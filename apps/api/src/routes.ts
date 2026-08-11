@@ -113,14 +113,14 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
   app.post("/api/jobs", async (request, reply) => {
     const access = await requireUser(request, options);
     const input = body(request);
-    const job = options.jobService.create({ userId: access.user.id, deviceId: access.device.id, type: input.type, input: input.input });
+    const job = await options.jobService.create({ userId: access.user.id, deviceId: access.device.id, type: input.type, input: input.input });
     return reply.code(201).send(job);
   });
 
   app.get("/api/jobs/:id", async (request) => {
     const access = await requireUser(request, options);
     const id = (request.params as { id: string }).id;
-    const job = options.jobService.get(id);
+    const job = await options.jobService.get(id);
     if (!job || job.userId !== access.user.id) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
     return job;
   });
@@ -128,9 +128,9 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
   app.post("/api/jobs/:id/cancel", async (request) => {
     const access = await requireUser(request, options);
     const id = (request.params as { id: string }).id;
-    const job = options.jobService.get(id);
+    const job = await options.jobService.get(id);
     if (!job || job.userId !== access.user.id) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
-    return options.jobService.cancel(id);
+    return await options.jobService.cancel(id);
   });
 
   app.post("/api/admin/auth/login", async (request, reply) => {
@@ -140,38 +140,38 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     if (!valid) throw new FoundationError(ApiErrorCode.INVALID_CREDENTIALS, "Invalid administrator credentials", 401);
     const sessionId = randomUUID();
     const accessToken = await signAccessToken({ sub: `admin:${email}`, deviceId: "admin-console", sessionId, roles: ["admin"] }, options.sessionSecret, { ttlSeconds: 900 });
-    options.adminService.recordAdminLogin(email);
+    await options.adminService.recordAdminLogin(email);
     return reply.send({ accessToken, admin: { email, roles: ["admin"] } });
   });
 
   app.get("/api/admin/dashboard", async (request) => {
     await requireAdmin(request, options);
-    return options.adminService.dashboard();
+    return await options.adminService.dashboard();
   });
 
   app.get("/api/admin/users", async (request) => {
     await requireAdmin(request, options);
-    return { users: options.adminService.listUsers() };
+    return { users: await options.adminService.listUsers() };
   });
 
   app.get("/api/admin/devices", async (request) => {
     await requireAdmin(request, options);
-    return { devices: options.adminService.listDevices() };
+    return { devices: await options.adminService.listDevices() };
   });
 
   app.get("/api/admin/sessions", async (request) => {
     await requireAdmin(request, options);
-    return { sessions: options.adminService.listSessions() };
+    return { sessions: await options.adminService.listSessions() };
   });
 
   app.get("/api/admin/jobs", async (request) => {
     await requireAdmin(request, options);
-    return { jobs: options.adminService.listJobs() };
+    return { jobs: await options.adminService.listJobs() };
   });
 
   app.get("/api/admin/audit-logs", async (request) => {
     await requireAdmin(request, options);
-    return { records: options.adminService.listAuditRecords() };
+    return { records: await options.adminService.listAuditRecords() };
   });
 
   app.post("/api/admin/sessions/:id/revoke", async (request) => {

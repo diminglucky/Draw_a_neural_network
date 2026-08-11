@@ -109,6 +109,6 @@ describe("session service", () => {
 
     await service.revokeSession({ sessionId: access.session.id, actorId: "admin-1", reason: "User requested device switch" });
     await expect(service.getCurrentAccess(access.accessToken)).rejects.toMatchObject({ code: ApiErrorCode.SESSION_REVOKED });
-    expect(store.listAuditRecords().some((item) => item.action === "session.revoked")).toBe(true);
+    expect((await store.listAuditRecords()).some((item) => item.action === "session.revoked")).toBe(true);
   });
 });

@@ -14,7 +14,7 @@ export class JobService {
     this.now = options.now ?? (() => new Date());
   }
 
-  create(input: { userId: string; deviceId: string; type: Job["type"]; input: unknown }): Job {
+  async create(input: { userId: string; deviceId: string; type: Job["type"]; input: unknown }): Promise<Job> {
     const job: Job = {
       id: randomUUID(),
       userId: input.userId,
@@ -29,60 +29,60 @@ export class JobService {
       startedAt: null,
       completedAt: null,
     };
-    this.options.store.createJob(job);
-    this.audit(job, "job.created", {});
+    await this.options.store.createJob(job);
+    await this.audit(job, "job.created", {});
     return job;
   }
 
-  get(id: string): Job | null {
+  async get(id: string): Promise<Job | null> {
     return this.options.store.getJob(id);
   }
 
-  start(id: string): Job {
-    const job = this.requireJob(id);
+  async start(id: string): Promise<Job> {
+    const job = await this.requireJob(id);
     this.assertStatus(job, ["queued"]);
     job.status = "running";
     job.startedAt = this.now().toISOString();
-    this.options.store.updateJob(job);
-    this.audit(job, "job.started", {});
+    await this.options.store.updateJob(job);
+    await this.audit(job, "job.started", {});
     return job;
   }
 
-  succeed(id: string, output: unknown): Job {
-    const job = this.requireJob(id);
+  async succeed(id: string, output: unknown): Promise<Job> {
+    const job = await this.requireJob(id);
     this.assertStatus(job, ["running"]);
     job.status = "succeeded";
     job.output = output;
     job.completedAt = this.now().toISOString();
-    this.options.store.updateJob(job);
-    this.audit(job, "job.succeeded", {});
+    await this.options.store.updateJob(job);
+    await this.audit(job, "job.succeeded", {});
     return job;
   }
 
-  fail(id: string, errorCode: Job["errorCode"], errorMessage: string): Job {
-    const job = this.requireJob(id);
+  async fail(id: string, errorCode: Job["errorCode"], errorMessage: string): Promise<Job> {
+    const job = await this.requireJob(id);
     this.assertStatus(job, ["queued", "running"]);
     job.status = "failed";
     job.errorCode = errorCode;
     job.errorMessage = errorMessage;
     job.completedAt = this.now().toISOString();
-    this.options.store.updateJob(job);
-    this.audit(job, "job.failed", { errorCode, errorMessage });
+    await this.options.store.updateJob(job);
+    await this.audit(job, "job.failed", { errorCode, errorMessage });
     return job;
   }
 
-  cancel(id: string): Job {
-    const job = this.requireJob(id);
+  async cancel(id: string): Promise<Job> {
+    const job = await this.requireJob(id);
     this.assertStatus(job, ["queued", "running"]);
     job.status = "cancelled";
     job.completedAt = this.now().toISOString();
-    this.options.store.updateJob(job);
-    this.audit(job, "job.cancelled", {});
+    await this.options.store.updateJob(job);
+    await this.audit(job, "job.cancelled", {});
     return job;
   }
 
-  private requireJob(id: string): Job {
-    const job = this.options.store.getJob(id);
+  private async requireJob(id: string): Promise<Job> {
+    const job = await this.options.store.getJob(id);
     if (!job) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
     return job;
   }
@@ -93,8 +93,8 @@ export class JobService {
     }
   }
 
-  private audit(job: Job, action: string, metadata: Record<string, unknown>): void {
-    this.options.store.createAuditRecord({
+  private async audit(job: Job, action: string, metadata: Record<string, unknown>): Promise<void> {
+    await this.options.store.createAuditRecord({
       id: randomUUID(),
       actorType: "system",
       actorId: null,

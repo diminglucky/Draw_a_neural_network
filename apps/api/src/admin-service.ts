@@ -6,11 +6,11 @@ import { SessionService } from "./session-service.js";
 export class AdminService {
   constructor(private readonly store: FoundationStore, private readonly sessions: SessionService) {}
 
-  dashboard() {
-    const users = this.store.listUsers();
-    const devices = users.flatMap((user) => this.store.listDevicesByUser(user.id));
-    const sessions = this.store.listSessions();
-    const jobs = this.store.listJobs();
+  async dashboard() {
+    const users = await this.store.listUsers();
+    const devices = (await Promise.all(users.map((user) => this.store.listDevicesByUser(user.id)))).flat();
+    const sessions = await this.store.listSessions();
+    const jobs = await this.store.listJobs();
     return {
       users: users.length,
       devices: devices.length,
@@ -18,27 +18,28 @@ export class AdminService {
       activeSessions: sessions.filter((session) => session.status === "active").length,
       jobs: jobs.length,
       failedJobs: jobs.filter((job) => job.status === "failed").length,
-      auditRecords: this.store.listAuditRecords().length,
+      auditRecords: (await this.store.listAuditRecords()).length,
     };
   }
 
-  listUsers() {
-    return this.store.listUsers().map(({ passwordHash: _passwordHash, ...user }) => user);
+  async listUsers() {
+    return (await this.store.listUsers()).map(({ passwordHash: _passwordHash, ...user }) => user);
   }
 
-  listDevices() {
-    return this.store.listUsers().flatMap((user) => this.store.listDevicesByUser(user.id));
+  async listDevices() {
+    const users = await this.store.listUsers();
+    return (await Promise.all(users.map((user) => this.store.listDevicesByUser(user.id)))).flat();
   }
 
-  listSessions() {
+  async listSessions() {
     return this.store.listSessions();
   }
 
-  listJobs() {
+  async listJobs() {
     return this.store.listJobs();
   }
 
-  listAuditRecords() {
+  async listAuditRecords() {
     return this.store.listAuditRecords();
   }
 
@@ -48,8 +49,8 @@ export class AdminService {
     return { id: sessionId, status: "revoked" };
   }
 
-  recordAdminLogin(adminId: string) {
-    this.store.createAuditRecord({
+  async recordAdminLogin(adminId: string): Promise<void> {
+    await this.store.createAuditRecord({
       id: randomUUID(),
       actorType: "admin",
       actorId: adminId,
