@@ -5,7 +5,7 @@ const root = process.cwd();
 const requiredFiles = [
   "apps/api/sql/001_foundation.sql",
   "infra/docker-compose.yml",
-  "apps/api/src/production-store-not-configured.ts",
+  "apps/api/src/store-factory.ts",
 ];
 const missingFiles = requiredFiles.filter((file) => !existsSync(resolve(root, file)));
 if (missingFiles.length > 0) {

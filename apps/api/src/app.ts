@@ -8,7 +8,7 @@ import { SessionService } from "./session-service.js";
 import { hashPassword } from "./security.js";
 import { InMemoryFoundationStore, type FoundationStore } from "./store.js";
 import { FoundationError } from "./domain.js";
-import { ProductionStoreNotConfiguredError } from "./production-store-not-configured.js";
+import { createFoundationStore } from "./store-factory.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -44,15 +44,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
 export async function buildDefaultApp(): Promise<FastifyInstance> {
   const config = loadConfig();
-  if (config.storageDriver !== "memory") {
-    throw new ProductionStoreNotConfiguredError(config);
-  }
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (config.nodeEnv === "production" && !adminPassword) {
     throw new Error("ADMIN_PASSWORD is required in production");
   }
-  return buildApp({
+  const storage = await createFoundationStore(config);
+  const app = buildApp({
     config,
+    store: storage.store,
     admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
   });
+  app.addHook("onClose", async () => storage.close());
+  return app;
 }
