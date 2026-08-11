@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDeviceKeyIpc, loadNativeDpapi } from "./main.mjs";
+import { buildFoundationUiUrl, createDeviceKeyIpc, loadNativeDpapi } from "./main.mjs";
 import { exposeDeviceKeyBridge } from "./preload.mjs";
 
 describe("Electron device-key bridge", () => {
+  it("marks the UI URL so the renderer enables proof-required authorization", () => {
+    expect(buildFoundationUiUrl("http://127.0.0.1:4173/?lang=zh", true)).toBe("http://127.0.0.1:4173/?lang=zh&deviceProof=required");
+    expect(buildFoundationUiUrl("http://127.0.0.1:4173/", false)).toBe("http://127.0.0.1:4173/?deviceProof=optional");
+  });
+
   it("registers only fixed identity and signing IPC handlers", async () => {
     const handlers = new Map();
     const ipcMain = {

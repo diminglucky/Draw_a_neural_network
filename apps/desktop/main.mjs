@@ -12,6 +12,12 @@ function bridgeError(code, message) {
   return error;
 }
 
+export function buildFoundationUiUrl(uiUrl, requireDeviceProof) {
+  const url = new URL(uiUrl);
+  url.searchParams.set("deviceProof", requireDeviceProof ? "required" : "optional");
+  return url.toString();
+}
+
 export async function loadNativeDpapi({ platformName = process.platform, importer = (specifier) => import(specifier) } = {}) {
   if (platformName !== "win32") throw bridgeError("DESKTOP_WINDOWS_REQUIRED", "The commercial desktop client requires Windows DPAPI");
   try {
@@ -47,7 +53,7 @@ export function createDeviceKeyIpc({ ipcMain, deviceKeyStore } = {}) {
   });
 }
 
-export async function startDesktopApp({ electron, dpapi, uiUrl = process.env.FOUNDATION_UI_URL || DEFAULT_FOUNDATION_UI_URL, userDataPath, keyStoreFactory = createDeviceKeyStore } = {}) {
+export async function startDesktopApp({ electron, dpapi, uiUrl = process.env.FOUNDATION_UI_URL || DEFAULT_FOUNDATION_UI_URL, requireDeviceProof = process.env.FOUNDATION_REQUIRE_DEVICE_PROOF !== "false", userDataPath, keyStoreFactory = createDeviceKeyStore } = {}) {
   if (!electron?.app || !electron?.BrowserWindow || !electron?.ipcMain) throw new TypeError("Electron app, BrowserWindow, and ipcMain are required");
   if (!dpapi) throw new TypeError("Windows DPAPI implementation is required");
 
@@ -68,7 +74,7 @@ export async function startDesktopApp({ electron, dpapi, uiUrl = process.env.FOU
       sandbox: true,
     },
   });
-  await window.loadURL(uiUrl);
+  await window.loadURL(buildFoundationUiUrl(uiUrl, requireDeviceProof));
   app.on?.("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });

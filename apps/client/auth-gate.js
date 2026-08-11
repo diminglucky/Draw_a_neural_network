@@ -58,6 +58,16 @@ function getDeviceIdentity(storage) {
   return identity;
 }
 
+function readDeviceProofRequirement(options) {
+  if (typeof options.requireDeviceProof === "boolean") return options.requireDeviceProof;
+  if (globalThis.SYNAPSE_REQUIRE_DEVICE_PROOF === true) return true;
+  try {
+    return new URLSearchParams(globalThis.location?.search || "").get("deviceProof") === "required";
+  } catch {
+    return false;
+  }
+}
+
 function gateMarkup() {
   return `
     <div class="foundation-gate-card" role="dialog" aria-labelledby="foundationGateTitle">
@@ -86,7 +96,7 @@ export function createAuthGate(options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const storage = getStorage(options.storage);
   const apiBase = (options.apiBase || globalThis.SYNAPSE_API_BASE || "http://127.0.0.1:4180").replace(/\/$/, "");
-  const requireDeviceProof = options.requireDeviceProof === true;
+  const requireDeviceProof = readDeviceProofRequirement(options);
   const deviceProvider = options.deviceProvider || createDeviceKeyProvider({
     bridge: options.deviceBridge,
     production: requireDeviceProof,
