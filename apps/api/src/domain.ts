@@ -11,9 +11,27 @@ export const ApiErrorCode = {
   NOT_FOUND: "NOT_FOUND",
   VALIDATION_FAILED: "VALIDATION_FAILED",
   JOB_NOT_CANCELLABLE: "JOB_NOT_CANCELLABLE",
+  EMAIL_ALREADY_REGISTERED: "EMAIL_ALREADY_REGISTERED",
+  USER_NOT_FOUND: "USER_NOT_FOUND",
+  DEVICE_NOT_FOUND: "DEVICE_NOT_FOUND",
+  SESSION_NOT_FOUND: "SESSION_NOT_FOUND",
+  SESSION_EXPIRED: "SESSION_EXPIRED",
+  USER_DISABLED: "USER_DISABLED",
 } as const;
 
 export type ApiErrorCode = (typeof ApiErrorCode)[keyof typeof ApiErrorCode];
+
+export class FoundationError extends Error {
+  constructor(
+    public readonly code: ApiErrorCode | string,
+    message: string,
+    public readonly statusCode = 400,
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "FoundationError";
+  }
+}
 
 export type EntityStatus = "active" | "suspended" | "revoked" | "disabled";
 export type SessionStatus = "active" | "revoked" | "expired" | "logged_out";
