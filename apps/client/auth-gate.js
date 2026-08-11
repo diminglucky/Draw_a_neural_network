@@ -169,6 +169,7 @@ export function createAuthGate(options = {}) {
           body: JSON.stringify({ email, password, device }),
         });
         device = registration.device;
+        if (device?.id && deviceProvider.bindDeviceId) await deviceProvider.bindDeviceId(device.id);
         storage?.setItem(DEVICE_KEY, JSON.stringify(registration.device));
       }
       const deviceId = device.id;
