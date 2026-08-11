@@ -1,3 +1,5 @@
+import { createDeviceKeyProvider } from "./device-key-provider.js";
+
 export const GATE_STATE = Object.freeze({
   LOCKED: "locked",
   AUTHORIZING: "authorizing",
@@ -84,7 +86,13 @@ export function createAuthGate(options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const storage = getStorage(options.storage);
   const apiBase = (options.apiBase || globalThis.SYNAPSE_API_BASE || "http://127.0.0.1:4180").replace(/\/$/, "");
-  const device = options.device || getDeviceIdentity(storage);
+  const requireDeviceProof = options.requireDeviceProof === true;
+  const deviceProvider = options.deviceProvider || createDeviceKeyProvider({
+    bridge: options.deviceBridge,
+    production: requireDeviceProof,
+    fallbackIdentity: () => getDeviceIdentity(storage),
+  });
+  let device = options.device || null;
   let mode = "login";
   let heartbeatTimer;
 
@@ -154,17 +162,30 @@ export function createAuthGate(options = {}) {
   async function submit(email, password) {
     setView({ state: GATE_STATE.AUTHORIZING, message: "正在连接授权服务…" });
     try {
+      device = device || await deviceProvider.getOrCreateIdentity();
       if (mode === "register") {
         const registration = await request("/api/auth/register", {
           method: "POST",
           body: JSON.stringify({ email, password, device }),
         });
+        device = registration.device;
         storage?.setItem(DEVICE_KEY, JSON.stringify(registration.device));
       }
-      const deviceId = JSON.parse(storage?.getItem(DEVICE_KEY) || "{}").id || device.id;
+      const deviceId = device.id;
+      const loginPayload = { email, password, deviceId };
+      if (requireDeviceProof) {
+        const challenge = await request("/api/auth/challenge", {
+          method: "POST",
+          body: JSON.stringify({ email, password, deviceId }),
+        });
+        loginPayload.deviceProof = {
+          challengeId: challenge.challengeId,
+          signature: await deviceProvider.signChallenge(challenge.challenge),
+        };
+      }
       const result = await request("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email, password, deviceId }),
+        body: JSON.stringify(loginPayload),
       });
       setToken(result.accessToken);
       return refresh();

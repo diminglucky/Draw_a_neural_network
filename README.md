@@ -102,6 +102,16 @@ OPENAI_API_KEY=your_key node server.js
 
 The analysis endpoint now requires an active Foundation API session even when `OPENAI_API_KEY` is not configured. Without an API key, an authenticated request receives the existing server-side draft synthesis; this is a development fallback and is not the commercial Agent/OpenAI implementation. Unauthenticated requests receive `401` and do not receive a local fallback.
 
+### Device proof and Electron boundary
+
+The API supports one-time Ed25519 device challenges. Enable the production-style gate locally with:
+
+```powershell
+$env:REQUIRE_DEVICE_PROOF = "true"
+```
+
+The browser gate delegates `getIdentity()` and `signChallenge(challenge)` to `globalThis.synapseDeviceKey` when proof is required. In the final Windows client this object must be exposed through a preload/IPC bridge whose private key is held by the Electron main process and protected by Windows DPAPI. The current browser bootstrap identity is only a development/test fallback and is not commercial device security.
+
 ## Code Generation
 
 Paste PyTorch or Keras model code into the "Code Generation" panel and click "Draw from Code".
