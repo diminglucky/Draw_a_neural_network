@@ -4,12 +4,14 @@ export interface FoundationStore {
   createUser(user: User): User;
   findUserByEmail(email: string): User | null;
   getUser(id: string): User | null;
+  listUsers(): User[];
   updateUser(user: User): User;
   createDevice(device: Device): Device;
   getDevice(id: string): Device | null;
   listDevicesByUser(userId: string): Device[];
   updateDevice(device: Device): Device;
   getSession(id: string): Session | null;
+  listSessions(): Session[];
   getActiveSessionByUser(userId: string): Session | null;
   createSession(session: Session): Session;
   updateSession(session: Session): Session;
@@ -18,6 +20,7 @@ export interface FoundationStore {
   getCurrentSubscription(userId: string): Subscription | null;
   createJob(job: Job): Job;
   getJob(id: string): Job | null;
+  listJobs(): Job[];
   updateJob(job: Job): Job;
   createAuditRecord(record: AuditRecord): AuditRecord;
   listAuditRecords(): AuditRecord[];
@@ -45,6 +48,10 @@ export class InMemoryFoundationStore implements FoundationStore {
     return this.users.get(id) ?? null;
   }
 
+  listUsers(): User[] {
+    return [...this.users.values()];
+  }
+
   updateUser(user: User): User {
     this.users.set(user.id, user);
     return user;
@@ -70,6 +77,10 @@ export class InMemoryFoundationStore implements FoundationStore {
 
   getSession(id: string): Session | null {
     return this.sessions.get(id) ?? null;
+  }
+
+  listSessions(): Session[] {
+    return [...this.sessions.values()];
   }
 
   getActiveSessionByUser(userId: string): Session | null {
@@ -113,6 +124,10 @@ export class InMemoryFoundationStore implements FoundationStore {
 
   getJob(id: string): Job | null {
     return this.jobs.get(id) ?? null;
+  }
+
+  listJobs(): Job[] {
+    return [...this.jobs.values()];
   }
 
   updateJob(job: Job): Job {
