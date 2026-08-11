@@ -31,6 +31,7 @@ The current Windows-first development slice includes:
 - PostgreSQL session claims and conditional writes are fenced with the Redis token;
 - Ed25519 device challenges are single-use and production login can require a valid device proof;
 - Windows Electron main-process device keys protected by DPAPI `CurrentUser`, with a fixed preload IPC bridge;
+- server-issued device ids are write-once bound to the DPAPI key and reused after Electron restart;
 - server-side authorization for the existing diagram-analysis endpoint.
 
 The current slice includes the PostgreSQL adapter, a Redis lease adapter with an in-memory test mode, and the Windows DPAPI device-key bridge. It does not claim to include the real OpenAI provider, Vision code understanding, Visio COM automation, signed installer, or `.vsdx` export.
@@ -64,7 +65,7 @@ $env:FOUNDATION_UI_URL = "http://127.0.0.1:4173"
 npm run desktop:dev
 ```
 
-`desktop:smoke` creates and reloads a DPAPI-protected Ed25519 key, then verifies a challenge signature without printing private material. The smoke is a Windows-only acceptance gate. The vendored `vendor/win-dpapi` package is derived from the MIT-licensed [daguej/node-dpapi](https://github.com/daguej/node-dpapi) 1.1.0 source and contains the minimum modern-MSVC const-correctness compatibility patch. Electron binaries are downloaded during installation; if the default release host is unavailable in a local network, set an approved mirror such as `$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"` before `npm install`.
+`desktop:smoke` creates and reloads a DPAPI-protected Ed25519 key, binds a server-style device id, and verifies a challenge signature without printing private material. The smoke is a Windows-only acceptance gate. The vendored `vendor/win-dpapi` package is derived from the MIT-licensed [daguej/node-dpapi](https://github.com/daguej/node-dpapi) 1.1.0 source and contains the minimum modern-MSVC const-correctness compatibility patch. Electron binaries are downloaded during installation; if the default release host is unavailable in a local network, set an approved mirror such as `$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"` before `npm install`.
 
 Open [http://127.0.0.1:4173/](http://127.0.0.1:4173/). The first visit is locked; choose “注册试用账号” to create the first user and bind the development device identity. The admin console is at [http://127.0.0.1:4173/apps/admin/](http://127.0.0.1:4173/apps/admin/).
 

@@ -18,6 +18,7 @@ const storagePath = join(directory, "device-key.json");
 try {
   const first = createDeviceKeyStore({ storagePath, dpapi });
   const identity = await first.getIdentity();
+  await first.bindDeviceId("smoke-device-1");
   const challenge = "desktop-dpapi-smoke-challenge";
   const signature = await first.signChallenge(challenge);
   const signatureValid = verify(
@@ -29,11 +30,11 @@ try {
 
   const second = createDeviceKeyStore({ storagePath, dpapi });
   const reloaded = await second.getIdentity();
-  if (identity.publicKey !== reloaded.publicKey || !signatureValid) {
+  if (identity.publicKey !== reloaded.publicKey || reloaded.id !== "smoke-device-1" || !signatureValid) {
     throw new Error("DPAPI device identity reload or signature verification failed");
   }
 
-  console.log(JSON.stringify({ status: "ok", platform: process.platform, electron: process.versions.electron, publicKeyStable: true, signatureValid: true }));
+  console.log(JSON.stringify({ status: "ok", platform: process.platform, electron: process.versions.electron, publicKeyStable: true, deviceIdStable: true, signatureValid: true }));
 } finally {
   await rm(directory, { recursive: true, force: true });
   app.exit(0);

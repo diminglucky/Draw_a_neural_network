@@ -28,11 +28,11 @@
 - Produces `getIdentity()` with an optional `id` field after binding.
 - Produces `bindDeviceId(deviceId): Promise<{ id: string }>`.
 
-- [ ] Add failing tests for binding, reload, idempotence, conflicting ids, and invalid ids.
-- [ ] Run `npm run api:test -- apps/desktop/device-key-store.test.js` and observe the missing method/behavior failure.
-- [ ] Implement optional `deviceId` document metadata, validation, atomic persistence, and identity projection.
-- [ ] Run the focused test and `node --check apps/desktop/device-key-store.mjs`.
-- [ ] Commit `feat: persist bound desktop device id`.
+- [x] Add failing tests for binding, reload, idempotence, conflicting ids, and invalid ids.
+- [x] Run `npm run api:test -- apps/desktop/device-key-store.test.js` and observe the missing method/behavior failure.
+- [x] Implement optional `deviceId` document metadata, validation, atomic persistence, and identity projection.
+- [x] Run the focused test and `node --check apps/desktop/device-key-store.mjs`.
+- [x] Commit `feat: persist bound desktop device id`.
 
 ### Task 2: Electron bridge and provider
 
@@ -49,11 +49,11 @@
 - Exposes `window.synapseDeviceKey.bindDeviceId(deviceId)`.
 - Provider delegates `bindDeviceId` to the bridge in production and allows no-op fallback only in development.
 
-- [ ] Add failing tests for fixed channel registration, input validation, preload exposure, and provider delegation.
-- [ ] Run the focused bridge/provider tests and confirm the missing binding behavior.
-- [ ] Implement the main handler, preload method, and provider boundary.
-- [ ] Run focused tests and JavaScript syntax checks.
-- [ ] Commit `feat: expose desktop device binding bridge`.
+- [x] Add failing tests for fixed channel registration, input validation, preload exposure, and provider delegation.
+- [x] Run the focused bridge/provider tests and confirm the missing binding behavior.
+- [x] Implement the main handler, preload method, and provider boundary.
+- [x] Run focused tests and JavaScript syntax checks.
+- [x] Commit `feat: expose desktop device binding bridge`.
 
 ### Task 3: Auth gate registration binding
 
@@ -66,11 +66,11 @@
 - After `/api/auth/register` returns a device, call `deviceProvider.bindDeviceId(registration.device.id)` before reporting registration success.
 - Preserve browser development fallback behavior by making binding optional outside production bridge mode.
 
-- [ ] Add a failing registration test that proves the server-issued id is bound before the subsequent login.
-- [ ] Run the focused auth tests and observe that the provider is not called today.
-- [ ] Implement the smallest auth-gate change.
-- [ ] Run focused auth tests and syntax checks.
-- [ ] Commit `feat: bind registered device in auth gate`.
+- [x] Add a failing registration test that proves the server-issued id is bound before the subsequent login.
+- [x] Run the focused auth tests and observe that the provider is not called today.
+- [x] Implement the smallest auth-gate change.
+- [x] Run focused auth tests and syntax checks.
+- [x] Commit `feat: bind registered device in auth gate`.
 
 ### Task 4: Full verification and delivery
 
@@ -78,7 +78,7 @@
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/verification-foundation.md`
 
-- [ ] Document the restart/relogin binding behavior and remaining signed-release gates.
-- [ ] Run `npm run api:test`, `npm run api:check`, `npx tsc --noEmit`, all syntax checks, PostgreSQL/Redis smokes, `npm run desktop:rebuild`, and `npm run desktop:smoke`.
-- [ ] Inspect `git diff --check`, staged paths, and the final branch status.
+- [x] Document the restart/relogin binding behavior and remaining signed-release gates.
+- [x] Run `npm run api:test`, `npm run api:check`, `npx tsc --noEmit`, all syntax checks, PostgreSQL/Redis smokes, `npm run desktop:rebuild`, and `npm run desktop:smoke`.
+- [x] Inspect `git diff --check`, staged paths, and the final branch status.
 - [ ] Commit `docs: document electron device binding acceptance`.

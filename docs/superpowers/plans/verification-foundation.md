@@ -70,4 +70,6 @@ npm run desktop:rebuild
 npm run desktop:smoke
 ```
 
-The rebuild proves the native DPAPI addon is compiled for the Electron ABI; the smoke proves DPAPI protect/unprotect, stable public-key reload, and challenge signature verification. A passing Node ABI build alone is insufficient. Non-Windows environments must report `DESKTOP_WINDOWS_REQUIRED` and cannot claim this gate.
+The rebuild proves the native DPAPI addon is compiled for the Electron ABI; the smoke proves DPAPI protect/unprotect, write-once server device-id binding, stable public-key reload, and challenge signature verification. A passing Node ABI build alone is insufficient. Non-Windows environments must report `DESKTOP_WINDOWS_REQUIRED` and cannot claim this gate.
+
+The Electron authorization data-flow test also verifies that registration binds the returned server `device.id` before proof-required login. Full UI acceptance must still cover a real Electron restart, session refresh, admin revocation, and clean-machine installation.
