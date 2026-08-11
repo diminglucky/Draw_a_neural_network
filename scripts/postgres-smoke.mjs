@@ -19,7 +19,8 @@ let first;
 let second;
 try {
   first = await connect();
-  await first.query(migration);
+  const schema = await first.query("SELECT to_regclass('public.users') AS users_table");
+  if (!schema.rows[0]?.users_table) await first.query(migration);
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,
