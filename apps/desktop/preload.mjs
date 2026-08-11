@@ -1,4 +1,4 @@
-import { DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
+import { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
 
 export function exposeDeviceKeyBridge({ contextBridge, ipcRenderer } = {}) {
   if (!contextBridge || typeof contextBridge.exposeInMainWorld !== "function") throw new TypeError("contextBridge is required");
@@ -7,6 +7,7 @@ export function exposeDeviceKeyBridge({ contextBridge, ipcRenderer } = {}) {
   const api = Object.freeze({
     getIdentity: () => ipcRenderer.invoke(DEVICE_KEY_GET_IDENTITY_CHANNEL),
     signChallenge: (challenge) => ipcRenderer.invoke(DEVICE_KEY_SIGN_CHALLENGE_CHANNEL, challenge),
+    bindDeviceId: (deviceId) => ipcRenderer.invoke(DEVICE_KEY_BIND_DEVICE_CHANNEL, deviceId),
   });
   contextBridge.exposeInMainWorld("synapseDeviceKey", api);
   return api;

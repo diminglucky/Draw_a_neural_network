@@ -1,9 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { MAX_DEVICE_CHALLENGE_BYTES, createDeviceKeyStore } from "./device-key-store.mjs";
-import { DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
+import { MAX_DEVICE_CHALLENGE_BYTES, MAX_DEVICE_ID_LENGTH, createDeviceKeyStore } from "./device-key-store.mjs";
+import { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
 
-export { DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
+export { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
 export const DEFAULT_FOUNDATION_UI_URL = "http://127.0.0.1:4173";
 
 function bridgeError(code, message) {
@@ -36,9 +36,14 @@ export function createDeviceKeyIpc({ ipcMain, deviceKeyStore } = {}) {
     }
     return deviceKeyStore.signChallenge(challenge);
   });
+  ipcMain.handle(DEVICE_KEY_BIND_DEVICE_CHANNEL, async (_event, deviceId) => {
+    if (typeof deviceId !== "string") throw bridgeError("DEVICE_ID_INVALID", "The server device id must be a string");
+    if (Buffer.byteLength(deviceId, "utf8") > MAX_DEVICE_ID_LENGTH) throw bridgeError("DEVICE_ID_TOO_LARGE", `The server device id must be at most ${MAX_DEVICE_ID_LENGTH} bytes`);
+    return deviceKeyStore.bindDeviceId(deviceId);
+  });
 
   return Object.freeze({
-    channels: Object.freeze([DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL]),
+    channels: Object.freeze([DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL, DEVICE_KEY_BIND_DEVICE_CHANNEL]),
   });
 }
 

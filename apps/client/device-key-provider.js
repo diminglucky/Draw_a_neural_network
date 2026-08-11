@@ -19,5 +19,11 @@ export function createDeviceKeyProvider(options = {}) {
       if (bridge?.signChallenge) return await bridge.signChallenge(challenge);
       throw bridgeError();
     },
+
+    async bindDeviceId(deviceId) {
+      if (bridge?.bindDeviceId) return await bridge.bindDeviceId(deviceId);
+      if (!production) return undefined;
+      throw bridgeError();
+    },
   };
 }
