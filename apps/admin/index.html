@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Synapse Studio | 管理员后台</title>
+    <link rel="stylesheet" href="./admin.css" />
+  </head>
+  <body>
+    <main class="admin-shell">
+      <section id="adminLogin" class="admin-card admin-login-card">
+        <p class="eyebrow">SYNAPSE STUDIO ADMIN</p>
+        <h1>管理员后台</h1>
+        <p>登录后查看用户、设备、在线会话、Job 和审计记录。</p>
+        <form id="adminLoginForm">
+          <label>管理员邮箱<input id="adminEmail" type="email" value="admin@example.com" required /></label>
+          <label>管理员密码<input id="adminPassword" type="password" required /></label>
+          <button class="primary-button" type="submit">登录后台</button>
+        </form>
+        <p id="adminLoginError" class="error" role="alert"></p>
+      </section>
+
+      <section id="adminApp" class="is-hidden">
+        <header class="admin-header">
+          <div><p class="eyebrow">COMMERCIAL CONTROL PLANE</p><h1>运营监控</h1></div>
+          <div class="admin-header-actions"><span id="adminIdentity"></span><button id="adminLogout" class="button-muted">退出</button></div>
+        </header>
+        <section id="dashboardCards" class="metric-grid"></section>
+        <section class="admin-grid">
+          <article class="admin-card"><div class="card-heading"><h2>用户</h2><button data-refresh="users" class="button-muted">刷新</button></div><table><thead><tr><th>邮箱</th><th>状态</th><th>创建时间</th></tr></thead><tbody id="usersTable"></tbody></table></article>
+          <article class="admin-card"><div class="card-heading"><h2>设备</h2><button data-refresh="devices" class="button-muted">刷新</button></div><table><thead><tr><th>名称</th><th>用户</th><th>状态</th><th>最后在线</th></tr></thead><tbody id="devicesTable"></tbody></table></article>
+          <article class="admin-card admin-wide"><div class="card-heading"><h2>会话</h2><button data-refresh="sessions" class="button-muted">刷新</button></div><table><thead><tr><th>ID</th><th>用户</th><th>设备</th><th>状态</th><th>租约到期</th><th>操作</th></tr></thead><tbody id="sessionsTable"></tbody></table></article>
+          <article class="admin-card"><div class="card-heading"><h2>Job</h2><button data-refresh="jobs" class="button-muted">刷新</button></div><table><thead><tr><th>类型</th><th>状态</th><th>创建时间</th></tr></thead><tbody id="jobsTable"></tbody></table></article>
+          <article class="admin-card"><div class="card-heading"><h2>审计记录</h2><button data-refresh="audit" class="button-muted">刷新</button></div><table><thead><tr><th>动作</th><th>目标</th><th>原因</th><th>时间</th></tr></thead><tbody id="auditTable"></tbody></table></article>
+        </section>
+        <p id="adminStatus" class="admin-status"></p>
+      </section>
+    </main>
+    <script src="./admin.js" type="module"></script>
+  </body>
+</html>

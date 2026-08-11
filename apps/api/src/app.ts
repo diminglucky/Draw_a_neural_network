@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cors from "@fastify/cors";
 import { loadConfig, type AppConfig } from "./config.js";
 import { AdminService } from "./admin-service.js";
 import { JobService } from "./job-service.js";
@@ -23,6 +24,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const jobService = new JobService({ store });
   const adminService = new AdminService(store, sessionService);
   const app = Fastify({ logger: false });
+  app.register(cors, { origin: true });
   registerRoutes(app, {
     sessionService,
     jobService,

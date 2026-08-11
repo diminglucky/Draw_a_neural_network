@@ -1,0 +1,37 @@
+#foundationGate {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 11, 28, 0.84);
+  backdrop-filter: blur(14px);
+}
+
+#foundationGate[hidden] { display: none; }
+
+.foundation-gate-card {
+  width: min(440px, 100%);
+  padding: 30px;
+  color: #eef1ff;
+  background: linear-gradient(145deg, #1d2145, #101329);
+  border: 1px solid rgba(174, 181, 255, 0.28);
+  border-radius: 22px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+}
+
+.foundation-gate-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .02em; }
+.foundation-gate-mark { display: grid; place-items: center; width: 30px; height: 30px; color: #0f1124; background: #b79cff; border-radius: 9px; }
+.foundation-gate-card h2 { margin: 8px 0 10px; font-size: 27px; }
+.foundation-gate-copy, .foundation-gate-footnote { color: #aab0d4; line-height: 1.6; }
+.foundation-gate-footnote { margin: 18px 0 0; font-size: 11px; }
+.foundation-auth-tabs { display: flex; gap: 8px; margin: 22px 0 14px; }
+.foundation-auth-tabs button { padding: 7px 11px; color: #aab0d4; background: transparent; border: 1px solid transparent; border-radius: 9px; cursor: pointer; }
+.foundation-auth-tabs button.is-selected { color: #fff; border-color: #6d73b9; background: rgba(111, 118, 206, .22); }
+.foundation-gate-card label { display: grid; gap: 7px; margin: 12px 0; color: #c7cbed; font-size: 13px; }
+.foundation-gate-card input { width: 100%; padding: 11px 12px; color: #fff; background: #0b0e20; border: 1px solid #3d426d; border-radius: 10px; box-sizing: border-box; }
+.foundation-gate-card [data-auth-submit] { width: 100%; margin-top: 10px; }
+.foundation-gate-status { margin: 18px 0 4px; color: #83e5c3; font-weight: 600; }
+.foundation-gate-identity { margin: 0; color: #bbc0de; font-size: 12px; }
+.foundation-gate-error { min-height: 18px; margin: 10px 0 0; color: #ff8d9c; font-size: 12px; }

@@ -6,8 +6,10 @@
     <title>Synapse Studio | 神经网络画布</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./apps/client/auth-gate.css" />
   </head>
   <body>
+    <div id="foundationGate" data-state="locked"></div>
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">
@@ -266,6 +268,7 @@
       </aside>
     </div>
 
+    <script src="./apps/client/auth-gate.js" type="module"></script>
     <script src="./app.js" type="module"></script>
   </body>
 </html>
