@@ -90,4 +90,35 @@ describe("DPAPI device key store", () => {
     expect(renames[0][0]).toBe(writes[0]);
     expect(renames[0][1]).toBe(file);
   });
+
+  it("binds a server device id once and preserves it across reload", async () => {
+    const file = await storagePath();
+    const first = createDeviceKeyStore({ storagePath: file, dpapi });
+
+    await expect(first.getIdentity()).resolves.not.toHaveProperty("id");
+    await expect(first.bindDeviceId("server-device-1")).resolves.toEqual({ id: "server-device-1" });
+    await expect(first.bindDeviceId("server-device-1")).resolves.toEqual({ id: "server-device-1" });
+    await expect(first.getIdentity()).resolves.toMatchObject({ id: "server-device-1" });
+
+    const second = createDeviceKeyStore({ storagePath: file, dpapi });
+    await expect(second.getIdentity()).resolves.toMatchObject({ id: "server-device-1" });
+  });
+
+  it("rejects a conflicting server device id without replacing the original binding", async () => {
+    const file = await storagePath();
+    const store = createDeviceKeyStore({ storagePath: file, dpapi });
+
+    await store.bindDeviceId("server-device-1");
+    await expect(store.bindDeviceId("server-device-2")).rejects.toMatchObject({ code: "DEVICE_ID_ALREADY_BOUND" });
+    await expect(store.getIdentity()).resolves.toMatchObject({ id: "server-device-1" });
+  });
+
+  it("rejects invalid server device ids before persistence", async () => {
+    const file = await storagePath();
+    const store = createDeviceKeyStore({ storagePath: file, dpapi });
+
+    await expect(store.bindDeviceId(123)).rejects.toMatchObject({ code: "DEVICE_ID_INVALID" });
+    await expect(store.bindDeviceId("")).rejects.toMatchObject({ code: "DEVICE_ID_INVALID" });
+    await expect(store.bindDeviceId("x".repeat(129))).rejects.toMatchObject({ code: "DEVICE_ID_INVALID" });
+  });
 });

@@ -5,6 +5,7 @@ import * as defaultFs from "node:fs/promises";
 export const DEVICE_KEY_FILE_VERSION = 1;
 export const DEVICE_KEY_ENTROPY = Buffer.from("Synapse Studio/device-key/v1", "utf8");
 export const MAX_DEVICE_CHALLENGE_BYTES = 4096;
+export const MAX_DEVICE_ID_LENGTH = 128;
 
 function deviceError(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined);
@@ -22,12 +23,17 @@ function identityDefaults() {
   };
 }
 
+function isValidDeviceId(deviceId) {
+  return typeof deviceId === "string" && deviceId.length > 0 && deviceId.length <= MAX_DEVICE_ID_LENGTH && /^[A-Za-z0-9._:-]+$/.test(deviceId);
+}
+
 function assertKeyDocument(document) {
   if (!document || typeof document !== "object" || Array.isArray(document)) throw new Error("key document is not an object");
   if (document.version !== DEVICE_KEY_FILE_VERSION) throw new Error("unsupported key document version");
   if (typeof document.publicKey !== "string" || !document.publicKey.includes("BEGIN PUBLIC KEY")) throw new Error("public key is invalid");
   if (typeof document.encryptedPrivateKey !== "string" || !document.encryptedPrivateKey) throw new Error("encrypted private key is invalid");
   if (typeof document.createdAt !== "string" || !document.createdAt) throw new Error("createdAt is invalid");
+  if (document.deviceId !== undefined && !isValidDeviceId(document.deviceId)) throw new Error("deviceId is invalid");
 }
 
 function publicKeyPem(key) {
@@ -37,13 +43,15 @@ function publicKeyPem(key) {
 
 function createIdentity(document) {
   const defaults = identityDefaults();
-  return Object.freeze({
+  const identity = {
     publicKey: document.publicKey,
     fingerprintHash: defaults.fingerprintHash,
     name: defaults.name,
     clientVersion: defaults.clientVersion,
     osVersion: defaults.osVersion,
-  });
+  };
+  if (document.deviceId) identity.id = document.deviceId;
+  return Object.freeze(identity);
 }
 
 export function createDeviceKeyStore({ storagePath, dpapi, fsImpl = defaultFs, now = () => new Date() } = {}) {
@@ -139,6 +147,17 @@ export function createDeviceKeyStore({ storagePath, dpapi, fsImpl = defaultFs, n
       }
       const { privateKey } = await load();
       return sign(null, challengeBytes, privateKey).toString("base64");
+    },
+
+    async bindDeviceId(deviceId) {
+      if (!isValidDeviceId(deviceId)) throw deviceError("DEVICE_ID_INVALID", `The server device id must be 1-${MAX_DEVICE_ID_LENGTH} safe characters`);
+      const state = await load();
+      if (state.document.deviceId === deviceId) return { id: deviceId };
+      if (state.document.deviceId) throw deviceError("DEVICE_ID_ALREADY_BOUND", "The device key is already bound to another server device");
+      const nextDocument = { ...state.document, deviceId };
+      await writeDocument(nextDocument);
+      state.document = nextDocument;
+      return { id: deviceId };
     },
   };
 }
