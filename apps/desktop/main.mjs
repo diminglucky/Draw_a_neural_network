@@ -6,6 +6,16 @@ import { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE
 export { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
 export const DEFAULT_FOUNDATION_UI_URL = "http://127.0.0.1:4173";
 
+export function scheduleDesktopStartup(startup, onError = (error) => console.error("Synapse Studio desktop startup failed", error)) {
+  queueMicrotask(() => {
+    try {
+      Promise.resolve(startup()).catch(onError);
+    } catch (error) {
+      onError(error);
+    }
+  });
+}
+
 function bridgeError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -68,7 +78,7 @@ export async function startDesktopApp({ electron, dpapi, uiUrl = process.env.FOU
 
   const window = new BrowserWindow({
     webPreferences: {
-      preload: fileURLToPath(new URL("./preload.mjs", import.meta.url)),
+      preload: fileURLToPath(new URL("./preload.cjs", import.meta.url)),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -88,4 +98,4 @@ async function startFromElectron() {
   await startDesktopApp({ electron, dpapi });
 }
 
-await startFromElectron();
+if (process.versions.electron) scheduleDesktopStartup(startFromElectron);

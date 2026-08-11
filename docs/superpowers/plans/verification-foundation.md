@@ -17,7 +17,7 @@ node --check apps/client/auth-gate.js
 node --check apps/admin/admin.js
 node --check apps/desktop/device-key-store.mjs
 node --check apps/desktop/main.mjs
-node --check apps/desktop/preload.mjs
+node --check apps/desktop/preload.cjs
 git diff --check
 ```
 

@@ -1,8 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFoundationUiUrl, createDeviceKeyIpc, loadNativeDpapi } from "./main.mjs";
-import { exposeDeviceKeyBridge } from "./preload.mjs";
+import { buildFoundationUiUrl, createDeviceKeyIpc, loadNativeDpapi, scheduleDesktopStartup } from "./main.mjs";
+import { exposeDeviceKeyBridge } from "./preload.cjs";
 
 describe("Electron device-key bridge", () => {
+  it("schedules desktop startup after the ESM entry module finishes evaluating", async () => {
+    const startup = vi.fn(async () => "started");
+
+    expect(scheduleDesktopStartup(startup)).toBeUndefined();
+    expect(startup).not.toHaveBeenCalled();
+
+    await Promise.resolve();
+    expect(startup).toHaveBeenCalledOnce();
+  });
+
   it("marks the UI URL so the renderer enables proof-required authorization", () => {
     expect(buildFoundationUiUrl("http://127.0.0.1:4173/?lang=zh", true)).toBe("http://127.0.0.1:4173/?lang=zh&deviceProof=required");
     expect(buildFoundationUiUrl("http://127.0.0.1:4173/", false)).toBe("http://127.0.0.1:4173/?deviceProof=optional");
