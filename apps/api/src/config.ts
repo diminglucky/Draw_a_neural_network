@@ -5,6 +5,7 @@ const environmentSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4180),
   SESSION_SECRET: z.string().min(32).optional(),
   STORAGE_DRIVER: z.enum(["memory", "postgres"]).default("memory"),
+  LEASE_DRIVER: z.enum(["memory", "redis"]).default("memory"),
   REDIS_URL: z.string().url().optional(),
   DATABASE_URL: z.string().url().optional(),
 });
@@ -14,6 +15,7 @@ export interface AppConfig {
   port: number;
   sessionSecret: string;
   storageDriver: "memory" | "postgres";
+  leaseDriver: "memory" | "redis";
   redisUrl?: string;
   databaseUrl?: string;
 }
@@ -29,12 +31,16 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
   if (parsed.STORAGE_DRIVER === "postgres" && !parsed.DATABASE_URL) {
     throw new Error("DATABASE_URL is required when STORAGE_DRIVER=postgres");
   }
+  if (parsed.LEASE_DRIVER === "redis" && !parsed.REDIS_URL) {
+    throw new Error("REDIS_URL is required when LEASE_DRIVER=redis");
+  }
 
   return {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
     sessionSecret: parsed.SESSION_SECRET || "development-only-session-secret-change-me-32",
     storageDriver: parsed.STORAGE_DRIVER,
+    leaseDriver: parsed.LEASE_DRIVER,
     redisUrl: parsed.REDIS_URL,
     databaseUrl: parsed.DATABASE_URL,
   };
