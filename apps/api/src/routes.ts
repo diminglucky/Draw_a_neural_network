@@ -56,12 +56,22 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     return reply.code(201).send({ user: publicUser(user), device });
   });
 
+  app.post("/api/auth/challenge", async (request) => {
+    const input = body(request);
+    return options.sessionService.createLoginChallenge({
+      email: String(input.email ?? ""),
+      password: String(input.password ?? ""),
+      deviceId: String(input.deviceId ?? ""),
+    });
+  });
+
   app.post("/api/auth/login", async (request, reply) => {
     const input = body(request);
     const result = await options.sessionService.login({
       email: String(input.email ?? ""),
       password: String(input.password ?? ""),
       deviceId: String(input.deviceId ?? ""),
+      deviceProof: input.deviceProof && { challengeId: String(input.deviceProof.challengeId ?? ""), signature: String(input.deviceProof.signature ?? "") },
     });
     return reply.send({ ...result, user: publicUser(result.user) });
   });

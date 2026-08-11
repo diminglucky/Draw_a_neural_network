@@ -26,7 +26,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     throw new Error("A FoundationStore must be injected when a durable storage driver is configured");
   }
   const store = options.store ?? new InMemoryFoundationStore();
-  const sessionService = new SessionService({ store, leaseSeconds: 90, accessTokenTtlSeconds: 900, sessionSecret: options.sessionSecret ?? config.sessionSecret, leaseCoordinator: options.leaseCoordinator });
+  const sessionService = new SessionService({ store, leaseSeconds: 90, accessTokenTtlSeconds: 900, challengeTtlSeconds: 120, requireDeviceProof: config.requireDeviceProof, sessionSecret: options.sessionSecret ?? config.sessionSecret, leaseCoordinator: options.leaseCoordinator });
   const jobService = new JobService({ store });
   const adminService = new AdminService(store, sessionService);
   const app = Fastify({ logger: false });

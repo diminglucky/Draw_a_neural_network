@@ -8,6 +8,7 @@ const environmentSchema = z.object({
   LEASE_DRIVER: z.enum(["memory", "redis"]).default("memory"),
   REDIS_URL: z.string().url().optional(),
   DATABASE_URL: z.string().url().optional(),
+  REQUIRE_DEVICE_PROOF: z.enum(["true", "false"]).optional(),
 });
 
 export interface AppConfig {
@@ -18,6 +19,7 @@ export interface AppConfig {
   leaseDriver: "memory" | "redis";
   redisUrl?: string;
   databaseUrl?: string;
+  requireDeviceProof: boolean;
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): AppConfig {
@@ -43,5 +45,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
     leaseDriver: parsed.LEASE_DRIVER,
     redisUrl: parsed.REDIS_URL,
     databaseUrl: parsed.DATABASE_URL,
+    requireDeviceProof: parsed.NODE_ENV === "production" || parsed.REQUIRE_DEVICE_PROOF === "true",
   };
 }

@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { ApiErrorCode, FoundationError, type AuditRecord, type Device, type Session, type Subscription, type User } from "./domain.js";
 import { hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from "./security.js";
 import type { FoundationStore } from "./store.js";
 import { InMemoryLeaseCoordinator, type LeaseCoordinator } from "./lease-coordinator.js";
+import { verifyDeviceSignature } from "./device-proof.js";
 
 interface SessionServiceOptions {
   store: FoundationStore;
@@ -11,15 +12,21 @@ interface SessionServiceOptions {
   accessTokenTtlSeconds: number;
   sessionSecret: string;
   leaseCoordinator?: LeaseCoordinator;
+  challengeTtlSeconds?: number;
+  requireDeviceProof?: boolean;
 }
 
 export class SessionService {
   private readonly now: () => Date;
   private readonly leaseCoordinator: LeaseCoordinator;
+  private readonly challengeTtlSeconds: number;
+  private readonly requireDeviceProof: boolean;
 
   constructor(private readonly options: SessionServiceOptions) {
     this.now = options.now ?? (() => new Date());
     this.leaseCoordinator = options.leaseCoordinator ?? new InMemoryLeaseCoordinator();
+    this.challengeTtlSeconds = options.challengeTtlSeconds ?? 120;
+    this.requireDeviceProof = options.requireDeviceProof ?? false;
   }
 
   async registerUser(input: { email: string; password: string }): Promise<User> {
@@ -60,6 +67,9 @@ export class SessionService {
     clientVersion: string;
     osVersion: string;
   }): Promise<Device> {
+    if (this.requireDeviceProof && input.publicKey === "browser-bootstrap-key") {
+      throw new FoundationError(ApiErrorCode.DEVICE_PROOF_REQUIRED, "A cryptographic device key is required", 400);
+    }
     const user = await this.options.store.getUser(input.userId);
     if (!user) throw new FoundationError(ApiErrorCode.USER_NOT_FOUND, "User was not found", 404);
     const device: Device = {
@@ -79,7 +89,7 @@ export class SessionService {
     return device;
   }
 
-  async login(input: { email: string; password: string; deviceId: string }): Promise<{ user: User; device: Device; session: Session; accessToken: string }> {
+  async createLoginChallenge(input: { email: string; password: string; deviceId: string }): Promise<{ challengeId: string; challenge: string; expiresAt: string }> {
     const user = await this.options.store.findUserByEmail(input.email);
     if (!user || !(await verifyPassword(input.password, user.passwordHash))) {
       throw new FoundationError(ApiErrorCode.INVALID_CREDENTIALS, "Invalid email or password", 401);
@@ -88,6 +98,42 @@ export class SessionService {
     const device = await this.options.store.getDevice(input.deviceId);
     if (!device || device.userId !== user.id || device.status !== "active") {
       throw new FoundationError(ApiErrorCode.DEVICE_NOT_AUTHORIZED, "Device is not authorized for this user", 403);
+    }
+    const now = this.now();
+    const expiresAt = new Date(now.getTime() + this.challengeTtlSeconds * 1000).toISOString();
+    const record = await this.options.store.createDeviceChallenge({
+      id: randomUUID(),
+      userId: user.id,
+      deviceId: device.id,
+      value: randomBytes(32).toString("base64url"),
+      expiresAt,
+      consumedAt: null,
+      createdAt: now.toISOString(),
+    });
+    return { challengeId: record.id, challenge: record.value, expiresAt: record.expiresAt };
+  }
+
+  async login(input: { email: string; password: string; deviceId: string; deviceProof?: { challengeId: string; signature: string } }): Promise<{ user: User; device: Device; session: Session; accessToken: string }> {
+    const user = await this.options.store.findUserByEmail(input.email);
+    if (!user || !(await verifyPassword(input.password, user.passwordHash))) {
+      throw new FoundationError(ApiErrorCode.INVALID_CREDENTIALS, "Invalid email or password", 401);
+    }
+    if (user.status !== "active") throw new FoundationError(ApiErrorCode.USER_DISABLED, "User is not active", 403);
+    const device = await this.options.store.getDevice(input.deviceId);
+    if (!device || device.userId !== user.id || device.status !== "active") {
+      throw new FoundationError(ApiErrorCode.DEVICE_NOT_AUTHORIZED, "Device is not authorized for this user", 403);
+    }
+    if (this.requireDeviceProof && !input.deviceProof) {
+      throw new FoundationError(ApiErrorCode.DEVICE_PROOF_REQUIRED, "A device proof is required", 401);
+    }
+    if (input.deviceProof) {
+      const challenge = await this.options.store.consumeDeviceChallenge(input.deviceProof.challengeId, this.now());
+      if (!challenge || challenge.userId !== user.id || challenge.deviceId !== device.id) {
+        throw new FoundationError(ApiErrorCode.DEVICE_CHALLENGE_INVALID, "Device challenge is invalid or expired", 401);
+      }
+      if (!verifyDeviceSignature(device.publicKey, challenge.value, input.deviceProof.signature)) {
+        throw new FoundationError(ApiErrorCode.DEVICE_PROOF_INVALID, "Device proof is invalid", 401);
+      }
     }
     const now = this.now();
     const session: Session = {
