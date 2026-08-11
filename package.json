@@ -7,7 +7,9 @@
     "api:test": "vitest run",
     "api:check": "tsx scripts/check-foundation.mjs",
     "api:smoke:postgres": "node scripts/postgres-smoke.mjs",
-    "api:smoke:redis": "tsx scripts/redis-smoke.mjs"
+    "api:smoke:redis": "tsx scripts/redis-smoke.mjs",
+    "desktop:dev": "electron apps/desktop/main.mjs",
+    "desktop:rebuild": "electron-rebuild -f -w win-dpapi"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
@@ -19,10 +21,15 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "@types/node": "^22.15.30",
     "@types/pg": "^8.21.0",
+    "electron": "^43.3.0",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
+  },
+  "optionalDependencies": {
+    "win-dpapi": "^1.1.0"
   }
 }
