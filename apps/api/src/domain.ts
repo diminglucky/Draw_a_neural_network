@@ -63,6 +63,16 @@ export interface Device {
   lastSeenAt: string | null;
 }
 
+export interface DeviceChallenge {
+  id: string;
+  userId: string;
+  deviceId: string;
+  value: string;
+  expiresAt: string;
+  consumedAt: string | null;
+  createdAt: string;
+}
+
 export interface Session {
   id: string;
   userId: string;

@@ -77,6 +77,23 @@ describe("PostgresFoundationStore", () => {
     expect(calls[0].text).toContain("NOW()");
   });
 
+  it("persists and atomically consumes device challenges", async () => {
+    const challengeRow = {
+      id: "challenge-1", user_id: "user-1", device_id: "device-1", challenge: "opaque-challenge",
+      expires_at: "2026-08-11T00:02:00.000Z", consumed_at: "2026-08-11T00:01:00.000Z", created_at: "2026-08-11T00:00:00.000Z",
+    };
+    const { pool, calls } = fakePool({ rows: [challengeRow], rowCount: 1 });
+    const store = new PostgresFoundationStore(pool);
+    await expect(store.createDeviceChallenge({
+      id: "challenge-1", userId: "user-1", deviceId: "device-1", value: "opaque-challenge",
+      expiresAt: "2026-08-11T00:02:00.000Z", consumedAt: null, createdAt: "2026-08-11T00:00:00.000Z",
+    })).resolves.toMatchObject({ value: "opaque-challenge" });
+    await expect(store.consumeDeviceChallenge("challenge-1", new Date("2026-08-11T00:01:00.000Z"))).resolves.toMatchObject({ id: "challenge-1" });
+    expect(calls[0].text).toContain("INSERT INTO device_challenges");
+    expect(calls[1].text).toContain("consumed_at IS NULL");
+    expect(calls[1].text).toContain("expires_at > $2");
+  });
+
   it("claims an active session inside a transaction with a user row lock", async () => {
     const calls: string[] = [];
     let released = false;

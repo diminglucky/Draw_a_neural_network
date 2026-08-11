@@ -32,6 +32,20 @@ CREATE TABLE device_keys (
   revoked_at TIMESTAMPTZ NULL
 );
 
+CREATE TABLE device_challenges (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  challenge TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX device_challenges_pending_idx
+ON device_challenges (expires_at)
+WHERE consumed_at IS NULL;
+
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -1,4 +1,4 @@
-import type { AuditRecord, Device, Job, Session, Subscription, User } from "./domain.js";
+import type { AuditRecord, Device, DeviceChallenge, Job, Session, Subscription, User } from "./domain.js";
 import type { FoundationStore } from "./store.js";
 
 export interface QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> {
@@ -58,6 +58,18 @@ function mapDevice(row: Row): Device {
     osVersion: String(row.os_version),
     createdAt: requiredTimestamp(row.created_at),
     lastSeenAt: timestamp(row.last_seen_at),
+  };
+}
+
+function mapDeviceChallenge(row: Row): DeviceChallenge {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    deviceId: String(row.device_id),
+    value: String(row.challenge),
+    expiresAt: requiredTimestamp(row.expires_at),
+    consumedAt: timestamp(row.consumed_at),
+    createdAt: requiredTimestamp(row.created_at),
   };
 }
 
@@ -237,6 +249,35 @@ export class PostgresFoundationStore implements FoundationStore {
       [device.id, device.publicKey, device.createdAt],
     );
     return mapDevice({ ...result.rows[0], public_key: device.publicKey });
+  }
+
+  async createDeviceChallenge(challenge: DeviceChallenge): Promise<DeviceChallenge> {
+    const result = await this.pool.query(
+      `INSERT INTO device_challenges (id, user_id, device_id, challenge, expires_at, consumed_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, user_id, device_id, challenge, expires_at, consumed_at, created_at`,
+      [challenge.id, challenge.userId, challenge.deviceId, challenge.value, challenge.expiresAt, challenge.consumedAt, challenge.createdAt],
+    );
+    return mapDeviceChallenge(result.rows[0]);
+  }
+
+  async getDeviceChallenge(id: string): Promise<DeviceChallenge | null> {
+    const result = await this.pool.query(
+      `SELECT id, user_id, device_id, challenge, expires_at, consumed_at, created_at
+       FROM device_challenges WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapDeviceChallenge(result.rows[0]) : null;
+  }
+
+  async consumeDeviceChallenge(id: string, now: Date): Promise<DeviceChallenge | null> {
+    const result = await this.pool.query(
+      `UPDATE device_challenges SET consumed_at = $2
+       WHERE id = $1 AND consumed_at IS NULL AND expires_at > $2
+       RETURNING id, user_id, device_id, challenge, expires_at, consumed_at, created_at`,
+      [id, now.toISOString()],
+    );
+    return result.rows[0] ? mapDeviceChallenge(result.rows[0]) : null;
   }
 
   async getSession(id: string): Promise<Session | null> {

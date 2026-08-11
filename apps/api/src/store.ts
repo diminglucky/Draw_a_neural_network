@@ -1,4 +1,4 @@
-import type { AuditRecord, Device, Job, Session, Subscription, User } from "./domain.js";
+import type { AuditRecord, Device, DeviceChallenge, Job, Session, Subscription, User } from "./domain.js";
 
 export interface FoundationStore {
   createUser(user: User): Promise<User>;
@@ -10,6 +10,9 @@ export interface FoundationStore {
   getDevice(id: string): Promise<Device | null>;
   listDevicesByUser(userId: string): Promise<Device[]>;
   updateDevice(device: Device): Promise<Device>;
+  createDeviceChallenge(challenge: DeviceChallenge): Promise<DeviceChallenge>;
+  getDeviceChallenge(id: string): Promise<DeviceChallenge | null>;
+  consumeDeviceChallenge(id: string, now: Date): Promise<DeviceChallenge | null>;
   getSession(id: string): Promise<Session | null>;
   listSessions(): Promise<Session[]>;
   getActiveSessionByUser(userId: string): Promise<Session | null>;
@@ -29,6 +32,7 @@ export interface FoundationStore {
 export class InMemoryFoundationStore implements FoundationStore {
   private readonly users = new Map<string, User>();
   private readonly devices = new Map<string, Device>();
+  private readonly deviceChallenges = new Map<string, DeviceChallenge>();
   private readonly sessions = new Map<string, Session>();
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly jobs = new Map<string, Job>();
@@ -73,6 +77,23 @@ export class InMemoryFoundationStore implements FoundationStore {
   async updateDevice(device: Device): Promise<Device> {
     this.devices.set(device.id, device);
     return device;
+  }
+
+  async createDeviceChallenge(challenge: DeviceChallenge): Promise<DeviceChallenge> {
+    this.deviceChallenges.set(challenge.id, challenge);
+    return challenge;
+  }
+
+  async getDeviceChallenge(id: string): Promise<DeviceChallenge | null> {
+    return this.deviceChallenges.get(id) ?? null;
+  }
+
+  async consumeDeviceChallenge(id: string, now: Date): Promise<DeviceChallenge | null> {
+    const challenge = this.deviceChallenges.get(id);
+    if (!challenge || challenge.consumedAt || new Date(challenge.expiresAt).getTime() <= now.getTime()) return null;
+    challenge.consumedAt = now.toISOString();
+    this.deviceChallenges.set(id, challenge);
+    return challenge;
   }
 
   async getSession(id: string): Promise<Session | null> {
