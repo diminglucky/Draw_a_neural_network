@@ -94,7 +94,7 @@ export class InMemoryFoundationStore implements FoundationStore {
 
   async updateSession(session: Session, expectedFencingToken?: number): Promise<Session | null> {
     const current = this.sessions.get(session.id);
-    if (expectedFencingToken !== undefined && (!current || current.leaseFencingToken !== expectedFencingToken)) return null;
+    if (expectedFencingToken !== undefined && (!current || current.status !== "active" || current.leaseFencingToken !== expectedFencingToken)) return null;
     this.sessions.set(session.id, session);
     return session;
   }

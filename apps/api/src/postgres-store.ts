@@ -276,7 +276,7 @@ export class PostgresFoundationStore implements FoundationStore {
   }
 
   async updateSession(session: Session, expectedFencingToken?: number): Promise<Session | null> {
-    const where = expectedFencingToken === undefined ? "WHERE id = $1" : "WHERE id = $1 AND lease_fencing_token = $6";
+    const where = expectedFencingToken === undefined ? "WHERE id = $1" : "WHERE id = $1 AND status = 'active' AND lease_fencing_token = $6";
     const result = await this.pool.query(
       `UPDATE sessions SET status = $2, last_heartbeat_at = $3, lease_expires_at = $4, revoked_at = $5
        ${where}

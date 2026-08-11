@@ -23,6 +23,7 @@ describe("foundation store async contract", () => {
     };
     await expect(store.claimActiveSession("user-1", session, new Date("2026-08-11T00:00:00.000Z"))).resolves.toBe(true);
     await expect(store.updateSession({ ...session, status: "logged_out" }, 1)).resolves.toBeNull();
-    await expect(store.updateSession({ ...session, status: "logged_out" }, 2)).resolves.toMatchObject({ status: "logged_out" });
+    await expect(store.updateSession({ ...session, status: "expired" }, 2)).resolves.toMatchObject({ status: "expired" });
+    await expect(store.updateSession({ ...session, status: "active" }, 2)).resolves.toBeNull();
   });
 });

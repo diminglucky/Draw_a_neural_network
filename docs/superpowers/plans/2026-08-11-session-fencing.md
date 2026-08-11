@@ -25,11 +25,11 @@
 - Modify: `apps/api/sql/001_foundation.sql`
 - Test: `apps/api/tests/domain.test.ts`
 
-- [ ] Add a failing assertion that a session carries a positive `leaseFencingToken`.
-- [ ] Run `npm run api:test -- apps/api/tests/domain.test.ts` and observe the contract failure.
-- [ ] Add `leaseFencingToken: number` to `Session` and add `lease_fencing_token BIGINT NOT NULL` to the schema.
-- [ ] Run the focused test and `npx tsc --noEmit`.
-- [ ] Commit `feat: persist session fencing tokens`.
+- [x] Add a failing assertion that a session carries a positive `leaseFencingToken`.
+- [x] Run `npm run api:test -- apps/api/tests/domain.test.ts` and observe the contract failure.
+- [x] Add `leaseFencingToken: number` to `Session` and add `lease_fencing_token BIGINT NOT NULL` to the schema.
+- [x] Run the focused test and `npx tsc --noEmit`.
+- [x] Commit `feat: persist session fencing tokens`.
 
 ### Task 2: Store persistence and conditional updates
 
@@ -40,11 +40,11 @@
 - Modify: `apps/api/tests/async-store-contract.test.ts`
 - Modify: `apps/api/tests/session-service.test.ts` fixtures
 
-- [ ] Add failing tests that map the token, insert it during claim, and require it in conditional session updates.
-- [ ] Run the focused store tests and confirm failure because SQL and memory contracts do not yet include the token.
-- [ ] Update both stores and all test fixtures; make `updateSession(session, fencingToken?)` conditionally update active rows when a token is supplied.
-- [ ] Run all store/session tests and the TypeScript check.
-- [ ] Commit `feat: fence session store writes`.
+- [x] Add failing tests that map the token, insert it during claim, and require it in conditional session updates.
+- [x] Run the focused store tests and confirm failure because SQL and memory contracts do not yet include the token.
+- [x] Update both stores and all test fixtures; make `updateSession(session, fencingToken?)` conditionally update active rows when a token is supplied.
+- [x] Run all store/session tests and the TypeScript check.
+- [x] Commit `feat: fence session store writes`.
 
 ### Task 3: SessionService distributed lease integration
 
@@ -54,13 +54,13 @@
 - Modify: `apps/api/tests/session-service.test.ts`
 - Create or modify: `apps/api/tests/session-fencing.test.ts`
 
-- [ ] Add failing tests with a fake LeaseCoordinator for login claim, provisional release, heartbeat renew, stale renew rejection, and stale token rejection.
-- [ ] Run the focused tests and confirm failure because SessionService does not call the coordinator.
-- [ ] Inject a coordinator into SessionService, claim Redis before durable session insertion, release on failed insertion, renew before heartbeat/access, and release on logout/revoke.
-- [ ] Convert failed renew or zero-row token updates into `SESSION_EXPIRED`; preserve infrastructure errors.
-- [ ] Pass the factory-created coordinator from `buildDefaultApp` into `buildApp` and keep test/default construction on memory leases.
-- [ ] Run full tests and TypeScript checking.
-- [ ] Commit `feat: bind redis fencing to sessions`.
+- [x] Add failing tests with a fake LeaseCoordinator for login claim, provisional release, heartbeat renew, stale renew rejection, and stale token rejection.
+- [x] Run the focused tests and confirm failure because SessionService does not call the coordinator.
+- [x] Inject a coordinator into SessionService, claim Redis before durable session insertion, release on failed insertion, renew before heartbeat/access, and release on logout/revoke.
+- [x] Convert failed renew or zero-row token updates into `SESSION_EXPIRED`; preserve infrastructure errors.
+- [x] Pass the factory-created coordinator from `buildDefaultApp` into `buildApp` and keep test/default construction on memory leases.
+- [x] Run full tests and TypeScript checking.
+- [x] Commit `feat: bind redis fencing to sessions`.
 
 ### Task 4: PostgreSQL takeover smoke
 
@@ -70,11 +70,11 @@
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/verification-foundation.md`
 
-- [ ] Extend the smoke with two active-session attempts using distinct fencing tokens and verify token-1 cannot update the token-2 session.
-- [ ] Run `npm run api:smoke:postgres` against the Docker PostgreSQL service.
-- [ ] Record the accepted behavior in README and the verification plan.
-- [ ] Run `npm run api:test`, `npm run api:check`, `npx tsc --noEmit`, all syntax checks, and `git diff --check`.
-- [ ] Commit `test: verify postgres session fencing`.
+- [x] Extend the smoke with two active-session attempts using distinct fencing tokens and verify token-1 cannot update the token-2 session.
+- [x] Run `npm run api:smoke:postgres` against the Docker PostgreSQL service.
+- [x] Record the accepted behavior in README and the verification plan.
+- [x] Run `npm run api:test`, `npm run api:check`, `npx tsc --noEmit`, all syntax checks, and `git diff --check`.
+- [x] Commit `test: verify postgres session fencing`.
 
 ## Self-review
 

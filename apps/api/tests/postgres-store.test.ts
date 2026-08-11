@@ -133,6 +133,7 @@ describe("PostgresFoundationStore", () => {
 
     await expect(store.updateSession(session, 7)).resolves.toBeNull();
     expect(calls[0].text).toContain("lease_fencing_token");
+    expect(calls[0].text).toContain("status = 'active'");
     expect(calls[0].values).toContain(7);
   });
 

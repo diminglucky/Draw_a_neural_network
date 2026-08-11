@@ -35,8 +35,8 @@ It must prove a real claim, competing-claim rejection, renewal, TTL expiry and t
 
 Latest source verification on 2026-08-11:
 
-- 15 test files passed;
-- 41 tests passed;
+- 16 test files passed;
+- 48 tests passed;
 - `npm run api:check`, `npx tsc --noEmit`, JavaScript syntax checks, and `git diff --check` passed.
 
 ## Local host acceptance
@@ -56,4 +56,4 @@ Latest source verification on 2026-08-11:
 - signed installer, update, crash recovery, telemetry redaction, rate limits, billing webhooks, backups, and restore must be accepted;
 - real OpenAI and Visio integrations require separate credentialed acceptance and must not be inferred from the placeholder adapters.
 
-The PostgreSQL smoke command is available as `npm run api:smoke:postgres`. It passed on 2026-08-11 after Docker Desktop was started. The API was also started with `STORAGE_DRIVER=postgres`, a user/device/session was created, the API was restarted, and the original session read back successfully from PostgreSQL. Redis container health was confirmed with `PONG`.
+The PostgreSQL smoke command is available as `npm run api:smoke:postgres`. It verifies persistence, the one-active-session index, takeover after the old session is expired, and rejection of stale fencing-token updates. It passed on 2026-08-11 after Docker Desktop was started. The API was also started with `STORAGE_DRIVER=postgres`, a user/device/session was created, the API was restarted, and the original session read back successfully from PostgreSQL. Redis container health was confirmed with `PONG`.
