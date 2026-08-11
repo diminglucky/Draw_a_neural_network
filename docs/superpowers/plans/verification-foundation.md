@@ -25,6 +25,12 @@ Expected evidence:
 - no JavaScript syntax or TypeScript errors;
 - no whitespace errors.
 
+Latest source verification on 2026-08-11:
+
+- 12 test files passed;
+- 34 tests passed;
+- `npm run api:check`, `npx tsc --noEmit`, JavaScript syntax checks, and `git diff --check` passed.
+
 ## Local host acceptance
 
 1. Start `npm run api:dev` and confirm `GET http://127.0.0.1:4180/health` returns `{ "status": "ok" }`.
@@ -41,3 +47,5 @@ Expected evidence:
 - Windows DPAPI device-key creation, signature proof, uninstall/reinstall, and machine-change policy must be tested;
 - signed installer, update, crash recovery, telemetry redaction, rate limits, billing webhooks, backups, and restore must be accepted;
 - real OpenAI and Visio integrations require separate credentialed acceptance and must not be inferred from the placeholder adapters.
+
+The PostgreSQL smoke command is now available as `npm run api:smoke:postgres`. It was attempted on 2026-08-11 but could not connect because the Docker Desktop Linux Engine was not running (`ECONNREFUSED 127.0.0.1:54329`). Start Docker Desktop and rerun the command before treating database persistence as host-accepted.

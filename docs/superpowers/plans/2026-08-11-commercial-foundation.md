@@ -251,7 +251,7 @@ git commit -m "feat: expose foundation auth and admin API"
 **Files:**
 - Create: apps/api/sql/001_foundation.sql
 - Create: infra/docker-compose.yml
-- Create: apps/api/src/production-store-not-configured.ts
+- Create: apps/api/src/store-factory.ts
 - Modify: apps/api/src/config.ts
 - Test: apps/api/tests/production-boundary.test.ts
 
@@ -262,7 +262,7 @@ Add a test that checks required SQL identifiers and the partial unique index for
 - [ ] Step 2: Run the checks to verify they fail.
 
 Run: npm run api:check
-Expected: FAIL because the migration and production guard do not exist.
+Expected: FAIL because the migration and store factory boundary do not exist.
 
 - [ ] Step 3: Add the schema and compose boundary.
 
@@ -276,7 +276,7 @@ Expected: PASS and the script reports that memory storage is development-only.
 - [ ] Step 5: Commit.
 
 ~~~powershell
-git add apps/api/sql/001_foundation.sql apps/api/src/production-store-not-configured.ts apps/api/src/config.ts infra/docker-compose.yml apps/api/tests/production-boundary.test.ts
+git add apps/api/sql/001_foundation.sql apps/api/src/store-factory.ts apps/api/src/config.ts infra/docker-compose.yml apps/api/tests/production-boundary.test.ts
 git commit -m "feat: define production persistence boundary"
 ~~~
 
