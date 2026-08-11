@@ -5,4 +5,5 @@ node_modules/
 dist/
 coverage/
 .playwright-mcp/
+.worktrees/
 synapse-*.png
