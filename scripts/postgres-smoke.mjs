@@ -7,12 +7,15 @@ const { Client } = pg;
 const databaseUrl = process.env.DATABASE_URL || "postgres://synapse:synapse-local-only@127.0.0.1:54329/synapse_studio";
 const migration = readFileSync(resolve(process.cwd(), "apps/api/sql/001_foundation.sql"), "utf8");
 const fencingMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/002_session_fencing.sql"), "utf8");
+const challengeMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/003_device_challenges.sql"), "utf8");
 const userId = `smoke-${randomUUID()}`;
 const email = `${userId}@example.com`;
 const deviceOneId = `device-${randomUUID()}`;
 const deviceTwoId = `device-${randomUUID()}`;
 const sessionOneId = `session-${randomUUID()}`;
 const sessionTwoId = `session-${randomUUID()}`;
+const challengeId = `challenge-${randomUUID()}`;
+const expiredChallengeId = `challenge-${randomUUID()}`;
 
 async function connect() {
   const client = new Client({ connectionString: databaseUrl });
@@ -27,6 +30,7 @@ try {
   const schema = await first.query("SELECT to_regclass('public.users') AS users_table");
   if (!schema.rows[0]?.users_table) await first.query(migration);
   await first.query(fencingMigration);
+  await first.query(challengeMigration);
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,
@@ -89,6 +93,35 @@ try {
   );
   if (currentUpdate.rowCount !== 1) throw new Error("The current fencing token could not update the active session");
 
+  await first.query(
+    `INSERT INTO device_challenges (id, user_id, device_id, challenge, expires_at, created_at)
+     VALUES ($1, $2, $3, $4, NOW() + INTERVAL '120 seconds', NOW())`,
+    [challengeId, userId, deviceTwoId, `challenge-value-${randomUUID()}`],
+  );
+  const consumedChallenge = await first.query(
+    `UPDATE device_challenges SET consumed_at = NOW()
+     WHERE id = $1 AND consumed_at IS NULL AND expires_at > NOW() RETURNING id`,
+    [challengeId],
+  );
+  if (consumedChallenge.rowCount !== 1) throw new Error("A valid device challenge could not be consumed");
+  const replayedChallenge = await first.query(
+    `UPDATE device_challenges SET consumed_at = NOW()
+     WHERE id = $1 AND consumed_at IS NULL AND expires_at > NOW() RETURNING id`,
+    [challengeId],
+  );
+  if (replayedChallenge.rowCount !== 0) throw new Error("A consumed device challenge was replayable");
+  await first.query(
+    `INSERT INTO device_challenges (id, user_id, device_id, challenge, expires_at, created_at)
+     VALUES ($1, $2, $3, $4, NOW() - INTERVAL '1 second', NOW())`,
+    [expiredChallengeId, userId, deviceTwoId, `expired-value-${randomUUID()}`],
+  );
+  const expiredChallenge = await first.query(
+    `UPDATE device_challenges SET consumed_at = NOW()
+     WHERE id = $1 AND consumed_at IS NULL AND expires_at > NOW() RETURNING id`,
+    [expiredChallengeId],
+  );
+  if (expiredChallenge.rowCount !== 0) throw new Error("An expired device challenge was consumed");
+
   second = await connect();
   const result = await second.query("SELECT id, email FROM users WHERE id = $1", [userId]);
   if (result.rows.length !== 1 || result.rows[0].email !== email) {
@@ -99,7 +132,7 @@ try {
   await first.query("DELETE FROM users WHERE id = $1", [userId]);
   await first.end();
   first = null;
-  console.log(`PostgreSQL smoke OK: persistence and session fencing accepted for ${email}`);
+  console.log(`PostgreSQL smoke OK: persistence, session fencing, and device challenges accepted for ${email}`);
 } catch (error) {
   console.error(`PostgreSQL smoke failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;

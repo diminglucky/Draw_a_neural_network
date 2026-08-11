@@ -29,6 +29,7 @@ The current Windows-first development slice includes:
 - PostgreSQL migration and Redis/PostgreSQL Docker boundary;
 - Redis-backed distributed leases with monotonic fencing tokens and explicit shutdown cleanup;
 - PostgreSQL session claims and conditional writes are fenced with the Redis token;
+- Ed25519 device challenges are single-use and production login can require a valid device proof;
 - server-side authorization for the existing diagram-analysis endpoint.
 
 The current slice includes the PostgreSQL adapter and a Redis lease adapter with an in-memory test mode. It does not claim to include the Windows DPAPI device-key bridge, real OpenAI provider, Vision code understanding, Visio COM automation, or `.vsdx` export. Those are the next integration phase.
@@ -179,7 +180,7 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 
 This repository now has a runnable foundation, not a finished paid product. Before commercial release, the following gates still need independent acceptance:
 
-1. replace the browser bootstrap identity with a signed Windows Electron device key protected by DPAPI;
+1. replace the provider contract with the native Windows DPAPI implementation and signed Electron packaging;
 2. move Agent/OpenAI calls behind the API `AgentProvider`, with quotas, cost limits, retries, redaction, and provider audit;
 3. implement the neural-network IR and validated layout pipeline;
 4. implement the `VisioExecutor` through a controlled Windows worker and validate readback/export;
