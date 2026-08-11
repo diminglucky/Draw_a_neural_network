@@ -26,7 +26,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
   if (parsed.NODE_ENV === "production" && parsed.STORAGE_DRIVER === "memory") {
     throw new Error("STORAGE_DRIVER=memory is development-only");
   }
-  if (parsed.NODE_ENV === "production" && parsed.STORAGE_DRIVER === "postgres" && !parsed.DATABASE_URL) {
+  if (parsed.STORAGE_DRIVER === "postgres" && !parsed.DATABASE_URL) {
     throw new Error("DATABASE_URL is required when STORAGE_DRIVER=postgres");
   }
 
