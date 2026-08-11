@@ -28,7 +28,7 @@ Expected evidence:
 Latest source verification on 2026-08-11:
 
 - 12 test files passed;
-- 34 tests passed;
+- 35 tests passed;
 - `npm run api:check`, `npx tsc --noEmit`, JavaScript syntax checks, and `git diff --check` passed.
 
 ## Local host acceptance
@@ -48,4 +48,4 @@ Latest source verification on 2026-08-11:
 - signed installer, update, crash recovery, telemetry redaction, rate limits, billing webhooks, backups, and restore must be accepted;
 - real OpenAI and Visio integrations require separate credentialed acceptance and must not be inferred from the placeholder adapters.
 
-The PostgreSQL smoke command is now available as `npm run api:smoke:postgres`. It was attempted on 2026-08-11 but could not connect because the Docker Desktop Linux Engine was not running (`ECONNREFUSED 127.0.0.1:54329`). Start Docker Desktop and rerun the command before treating database persistence as host-accepted.
+The PostgreSQL smoke command is available as `npm run api:smoke:postgres`. It passed on 2026-08-11 after Docker Desktop was started. The API was also started with `STORAGE_DRIVER=postgres`, a user/device/session was created, the API was restarted, and the original session read back successfully from PostgreSQL. Redis container health was confirmed with `PONG`.

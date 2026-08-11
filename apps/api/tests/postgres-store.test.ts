@@ -62,6 +62,21 @@ describe("PostgresFoundationStore", () => {
     await expect(store.findUserByEmail("missing@example.com")).resolves.toBeNull();
   });
 
+  it("writes the required created_at field for subscriptions", async () => {
+    const { pool, calls } = fakePool({
+      rows: [{ id: "sub-1", user_id: "user-1", plan_id: "trial", status: "trialing", starts_at: "2026-08-11T00:00:00.000Z", ends_at: null }],
+      rowCount: 1,
+    });
+    const store = new PostgresFoundationStore(pool);
+    await store.createSubscription({
+      id: "sub-1", userId: "user-1", plan: "trial", status: "trialing",
+      startsAt: "2026-08-11T00:00:00.000Z", endsAt: null, features: ["foundation"], limits: { foundationJobsPerMonth: 10 },
+    });
+
+    expect(calls[0].text).toContain("created_at");
+    expect(calls[0].text).toContain("NOW()");
+  });
+
   it("claims an active session inside a transaction with a user row lock", async () => {
     const calls: string[] = [];
     let released = false;

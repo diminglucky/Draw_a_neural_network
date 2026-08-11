@@ -320,8 +320,8 @@ export class PostgresFoundationStore implements FoundationStore {
 
   async createSubscription(subscription: Subscription): Promise<Subscription> {
     const result = await this.pool.query(
-      `INSERT INTO subscriptions (id, user_id, plan_id, status, starts_at, ends_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO subscriptions (id, user_id, plan_id, status, starts_at, ends_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
        RETURNING id, user_id, plan_id, status, starts_at, ends_at`,
       [subscription.id, subscription.userId, subscription.plan, subscription.status, subscription.startsAt, subscription.endsAt],
     );
