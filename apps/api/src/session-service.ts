@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ApiErrorCode, FoundationError, type AuditRecord, type Device, type Session, type Subscription, type User } from "./domain.js";
 import { hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from "./security.js";
 import type { FoundationStore } from "./store.js";
+import { InMemoryLeaseCoordinator, type LeaseCoordinator } from "./lease-coordinator.js";
 
 interface SessionServiceOptions {
   store: FoundationStore;
@@ -9,13 +10,16 @@ interface SessionServiceOptions {
   leaseSeconds: number;
   accessTokenTtlSeconds: number;
   sessionSecret: string;
+  leaseCoordinator?: LeaseCoordinator;
 }
 
 export class SessionService {
   private readonly now: () => Date;
+  private readonly leaseCoordinator: LeaseCoordinator;
 
   constructor(private readonly options: SessionServiceOptions) {
     this.now = options.now ?? (() => new Date());
+    this.leaseCoordinator = options.leaseCoordinator ?? new InMemoryLeaseCoordinator();
   }
 
   async registerUser(input: { email: string; password: string }): Promise<User> {
@@ -95,11 +99,21 @@ export class SessionService {
       startedAt: now.toISOString(),
       lastHeartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + this.options.leaseSeconds * 1000).toISOString(),
-      leaseFencingToken: 1,
+      leaseFencingToken: 0,
       revokedAt: null,
     };
-    if (!(await this.options.store.claimActiveSession(user.id, session, now))) {
+    const lease = await this.leaseCoordinator.claim(this.accountLeaseKey(user.id), session.id, this.options.leaseSeconds);
+    if (!lease.acquired || lease.fencingToken === null) {
       throw new FoundationError(ApiErrorCode.ACCOUNT_ALREADY_IN_USE, "Account is already active on another device", 409);
+    }
+    session.leaseFencingToken = lease.fencingToken;
+    try {
+      if (!(await this.options.store.claimActiveSession(user.id, session, now))) {
+        throw new FoundationError(ApiErrorCode.ACCOUNT_ALREADY_IN_USE, "Account is already active on another device", 409);
+      }
+    } catch (error) {
+      await this.releaseLease(session);
+      throw error;
     }
     user.lastLoginAt = now.toISOString();
     await this.options.store.updateUser(user);
@@ -121,9 +135,6 @@ export class SessionService {
     if (!session) throw new FoundationError(ApiErrorCode.SESSION_NOT_FOUND, "Session was not found", 404);
     const now = this.now();
     await this.assertLiveSession(session, now);
-    session.lastHeartbeatAt = now.toISOString();
-    session.leaseExpiresAt = new Date(now.getTime() + this.options.leaseSeconds * 1000).toISOString();
-    await this.options.store.updateSession(session);
     const device = await this.options.store.getDevice(session.deviceId);
     if (device) {
       device.lastSeenAt = now.toISOString();
@@ -149,18 +160,20 @@ export class SessionService {
     if (claims.sessionId !== input.sessionId) throw new FoundationError(ApiErrorCode.INVALID_TOKEN, "Token does not match session", 401);
     const session = await this.options.store.getSession(input.sessionId);
     if (!session) return;
+    await this.releaseLease(session);
     session.status = "logged_out";
     session.revokedAt = this.now().toISOString();
-    await this.options.store.updateSession(session);
+    await this.options.store.updateSession(session, session.leaseFencingToken);
     await this.audit("user", session.userId, "session.logged_out", "session", session.id, null, {});
   }
 
   async revokeSession(input: { sessionId: string; actorId: string; reason: string }): Promise<void> {
     const session = await this.options.store.getSession(input.sessionId);
     if (!session) throw new FoundationError(ApiErrorCode.SESSION_NOT_FOUND, "Session was not found", 404);
+    await this.releaseLease(session);
     session.status = "revoked";
     session.revokedAt = this.now().toISOString();
-    await this.options.store.updateSession(session);
+    await this.options.store.updateSession(session, session.leaseFencingToken);
     await this.audit("admin", input.actorId, "session.revoked", "session", session.id, input.reason, { userId: session.userId, deviceId: session.deviceId });
   }
 
@@ -178,9 +191,28 @@ export class SessionService {
     }
     if (session.status !== "active" || new Date(session.leaseExpiresAt).getTime() <= now.getTime()) {
       session.status = "expired";
-      await this.options.store.updateSession(session);
+      await this.options.store.updateSession(session, session.leaseFencingToken);
       throw new FoundationError(ApiErrorCode.SESSION_EXPIRED, "Session lease has expired", 401);
     }
+
+    const renewed = await this.leaseCoordinator.renew(this.accountLeaseKey(session.userId), session.id, session.leaseFencingToken, this.options.leaseSeconds);
+    if (!renewed.acquired || renewed.fencingToken !== session.leaseFencingToken) {
+      session.status = "expired";
+      await this.options.store.updateSession(session, session.leaseFencingToken);
+      throw new FoundationError(ApiErrorCode.SESSION_EXPIRED, "Session lease has expired", 401);
+    }
+    session.lastHeartbeatAt = now.toISOString();
+    session.leaseExpiresAt = new Date(now.getTime() + this.options.leaseSeconds * 1000).toISOString();
+    const updated = await this.options.store.updateSession(session, session.leaseFencingToken);
+    if (!updated) throw new FoundationError(ApiErrorCode.SESSION_EXPIRED, "Session lease has been replaced", 401);
+  }
+
+  private accountLeaseKey(userId: string): string {
+    return `account:${userId}`;
+  }
+
+  private async releaseLease(session: Session): Promise<void> {
+    await this.leaseCoordinator.release(this.accountLeaseKey(session.userId), session.id, session.leaseFencingToken);
   }
 
   private async audit(actorType: AuditRecord["actorType"], actorId: string | null, action: string, targetType: string, targetId: string | null, reason: string | null, metadata: Record<string, unknown>): Promise<void> {

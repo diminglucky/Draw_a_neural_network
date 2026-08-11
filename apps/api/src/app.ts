@@ -10,12 +10,14 @@ import { InMemoryFoundationStore, type FoundationStore } from "./store.js";
 import { FoundationError } from "./domain.js";
 import { createFoundationStore } from "./store-factory.js";
 import { createLeaseCoordinator } from "./lease-factory.js";
+import type { LeaseCoordinator } from "./lease-coordinator.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
   store?: FoundationStore;
   sessionSecret?: string;
   admin?: { email: string; passwordHash: string };
+  leaseCoordinator?: LeaseCoordinator;
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -24,7 +26,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     throw new Error("A FoundationStore must be injected when a durable storage driver is configured");
   }
   const store = options.store ?? new InMemoryFoundationStore();
-  const sessionService = new SessionService({ store, leaseSeconds: 90, accessTokenTtlSeconds: 900, sessionSecret: options.sessionSecret ?? config.sessionSecret });
+  const sessionService = new SessionService({ store, leaseSeconds: 90, accessTokenTtlSeconds: 900, sessionSecret: options.sessionSecret ?? config.sessionSecret, leaseCoordinator: options.leaseCoordinator });
   const jobService = new JobService({ store });
   const adminService = new AdminService(store, sessionService);
   const app = Fastify({ logger: false });
@@ -59,6 +61,7 @@ export async function buildDefaultApp(): Promise<FastifyInstance> {
       const app = buildApp({
         config,
         store: storage.store,
+        leaseCoordinator: lease.coordinator,
         admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
       });
       app.addHook("onClose", async () => {
