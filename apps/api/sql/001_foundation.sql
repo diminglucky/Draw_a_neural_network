@@ -140,3 +140,15 @@ CREATE TABLE audit_logs (
 
 CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC);
 CREATE INDEX audit_logs_target_idx ON audit_logs (target_type, target_id);
+
+INSERT INTO plans (id, name, description, features, limits, active, created_at)
+VALUES (
+  'trial',
+  'trial',
+  'Foundation trial plan',
+  '["foundation"]'::jsonb,
+  '{"foundationJobsPerMonth": 10}'::jsonb,
+  TRUE,
+  NOW()
+)
+ON CONFLICT (id) DO NOTHING;

@@ -1,0 +1,398 @@
+import type { AuditRecord, Device, Job, Session, Subscription, User } from "./domain.js";
+import type { FoundationStore } from "./store.js";
+
+export interface QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> {
+  rows: Row[];
+  rowCount: number | null;
+}
+
+export interface PoolClientLike {
+  query(text: string, values?: readonly unknown[]): Promise<QueryResult>;
+  release(): void;
+}
+
+export interface PoolLike {
+  query(text: string, values?: readonly unknown[]): Promise<QueryResult>;
+  connect(): Promise<PoolClientLike>;
+  end?(): Promise<void>;
+}
+
+type Row = Record<string, any>;
+
+function timestamp(value: unknown): string | null {
+  return value === null || value === undefined ? null : new Date(value as string | number | Date).toISOString();
+}
+
+function requiredTimestamp(value: unknown): string {
+  const result = timestamp(value);
+  if (!result) throw new Error("Database row is missing a required timestamp");
+  return result;
+}
+
+function json<T>(value: unknown, fallback: T): T {
+  if (value === null || value === undefined) return fallback;
+  return typeof value === "string" ? JSON.parse(value) as T : value as T;
+}
+
+function mapUser(row: Row): User {
+  return {
+    id: String(row.id),
+    email: String(row.email),
+    passwordHash: String(row.password_hash),
+    status: row.status,
+    roles: json(row.roles, []),
+    createdAt: requiredTimestamp(row.created_at),
+    lastLoginAt: timestamp(row.last_login_at),
+  };
+}
+
+function mapDevice(row: Row): Device {
+  return {
+    id: String(row.id),
+    userId: row.user_id === null || row.user_id === undefined ? null : String(row.user_id),
+    name: String(row.name),
+    publicKey: String(row.public_key ?? ""),
+    fingerprintHash: String(row.fingerprint_hash),
+    status: row.status,
+    clientVersion: String(row.client_version),
+    osVersion: String(row.os_version),
+    createdAt: requiredTimestamp(row.created_at),
+    lastSeenAt: timestamp(row.last_seen_at),
+  };
+}
+
+function mapSession(row: Row): Session {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    deviceId: String(row.device_id),
+    status: row.status,
+    accessTokenId: String(row.access_token_id),
+    startedAt: requiredTimestamp(row.started_at),
+    lastHeartbeatAt: requiredTimestamp(row.last_heartbeat_at),
+    leaseExpiresAt: requiredTimestamp(row.lease_expires_at),
+    revokedAt: timestamp(row.revoked_at),
+  };
+}
+
+function mapSubscription(row: Row): Subscription {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    plan: String(row.plan_name ?? row.plan_id),
+    status: row.status,
+    startsAt: requiredTimestamp(row.starts_at),
+    endsAt: timestamp(row.ends_at),
+    features: json(row.features, []),
+    limits: json(row.limits, {}),
+  };
+}
+
+function mapJob(row: Row): Job {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    deviceId: String(row.device_id),
+    type: row.type,
+    status: row.status,
+    input: json(row.input, {}),
+    output: row.output === null || row.output === undefined ? null : json(row.output, null),
+    errorCode: row.error_code ?? null,
+    errorMessage: row.error_message ?? null,
+    createdAt: requiredTimestamp(row.created_at),
+    startedAt: timestamp(row.started_at),
+    completedAt: timestamp(row.completed_at),
+  };
+}
+
+function mapAudit(row: Row): AuditRecord {
+  return {
+    id: String(row.id),
+    actorType: row.actor_type,
+    actorId: row.actor_id ?? null,
+    action: String(row.action),
+    targetType: String(row.target_type),
+    targetId: row.target_id ?? null,
+    reason: row.reason ?? null,
+    metadata: json(row.metadata, {}),
+    createdAt: requiredTimestamp(row.created_at),
+  };
+}
+
+function uniqueViolation(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505");
+}
+
+export class PostgresFoundationStore implements FoundationStore {
+  constructor(private readonly pool: PoolLike) {}
+
+  async close(): Promise<void> {
+    await this.pool.end?.();
+  }
+
+  async createUser(user: User): Promise<User> {
+    const result = await this.pool.query(
+      `INSERT INTO users (id, email, password_hash, status, roles, created_at, last_login_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+       RETURNING id, email, password_hash, status, roles, created_at, last_login_at`,
+      [user.id, user.email, user.passwordHash, user.status, JSON.stringify(user.roles), user.createdAt, user.lastLoginAt],
+    );
+    return mapUser(result.rows[0]);
+  }
+
+  async findUserByEmail(email: string): Promise<User | null> {
+    const result = await this.pool.query(
+      `SELECT id, email, password_hash, status, roles, created_at, last_login_at
+       FROM users WHERE email = $1 LIMIT 1`,
+      [email.trim().toLowerCase()],
+    );
+    return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
+  async getUser(id: string): Promise<User | null> {
+    const result = await this.pool.query(
+      `SELECT id, email, password_hash, status, roles, created_at, last_login_at
+       FROM users WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
+  async listUsers(): Promise<User[]> {
+    const result = await this.pool.query(
+      `SELECT id, email, password_hash, status, roles, created_at, last_login_at
+       FROM users ORDER BY created_at DESC`,
+    );
+    return result.rows.map(mapUser);
+  }
+
+  async updateUser(user: User): Promise<User> {
+    const result = await this.pool.query(
+      `UPDATE users SET email = $2, password_hash = $3, status = $4, roles = $5::jsonb, last_login_at = $6
+       WHERE id = $1
+       RETURNING id, email, password_hash, status, roles, created_at, last_login_at`,
+      [user.id, user.email, user.passwordHash, user.status, JSON.stringify(user.roles), user.lastLoginAt],
+    );
+    return mapUser(result.rows[0]);
+  }
+
+  async createDevice(device: Device): Promise<Device> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO devices (id, user_id, name, fingerprint_hash, status, client_version, os_version, created_at, last_seen_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [device.id, device.userId, device.name, device.fingerprintHash, device.status, device.clientVersion, device.osVersion, device.createdAt, device.lastSeenAt],
+      );
+      await client.query(
+        `INSERT INTO device_keys (device_id, public_key, algorithm, created_at)
+         VALUES ($1, $2, 'Ed25519', $3)`,
+        [device.id, device.publicKey, device.createdAt],
+      );
+      await client.query("COMMIT");
+      return device;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getDevice(id: string): Promise<Device | null> {
+    const result = await this.pool.query(
+      `SELECT d.id, d.user_id, d.name, dk.public_key, d.fingerprint_hash, d.status,
+              d.client_version, d.os_version, d.created_at, d.last_seen_at
+       FROM devices d LEFT JOIN device_keys dk ON dk.device_id = d.id
+       WHERE d.id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapDevice(result.rows[0]) : null;
+  }
+
+  async listDevicesByUser(userId: string): Promise<Device[]> {
+    const result = await this.pool.query(
+      `SELECT d.id, d.user_id, d.name, dk.public_key, d.fingerprint_hash, d.status,
+              d.client_version, d.os_version, d.created_at, d.last_seen_at
+       FROM devices d LEFT JOIN device_keys dk ON dk.device_id = d.id
+       WHERE d.user_id = $1 ORDER BY d.created_at DESC`,
+      [userId],
+    );
+    return result.rows.map(mapDevice);
+  }
+
+  async updateDevice(device: Device): Promise<Device> {
+    const result = await this.pool.query(
+      `UPDATE devices SET user_id = $2, name = $3, fingerprint_hash = $4, status = $5,
+          client_version = $6, os_version = $7, last_seen_at = $8 WHERE id = $1
+       RETURNING id, user_id, name, fingerprint_hash, status, client_version, os_version, created_at, last_seen_at`,
+      [device.id, device.userId, device.name, device.fingerprintHash, device.status, device.clientVersion, device.osVersion, device.lastSeenAt],
+    );
+    await this.pool.query(
+      `INSERT INTO device_keys (device_id, public_key, algorithm, created_at)
+       VALUES ($1, $2, 'Ed25519', $3)
+       ON CONFLICT (device_id) DO UPDATE SET public_key = EXCLUDED.public_key`,
+      [device.id, device.publicKey, device.createdAt],
+    );
+    return mapDevice({ ...result.rows[0], public_key: device.publicKey });
+  }
+
+  async getSession(id: string): Promise<Session | null> {
+    const result = await this.pool.query(
+      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+       FROM sessions WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapSession(result.rows[0]) : null;
+  }
+
+  async listSessions(): Promise<Session[]> {
+    const result = await this.pool.query(
+      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+       FROM sessions ORDER BY started_at DESC`,
+    );
+    return result.rows.map(mapSession);
+  }
+
+  async getActiveSessionByUser(userId: string): Promise<Session | null> {
+    const result = await this.pool.query(
+      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+       FROM sessions WHERE user_id = $1 AND status = 'active' LIMIT 1`,
+      [userId],
+    );
+    return result.rows[0] ? mapSession(result.rows[0]) : null;
+  }
+
+  async createSession(session: Session): Promise<Session> {
+    const result = await this.pool.query(
+      `INSERT INTO sessions (id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at`,
+      [session.id, session.userId, session.deviceId, session.status, session.accessTokenId, session.startedAt, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt],
+    );
+    return mapSession(result.rows[0]);
+  }
+
+  async updateSession(session: Session): Promise<Session> {
+    const result = await this.pool.query(
+      `UPDATE sessions SET status = $2, last_heartbeat_at = $3, lease_expires_at = $4, revoked_at = $5
+       WHERE id = $1
+       RETURNING id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at`,
+      [session.id, session.status, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt],
+    );
+    return mapSession(result.rows[0]);
+  }
+
+  async claimActiveSession(userId: string, session: Session, now: Date): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [userId]);
+      const current = await client.query(
+        `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+         FROM sessions WHERE user_id = $1 AND status = 'active' LIMIT 1`,
+        [userId],
+      );
+      const active = current.rows[0] ? mapSession(current.rows[0]) : null;
+      if (active && new Date(active.leaseExpiresAt).getTime() > now.getTime()) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+      if (active) {
+        await client.query("UPDATE sessions SET status = 'expired' WHERE id = $1", [active.id]);
+      }
+      await client.query(
+        `INSERT INTO sessions (id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [session.id, session.userId, session.deviceId, session.status, session.accessTokenId, session.startedAt, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt],
+      );
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (uniqueViolation(error)) return false;
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createSubscription(subscription: Subscription): Promise<Subscription> {
+    const result = await this.pool.query(
+      `INSERT INTO subscriptions (id, user_id, plan_id, status, starts_at, ends_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, user_id, plan_id, status, starts_at, ends_at`,
+      [subscription.id, subscription.userId, subscription.plan, subscription.status, subscription.startsAt, subscription.endsAt],
+    );
+    return mapSubscription({ ...result.rows[0], plan_name: subscription.plan, features: subscription.features, limits: subscription.limits });
+  }
+
+  async getCurrentSubscription(userId: string): Promise<Subscription | null> {
+    const result = await this.pool.query(
+      `SELECT s.id, s.user_id, s.plan_id, p.name AS plan_name, s.status, s.starts_at, s.ends_at,
+              COALESCE(p.features, '[]'::jsonb) AS features, COALESCE(p.limits, '{}'::jsonb) AS limits
+       FROM subscriptions s LEFT JOIN plans p ON p.id = s.plan_id
+       WHERE s.user_id = $1 AND s.status IN ('trialing', 'active')
+         AND (s.ends_at IS NULL OR s.ends_at > NOW())
+       ORDER BY s.starts_at DESC LIMIT 1`,
+      [userId],
+    );
+    return result.rows[0] ? mapSubscription(result.rows[0]) : null;
+  }
+
+  async createJob(job: Job): Promise<Job> {
+    const result = await this.pool.query(
+      `INSERT INTO jobs (id, user_id, device_id, type, status, input, output, error_code, error_message, created_at, started_at, completed_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12)
+       RETURNING id, user_id, device_id, type, status, input, output, error_code, error_message, created_at, started_at, completed_at`,
+      [job.id, job.userId, job.deviceId, job.type, job.status, JSON.stringify(job.input), job.output === null ? null : JSON.stringify(job.output), job.errorCode, job.errorMessage, job.createdAt, job.startedAt, job.completedAt],
+    );
+    return mapJob(result.rows[0]);
+  }
+
+  async getJob(id: string): Promise<Job | null> {
+    const result = await this.pool.query(
+      `SELECT id, user_id, device_id, type, status, input, output, error_code, error_message, created_at, started_at, completed_at
+       FROM jobs WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapJob(result.rows[0]) : null;
+  }
+
+  async listJobs(): Promise<Job[]> {
+    const result = await this.pool.query(
+      `SELECT id, user_id, device_id, type, status, input, output, error_code, error_message, created_at, started_at, completed_at
+       FROM jobs ORDER BY created_at DESC`,
+    );
+    return result.rows.map(mapJob);
+  }
+
+  async updateJob(job: Job): Promise<Job> {
+    const result = await this.pool.query(
+      `UPDATE jobs SET status = $2, output = $3::jsonb, error_code = $4, error_message = $5, started_at = $6, completed_at = $7
+       WHERE id = $1
+       RETURNING id, user_id, device_id, type, status, input, output, error_code, error_message, created_at, started_at, completed_at`,
+      [job.id, job.status, job.output === null ? null : JSON.stringify(job.output), job.errorCode, job.errorMessage, job.startedAt, job.completedAt],
+    );
+    return mapJob(result.rows[0]);
+  }
+
+  async createAuditRecord(record: AuditRecord): Promise<AuditRecord> {
+    const result = await this.pool.query(
+      `INSERT INTO audit_logs (id, actor_type, actor_id, action, target_type, target_id, reason, metadata, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+       RETURNING id, actor_type, actor_id, action, target_type, target_id, reason, metadata, created_at`,
+      [record.id, record.actorType, record.actorId, record.action, record.targetType, record.targetId, record.reason, JSON.stringify(record.metadata), record.createdAt],
+    );
+    return mapAudit(result.rows[0]);
+  }
+
+  async listAuditRecords(): Promise<AuditRecord[]> {
+    const result = await this.pool.query(
+      `SELECT id, actor_type, actor_id, action, target_type, target_id, reason, metadata, created_at
+       FROM audit_logs ORDER BY created_at DESC`,
+    );
+    return result.rows.map(mapAudit);
+  }
+}
