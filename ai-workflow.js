@@ -77,20 +77,17 @@ async function setFiles(files, previewList, aiStatus) {
 }
 
 async function analyzeWithOptionalBackend(request) {
-  try {
-    const response = await fetch("/api/analyze-diagram", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    });
-    if (response.ok) {
-      const payload = await response.json();
-      if (payload?.nodes && payload?.edges) return payload;
-    }
-  } catch {
-    // Static-file mode has no backend; fall through to local structure synthesis.
-  }
-  return synthesizeDiagram(request);
+  const accessToken = globalThis.localStorage?.getItem("synapse.accessToken");
+  if (!accessToken) throw new Error("Online authorization is required before diagram analysis");
+  const response = await fetch("/api/analyze-diagram", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(request),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `Diagram analysis failed (${response.status})`);
+  if (!payload?.nodes || !payload?.edges) throw new Error("Diagram analysis returned an invalid document");
+  return payload;
 }
 
 function synthesizeDiagram(request) {

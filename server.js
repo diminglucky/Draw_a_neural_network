@@ -6,6 +6,7 @@ const port = Number(process.env.PORT || 4173);
 const root = process.cwd();
 const openAIKey = process.env.OPENAI_API_KEY;
 const model = process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
+const foundationApiUrl = (process.env.FOUNDATION_API_URL || "http://127.0.0.1:4180").replace(/\/$/, "");
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -35,6 +36,16 @@ createServer(async (request, response) => {
 });
 
 async function handleAnalyze(request, response) {
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) {
+    sendJson(response, 401, { error: "Online authorization is required", code: "INVALID_TOKEN" });
+    return;
+  }
+  const authorized = await verifyFoundationSession(authorization);
+  if (!authorized) {
+    sendJson(response, 401, { error: "Foundation session is not active", code: "SESSION_REVOKED" });
+    return;
+  }
   if (!openAIKey) {
     sendJson(response, 200, synthesizeFallbackDiagram(await readJson(request)));
     return;
@@ -87,6 +98,19 @@ async function handleAnalyze(request, response) {
     return;
   }
   sendJson(response, 200, JSON.parse(text));
+}
+
+async function verifyFoundationSession(authorization) {
+  try {
+    const response = await fetch(`${foundationApiUrl}/api/auth/session`, {
+      headers: { Authorization: authorization },
+    });
+    if (!response.ok) console.error(`Foundation authorization rejected with HTTP ${response.status}`);
+    return response.ok;
+  } catch (error) {
+    console.error(`Foundation authorization service is unreachable: ${error instanceof Error ? error.message : "unknown error"}`);
+    return false;
+  }
 }
 
 function buildVisionPrompt(body) {

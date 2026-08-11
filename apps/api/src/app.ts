@@ -47,9 +47,12 @@ export async function buildDefaultApp(): Promise<FastifyInstance> {
   if (config.storageDriver !== "memory") {
     throw new ProductionStoreNotConfiguredError(config);
   }
-  const adminPassword = process.env.ADMIN_PASSWORD ?? "";
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (config.nodeEnv === "production" && !adminPassword) {
+    throw new Error("ADMIN_PASSWORD is required in production");
+  }
   return buildApp({
     config,
-    admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword) },
+    admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
   });
 }

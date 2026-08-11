@@ -14,7 +14,55 @@ The app is designed for people who want diagrams closer to PlotNeuralNet, NN-SVG
 - Export to SVG, PNG, and JSON; import JSON to continue editing.
 - Built-in templates for CNN, ResNet, U-Net, 3D Medical U-Net, Hybrid ViT, GAN, Diffusion U-Net, and MLP.
 
-## Quick Start
+## Commercial foundation quick start
+
+The commercial foundation adds the online authorization boundary required for paid use. The browser client remains the existing editable SVG canvas, but its interaction layer is covered by an authorization gate until the Foundation API confirms the user, device, session lease, and subscription.
+
+The current Windows-first development slice includes:
+
+- online registration/login and access-token sessions;
+- one active session per account, with heartbeat lease renewal;
+- device ownership records and an explicit development device identity;
+- trial subscription and entitlement contracts;
+- admin login, dashboard, user/device/session/Job/audit views, and forced session revocation;
+- authenticated Job lifecycle and explicit Agent/Visio adapter boundaries;
+- PostgreSQL migration and Redis/PostgreSQL Docker boundary;
+- server-side authorization for the existing diagram-analysis endpoint.
+
+The current slice does not claim to include the production PostgreSQL/Redis adapter, Windows DPAPI device-key bridge, real OpenAI provider, Vision code understanding, Visio COM automation, or `.vsdx` export. Those are the next integration phase.
+
+### Run on Windows locally
+
+Use two PowerShell terminals from the repository root:
+
+```powershell
+npm install
+$env:NODE_ENV = "development"
+$env:SESSION_SECRET = "local-session-secret-change-me-32-characters"
+$env:ADMIN_PASSWORD = "local-admin-password-please-change"
+npm run api:dev
+```
+
+In the second terminal:
+
+```powershell
+$env:FOUNDATION_API_URL = "http://127.0.0.1:4180"
+node server.js
+```
+
+Open [http://127.0.0.1:4173/](http://127.0.0.1:4173/). The first visit is locked; choose “注册试用账号” to create the first user and bind the development device identity. The admin console is at [http://127.0.0.1:4173/apps/admin/](http://127.0.0.1:4173/apps/admin/).
+
+The default API store is memory-only and is intentionally suitable only for local development/tests. Restarting the API loses users, devices, sessions, and audit data. Production startup rejects `STORAGE_DRIVER=memory`; selecting PostgreSQL currently fails closed until the durable store adapter is added.
+
+Optional local services are defined in `infra/docker-compose.yml`:
+
+```powershell
+docker compose -f infra/docker-compose.yml up -d
+```
+
+The SQL migration is mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; that adapter is a separate implementation gate.
+
+## Existing canvas quick start
 
 This is a lightweight vanilla JavaScript project. No build step is required.
 
@@ -30,7 +78,7 @@ http://127.0.0.1:4173/
 
 You can also open `index.html` directly for the static canvas experience.
 
-## Optional Vision Backend
+## Authenticated Vision Backend
 
 To enable AI vision analysis for uploaded diagrams, set `OPENAI_API_KEY` before starting the server:
 
@@ -38,7 +86,7 @@ To enable AI vision analysis for uploaded diagrams, set `OPENAI_API_KEY` before 
 OPENAI_API_KEY=your_key node server.js
 ```
 
-Without an API key, the app still works and uses local fallback synthesis for uploaded references.
+The analysis endpoint now requires an active Foundation API session even when `OPENAI_API_KEY` is not configured. Without an API key, an authenticated request receives the existing server-side draft synthesis; this is a development fallback and is not the commercial Agent/OpenAI implementation. Unauthenticated requests receive `401` and do not receive a local fallback.
 
 ## Code Generation
 
@@ -80,6 +128,11 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 ├── code-workflow.js  # PyTorch/Keras code-to-diagram generation
 ├── ai-workflow.js    # Image upload and vision-assisted diagram workflow
 ├── server.js         # Static server and optional OpenAI vision endpoint
+├── apps/api/          # Auth, sessions, subscriptions, jobs, admin, and adapters
+├── apps/client/       # Online authorization gate for the canvas
+├── apps/admin/        # Minimal authenticated operations console
+├── apps/api/sql/      # PostgreSQL production-boundary migration
+├── infra/              # Optional local PostgreSQL/Redis services
 └── favicon.svg
 ```
 
@@ -97,4 +150,16 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 - More paper presets for U-Net variants, Transformers, diffusion models, and multimodal models.
 - Better automatic layout for very large models.
 - Layer-level import/export interoperability with common model visualization formats.
+
+## Commercial implementation status
+
+This repository now has a runnable foundation, not a finished paid product. Before commercial release, the following gates still need independent acceptance:
+
+1. implement and load the PostgreSQL store plus Redis lease coordination;
+2. replace the browser bootstrap identity with a signed Windows Electron device key protected by DPAPI;
+3. move Agent/OpenAI calls behind the API `AgentProvider`, with quotas, cost limits, retries, redaction, and provider audit;
+4. implement the neural-network IR and validated layout pipeline;
+5. implement the `VisioExecutor` through a controlled Windows worker and validate readback/export;
+6. add billing-provider webhooks, entitlement reconciliation, rate limiting, abuse detection, backups, migrations, and operational alerts;
+7. package/sign the Windows client and perform clean-machine, upgrade, revoke, offline, reconnect, and concurrent-login acceptance tests.
 
