@@ -71,6 +71,7 @@ function mapSession(row: Row): Session {
     startedAt: requiredTimestamp(row.started_at),
     lastHeartbeatAt: requiredTimestamp(row.last_heartbeat_at),
     leaseExpiresAt: requiredTimestamp(row.lease_expires_at),
+    leaseFencingToken: Number(row.lease_fencing_token ?? 1),
     revokedAt: timestamp(row.revoked_at),
   };
 }

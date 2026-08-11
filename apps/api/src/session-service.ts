@@ -95,6 +95,7 @@ export class SessionService {
       startedAt: now.toISOString(),
       lastHeartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + this.options.leaseSeconds * 1000).toISOString(),
+      leaseFencingToken: 1,
       revokedAt: null,
     };
     if (!(await this.options.store.claimActiveSession(user.id, session, now))) {

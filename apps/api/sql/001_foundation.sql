@@ -41,6 +41,7 @@ CREATE TABLE sessions (
   started_at TIMESTAMPTZ NOT NULL,
   last_heartbeat_at TIMESTAMPTZ NOT NULL,
   lease_expires_at TIMESTAMPTZ NOT NULL,
+  lease_fencing_token BIGINT NOT NULL,
   revoked_at TIMESTAMPTZ NULL
 );
 

@@ -69,6 +69,7 @@ export interface Session {
   startedAt: string;
   lastHeartbeatAt: string;
   leaseExpiresAt: string;
+  leaseFencingToken: number;
   revokedAt: string | null;
 }
 

@@ -103,6 +103,7 @@ describe("PostgresFoundationStore", () => {
       startedAt: "2026-08-11T00:00:00.000Z",
       lastHeartbeatAt: "2026-08-11T00:00:00.000Z",
       leaseExpiresAt: "2026-08-11T00:01:00.000Z",
+      leaseFencingToken: 1,
       revokedAt: null,
     };
 
@@ -131,7 +132,7 @@ describe("PostgresFoundationStore", () => {
 
     await expect(store.claimActiveSession("user-1", {
       id: "session-1", userId: "user-1", deviceId: "device-1", status: "active", accessTokenId: "token-1",
-      startedAt: "2026-08-11T00:00:00.000Z", lastHeartbeatAt: "2026-08-11T00:00:00.000Z", leaseExpiresAt: "2026-08-11T00:01:00.000Z", revokedAt: null,
+      startedAt: "2026-08-11T00:00:00.000Z", lastHeartbeatAt: "2026-08-11T00:00:00.000Z", leaseExpiresAt: "2026-08-11T00:01:00.000Z", leaseFencingToken: 1, revokedAt: null,
     }, new Date("2026-08-11T00:00:00.000Z"))).rejects.toThrow("database unavailable");
     expect(calls.at(-1)).toBe("ROLLBACK");
     expect(released).toBe(true);
