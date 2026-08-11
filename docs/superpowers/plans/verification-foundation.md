@@ -25,10 +25,18 @@ Expected evidence:
 - no JavaScript syntax or TypeScript errors;
 - no whitespace errors.
 
+The Redis integration has an additional Docker-backed check:
+
+```powershell
+npm run api:smoke:redis
+```
+
+It must prove a real claim, competing-claim rejection, renewal, TTL expiry and takeover, monotonic fencing tokens, stale-release protection, and final release against the Redis service.
+
 Latest source verification on 2026-08-11:
 
-- 12 test files passed;
-- 35 tests passed;
+- 15 test files passed;
+- 41 tests passed;
 - `npm run api:check`, `npx tsc --noEmit`, JavaScript syntax checks, and `git diff --check` passed.
 
 ## Local host acceptance
@@ -43,7 +51,7 @@ Latest source verification on 2026-08-11:
 
 ## Production gates still pending
 
-- PostgreSQL persistence is implemented and has a local smoke-test path; Redis lease coordination still needs a production adapter and concurrent fencing acceptance;
+- PostgreSQL persistence and the Redis lease adapter are implemented and have local smoke-test paths; fencing must still be bound into PostgreSQL session claims and accepted under concurrent multi-instance login;
 - Windows DPAPI device-key creation, signature proof, uninstall/reinstall, and machine-change policy must be tested;
 - signed installer, update, crash recovery, telemetry redaction, rate limits, billing webhooks, backups, and restore must be accepted;
 - real OpenAI and Visio integrations require separate credentialed acceptance and must not be inferred from the placeholder adapters.

@@ -31,11 +31,11 @@
 - Test: `apps/api/tests/lease-config.test.ts`
 
 - [x] Write the design and plan.
-- [ ] Add the official `redis` runtime dependency.
-- [ ] Add a failing test that `LEASE_DRIVER=redis` requires `REDIS_URL`.
-- [ ] Implement the config field and validation.
-- [ ] Run the focused test and TypeScript check.
-- [ ] Commit with `feat: prepare redis lease configuration`.
+- [x] Add the official `redis` runtime dependency.
+- [x] Add a failing test that `LEASE_DRIVER=redis` requires `REDIS_URL`.
+- [x] Implement the config field and validation.
+- [x] Run the focused test and TypeScript check.
+- [x] Commit with `feat: prepare redis lease configuration`.
 
 ### Task 2: Fencing contract and memory implementation
 
@@ -43,11 +43,11 @@
 - Modify: `apps/api/src/lease-coordinator.ts`
 - Modify: `apps/api/tests/lease-coordinator.test.ts`
 
-- [ ] Change claim/renew to return `{ acquired, fencingToken }` and release to require the token.
-- [ ] Write failing tests for monotonic tokens, stale renew, stale release, and expired takeover.
-- [ ] Update `InMemoryLeaseCoordinator` with a per-key sequence counter.
-- [ ] Run focused tests and all existing tests.
-- [ ] Commit with `feat: add fencing tokens to lease contract`.
+- [x] Change claim/renew to return `{ acquired, fencingToken }` and release to require the token.
+- [x] Write failing tests for monotonic tokens, stale renew, stale release, and expired takeover.
+- [x] Update `InMemoryLeaseCoordinator` with a per-key sequence counter.
+- [x] Run focused tests and all existing tests.
+- [x] Commit with `feat: add fencing tokens to lease contract`.
 
 ### Task 3: Redis Lua adapter
 
@@ -55,11 +55,11 @@
 - Create: `apps/api/src/redis-lease-coordinator.ts`
 - Create: `apps/api/tests/redis-lease-coordinator.test.ts`
 
-- [ ] Write failing fake-client tests for claim, competing claim, renew, release, namespaced keys, and Redis error propagation.
-- [ ] Implement `RedisClientLike`, `RedisLeaseCoordinator`, and claim/renew/release Lua scripts.
-- [ ] Parse Redis array responses into `LeaseResult` without treating malformed responses as success.
-- [ ] Run focused tests and TypeScript checking.
-- [ ] Commit with `feat: add redis lua lease coordinator`.
+- [x] Write failing fake-client tests for claim, competing claim, renew, release, namespaced keys, and Redis error propagation.
+- [x] Implement `RedisClientLike`, `RedisLeaseCoordinator`, and claim/renew/release Lua scripts.
+- [x] Parse Redis array responses into `LeaseResult` without treating malformed responses as success.
+- [x] Run focused tests and TypeScript checking.
+- [x] Commit with `feat: add redis lua lease coordinator`.
 
 ### Task 4: Redis factory and shutdown
 
@@ -69,12 +69,12 @@
 - Modify: `apps/api/src/app.ts`
 - Modify: `apps/api/src/main.ts`
 
-- [ ] Write failing factory tests for memory mode, Redis mode, missing URL, and close behavior.
-- [ ] Implement a Redis client factory using `createClient({ url })`.
-- [ ] Register shutdown cleanup without changing the existing Store factory.
-- [ ] Ensure Redis mode cannot silently instantiate the memory coordinator.
-- [ ] Run focused and full tests.
-- [ ] Commit with `feat: wire redis lease lifecycle`.
+- [x] Write failing factory tests for memory mode, Redis mode, missing URL, and close behavior.
+- [x] Implement a Redis client factory using `createClient({ url })`.
+- [x] Register shutdown cleanup without changing the existing Store factory.
+- [x] Ensure Redis mode cannot silently instantiate the memory coordinator.
+- [x] Run focused and full tests.
+- [x] Commit with `feat: wire redis lease lifecycle`.
 
 ### Task 5: Real Redis smoke and documentation
 
@@ -84,10 +84,10 @@
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/verification-foundation.md`
 
-- [ ] Write a smoke script that claims, rejects a competitor, renews, waits for expiry, claims with a larger fencing token, rejects stale release, and releases the current lease.
-- [ ] Run it against Redis in `infra/docker-compose.yml`.
-- [ ] Add the command to README and record the acceptance result.
-- [ ] Run all source checks and `git diff --check`.
+- [x] Write a smoke script that claims, rejects a competitor, renews, waits for expiry, claims with a larger fencing token, rejects stale release, and releases the current lease.
+- [x] Run it against Redis in `infra/docker-compose.yml`.
+- [x] Add the command to README and record the acceptance result.
+- [x] Run all source checks and `git diff --check`.
 - [ ] Commit with `feat: add redis lease smoke verification`.
 
 ## Self-review

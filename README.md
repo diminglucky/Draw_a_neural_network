@@ -27,9 +27,10 @@ The current Windows-first development slice includes:
 - admin login, dashboard, user/device/session/Job/audit views, and forced session revocation;
 - authenticated Job lifecycle and explicit Agent/Visio adapter boundaries;
 - PostgreSQL migration and Redis/PostgreSQL Docker boundary;
+- Redis-backed distributed leases with monotonic fencing tokens and explicit shutdown cleanup;
 - server-side authorization for the existing diagram-analysis endpoint.
 
-The current slice includes the PostgreSQL adapter and an in-memory lease-coordinator contract. It does not claim to include a Redis lease adapter, Windows DPAPI device-key bridge, real OpenAI provider, Vision code understanding, Visio COM automation, or `.vsdx` export. Those are the next integration phase.
+The current slice includes the PostgreSQL adapter and a Redis lease adapter with an in-memory test mode. It does not claim to include the Windows DPAPI device-key bridge, real OpenAI provider, Vision code understanding, Visio COM automation, or `.vsdx` export. Those are the next integration phase.
 
 ### Run on Windows locally
 
@@ -64,6 +65,12 @@ The SQL migration is mounted into PostgreSQL on first initialization. Docker ser
 
 ```powershell
 npm run api:smoke:postgres
+```
+
+Redis leases are opt-in during local development. Set `LEASE_DRIVER=redis` and keep `REDIS_URL` configured before starting the API. Verify the real Redis Lua adapter and fencing behavior with:
+
+```powershell
+npm run api:smoke:redis
 ```
 
 ## Existing canvas quick start
@@ -159,7 +166,7 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 
 This repository now has a runnable foundation, not a finished paid product. Before commercial release, the following gates still need independent acceptance:
 
-1. implement and validate a Redis lease adapter and distributed fencing around PostgreSQL session claims;
+1. bind the Redis fencing token into PostgreSQL session claims and validate concurrent multi-instance login behavior;
 2. replace the browser bootstrap identity with a signed Windows Electron device key protected by DPAPI;
 3. move Agent/OpenAI calls behind the API `AgentProvider`, with quotas, cost limits, retries, redaction, and provider audit;
 4. implement the neural-network IR and validated layout pipeline;

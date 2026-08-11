@@ -6,7 +6,8 @@
     "api:dev": "tsx apps/api/src/main.ts",
     "api:test": "vitest run",
     "api:check": "tsx scripts/check-foundation.mjs",
-    "api:smoke:postgres": "node scripts/postgres-smoke.mjs"
+    "api:smoke:postgres": "node scripts/postgres-smoke.mjs",
+    "api:smoke:redis": "tsx scripts/redis-smoke.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
