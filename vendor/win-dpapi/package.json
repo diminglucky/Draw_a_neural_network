@@ -1,0 +1,16 @@
+{
+  "name": "win-dpapi",
+  "version": "1.1.0-synapse.1",
+  "description": "Node native module to encrypt/decrypt data with Windows DPAPI",
+  "main": "index.js",
+  "license": "MIT",
+  "os": ["win32"],
+  "repository": "https://github.com/daguej/node-dpapi",
+  "dependencies": {
+    "bindings": "^1.5.0",
+    "nan": "^2.14.1"
+  },
+  "scripts": {
+    "install": "node-gyp rebuild"
+  }
+}

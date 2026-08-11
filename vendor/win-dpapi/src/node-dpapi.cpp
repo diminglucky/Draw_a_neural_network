@@ -1,0 +1,118 @@
+#include <node.h>
+#include <nan.h>
+#include <Windows.h>
+#include <dpapi.h>
+#include <functional>
+
+v8::Local<v8::String> CreateUtf8String(v8::Isolate* isolate, const char* strData)
+{
+	return v8::String::NewFromUtf8(isolate, strData, v8::NewStringType::kNormal).ToLocalChecked();
+}
+
+void ProtectDataCommon(bool protect, Nan::NAN_METHOD_ARGS_TYPE info)
+{
+	v8::Isolate* isolate = info.GetIsolate();
+
+	if (info.Length() != 3) {
+		isolate->ThrowException(v8::Exception::RangeError(
+			CreateUtf8String(isolate, "3 arguments are required")));
+		return;
+	}
+
+	if (info[0]->IsNullOrUndefined() || !info[0]->IsUint8Array())
+	{
+		isolate->ThrowException(v8::Exception::TypeError(
+			CreateUtf8String(isolate, "First argument, data, must be a valid Uint8Array")));
+		return;
+	}
+
+	if (!info[1]->IsNull() && !info[1]->IsUint8Array())
+	{
+		isolate->ThrowException(v8::Exception::TypeError(
+			CreateUtf8String(isolate, "Second argument, optionalEntropy, must be null or an ArrayBuffer")));
+		return;
+	}
+
+	if (info[2]->IsNullOrUndefined() || !info[2]->IsString())
+	{
+		isolate->ThrowException(v8::Exception::TypeError(
+			CreateUtf8String(isolate, "Third argument, scope, must be a string")));
+		return;
+	}
+
+	DWORD flags = 0;
+	if (!info[2]->IsNullOrUndefined())
+	{
+		v8::String::Utf8Value strData(isolate, info[2]);
+		std::string scope(*strData);
+		if (stricmp(scope.c_str(), "LocalMachine") == 0)
+		{
+			flags = CRYPTPROTECT_LOCAL_MACHINE;
+		}
+	}
+
+	auto buffer = node::Buffer::Data(info[0]);
+	auto len = node::Buffer::Length(info[0]);
+
+	DATA_BLOB entropyBlob;
+	entropyBlob.pbData = nullptr;
+	if (!info[1]->IsNull())
+	{
+		entropyBlob.pbData = reinterpret_cast<BYTE*>(node::Buffer::Data(info[1]));
+		entropyBlob.cbData = node::Buffer::Length(info[1]);
+	}
+
+	DATA_BLOB dataIn;
+	DATA_BLOB dataOut;
+	dataIn.pbData = reinterpret_cast<BYTE*>(buffer);
+	dataIn.cbData = len;
+
+	bool success = false;
+	if (protect)
+	{
+		success = CryptProtectData(
+			&dataIn, nullptr, entropyBlob.pbData ? &entropyBlob : nullptr,
+			nullptr, nullptr, flags, &dataOut);
+	}
+	else
+	{
+		success = CryptUnprotectData(
+			&dataIn, nullptr, entropyBlob.pbData ? &entropyBlob : nullptr,
+			nullptr, nullptr, flags, &dataOut);
+	}
+
+	if (!success)
+	{
+		isolate->ThrowException(v8::Exception::Error(
+			CreateUtf8String(isolate, "Windows DPAPI operation failed")));
+		return;
+	}
+
+	auto returnBuffer = Nan::CopyBuffer(reinterpret_cast<const char*>(dataOut.pbData), dataOut.cbData).ToLocalChecked();
+	LocalFree(dataOut.pbData);
+	info.GetReturnValue().Set(returnBuffer);
+}
+
+NAN_METHOD(protectData)
+{
+	ProtectDataCommon(true, info);
+}
+
+NAN_METHOD(unprotectData)
+{
+	ProtectDataCommon(false, info);
+}
+
+NAN_MODULE_INIT(init)
+{
+	Nan::Set(target, Nan::New<v8::String>("protectData").ToLocalChecked(),
+		Nan::GetFunction(Nan::New<v8::FunctionTemplate>(protectData)).ToLocalChecked());
+	Nan::Set(target, Nan::New<v8::String>("unprotectData").ToLocalChecked(),
+		Nan::GetFunction(Nan::New<v8::FunctionTemplate>(unprotectData)).ToLocalChecked());
+}
+
+#if NODE_MAJOR_VERSION >= 10
+NAN_MODULE_WORKER_ENABLED(binding, init)
+#else
+NODE_MODULE(binding, init)
+#endif

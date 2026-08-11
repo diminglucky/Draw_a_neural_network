@@ -15,6 +15,9 @@ node --check code-workflow.js
 node --check ai-workflow.js
 node --check apps/client/auth-gate.js
 node --check apps/admin/admin.js
+node --check apps/desktop/device-key-store.mjs
+node --check apps/desktop/main.mjs
+node --check apps/desktop/preload.mjs
 git diff --check
 ```
 
@@ -57,3 +60,14 @@ Latest source verification on 2026-08-11:
 - real OpenAI and Visio integrations require separate credentialed acceptance and must not be inferred from the placeholder adapters.
 
 The PostgreSQL smoke command is available as `npm run api:smoke:postgres`. It verifies persistence, one-active-session fencing, takeover after the old session is expired, rejection of stale fencing-token updates, and one-time device challenge consumption/replay/expiry behavior. It passed on 2026-08-11 after Docker Desktop was started. The API was also started with `STORAGE_DRIVER=postgres`, a user/device/session was created, the API was restarted, and the original session read back successfully from PostgreSQL. Redis container health was confirmed with `PONG`.
+
+## Windows Electron acceptance
+
+Run these commands on Windows after `npm install`:
+
+```powershell
+npm run desktop:rebuild
+npm run desktop:smoke
+```
+
+The rebuild proves the native DPAPI addon is compiled for the Electron ABI; the smoke proves DPAPI protect/unprotect, stable public-key reload, and challenge signature verification. A passing Node ABI build alone is insufficient. Non-Windows environments must report `DESKTOP_WINDOWS_REQUIRED` and cannot claim this gate.

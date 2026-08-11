@@ -30,9 +30,10 @@ The current Windows-first development slice includes:
 - Redis-backed distributed leases with monotonic fencing tokens and explicit shutdown cleanup;
 - PostgreSQL session claims and conditional writes are fenced with the Redis token;
 - Ed25519 device challenges are single-use and production login can require a valid device proof;
+- Windows Electron main-process device keys protected by DPAPI `CurrentUser`, with a fixed preload IPC bridge;
 - server-side authorization for the existing diagram-analysis endpoint.
 
-The current slice includes the PostgreSQL adapter and a Redis lease adapter with an in-memory test mode. It does not claim to include the Windows DPAPI device-key bridge, real OpenAI provider, Vision code understanding, Visio COM automation, or `.vsdx` export. Those are the next integration phase.
+The current slice includes the PostgreSQL adapter, a Redis lease adapter with an in-memory test mode, and the Windows DPAPI device-key bridge. It does not claim to include the real OpenAI provider, Vision code understanding, Visio COM automation, signed installer, or `.vsdx` export.
 
 ### Run on Windows locally
 
@@ -52,6 +53,18 @@ In the second terminal:
 $env:FOUNDATION_API_URL = "http://127.0.0.1:4180"
 node server.js
 ```
+
+To run the Windows Electron shell, install dependencies and rebuild the native addon for Electron before starting the client:
+
+```powershell
+npm install
+npm run desktop:rebuild
+npm run desktop:smoke
+$env:FOUNDATION_UI_URL = "http://127.0.0.1:4173"
+npm run desktop:dev
+```
+
+`desktop:smoke` creates and reloads a DPAPI-protected Ed25519 key, then verifies a challenge signature without printing private material. The smoke is a Windows-only acceptance gate. The vendored `vendor/win-dpapi` package is derived from the MIT-licensed [daguej/node-dpapi](https://github.com/daguej/node-dpapi) 1.1.0 source and contains the minimum modern-MSVC const-correctness compatibility patch. Electron binaries are downloaded during installation; if the default release host is unavailable in a local network, set an approved mirror such as `$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"` before `npm install`.
 
 Open [http://127.0.0.1:4173/](http://127.0.0.1:4173/). The first visit is locked; choose “注册试用账号” to create the first user and bind the development device identity. The admin console is at [http://127.0.0.1:4173/apps/admin/](http://127.0.0.1:4173/apps/admin/).
 
@@ -180,7 +193,7 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 
 This repository now has a runnable foundation, not a finished paid product. Before commercial release, the following gates still need independent acceptance:
 
-1. replace the provider contract with the native Windows DPAPI implementation and signed Electron packaging;
+1. complete signed Electron packaging, auto-update signing, uninstall/reinstall policy, and clean-machine acceptance around the native Windows DPAPI implementation;
 2. move Agent/OpenAI calls behind the API `AgentProvider`, with quotas, cost limits, retries, redaction, and provider audit;
 3. implement the neural-network IR and validated layout pipeline;
 4. implement the `VisioExecutor` through a controlled Windows worker and validate readback/export;

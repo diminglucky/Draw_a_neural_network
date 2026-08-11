@@ -12,6 +12,16 @@ function bridgeError(code, message) {
   return error;
 }
 
+export async function loadNativeDpapi({ platformName = process.platform, importer = (specifier) => import(specifier) } = {}) {
+  if (platformName !== "win32") throw bridgeError("DESKTOP_WINDOWS_REQUIRED", "The commercial desktop client requires Windows DPAPI");
+  try {
+    const module = await importer("win-dpapi");
+    return module.default || module;
+  } catch (error) {
+    throw bridgeError("DEVICE_DPAPI_UNAVAILABLE", "The Windows DPAPI native module is unavailable; rebuild it for this Electron version", error);
+  }
+}
+
 export function createDeviceKeyIpc({ ipcMain, deviceKeyStore } = {}) {
   if (!ipcMain || typeof ipcMain.handle !== "function") throw new TypeError("ipcMain.handle is required");
   if (!deviceKeyStore || typeof deviceKeyStore.getIdentity !== "function" || typeof deviceKeyStore.signChallenge !== "function") {
@@ -63,8 +73,8 @@ export async function startDesktopApp({ electron, dpapi, uiUrl = process.env.FOU
 async function startFromElectron() {
   if (!process.versions.electron) return;
   const electron = await import("electron");
-  const dpapiModule = await import("win-dpapi");
-  await startDesktopApp({ electron, dpapi: dpapiModule.default || dpapiModule });
+  const dpapi = await loadNativeDpapi();
+  await startDesktopApp({ electron, dpapi });
 }
 
 await startFromElectron();

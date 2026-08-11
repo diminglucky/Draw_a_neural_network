@@ -8,3 +8,6 @@ coverage/
 .playwright-mcp/
 .worktrees/
 synapse-*.png
+vendor/win-dpapi/build/
+vendor/win-dpapi/bin/
+win-dpapi-*.tgz

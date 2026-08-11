@@ -9,7 +9,8 @@
     "api:smoke:postgres": "node scripts/postgres-smoke.mjs",
     "api:smoke:redis": "tsx scripts/redis-smoke.mjs",
     "desktop:dev": "electron apps/desktop/main.mjs",
-    "desktop:rebuild": "electron-rebuild -f -w win-dpapi"
+    "desktop:rebuild": "electron-rebuild -f -w win-dpapi",
+    "desktop:smoke": "electron scripts/desktop-dpapi-smoke.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
@@ -30,6 +31,6 @@
     "vitest": "^3.2.4"
   },
   "optionalDependencies": {
-    "win-dpapi": "^1.1.0"
+    "win-dpapi": "file:vendor/win-dpapi"
   }
 }

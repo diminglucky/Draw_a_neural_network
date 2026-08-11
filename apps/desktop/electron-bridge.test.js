@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDeviceKeyIpc } from "./main.mjs";
+import { createDeviceKeyIpc, loadNativeDpapi } from "./main.mjs";
 import { exposeDeviceKeyBridge } from "./preload.mjs";
 
 describe("Electron device-key bridge", () => {
@@ -46,5 +46,12 @@ describe("Electron device-key bridge", () => {
     expect(Object.keys(exposed.synapseDeviceKey)).toEqual(["getIdentity", "signChallenge"]);
     await expect(exposed.synapseDeviceKey.getIdentity()).resolves.toEqual({ channel: "device-key:get-identity", value: undefined });
     await expect(exposed.synapseDeviceKey.signChallenge("challenge")).resolves.toEqual({ channel: "device-key:sign-challenge", value: "challenge" });
+  });
+
+  it("fails clearly when native DPAPI is requested outside Windows", async () => {
+    const importer = vi.fn();
+
+    await expect(loadNativeDpapi({ platformName: "linux", importer })).rejects.toMatchObject({ code: "DESKTOP_WINDOWS_REQUIRED" });
+    expect(importer).not.toHaveBeenCalled();
   });
 });

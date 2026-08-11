@@ -23,42 +23,43 @@
 
 **Files:**
 - Create: `apps/desktop/device-key-store.mjs`
-- Create: `apps/desktop/device-key-store.test.mjs`
+- Create: `apps/desktop/device-key-store.test.js`
 
-- [ ] Add failing tests for first key generation, persistence/reload, signing, malformed-file rejection, and atomic file writes using fake DPAPI/filesystem dependencies.
-- [ ] Run `npm run api:test -- apps/desktop/device-key-store.test.mjs` and observe the missing module failure.
-- [ ] Implement `createDeviceKeyStore({ storagePath, dpapi, fsImpl, now })` with `getIdentity()` and `signChallenge(challenge)`.
-- [ ] Run focused tests and `node --check apps/desktop/device-key-store.mjs`.
-- [ ] Commit `feat: add dpapi device key store`.
+- [x] Add failing tests for first key generation, persistence/reload, signing, malformed-file rejection, and atomic file writes using fake DPAPI/filesystem dependencies.
+- [x] Run `npm run api:test -- apps/desktop/device-key-store.test.js` and observe the missing module failure.
+- [x] Implement `createDeviceKeyStore({ storagePath, dpapi, fsImpl, now })` with `getIdentity()` and `signChallenge(challenge)`.
+- [x] Run focused tests and `node --check apps/desktop/device-key-store.mjs`.
+- [x] Commit `feat: add dpapi device key store`.
 
 ### Task 2: Electron main and preload bridge
 
 **Files:**
 - Create: `apps/desktop/main.mjs`
 - Create: `apps/desktop/preload.mjs`
-- Create: `apps/desktop/electron-bridge.test.mjs`
+- Create: `apps/desktop/electron-bridge.test.js`
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] Add failing tests for fixed IPC channel registration, challenge type/length validation, and preload method exposure.
-- [ ] Run focused bridge tests and observe missing Electron bridge modules.
-- [ ] Implement main-process handlers and preload `contextBridge` exposure; load the existing UI URL from `FOUNDATION_UI_URL`.
-- [ ] Add `desktop:dev` and Electron dependencies; keep native DPAPI import main-process-only.
-- [ ] Run bridge tests and JavaScript syntax checks.
-- [ ] Commit `feat: add electron device proof bridge`.
+- [x] Add failing tests for fixed IPC channel registration, challenge type/length validation, and preload method exposure.
+- [x] Run focused bridge tests and observe missing Electron bridge modules.
+- [x] Implement main-process handlers and preload `contextBridge` exposure; load the existing UI URL from `FOUNDATION_UI_URL`.
+- [x] Add `desktop:dev` and Electron dependencies; keep native DPAPI import main-process-only.
+- [x] Run bridge tests and JavaScript syntax checks.
+- [x] Commit `feat: add electron device proof bridge`.
 
 ### Task 3: Native Windows dependency and local acceptance
 
 **Files:**
-- Modify: `apps/desktop/main.mjs`
+- Modify: `apps/desktop/main.mjs`, `package.json`, `package-lock.json`
 - Modify: `README.md`
 - Modify: `.env.example`
 - Create: `scripts/desktop-dpapi-smoke.mjs`
+- Create: `vendor/win-dpapi/`
 
-- [ ] Implement runtime loading of `win-dpapi` and fail clearly on non-Windows production startup.
-- [ ] Run `npm install`/Electron rebuild on Windows and verify the native module loads.
-- [ ] Run a DPAPI smoke that creates/reloads the key, signs a challenge, and verifies the signature against the API verifier.
-- [ ] Document that native DPAPI and signed installer acceptance are Windows-only release gates.
+- [x] Implement runtime loading of `win-dpapi` and fail clearly on non-Windows production startup.
+- [x] Run `npm install`/Electron rebuild on Windows and verify the native module loads.
+- [x] Run a DPAPI smoke that creates/reloads the key, signs a challenge, and verifies the signature against the API verifier contract.
+- [x] Document that native DPAPI and signed installer acceptance are Windows-only release gates.
 - [ ] Run all API/client tests, syntax checks, both existing smokes, and the DPAPI smoke.
 - [ ] Commit `test: verify windows dpapi device key`.
 
