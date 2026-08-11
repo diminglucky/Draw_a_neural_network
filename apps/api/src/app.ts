@@ -9,6 +9,7 @@ import { hashPassword } from "./security.js";
 import { InMemoryFoundationStore, type FoundationStore } from "./store.js";
 import { FoundationError } from "./domain.js";
 import { createFoundationStore } from "./store-factory.js";
+import { createLeaseCoordinator } from "./lease-factory.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -52,11 +53,25 @@ export async function buildDefaultApp(): Promise<FastifyInstance> {
     throw new Error("ADMIN_PASSWORD is required in production");
   }
   const storage = await createFoundationStore(config);
-  const app = buildApp({
-    config,
-    store: storage.store,
-    admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
-  });
-  app.addHook("onClose", async () => storage.close());
-  return app;
+  try {
+    const lease = await createLeaseCoordinator(config);
+    try {
+      const app = buildApp({
+        config,
+        store: storage.store,
+        admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
+      });
+      app.addHook("onClose", async () => {
+        await lease.close();
+        await storage.close();
+      });
+      return app;
+    } catch (error) {
+      await lease.close();
+      throw error;
+    }
+  } catch (error) {
+    await storage.close();
+    throw error;
+  }
 }
