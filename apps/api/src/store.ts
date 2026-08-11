@@ -14,7 +14,7 @@ export interface FoundationStore {
   listSessions(): Promise<Session[]>;
   getActiveSessionByUser(userId: string): Promise<Session | null>;
   createSession(session: Session): Promise<Session>;
-  updateSession(session: Session): Promise<Session>;
+  updateSession(session: Session, expectedFencingToken?: number): Promise<Session | null>;
   claimActiveSession(userId: string, session: Session, now: Date): Promise<boolean>;
   createSubscription(subscription: Subscription): Promise<Subscription>;
   getCurrentSubscription(userId: string): Promise<Subscription | null>;
@@ -92,7 +92,9 @@ export class InMemoryFoundationStore implements FoundationStore {
     return session;
   }
 
-  async updateSession(session: Session): Promise<Session> {
+  async updateSession(session: Session, expectedFencingToken?: number): Promise<Session | null> {
+    const current = this.sessions.get(session.id);
+    if (expectedFencingToken !== undefined && (!current || current.leaseFencingToken !== expectedFencingToken)) return null;
     this.sessions.set(session.id, session);
     return session;
   }

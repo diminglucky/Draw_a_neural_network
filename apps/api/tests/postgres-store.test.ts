@@ -114,6 +114,28 @@ describe("PostgresFoundationStore", () => {
     expect(released).toBe(true);
   });
 
+  it("writes the fencing token and rejects a conditional update when no token-matching row exists", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const pool: PoolLike = {
+      async query(text, values = []) {
+        calls.push({ text, values });
+        return { rows: [], rowCount: 0 };
+      },
+      async connect() {
+        return { async query(text, values = []) { calls.push({ text, values }); return { rows: [], rowCount: 0 }; }, release() {} };
+      },
+    };
+    const store = new PostgresFoundationStore(pool);
+    const session: Session = {
+      id: "session-1", userId: "user-1", deviceId: "device-1", status: "active", accessTokenId: "token-1",
+      startedAt: "2026-08-11T00:00:00.000Z", lastHeartbeatAt: "2026-08-11T00:00:00.000Z", leaseExpiresAt: "2026-08-11T00:01:00.000Z", leaseFencingToken: 7, revokedAt: null,
+    };
+
+    await expect(store.updateSession(session, 7)).resolves.toBeNull();
+    expect(calls[0].text).toContain("lease_fencing_token");
+    expect(calls[0].values).toContain(7);
+  });
+
   it("rolls back and releases the client when session insertion fails", async () => {
     const calls: string[] = [];
     let released = false;

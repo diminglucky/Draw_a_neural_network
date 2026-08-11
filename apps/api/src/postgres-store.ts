@@ -241,7 +241,7 @@ export class PostgresFoundationStore implements FoundationStore {
 
   async getSession(id: string): Promise<Session | null> {
     const result = await this.pool.query(
-      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at
        FROM sessions WHERE id = $1`,
       [id],
     );
@@ -250,7 +250,7 @@ export class PostgresFoundationStore implements FoundationStore {
 
   async listSessions(): Promise<Session[]> {
     const result = await this.pool.query(
-      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at
        FROM sessions ORDER BY started_at DESC`,
     );
     return result.rows.map(mapSession);
@@ -258,7 +258,7 @@ export class PostgresFoundationStore implements FoundationStore {
 
   async getActiveSessionByUser(userId: string): Promise<Session | null> {
     const result = await this.pool.query(
-      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+      `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at
        FROM sessions WHERE user_id = $1 AND status = 'active' LIMIT 1`,
       [userId],
     );
@@ -267,22 +267,25 @@ export class PostgresFoundationStore implements FoundationStore {
 
   async createSession(session: Session): Promise<Session> {
     const result = await this.pool.query(
-      `INSERT INTO sessions (id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at`,
-      [session.id, session.userId, session.deviceId, session.status, session.accessTokenId, session.startedAt, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt],
+      `INSERT INTO sessions (id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at`,
+      [session.id, session.userId, session.deviceId, session.status, session.accessTokenId, session.startedAt, session.lastHeartbeatAt, session.leaseExpiresAt, session.leaseFencingToken, session.revokedAt],
     );
     return mapSession(result.rows[0]);
   }
 
-  async updateSession(session: Session): Promise<Session> {
+  async updateSession(session: Session, expectedFencingToken?: number): Promise<Session | null> {
+    const where = expectedFencingToken === undefined ? "WHERE id = $1" : "WHERE id = $1 AND lease_fencing_token = $6";
     const result = await this.pool.query(
       `UPDATE sessions SET status = $2, last_heartbeat_at = $3, lease_expires_at = $4, revoked_at = $5
-       WHERE id = $1
-       RETURNING id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at`,
-      [session.id, session.status, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt],
+       ${where}
+       RETURNING id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at`,
+      expectedFencingToken === undefined
+        ? [session.id, session.status, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt]
+        : [session.id, session.status, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt, expectedFencingToken],
     );
-    return mapSession(result.rows[0]);
+    return result.rows[0] ? mapSession(result.rows[0]) : null;
   }
 
   async claimActiveSession(userId: string, session: Session, now: Date): Promise<boolean> {
@@ -291,7 +294,7 @@ export class PostgresFoundationStore implements FoundationStore {
       await client.query("BEGIN");
       await client.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [userId]);
       const current = await client.query(
-        `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at
+        `SELECT id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at
          FROM sessions WHERE user_id = $1 AND status = 'active' LIMIT 1`,
         [userId],
       );
@@ -304,9 +307,9 @@ export class PostgresFoundationStore implements FoundationStore {
         await client.query("UPDATE sessions SET status = 'expired' WHERE id = $1", [active.id]);
       }
       await client.query(
-        `INSERT INTO sessions (id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, revoked_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [session.id, session.userId, session.deviceId, session.status, session.accessTokenId, session.startedAt, session.lastHeartbeatAt, session.leaseExpiresAt, session.revokedAt],
+        `INSERT INTO sessions (id, user_id, device_id, status, access_token_id, started_at, last_heartbeat_at, lease_expires_at, lease_fencing_token, revoked_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [session.id, session.userId, session.deviceId, session.status, session.accessTokenId, session.startedAt, session.lastHeartbeatAt, session.leaseExpiresAt, session.leaseFencingToken, session.revokedAt],
       );
       await client.query("COMMIT");
       return true;
