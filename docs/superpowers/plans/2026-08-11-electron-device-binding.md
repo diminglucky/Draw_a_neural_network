@@ -81,4 +81,4 @@
 - [x] Document the restart/relogin binding behavior and remaining signed-release gates.
 - [x] Run `npm run api:test`, `npm run api:check`, `npx tsc --noEmit`, all syntax checks, PostgreSQL/Redis smokes, `npm run desktop:rebuild`, and `npm run desktop:smoke`.
 - [x] Inspect `git diff --check`, staged paths, and the final branch status.
-- [ ] Commit `docs: document electron device binding acceptance`.
+- [x] Commit `docs: document electron device binding acceptance`.
