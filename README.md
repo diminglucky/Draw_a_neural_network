@@ -29,7 +29,7 @@ The current Windows-first development slice includes:
 - PostgreSQL migration and Redis/PostgreSQL Docker boundary;
 - server-side authorization for the existing diagram-analysis endpoint.
 
-The current slice does not claim to include the production PostgreSQL/Redis adapter, Windows DPAPI device-key bridge, real OpenAI provider, Vision code understanding, Visio COM automation, or `.vsdx` export. Those are the next integration phase.
+The current slice includes the PostgreSQL adapter and an in-memory lease-coordinator contract. It does not claim to include a Redis lease adapter, Windows DPAPI device-key bridge, real OpenAI provider, Vision code understanding, Visio COM automation, or `.vsdx` export. Those are the next integration phase.
 
 ### Run on Windows locally
 
@@ -52,7 +52,7 @@ node server.js
 
 Open [http://127.0.0.1:4173/](http://127.0.0.1:4173/). The first visit is locked; choose “注册试用账号” to create the first user and bind the development device identity. The admin console is at [http://127.0.0.1:4173/apps/admin/](http://127.0.0.1:4173/apps/admin/).
 
-The default API store is memory-only and is intentionally suitable only for local development/tests. Restarting the API loses users, devices, sessions, and audit data. Production startup rejects `STORAGE_DRIVER=memory`; selecting PostgreSQL currently fails closed until the durable store adapter is added.
+The default API store is memory-only and is intentionally suitable only for local development/tests. Restarting the API loses users, devices, sessions, and audit data. Production startup rejects `STORAGE_DRIVER=memory`; selecting PostgreSQL creates a real `pg.Pool` and uses the PostgreSQL Store.
 
 Optional local services are defined in `infra/docker-compose.yml`:
 
@@ -60,7 +60,11 @@ Optional local services are defined in `infra/docker-compose.yml`:
 docker compose -f infra/docker-compose.yml up -d
 ```
 
-The SQL migration is mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; that adapter is a separate implementation gate.
+The SQL migration is mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; set `STORAGE_DRIVER=postgres` and `DATABASE_URL` before starting the API. Verify persistence with:
+
+```powershell
+npm run api:smoke:postgres
+```
 
 ## Existing canvas quick start
 
@@ -155,7 +159,7 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 
 This repository now has a runnable foundation, not a finished paid product. Before commercial release, the following gates still need independent acceptance:
 
-1. implement and load the PostgreSQL store plus Redis lease coordination;
+1. implement and validate a Redis lease adapter and distributed fencing around PostgreSQL session claims;
 2. replace the browser bootstrap identity with a signed Windows Electron device key protected by DPAPI;
 3. move Agent/OpenAI calls behind the API `AgentProvider`, with quotas, cost limits, retries, redaction, and provider audit;
 4. implement the neural-network IR and validated layout pipeline;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "../src/config.js";
+import { buildApp } from "../src/app.js";
 
 describe("production persistence boundary", () => {
   it("contains durable tables and a unique active-session rule", () => {
@@ -15,5 +16,15 @@ describe("production persistence boundary", () => {
 
   it("rejects memory storage in production", () => {
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: "production-secret-production-secret", STORAGE_DRIVER: "memory" })).toThrow(/development-only/);
+  });
+
+  it("does not let a PostgreSQL config silently create an in-memory app", () => {
+    const config = loadConfig({
+      NODE_ENV: "development",
+      STORAGE_DRIVER: "postgres",
+      DATABASE_URL: "postgres://synapse:synapse-local-only@127.0.0.1:54329/synapse_studio",
+      SESSION_SECRET: "development-secret-development-secret",
+    });
+    expect(() => buildApp({ config })).toThrow(/FoundationStore|storage/i);
   });
 });

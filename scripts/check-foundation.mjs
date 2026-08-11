@@ -37,4 +37,4 @@ if (!compose.includes("postgres:") || !compose.includes("redis:")) {
   throw new Error("Docker Compose must define postgres and redis services");
 }
 
-console.log("Foundation boundary OK: durable schema, PostgreSQL/Redis services, and production store guard are present.");
+console.log("Foundation boundary OK: durable schema, PostgreSQL/Redis services, and explicit store factory are present.");

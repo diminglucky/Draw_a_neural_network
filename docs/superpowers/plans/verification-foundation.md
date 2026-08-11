@@ -37,7 +37,7 @@ Expected evidence:
 
 ## Production gates still pending
 
-- PostgreSQL and Redis adapters must be implemented and tested under concurrent claims;
+- PostgreSQL persistence is implemented and has a local smoke-test path; Redis lease coordination still needs a production adapter and concurrent fencing acceptance;
 - Windows DPAPI device-key creation, signature proof, uninstall/reinstall, and machine-change policy must be tested;
 - signed installer, update, crash recovery, telemetry redaction, rate limits, billing webhooks, backups, and restore must be accepted;
 - real OpenAI and Visio integrations require separate credentialed acceptance and must not be inferred from the placeholder adapters.

@@ -19,6 +19,9 @@ export interface BuildAppOptions {
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const config = options.config ?? loadConfig({ NODE_ENV: "test", SESSION_SECRET: options.sessionSecret ?? "test-session-secret-test-session-secret", STORAGE_DRIVER: "memory" });
+  if (!options.store && config.storageDriver !== "memory") {
+    throw new Error("A FoundationStore must be injected when a durable storage driver is configured");
+  }
   const store = options.store ?? new InMemoryFoundationStore();
   const sessionService = new SessionService({ store, leaseSeconds: 90, accessTokenTtlSeconds: 900, sessionSecret: options.sessionSecret ?? config.sessionSecret });
   const jobService = new JobService({ store });
