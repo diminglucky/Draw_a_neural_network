@@ -7,6 +7,7 @@ import { SessionService } from "./session-service.js";
 import { hashPassword } from "./security.js";
 import { InMemoryFoundationStore, type FoundationStore } from "./store.js";
 import { FoundationError } from "./domain.js";
+import { ProductionStoreNotConfiguredError } from "./production-store-not-configured.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -41,6 +42,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
 export async function buildDefaultApp(): Promise<FastifyInstance> {
   const config = loadConfig();
+  if (config.storageDriver !== "memory") {
+    throw new ProductionStoreNotConfiguredError(config);
+  }
   const adminPassword = process.env.ADMIN_PASSWORD ?? "";
   return buildApp({
     config,
