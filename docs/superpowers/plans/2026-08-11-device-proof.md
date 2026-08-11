@@ -93,7 +93,7 @@
 - [x] Extend PostgreSQL smoke to create, consume, reject replay, and reject expired challenges.
 - [x] Run all API tests, both smoke scripts, source checks, syntax checks, and Docker health checks.
 - [x] Record that DPAPI native implementation and signed installer acceptance remain pending.
-- [ ] Commit `test: verify device proof challenge flow`.
+- [x] Commit `test: verify device proof challenge flow`.
 
 ## Self-review
 
