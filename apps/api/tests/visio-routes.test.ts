@@ -3,6 +3,8 @@ import { buildApp } from "../src/app.js";
 import { ApiErrorCode } from "../src/domain.js";
 import { hashPassword } from "../src/security.js";
 import type { VisioExecutor } from "../src/adapters.js";
+import { JobService } from "../src/job-service.js";
+import { InMemoryFoundationStore } from "../src/store.js";
 
 const diagram = {
   figure: { title: "CNN", stages: ["Input", "Output"] },
@@ -71,6 +73,34 @@ describe("Visio export routes", () => {
     expect(response.statusCode).toBe(202);
     expect(response.json()).toMatchObject({ type: "visio-export", status: "queued", pollUrl: `/api/jobs/${response.json().id}` });
     await expect(waitForJob(app, authorization, response.json().id, "succeeded")).resolves.toMatchObject({ output: { readback: { valid: true, shapeCount: 1, connectorCount: 0 } } });
+  });
+
+  it("resubmits queued Visio Jobs when the API becomes ready", async () => {
+    const store = new InMemoryFoundationStore();
+    const jobService = new JobService({ store });
+    const queued = await jobService.create({ userId: "recovery-user", deviceId: "recovery-device", type: "visio-export", input: { diagram } });
+    const executor: VisioExecutor = {
+      healthCheck: async () => ({ connected: true }),
+      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } }),
+      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+    };
+    const app = buildApp({
+      store,
+      visioExecutor: executor,
+      sessionSecret: "test-session-secret-test-session-secret",
+      admin: { email: "admin@example.com", passwordHash: await hashPassword("admin-password") },
+    });
+
+    try {
+      await app.ready();
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 1_000 && (await store.getJob(queued.id))?.status !== "succeeded") {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await expect(store.getJob(queued.id)).resolves.toMatchObject({ status: "succeeded" });
+    } finally {
+      await app.close();
+    }
   });
 
   it("does not execute the Worker twice for a repeated key", async () => {

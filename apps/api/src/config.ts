@@ -13,6 +13,7 @@ const environmentSchema = z.object({
   VISIO_OUTPUT_ROOT: z.string().trim().min(1).optional(),
   VISIO_WORKER_MODE: z.enum(["mock", "live"]).default("mock"),
   VISIO_WORKER_TIMEOUT_MS: z.coerce.number().int().min(1000).max(600000).default(120000),
+  VISIO_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(1),
 });
 
 export interface AppConfig {
@@ -28,6 +29,7 @@ export interface AppConfig {
   visioOutputRoot?: string;
   visioWorkerMode: "mock" | "live";
   visioWorkerTimeoutMs: number;
+  visioMaxConcurrency: number;
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): AppConfig {
@@ -58,5 +60,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
     visioOutputRoot: parsed.VISIO_OUTPUT_ROOT,
     visioWorkerMode: parsed.VISIO_WORKER_MODE,
     visioWorkerTimeoutMs: parsed.VISIO_WORKER_TIMEOUT_MS,
+    visioMaxConcurrency: parsed.VISIO_MAX_CONCURRENCY,
   };
 }

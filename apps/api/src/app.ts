@@ -48,7 +48,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const jobService = new JobService({ store });
   const adminService = new AdminService(store, sessionService);
   const visioExecutor = options.visioExecutor ?? createVisioExecutorForConfig(config);
-  const visioJobRunner = options.visioJobRunner ?? new VisioJobRunner({ store, jobService, executor: visioExecutor });
+  const visioJobRunner = options.visioJobRunner ?? new VisioJobRunner({ store, jobService, executor: visioExecutor, maxConcurrentJobs: config.visioMaxConcurrency });
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
@@ -62,7 +62,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     visioExecutor,
     visioJobRunner,
   });
-  app.addHook("onReady", async () => { await visioJobRunner.recoverStaleJobs(); });
+  app.addHook("onReady", async () => { await visioJobRunner.recoverJobs(); });
   app.addHook("onClose", async () => { await visioJobRunner.close(); });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof FoundationError) {

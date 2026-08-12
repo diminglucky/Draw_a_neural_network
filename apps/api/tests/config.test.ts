@@ -19,11 +19,13 @@ describe("storage configuration", () => {
       VISIO_OUTPUT_ROOT: "C:\\exports",
       VISIO_WORKER_MODE: "live",
       VISIO_WORKER_TIMEOUT_MS: "45000",
+      VISIO_MAX_CONCURRENCY: "2",
     })).toMatchObject({
       visioWorkerPath: "C:\\tools\\visio-worker.exe",
       visioOutputRoot: "C:\\exports",
       visioWorkerMode: "live",
       visioWorkerTimeoutMs: 45000,
+      visioMaxConcurrency: 2,
     });
   });
 
@@ -31,6 +33,12 @@ describe("storage configuration", () => {
     expect(loadConfig({ NODE_ENV: "test", STORAGE_DRIVER: "memory", SESSION_SECRET: "development-secret-development-secret" })).toMatchObject({
       visioWorkerMode: "mock",
       visioWorkerTimeoutMs: 120000,
+      visioMaxConcurrency: 1,
     });
+  });
+
+  it("rejects an unsafe Visio Worker concurrency", () => {
+    expect(() => loadConfig({ NODE_ENV: "test", STORAGE_DRIVER: "memory", SESSION_SECRET: "development-secret-development-secret", VISIO_MAX_CONCURRENCY: "0" })).toThrow(/VISIO_MAX_CONCURRENCY/);
+    expect(() => loadConfig({ NODE_ENV: "test", STORAGE_DRIVER: "memory", SESSION_SECRET: "development-secret-development-secret", VISIO_MAX_CONCURRENCY: "9" })).toThrow(/VISIO_MAX_CONCURRENCY/);
   });
 });
