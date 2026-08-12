@@ -30,6 +30,16 @@ async function createAuthorizedApp(visioExecutor?: VisioExecutor) {
   return { app, authorization: `Bearer ${login.json().accessToken}` };
 }
 
+async function waitForJob(app: Awaited<ReturnType<typeof buildApp>>, authorization: string, jobId: string, expectedStatus: string) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 1_000) {
+    const response = await app.inject({ method: "GET", url: `/api/jobs/${jobId}`, headers: { authorization } });
+    if (response.json().status === expectedStatus) return response.json();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Job ${jobId} did not reach ${expectedStatus}`);
+}
+
 describe("Visio export routes", () => {
   it("returns an explicit error when the Worker is not configured", async () => {
     const { app, authorization } = await createAuthorizedApp();
@@ -58,8 +68,9 @@ describe("Visio export routes", () => {
       payload: { diagram },
     });
 
-    expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({ type: "visio-export", status: "succeeded", output: { readback: { valid: true, shapeCount: 1, connectorCount: 0 } } });
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ type: "visio-export", status: "queued", pollUrl: `/api/jobs/${response.json().id}` });
+    await expect(waitForJob(app, authorization, response.json().id, "succeeded")).resolves.toMatchObject({ output: { readback: { valid: true, shapeCount: 1, connectorCount: 0 } } });
   });
 
   it("does not execute the Worker twice for a repeated key", async () => {
@@ -77,7 +88,8 @@ describe("Visio export routes", () => {
     const first = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram } });
     const second = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram } });
 
-    expect(first.statusCode).toBe(201);
+    expect(first.statusCode).toBe(202);
+    await waitForJob(app, authorization, first.json().id, "succeeded");
     expect(second.statusCode).toBe(200);
     expect(second.json().id).toBe(first.json().id);
     expect(executions).toBe(1);
@@ -94,9 +106,33 @@ describe("Visio export routes", () => {
     const first = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram } });
     const second = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram: { ...diagram, figure: { title: "Different" } } } });
 
-    expect(first.statusCode).toBe(201);
+    expect(first.statusCode).toBe(202);
     expect(second.statusCode).toBe(409);
     expect(second.json().error.code).toBe(ApiErrorCode.VISIO_IDEMPOTENCY_KEY_REUSED);
     expect(second.json().error.details.requestHashMatches).toBe(false);
+  });
+
+  it("cancels a running Visio Job through the user-scoped Job route", async () => {
+    const executor: VisioExecutor = {
+      healthCheck: async () => ({ connected: true }),
+      executeDiagram: async (_input, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("cancelled"), { code: ApiErrorCode.VISIO_EXECUTION_FAILED })), { once: true });
+      }),
+      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+    };
+    const { app, authorization } = await createAuthorizedApp(executor);
+    const request = app.inject({
+      method: "POST",
+      url: "/api/visio/export",
+      headers: { authorization, "idempotency-key": "visio-cancel-1" },
+      payload: { diagram },
+    });
+    const response = await request;
+    expect(response.statusCode).toBe(202);
+    await waitForJob(app, authorization, response.json().id, "running");
+
+    const cancelled = await app.inject({ method: "POST", url: `/api/jobs/${response.json().id}/cancel`, headers: { authorization } });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toMatchObject({ status: "cancelled" });
   });
 });

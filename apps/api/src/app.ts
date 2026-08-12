@@ -14,6 +14,7 @@ import type { LeaseCoordinator } from "./lease-coordinator.js";
 import { createAgentServiceForConfig } from "./agent-runtime.js";
 import { NotConnectedVisioExecutor, type VisioExecutor } from "./adapters.js";
 import { VisioWorkerClient } from "./visio-worker-client.js";
+import { VisioJobRunner } from "./visio-job-runner.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -23,6 +24,7 @@ export interface BuildAppOptions {
   leaseCoordinator?: LeaseCoordinator;
   agentService?: AgentServiceContract;
   visioExecutor?: VisioExecutor;
+  visioJobRunner?: VisioJobRunner;
 }
 
 function createVisioExecutorForConfig(config: AppConfig): VisioExecutor {
@@ -45,6 +47,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const sessionService = new SessionService({ store, leaseSeconds: 90, accessTokenTtlSeconds: 900, challengeTtlSeconds: 120, requireDeviceProof: config.requireDeviceProof, sessionSecret: options.sessionSecret ?? config.sessionSecret, leaseCoordinator: options.leaseCoordinator });
   const jobService = new JobService({ store });
   const adminService = new AdminService(store, sessionService);
+  const visioExecutor = options.visioExecutor ?? createVisioExecutorForConfig(config);
+  const visioJobRunner = options.visioJobRunner ?? new VisioJobRunner({ store, jobService, executor: visioExecutor });
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
@@ -55,8 +59,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     sessionSecret: options.sessionSecret ?? config.sessionSecret,
     admin: options.admin ?? { email: "admin@example.com", passwordHash: "" },
     agentService: options.agentService,
-    visioExecutor: options.visioExecutor ?? createVisioExecutorForConfig(config),
+    visioExecutor,
+    visioJobRunner,
   });
+  app.addHook("onReady", async () => { await visioJobRunner.recoverStaleJobs(); });
+  app.addHook("onClose", async () => { await visioJobRunner.close(); });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof FoundationError) {
       return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message, requestId: request.id, details: error.details } });

@@ -7,6 +7,7 @@ import { SessionService } from "./session-service.js";
 import { signAccessToken, verifyAccessToken, verifyPassword } from "./security.js";
 import type { FoundationStore } from "./store.js";
 import type { VisioExecutor } from "./adapters.js";
+import type { VisioJobRunner } from "./visio-job-runner.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -69,6 +70,7 @@ interface RouteOptions {
   admin: { email: string; passwordHash: string };
   agentService?: AgentServiceContract;
   visioExecutor: VisioExecutor;
+  visioJobRunner: VisioJobRunner;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -377,6 +379,10 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
   app.post("/api/visio/export", async (request, reply) => {
     const access = await requireUser(request, options);
     const input = parseVisioExportBody(request);
+    const health = await options.visioExecutor.healthCheck();
+    if (!health.connected) {
+      throw new FoundationError(health.reason === ApiErrorCode.VISIO_EXECUTION_FAILED ? ApiErrorCode.VISIO_EXECUTION_FAILED : ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED, "Visio Worker is not configured or unavailable", 503, { reason: health.reason });
+    }
     const requestHash = visioRequestHash(input.diagram);
     const created = await options.jobService.createVisioIdempotent({
       userId: access.user.id,
@@ -395,24 +401,8 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
       return reply.code(200).send(created.job);
     }
     const job = created.job;
-    await options.jobService.start(job.id);
-
-    try {
-      const result = await options.visioExecutor.executeDiagram({ jobId: job.id, diagram: input.diagram });
-      return reply.code(201).send(await options.jobService.succeed(job.id, {
-        path: result.path,
-        readback: result.readback,
-      }));
-    } catch (error) {
-      const code: ApiErrorCode = error instanceof FoundationError && Object.values(ApiErrorCode).includes(error.code as ApiErrorCode)
-        ? error.code as ApiErrorCode
-        : ApiErrorCode.VISIO_EXECUTION_FAILED;
-      const message = error instanceof Error ? error.message : "Visio Worker execution failed";
-      await options.jobService.fail(job.id, code, message);
-      throw error instanceof FoundationError
-        ? error
-        : new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, message, 502);
-    }
+    options.visioJobRunner.submit(job.id);
+    return reply.code(202).send({ ...job, pollUrl: `/api/jobs/${job.id}` });
   });
 
   app.get("/api/jobs/:id", async (request) => {
@@ -428,6 +418,7 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const id = (request.params as { id: string }).id;
     const job = await options.jobService.get(id);
     if (!job || job.userId !== access.user.id) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
+    if (job.type === "visio-export") return await options.visioJobRunner.cancel(id);
     return await options.jobService.cancel(id);
   });
 
