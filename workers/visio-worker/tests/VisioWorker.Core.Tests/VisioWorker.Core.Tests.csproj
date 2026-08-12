@@ -14,5 +14,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\VisioWorker.Core\VisioWorker.Core.csproj" />
     <ProjectReference Include="..\..\src\VisioWorker.Live\VisioWorker.Live.csproj" />
+    <ProjectReference Include="..\..\src\VisioWorker.Host\VisioWorker.Host.csproj" />
   </ItemGroup>
 </Project>
