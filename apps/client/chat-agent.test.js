@@ -4,12 +4,18 @@ import {
   buildAgentRequestHeaders,
   buildAgentPayload,
   buildVisioExportRequestHeaders,
+  cancelVisioExportJob,
   createIdempotencyKey,
   escapeHtml,
   exportDiagramToVisio,
+  getVisioExportJob,
   isAgentAuthorized,
+  isVisioJobCancellable,
+  renderVisioError,
+  submitVisioExport,
   validateAttachment,
   validateMessage,
+  waitForVisioExport,
 } from "../../chat-agent.js";
 
 describe("Agent Chat client contracts", () => {
@@ -55,9 +61,9 @@ describe("Agent Chat client contracts", () => {
     expect(JSON.stringify(headers)).not.toContain("apiKey");
   });
 
-  it("exports a validated Agent diagram through the authenticated Visio route", async () => {
+  it("submits a validated Agent diagram as a queued Visio Job", async () => {
     let request;
-    const result = await exportDiagramToVisio({ nodes: [], edges: [] }, {
+    const result = await submitVisioExport({ nodes: [], edges: [] }, {
       apiBase: "http://127.0.0.1:4180",
       token: "bearer-token",
       idempotencyKey: "visio-export-1",
@@ -65,12 +71,13 @@ describe("Agent Chat client contracts", () => {
         request = { url, init };
         return {
           ok: true,
-          status: 201,
+          status: 202,
           async json() {
             return {
+              id: "job-1",
               type: "visio-export",
-              status: "succeeded",
-              output: { path: "C:\\exports\\job-1.vsdx", readback: { valid: true, shapeCount: 2, connectorCount: 1 } },
+              status: "queued",
+              pollUrl: "/api/jobs/job-1",
             };
           },
         };
@@ -81,7 +88,73 @@ describe("Agent Chat client contracts", () => {
     expect(request.init.method).toBe("POST");
     expect(request.init.headers).toEqual(buildVisioExportRequestHeaders("bearer-token", "visio-export-1"));
     expect(JSON.parse(request.init.body)).toEqual({ diagram: { nodes: [], edges: [] } });
-    expect(result.output.readback).toEqual({ valid: true, shapeCount: 2, connectorCount: 1 });
+    expect(result).toMatchObject({ id: "job-1", status: "queued", pollUrl: "/api/jobs/job-1" });
+  });
+
+  it("polls a user-owned Visio Job until it succeeds with bounded backoff", async () => {
+    const requests = [];
+    const delays = [];
+    const states = [
+      { id: "job-2", type: "visio-export", status: "queued" },
+      { id: "job-2", type: "visio-export", status: "running" },
+      { id: "job-2", type: "visio-export", status: "succeeded", output: { path: "C:\\exports\\job-2.vsdx", readback: { valid: true, shapeCount: 2, connectorCount: 1 } } },
+    ];
+    const result = await waitForVisioExport("job-2", {
+      apiBase: "http://127.0.0.1:4180",
+      token: "bearer-token",
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return { ok: true, status: 200, async json() { return states.shift(); } };
+      },
+      sleepImpl: async (delay) => delays.push(delay),
+      maxWaitMs: 1_000,
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(requests).toHaveLength(3);
+    expect(requests.every(({ init }) => init.headers.Authorization === "Bearer bearer-token")).toBe(true);
+    expect(delays).toEqual([100, 250]);
+  });
+
+  it("stops polling immediately when a Visio Job reaches a terminal failure", async () => {
+    let calls = 0;
+    const result = await waitForVisioExport("job-failed", {
+      token: "bearer-token",
+      fetchImpl: async () => {
+        calls += 1;
+        return { ok: true, status: 200, async json() { return { id: "job-failed", type: "visio-export", status: "failed", errorCode: "VISIO_EXECUTION_FAILED" }; } };
+      },
+      sleepImpl: async () => { throw new Error("sleep must not be called after a terminal state"); },
+    });
+
+    expect(result).toMatchObject({ id: "job-failed", status: "failed" });
+    expect(calls).toBe(1);
+  });
+
+  it("gets and cancels only cancellable Visio Job states", async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200, async json() { return { id: "job-3", type: "visio-export", status: "cancelled" }; } };
+    };
+
+    await expect(getVisioExportJob("job-3", { apiBase: "http://127.0.0.1:4180", token: "bearer-token", fetchImpl })).resolves.toMatchObject({ id: "job-3" });
+    await expect(cancelVisioExportJob("job-3", { apiBase: "http://127.0.0.1:4180", token: "bearer-token", status: "running", fetchImpl })).resolves.toMatchObject({ status: "cancelled" });
+    await expect(cancelVisioExportJob("job-3", { token: "bearer-token", status: "succeeded", fetchImpl })).rejects.toThrow("Job cannot be cancelled");
+
+    expect(calls[0]).toMatchObject({ url: "http://127.0.0.1:4180/api/jobs/job-3", init: { method: "GET" } });
+    expect(calls[1]).toMatchObject({ url: "http://127.0.0.1:4180/api/jobs/job-3/cancel", init: { method: "POST" } });
+    expect(isVisioJobCancellable("queued")).toBe(true);
+    expect(isVisioJobCancellable("running")).toBe(true);
+    expect(isVisioJobCancellable("expired")).toBe(false);
+    expect(isVisioJobCancellable("succeeded")).toBe(false);
+  });
+
+  it("renders API error messages as text instead of HTML", () => {
+    const node = { hidden: true, textContent: "" };
+    renderVisioError(node, `<img src=x onerror="bad()">`);
+    expect(node.textContent).toBe(`<img src=x onerror="bad()">`);
+    expect(node.hidden).toBe(false);
   });
 
   it("surfaces an explicit Visio export error from the API", async () => {

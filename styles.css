@@ -1102,6 +1102,17 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+.agent-chat-visio-job {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.agent-chat-visio-cancel {
+  margin-top: 8px;
+}
+
 .agent-chat-header h2 {
   margin: 2px 0 0;
   font-size: 18px;

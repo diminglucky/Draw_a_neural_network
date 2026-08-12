@@ -29,6 +29,14 @@ To exercise the complete authenticated API route with the real live Worker:
 npx tsx scripts/visio-api-route-live-smoke.ts
 ```
 
+The route is asynchronous: the smoke requires `202` from submission, polls the user-scoped Job endpoint until `succeeded`, and validates the Worker readback. To additionally prove idempotent replay does not launch a second Worker or create a second artifact:
+
+```powershell
+npx tsx scripts/visio-api-route-async-live-smoke.ts
+```
+
+The async smoke uses a unique output root and requires `202` for the first submission, `200` for the same-key replay, the same Job id, one `.vsdx` output, and a valid shape/connector readback.
+
 ## Live COM gate
 
 Run this only on a Windows machine where Microsoft Visio is installed and the `Visio.Application` COM ProgID is registered:
@@ -73,7 +81,8 @@ Record the operator, machine, Visio version, output hash, and observations in th
 ## Evidence status for this implementation slice
 
 - Source/design: implemented in the standalone repository.
-- Focused API and Worker tests: completed on 2026-08-12; API and client Vitest passed 35 files/144 tests and Worker xUnit passed 9 tests.
+- Focused API and Worker tests: completed on 2026-08-12; API and client Vitest passed 36 files/156 tests and Worker xUnit passed 9 tests. The client contract covers queued/running polling, terminal stop, cancellation eligibility, and text-only error rendering.
+- Runtime recovery source: the API runner owns one abortable Worker per Visio Job, cancels only that Job's process, and marks persisted running Jobs as `expired` during startup recovery.
 - Worker build/package: completed on 2026-08-12 with 0 warnings and 0 errors after restoring the standalone solution using `workers/visio-worker/NuGet.Config`.
 - Live Visio COM acceptance: completed on the current Windows host; smoke readback was `shapeCount=5`, `connectorCount=1`.
 - Independent `.vsdx` inspection: the generated package contained `visio/pages/page1.xml`, and an independent Visio COM reopen found 5 shapes. A human visual/editability review remains a separate operator gate.

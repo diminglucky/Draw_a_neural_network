@@ -21,6 +21,18 @@ const app = buildApp({
   admin: { email: "admin@example.com", passwordHash: await hashPassword("admin-password") },
 });
 
+async function waitForJob(authorization: string, jobId: string) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const response = await app.inject({ method: "GET", url: `/api/jobs/${jobId}`, headers: { authorization } });
+    if (response.statusCode !== 200) throw new Error(`Job polling failed: ${response.body}`);
+    const job = response.json();
+    if (["succeeded", "failed", "cancelled", "expired"].includes(job.status)) return job;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Job ${jobId} did not reach a terminal state within 120 seconds`);
+}
+
 try {
   const email = `visio-live-${Date.now()}@example.com`;
   const registered = await app.inject({
@@ -58,8 +70,11 @@ try {
       },
     },
   });
-  if (response.statusCode !== 201) throw new Error(`Visio export failed: ${response.body}`);
-  console.log(JSON.stringify({ statusCode: response.statusCode, job: response.json() }, null, 2));
+  if (response.statusCode !== 202) throw new Error(`Visio export submission failed: ${response.body}`);
+  const submitted = response.json();
+  const job = await waitForJob(`Bearer ${login.json().accessToken}`, submitted.id);
+  if (job.status !== "succeeded" || job.output?.readback?.valid !== true) throw new Error(`Visio export did not succeed: ${JSON.stringify(job)}`);
+  console.log(JSON.stringify({ statusCode: response.statusCode, job }, null, 2));
 } finally {
   await app.close();
 }

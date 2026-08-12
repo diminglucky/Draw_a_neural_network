@@ -139,6 +139,8 @@ The browser gate delegates `getIdentity()` and `signChallenge(challenge)` to `gl
 
 The Visio integration is an independent Windows Worker boundary. The Node API never holds a Visio COM object: an authenticated `POST /api/visio/export` request creates a user-owned `visio-export` Job, sends a normalized diagram over one JSON-lines request to a per-job C# Worker process, and publishes the `.vsdx` path only after the Worker has performed readback validation.
 
+The route is asynchronous and recoverable. A new export returns `202` with `status: "queued"` and `pollUrl`; the browser polls `GET /api/jobs/:id` until `succeeded`, `failed`, `cancelled`, or `expired`. `POST /api/jobs/:id/cancel` can cancel only the authenticated user's queued or running Visio Job. The API aborts the corresponding Worker process, marks running Jobs left by an API restart as `expired`, and preserves `Idempotency-Key` replays without starting a second Worker.
+
 Build the Worker solution from PowerShell:
 
 ```powershell
@@ -149,6 +151,18 @@ Run the headless mock Worker smoke without Microsoft Visio:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/visio-worker-mock-smoke.ps1
+```
+
+After building the live Worker on a Windows host with Visio installed, exercise the complete asynchronous authenticated route and idempotency replay with:
+
+```powershell
+npx tsx scripts/visio-api-route-async-live-smoke.ts
+```
+
+The smoke must report `firstStatusCode: 202`, `replayStatusCode: 200`, a succeeded readback, and exactly one generated `.vsdx` file. The existing route smoke also follows the `202` response through polling:
+
+```powershell
+npx tsx scripts/visio-api-route-live-smoke.ts
 ```
 
 Configure the API with a Worker executable and an output root when enabling export:
