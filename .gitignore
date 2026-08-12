@@ -13,3 +13,4 @@ vendor/win-dpapi/bin/
 win-dpapi-*.tgz
 workers/visio-worker/**/bin/
 workers/visio-worker/**/obj/
+.superpowers/
