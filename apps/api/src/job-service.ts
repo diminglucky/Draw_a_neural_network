@@ -65,6 +65,18 @@ export class JobService {
     return job;
   }
 
+  async expire(id: string): Promise<Job> {
+    const job = await this.requireJob(id);
+    this.assertStatus(job, ["running"]);
+    job.status = "expired";
+    job.errorCode = ApiErrorCode.VISIO_EXECUTION_FAILED;
+    job.errorMessage = "Visio Job expired because its Worker was not recoverable after API restart";
+    job.completedAt = this.now().toISOString();
+    await this.options.store.updateJob(job);
+    await this.audit(job, "job.expired", { errorCode: job.errorCode });
+    return job;
+  }
+
   async cancel(id: string): Promise<Job> {
     const job = await this.requireJob(id);
     this.assertStatus(job, ["queued", "running"]);
