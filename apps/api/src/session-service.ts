@@ -52,7 +52,7 @@ export class SessionService {
       startsAt: user.createdAt,
       endsAt: null,
       features: ["foundation"],
-      limits: { foundationJobsPerMonth: 10 },
+      limits: { foundationJobsPerMonth: 10, agentChatsPerMonth: 10 },
     };
     await this.options.store.createSubscription(subscription);
     await this.audit("system", null, "user.registered", "user", user.id, null, { email });

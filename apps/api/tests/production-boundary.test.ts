@@ -12,6 +12,17 @@ describe("production persistence boundary", () => {
     expect(sql).toContain("CREATE TABLE devices");
     expect(sql).toContain("CREATE TABLE sessions");
     expect(sql).toContain("CREATE UNIQUE INDEX sessions_one_active_per_user");
+    expect(sql).toContain('"agentChatsPerMonth": 10');
+  });
+
+  it("contains the durable Agent usage ledger migration", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/004_agent_usage_ledger.sql"), "utf8");
+
+    expect(sql).toContain("CREATE TABLE agent_usage_periods");
+    expect(sql).toContain("CREATE TABLE agent_usage_ledger");
+    expect(sql).toContain("UNIQUE (user_id, idempotency_key)");
+    expect(sql).toContain("UPDATE plans");
+    expect(sql).toContain("agentChatsPerMonth");
   });
 
   it("rejects memory storage in production", () => {

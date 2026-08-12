@@ -162,7 +162,7 @@ VALUES (
   'trial',
   'Foundation trial plan',
   '["foundation"]'::jsonb,
-  '{"foundationJobsPerMonth": 10}'::jsonb,
+  '{"foundationJobsPerMonth": 10, "agentChatsPerMonth": 10}'::jsonb,
   TRUE,
   NOW()
 )

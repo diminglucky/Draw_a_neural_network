@@ -3,14 +3,15 @@ import cors from "@fastify/cors";
 import { loadConfig, type AppConfig } from "./config.js";
 import { AdminService } from "./admin-service.js";
 import { JobService } from "./job-service.js";
-import { registerRoutes } from "./routes.js";
+import { registerRoutes, type AgentServiceContract } from "./routes.js";
 import { SessionService } from "./session-service.js";
 import { hashPassword } from "./security.js";
 import { InMemoryFoundationStore, type FoundationStore } from "./store.js";
-import { FoundationError } from "./domain.js";
+import { ApiErrorCode, FoundationError } from "./domain.js";
 import { createFoundationStore } from "./store-factory.js";
 import { createLeaseCoordinator } from "./lease-factory.js";
 import type { LeaseCoordinator } from "./lease-coordinator.js";
+import { createAgentServiceForConfig } from "./agent-runtime.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -18,6 +19,7 @@ export interface BuildAppOptions {
   sessionSecret?: string;
   admin?: { email: string; passwordHash: string };
   leaseCoordinator?: LeaseCoordinator;
+  agentService?: AgentServiceContract;
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -32,15 +34,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
+    store,
     sessionService,
     jobService,
     adminService,
     sessionSecret: options.sessionSecret ?? config.sessionSecret,
     admin: options.admin ?? { email: "admin@example.com", passwordHash: "" },
+    agentService: options.agentService,
   });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof FoundationError) {
       return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message, requestId: request.id, details: error.details } });
+    }
+    const fastifyErrorCode = typeof error === "object" && error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : null;
+    if (fastifyErrorCode?.startsWith("FST_ERR_CTP_")) {
+      return reply.code(400).send({
+        error: {
+          code: ApiErrorCode.VALIDATION_FAILED,
+          message: "Request body must be valid JSON",
+          requestId: request.id,
+          details: { field: "body", reason: "malformed_body" },
+        },
+      });
     }
     request.log.error(error);
     return reply.code(500).send({ error: { code: "INTERNAL_ERROR", message: "Internal server error", requestId: request.id } });
@@ -63,6 +80,7 @@ export async function buildDefaultApp(): Promise<FastifyInstance> {
         store: storage.store,
         leaseCoordinator: lease.coordinator,
         admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
+        agentService: createAgentServiceForConfig(config),
       });
       app.addHook("onClose", async () => {
         await lease.close();

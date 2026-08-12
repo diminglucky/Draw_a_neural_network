@@ -8,6 +8,7 @@ const databaseUrl = process.env.DATABASE_URL || "postgres://synapse:synapse-loca
 const migration = readFileSync(resolve(process.cwd(), "apps/api/sql/001_foundation.sql"), "utf8");
 const fencingMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/002_session_fencing.sql"), "utf8");
 const challengeMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/003_device_challenges.sql"), "utf8");
+const usageMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/004_agent_usage_ledger.sql"), "utf8");
 const userId = `smoke-${randomUUID()}`;
 const email = `${userId}@example.com`;
 const deviceOneId = `device-${randomUUID()}`;
@@ -31,6 +32,8 @@ try {
   if (!schema.rows[0]?.users_table) await first.query(migration);
   await first.query(fencingMigration);
   await first.query(challengeMigration);
+  const usageSchema = await first.query("SELECT to_regclass('public.agent_usage_ledger') AS usage_table");
+  if (!usageSchema.rows[0]?.usage_table) await first.query(usageMigration);
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,
@@ -122,17 +125,75 @@ try {
   );
   if (expiredChallenge.rowCount !== 0) throw new Error("An expired device challenge was consumed");
 
+  const usagePeriod = "2026-08-01T00:00:00.000Z";
+  const usageKey = `usage-${randomUUID()}`;
+  const usageHash = `hash-${randomUUID()}`;
+  await first.query("BEGIN");
+  await first.query(
+    `INSERT INTO agent_usage_periods (user_id, metric, period_start, limit_snapshot, consumed)
+     VALUES ($1, 'agentChatRequests', $2, 1, 0)
+     ON CONFLICT (user_id, metric, period_start) DO NOTHING`,
+    [userId, usagePeriod],
+  );
+  const usageFirstPeriod = await first.query(
+    `UPDATE agent_usage_periods SET consumed = consumed + 1, updated_at = NOW()
+     WHERE user_id = $1 AND metric = 'agentChatRequests' AND period_start = $2
+       AND consumed + 1 <= limit_snapshot
+     RETURNING consumed, limit_snapshot`,
+    [userId, usagePeriod],
+  );
+  if (usageFirstPeriod.rowCount !== 1) throw new Error("The first Agent usage reservation was rejected");
+  await first.query(
+    `INSERT INTO agent_usage_ledger
+      (id, user_id, metric, period_start, idempotency_key, request_hash, amount, limit_snapshot, consumed, state, created_at)
+     VALUES ($1, $2, 'agentChatRequests', $3, $4, $5, 1, $6, $7, 'accepted', NOW())`,
+    [randomUUID(), userId, usagePeriod, usageKey, usageHash, usageFirstPeriod.rows[0].limit_snapshot, usageFirstPeriod.rows[0].consumed],
+  );
+  await first.query("COMMIT");
+
+  const duplicateUsage = await first.query(
+    `SELECT id, request_hash, state FROM agent_usage_ledger
+     WHERE user_id = $1 AND idempotency_key = $2`,
+    [userId, usageKey],
+  );
+  if (duplicateUsage.rowCount !== 1 || duplicateUsage.rows[0].request_hash !== usageHash) throw new Error("Agent usage idempotency readback failed");
+  const exhaustedUsage = await first.query(
+    `UPDATE agent_usage_periods SET consumed = consumed + 1, updated_at = NOW()
+     WHERE user_id = $1 AND metric = 'agentChatRequests' AND period_start = $2
+       AND consumed + 1 <= limit_snapshot
+     RETURNING consumed`,
+    [userId, usagePeriod],
+  );
+  if (exhaustedUsage.rowCount !== 0) throw new Error("Agent usage quota did not enforce the monthly limit");
+  const finalizedUsage = await first.query(
+    `UPDATE agent_usage_ledger SET state = 'failed', outcome = 'provider_error', error_code = 'AGENT_PROVIDER_FAILED', finalized_at = NOW()
+     WHERE user_id = $1 AND idempotency_key = $2 AND state = 'accepted'
+     RETURNING state, outcome, error_code`,
+    [userId, usageKey],
+  );
+  if (finalizedUsage.rowCount !== 1 || finalizedUsage.rows[0].state !== "failed") throw new Error("Agent usage finalization failed");
+
   second = await connect();
   const result = await second.query("SELECT id, email FROM users WHERE id = $1", [userId]);
   if (result.rows.length !== 1 || result.rows[0].email !== email) {
     throw new Error("PostgreSQL persistence readback did not return the inserted user");
+  }
+  const usageReadback = await second.query(
+    `SELECT p.consumed, l.state
+     FROM agent_usage_periods p JOIN agent_usage_ledger l
+       ON l.user_id = p.user_id AND l.metric = p.metric AND l.period_start = p.period_start
+     WHERE p.user_id = $1 AND p.metric = 'agentChatRequests' AND p.period_start = $2`,
+    [userId, usagePeriod],
+  );
+  if (usageReadback.rowCount !== 1 || Number(usageReadback.rows[0].consumed) !== 1 || usageReadback.rows[0].state !== "failed") {
+    throw new Error("PostgreSQL Agent usage persistence readback failed");
   }
   await second.end();
   second = null;
   await first.query("DELETE FROM users WHERE id = $1", [userId]);
   await first.end();
   first = null;
-  console.log(`PostgreSQL smoke OK: persistence, session fencing, and device challenges accepted for ${email}`);
+  console.log(`PostgreSQL smoke OK: persistence, session fencing, device challenges, and Agent usage ledger accepted for ${email}`);
 } catch (error) {
   console.error(`PostgreSQL smoke failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;

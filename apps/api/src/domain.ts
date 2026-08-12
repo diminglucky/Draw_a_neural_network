@@ -2,6 +2,8 @@ export const ApiErrorCode = {
   ACCOUNT_ALREADY_IN_USE: "ACCOUNT_ALREADY_IN_USE",
   SESSION_REVOKED: "SESSION_REVOKED",
   AGENT_PROVIDER_NOT_CONFIGURED: "AGENT_PROVIDER_NOT_CONFIGURED",
+  AGENT_QUOTA_EXCEEDED: "AGENT_QUOTA_EXCEEDED",
+  AGENT_IDEMPOTENCY_KEY_REUSED: "AGENT_IDEMPOTENCY_KEY_REUSED",
   VISIO_EXECUTOR_NOT_CONFIGURED: "VISIO_EXECUTOR_NOT_CONFIGURED",
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
   INVALID_TOKEN: "INVALID_TOKEN",
@@ -122,4 +124,51 @@ export interface AuditRecord {
   reason: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
+}
+
+export type AgentUsageMetric = "agentChatRequests";
+export type AgentUsageState = "accepted" | "completed" | "failed" | "unknown";
+
+export interface AgentUsageReservationInput {
+  userId: string;
+  metric: AgentUsageMetric;
+  periodStart: string;
+  idempotencyKey: string;
+  requestHash: string;
+  amount: number;
+  limit: number;
+}
+
+export interface AgentUsageReservation {
+  id: string;
+  userId: string;
+  metric: AgentUsageMetric;
+  periodStart: string;
+  idempotencyKey: string;
+  requestHash: string;
+  amount: number;
+  limit: number;
+  consumed: number;
+  remaining: number;
+  state: AgentUsageState;
+  outcome: string | null;
+  provider: string | null;
+  errorCode: string | null;
+  createdAt: string;
+  finalizedAt: string | null;
+}
+
+export interface AgentUsageDuplicate {
+  duplicate: true;
+  requestHashMatches: boolean;
+  reservation: AgentUsageReservation;
+}
+
+export interface AgentUsageFinalizationInput {
+  id: string;
+  state: Exclude<AgentUsageState, "accepted">;
+  outcome: string;
+  provider?: string;
+  errorCode?: string;
+  finalizedAt?: string;
 }

@@ -177,4 +177,119 @@ describe("PostgresFoundationStore", () => {
     expect(calls.at(-1)).toBe("ROLLBACK");
     expect(released).toBe(true);
   });
+
+  it("reserves agent usage inside a locked transaction and inserts a ledger row", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    let released = false;
+    const periodRow = {
+      user_id: "user-1",
+      metric: "agentChatRequests",
+      period_start: "2026-08-01T00:00:00.000Z",
+      limit_snapshot: 2,
+      consumed: 0,
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+    const reservationRow = {
+      id: "usage-1",
+      user_id: "user-1",
+      metric: "agentChatRequests",
+      period_start: "2026-08-01T00:00:00.000Z",
+      idempotency_key: "req-1",
+      request_hash: "hash-1",
+      amount: 1,
+      limit_snapshot: 2,
+      consumed: 1,
+      state: "accepted",
+      outcome: null,
+      provider: null,
+      error_code: null,
+      created_at: "2026-08-11T00:00:00.000Z",
+      finalized_at: null,
+    };
+    const client = {
+      async query(text: string, values: readonly unknown[] = []) {
+        calls.push({ text, values });
+        if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return { rows: [], rowCount: 0 };
+        if (text.includes("FROM agent_usage_periods") && text.includes("FOR UPDATE")) return { rows: [periodRow], rowCount: 1 };
+        if (text.includes("FROM agent_usage_ledger")) return { rows: [], rowCount: 0 };
+        if (text.includes("UPDATE agent_usage_periods")) return { rows: [{ ...periodRow, consumed: 1 }], rowCount: 1 };
+        if (text.includes("INSERT INTO agent_usage_ledger")) return { rows: [reservationRow], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      },
+      release() { released = true; },
+    };
+    const pool: PoolLike = {
+      async query() { return { rows: [], rowCount: 0 }; },
+      async connect() { return client; },
+    };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.reserveAgentUsage({
+      userId: "user-1",
+      metric: "agentChatRequests",
+      periodStart: "2026-08-01T00:00:00.000Z",
+      idempotencyKey: "req-1",
+      requestHash: "hash-1",
+      amount: 1,
+      limit: 2,
+    })).resolves.toMatchObject({ id: "usage-1", consumed: 1, remaining: 1, state: "accepted" });
+
+    expect(calls[0].text).toBe("BEGIN");
+    expect(calls.some((call) => call.text.includes("FROM agent_usage_periods") && call.text.includes("FOR UPDATE"))).toBe(true);
+    expect(calls.some((call) => call.text.includes("consumed + $"))).toBe(true);
+    expect(calls.some((call) => call.text.includes("FROM agent_usage_ledger"))).toBe(true);
+    expect(calls.at(-1)?.text).toBe("COMMIT");
+    expect(released).toBe(true);
+  });
+
+  it("rolls back an agent usage reservation when the monthly quota is exhausted", async () => {
+    const calls: string[] = [];
+    let released = false;
+    const client = {
+      async query(text: string) {
+        calls.push(text);
+        if (text.includes("FROM agent_usage_periods") && text.includes("FOR UPDATE")) {
+          return {
+            rows: [{ user_id: "user-1", metric: "agentChatRequests", period_start: "2026-08-01T00:00:00.000Z", limit_snapshot: 1, consumed: 1, updated_at: "2026-08-11T00:00:00.000Z" }],
+            rowCount: 1,
+          };
+        }
+        if (text.includes("UPDATE agent_usage_periods")) return { rows: [], rowCount: 0 };
+        return { rows: [], rowCount: 0 };
+      },
+      release() { released = true; },
+    };
+    const pool: PoolLike = { async query() { return { rows: [], rowCount: 0 }; }, async connect() { return client; } };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.reserveAgentUsage({
+      userId: "user-1",
+      metric: "agentChatRequests",
+      periodStart: "2026-08-01T00:00:00.000Z",
+      idempotencyKey: "req-2",
+      requestHash: "hash-2",
+      amount: 1,
+      limit: 1,
+    })).resolves.toBeNull();
+
+    expect(calls.at(-1)).toBe("ROLLBACK");
+    expect(released).toBe(true);
+  });
+
+  it("finalizes only an accepted agent usage ledger row", async () => {
+    const { pool, calls } = fakePool({
+      rows: [{
+        id: "usage-1", user_id: "user-1", metric: "agentChatRequests", period_start: "2026-08-01T00:00:00.000Z",
+        idempotency_key: "req-1", request_hash: "hash-1", amount: 1, limit_snapshot: 2, consumed: 1,
+        state: "failed", outcome: "provider_error", provider: "local-deterministic", error_code: "AGENT_PROVIDER_FAILED",
+        created_at: "2026-08-11T00:00:00.000Z", finalized_at: "2026-08-11T00:01:00.000Z",
+      }],
+      rowCount: 1,
+    });
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.finalizeAgentUsage({ id: "usage-1", state: "failed", outcome: "provider_error", provider: "local-deterministic", errorCode: "AGENT_PROVIDER_FAILED" })).resolves.toMatchObject({ state: "failed", outcome: "provider_error" });
+    expect(calls[0].text).toContain("UPDATE agent_usage_ledger");
+    expect(calls[0].text).toContain("state = 'accepted'");
+  });
 });

@@ -117,6 +117,14 @@ OPENAI_API_KEY=your_key node server.js
 
 The analysis endpoint now requires an active Foundation API session even when `OPENAI_API_KEY` is not configured. Without an API key, an authenticated request receives the existing server-side draft synthesis; this is a development fallback and is not the commercial Agent/OpenAI implementation. Unauthenticated requests receive `401` and do not receive a local fallback.
 
+## Agent diagram bridge boundary
+
+The browser canvas remains the first renderer for the Agent MVP. The chat UI is expected to submit an authorized request to the Foundation API, receive a validated canvas-compatible `diagram`, and then call `window.synapseApplyAgentDiagram(diagram)` to replace the current editable canvas document. This bridge reuses the same document-application path as the existing code/image workflows, so manual editing, SVG/PNG export, JSON export, and JSON re-import continue to work on the applied result.
+
+For local development, the Agent path is allowed to use a deterministic local provider so the browser UI can be exercised without claiming real model analysis. When an OpenAI-backed provider is configured, the request remains server-side: the browser only sends the existing Foundation bearer token to the API and never receives provider API keys or raw provider credentials. In other words, the canvas only consumes validated diagram JSON, not raw model output, raw SVG, or direct provider responses.
+
+Microsoft Visio remains a follow-up adapter, not a browser responsibility. The current bridge only applies a browser-renderable canvas document; it does not claim `.vsdx` export, COM automation, or desktop execution. A future Windows Visio adapter should consume the same validated IR/diagram boundary rather than bypassing the browser or exposing desktop control to the model.
+
 ### Device proof and Electron boundary
 
 The API supports one-time Ed25519 device challenges. Enable the production-style gate locally with:
@@ -195,8 +203,8 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 This repository now has a runnable foundation, not a finished paid product. Before commercial release, the following gates still need independent acceptance:
 
 1. complete signed Electron packaging, auto-update signing, uninstall/reinstall policy, and clean-machine acceptance around the native Windows DPAPI implementation;
-2. move Agent/OpenAI calls behind the API `AgentProvider`, with quotas, cost limits, retries, redaction, and provider audit;
-3. implement the neural-network IR and validated layout pipeline;
+2. extend Agent/OpenAI governance with token-based cost limits, bounded retries/timeouts, and production redaction/usage accounting; the current MVP already keeps providers behind the API, enforces a PostgreSQL-capable monthly `agentChatRequests` usage ledger with `Idempotency-Key` protection, records provider-neutral request/completion/failure/rejection audit metadata, and excludes message/file contents from audit records;
+3. the Network IR and deterministic validated publication-layout pipeline are implemented for the browser MVP; independent production/host acceptance remains separate from the focused tests and local deterministic smoke;
 4. implement the `VisioExecutor` through a controlled Windows worker and validate readback/export;
 5. add billing-provider webhooks, entitlement reconciliation, rate limiting, abuse detection, backups, migrations, and operational alerts;
 6. package/sign the Windows client and perform clean-machine, upgrade, revoke, offline, reconnect, and concurrent-login acceptance tests.

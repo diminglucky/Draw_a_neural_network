@@ -1,4 +1,17 @@
-import type { AuditRecord, Device, DeviceChallenge, Job, Session, Subscription, User } from "./domain.js";
+import { randomUUID } from "node:crypto";
+import type {
+  AgentUsageDuplicate,
+  AgentUsageFinalizationInput,
+  AgentUsageReservation,
+  AgentUsageReservationInput,
+  AuditRecord,
+  Device,
+  DeviceChallenge,
+  Job,
+  Session,
+  Subscription,
+  User,
+} from "./domain.js";
 import type { FoundationStore } from "./store.js";
 
 export interface QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> {
@@ -129,6 +142,29 @@ function mapAudit(row: Row): AuditRecord {
     reason: row.reason ?? null,
     metadata: json(row.metadata, {}),
     createdAt: requiredTimestamp(row.created_at),
+  };
+}
+
+function mapAgentUsage(row: Row): AgentUsageReservation {
+  const limit = Number(row.limit_snapshot);
+  const consumed = Number(row.consumed);
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    metric: row.metric,
+    periodStart: requiredTimestamp(row.period_start),
+    idempotencyKey: String(row.idempotency_key),
+    requestHash: String(row.request_hash),
+    amount: Number(row.amount),
+    limit,
+    consumed,
+    remaining: Math.max(0, limit - consumed),
+    state: row.state,
+    outcome: row.outcome ?? null,
+    provider: row.provider ?? null,
+    errorCode: row.error_code ?? null,
+    createdAt: requiredTimestamp(row.created_at),
+    finalizedAt: timestamp(row.finalized_at),
   };
 }
 
@@ -439,5 +475,111 @@ export class PostgresFoundationStore implements FoundationStore {
        FROM audit_logs ORDER BY created_at DESC`,
     );
     return result.rows.map(mapAudit);
+  }
+
+  async reserveAgentUsage(input: AgentUsageReservationInput): Promise<AgentUsageReservation | AgentUsageDuplicate | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO agent_usage_periods (user_id, metric, period_start, limit_snapshot, consumed, updated_at)
+         VALUES ($1, $2, $3, $4, 0, NOW())
+         ON CONFLICT (user_id, metric, period_start) DO NOTHING`,
+        [input.userId, input.metric, input.periodStart, input.limit],
+      );
+
+      const periodResult = await client.query(
+        `SELECT user_id, metric, period_start, limit_snapshot, consumed, updated_at
+         FROM agent_usage_periods
+         WHERE user_id = $1 AND metric = $2 AND period_start = $3
+         FOR UPDATE`,
+        [input.userId, input.metric, input.periodStart],
+      );
+      const period = periodResult.rows[0];
+      if (!period) throw new Error("Agent usage period could not be created");
+
+      const existingResult = await client.query(
+        `SELECT id, user_id, metric, period_start, idempotency_key, request_hash, amount,
+                limit_snapshot, consumed, state, outcome, provider, error_code, created_at, finalized_at
+         FROM agent_usage_ledger
+         WHERE user_id = $1 AND idempotency_key = $2
+         FOR UPDATE`,
+        [input.userId, input.idempotencyKey],
+      );
+      if (existingResult.rows[0]) {
+        await client.query("COMMIT");
+        const reservation = mapAgentUsage(existingResult.rows[0]);
+        return {
+          duplicate: true,
+          requestHashMatches: reservation.requestHash === input.requestHash,
+          reservation,
+        };
+      }
+
+      const updatedPeriodResult = await client.query(
+        `UPDATE agent_usage_periods
+         SET consumed = consumed + $4, updated_at = NOW()
+         WHERE user_id = $1 AND metric = $2 AND period_start = $3
+           AND consumed + $4 <= limit_snapshot
+         RETURNING user_id, metric, period_start, limit_snapshot, consumed, updated_at`,
+        [input.userId, input.metric, input.periodStart, input.amount],
+      );
+      const updatedPeriod = updatedPeriodResult.rows[0];
+      if (!updatedPeriod) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      const id = randomUUID();
+      const createdAt = new Date().toISOString();
+      const ledgerResult = await client.query(
+        `INSERT INTO agent_usage_ledger
+          (id, user_id, metric, period_start, idempotency_key, request_hash, amount,
+           limit_snapshot, consumed, state, outcome, provider, error_code, created_at, finalized_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'accepted', NULL, NULL, NULL, $10, NULL)
+         RETURNING id, user_id, metric, period_start, idempotency_key, request_hash, amount,
+                   limit_snapshot, consumed, state, outcome, provider, error_code, created_at, finalized_at`,
+        [
+          id,
+          input.userId,
+          input.metric,
+          input.periodStart,
+          input.idempotencyKey,
+          input.requestHash,
+          input.amount,
+          updatedPeriod.limit_snapshot,
+          updatedPeriod.consumed,
+          createdAt,
+        ],
+      );
+      await client.query("COMMIT");
+      return mapAgentUsage(ledgerResult.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async finalizeAgentUsage(input: AgentUsageFinalizationInput): Promise<AgentUsageReservation | null> {
+    const finalizedAt = input.finalizedAt ?? new Date().toISOString();
+    const result = await this.pool.query(
+      `UPDATE agent_usage_ledger
+       SET state = $2, outcome = $3, provider = $4, error_code = $5, finalized_at = $6
+       WHERE id = $1 AND state = 'accepted'
+       RETURNING id, user_id, metric, period_start, idempotency_key, request_hash, amount,
+                 limit_snapshot, consumed, state, outcome, provider, error_code, created_at, finalized_at`,
+      [input.id, input.state, input.outcome, input.provider ?? null, input.errorCode ?? null, finalizedAt],
+    );
+    if (result.rows[0]) return mapAgentUsage(result.rows[0]);
+
+    const existing = await this.pool.query(
+      `SELECT id, user_id, metric, period_start, idempotency_key, request_hash, amount,
+              limit_snapshot, consumed, state, outcome, provider, error_code, created_at, finalized_at
+       FROM agent_usage_ledger WHERE id = $1`,
+      [input.id],
+    );
+    return existing.rows[0] ? mapAgentUsage(existing.rows[0]) : null;
   }
 }

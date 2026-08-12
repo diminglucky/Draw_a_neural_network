@@ -1,4 +1,17 @@
-import type { AuditRecord, Device, DeviceChallenge, Job, Session, Subscription, User } from "./domain.js";
+import { randomUUID } from "node:crypto";
+import type {
+  AgentUsageDuplicate,
+  AgentUsageFinalizationInput,
+  AgentUsageReservation,
+  AgentUsageReservationInput,
+  AuditRecord,
+  Device,
+  DeviceChallenge,
+  Job,
+  Session,
+  Subscription,
+  User,
+} from "./domain.js";
 
 export interface FoundationStore {
   createUser(user: User): Promise<User>;
@@ -27,6 +40,8 @@ export interface FoundationStore {
   updateJob(job: Job): Promise<Job>;
   createAuditRecord(record: AuditRecord): Promise<AuditRecord>;
   listAuditRecords(): Promise<AuditRecord[]>;
+  reserveAgentUsage(input: AgentUsageReservationInput): Promise<AgentUsageReservation | AgentUsageDuplicate | null>;
+  finalizeAgentUsage(input: AgentUsageFinalizationInput): Promise<AgentUsageReservation | null>;
 }
 
 export class InMemoryFoundationStore implements FoundationStore {
@@ -37,6 +52,9 @@ export class InMemoryFoundationStore implements FoundationStore {
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly jobs = new Map<string, Job>();
   private readonly audits: AuditRecord[] = [];
+  private readonly agentUsagePeriods = new Map<string, { limit: number; consumed: number }>();
+  private readonly agentUsageReservations = new Map<string, AgentUsageReservation>();
+  private readonly agentUsageByIdempotency = new Map<string, string>();
 
   async createUser(user: User): Promise<User> {
     this.users.set(user.id, user);
@@ -165,5 +183,63 @@ export class InMemoryFoundationStore implements FoundationStore {
 
   async listAuditRecords(): Promise<AuditRecord[]> {
     return [...this.audits];
+  }
+
+  async reserveAgentUsage(input: AgentUsageReservationInput): Promise<AgentUsageReservation | AgentUsageDuplicate | null> {
+    const idempotencyIndex = `${input.userId}:${input.idempotencyKey}`;
+    const existingId = this.agentUsageByIdempotency.get(idempotencyIndex);
+    if (existingId) {
+      const reservation = this.agentUsageReservations.get(existingId);
+      if (!reservation) return null;
+      return {
+        duplicate: true,
+        requestHashMatches: reservation.requestHash === input.requestHash,
+        reservation,
+      };
+    }
+
+    const periodIndex = `${input.userId}:${input.metric}:${input.periodStart}`;
+    const period = this.agentUsagePeriods.get(periodIndex) ?? { limit: input.limit, consumed: 0 };
+    if (period.limit <= 0 || period.consumed + input.amount > period.limit) return null;
+
+    period.consumed += input.amount;
+    this.agentUsagePeriods.set(periodIndex, period);
+    const reservation: AgentUsageReservation = {
+      id: randomUUID(),
+      userId: input.userId,
+      metric: input.metric,
+      periodStart: input.periodStart,
+      idempotencyKey: input.idempotencyKey,
+      requestHash: input.requestHash,
+      amount: input.amount,
+      limit: period.limit,
+      consumed: period.consumed,
+      remaining: Math.max(0, period.limit - period.consumed),
+      state: "accepted",
+      outcome: null,
+      provider: null,
+      errorCode: null,
+      createdAt: new Date().toISOString(),
+      finalizedAt: null,
+    };
+    this.agentUsageReservations.set(reservation.id, reservation);
+    this.agentUsageByIdempotency.set(idempotencyIndex, reservation.id);
+    return reservation;
+  }
+
+  async finalizeAgentUsage(input: AgentUsageFinalizationInput): Promise<AgentUsageReservation | null> {
+    const current = this.agentUsageReservations.get(input.id);
+    if (!current) return null;
+    if (current.state !== "accepted") return current;
+    const finalized: AgentUsageReservation = {
+      ...current,
+      state: input.state,
+      outcome: input.outcome,
+      provider: input.provider ?? current.provider,
+      errorCode: input.errorCode ?? current.errorCode,
+      finalizedAt: input.finalizedAt ?? new Date().toISOString(),
+    };
+    this.agentUsageReservations.set(input.id, finalized);
+    return finalized;
   }
 }

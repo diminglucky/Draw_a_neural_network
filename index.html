@@ -24,6 +24,7 @@
           <button class="ghost-button" id="saveJsonButton" type="button">导出 JSON</button>
           <button class="ghost-button" id="exportSvgButton" type="button">导出 SVG</button>
           <button class="primary-button" id="exportPngButton" type="button">导出 PNG</button>
+          <button class="ghost-button" id="agentChatToggle" type="button" aria-controls="agentChatDrawer">Agent 对话</button>
         </div>
       </header>
 
@@ -268,7 +269,34 @@
       </aside>
     </div>
 
+    <aside id="agentChatDrawer" class="agent-chat-drawer" aria-label="Agent 对话抽屉">
+      <div class="agent-chat-header">
+        <div>
+          <p class="eyebrow">AGENT CHAT</p>
+          <h2>模型架构助手</h2>
+        </div>
+        <button class="icon-button" type="button" data-agent-close aria-label="关闭 Agent 对话">×</button>
+      </div>
+      <p class="agent-chat-lock" data-agent-lock role="status">请先完成在线授权，Agent 对话已锁定</p>
+      <div class="agent-chat-messages" data-agent-result hidden aria-live="polite"></div>
+      <p class="agent-chat-error" data-agent-error role="alert" hidden></p>
+      <p class="agent-chat-status" data-agent-status>准备发送</p>
+      <div class="agent-chat-attachments" data-agent-attachments aria-live="polite"></div>
+      <form data-agent-form>
+        <label class="agent-chat-label" for="agentChatMessage">消息</label>
+        <textarea id="agentChatMessage" data-agent-message rows="4" maxlength="12000" placeholder="描述你想绘制或修改的网络结构"></textarea>
+        <div class="agent-chat-actions">
+          <label class="ghost-button agent-chat-file-button">
+            添加附件
+            <input data-agent-file type="file" multiple accept=".py,.ipynb,.txt,.md,.json,image/png,image/jpeg,image/webp" />
+          </label>
+          <button class="primary-button" data-agent-send type="submit">发送给 Agent</button>
+        </div>
+      </form>
+    </aside>
+
     <script src="./apps/client/auth-gate.js" type="module"></script>
     <script src="./app.js" type="module"></script>
+    <script src="./chat-agent.js" type="module"></script>
   </body>
 </html>

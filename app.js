@@ -178,6 +178,12 @@ function applyDiagramDocument(document, options = {}) {
   return true;
 }
 
+function applyAgentDiagram(diagram) {
+  return applyDiagramDocument(diagram, {
+    message: "Agent diagram applied to the canvas",
+  });
+}
+
 function normalizeDiagramDocument(document) {
   if (!document || !Array.isArray(document.nodes) || !Array.isArray(document.edges)) return null;
   const nodes = document.nodes
@@ -1955,6 +1961,7 @@ minimap.addEventListener("keydown", handleMinimapKeydown);
 bindInspector();
 setupAIWorkflow({ applyDiagramDocument, setStatus });
 setupCodeWorkflow({ applyDiagramDocument, setStatus });
+window.synapseApplyAgentDiagram = applyAgentDiagram;
 window.__synapseTestApply = applyDiagramDocument;
 const previewTemplate = new URLSearchParams(window.location.search).get("previewTemplate");
 if (previewTemplate && modelLibrary.some((item) => item.id === previewTemplate)) {

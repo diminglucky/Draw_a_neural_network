@@ -29,6 +29,14 @@ describe("session service", () => {
     });
   });
 
+  it("gives new trial users a durable monthly Agent request limit", async () => {
+    const user = await service.registerUser({ email: "agent-user@example.com", password: "password-123" });
+
+    await expect(store.getCurrentSubscription(user.id)).resolves.toMatchObject({
+      limits: { foundationJobsPerMonth: 10, agentChatsPerMonth: 10 },
+    });
+  });
+
   it("creates a device and starts the first active session", async () => {
     const user = await service.registerUser({ email: "user@example.com", password: "password-123" });
     const device = await service.registerDevice({
