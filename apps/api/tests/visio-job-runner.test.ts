@@ -20,10 +20,10 @@ async function waitFor(condition: () => Promise<boolean>, timeoutMs = 1_000): Pr
   throw new Error("condition was not met before timeout");
 }
 
-function createRunner(executor: VisioExecutor) {
+function createRunner(executor: VisioExecutor, options: { maxConcurrentJobs?: number } = {}) {
   const store = new InMemoryFoundationStore();
   const jobService = new JobService({ store });
-  const runner = new VisioJobRunner({ store, jobService, executor });
+  const runner = new VisioJobRunner({ store, jobService, executor, ...options });
   activeRunners.push(runner);
   return { store, jobService, runner };
 }
@@ -41,6 +41,18 @@ function successfulExecutor(delayMs = 0): VisioExecutor {
   return {
     healthCheck: async () => ({ connected: true }),
     executeDiagram: async ({ jobId }) => {
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return { path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } };
+    },
+    readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+  };
+}
+
+function countingSuccessfulExecutor(counter: { value: number }, delayMs = 0): VisioExecutor {
+  return {
+    healthCheck: async () => ({ connected: true }),
+    executeDiagram: async ({ jobId }) => {
+      counter.value += 1;
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
       return { path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } };
     },
@@ -80,6 +92,40 @@ describe("VisioJobRunner", () => {
     await runner.recoverStaleJobs();
 
     await expect(jobService.get(job.id)).resolves.toMatchObject({ status: "expired" });
+  });
+
+  it("keeps the second Job queued until the first Worker completes", async () => {
+    const { jobService, runner } = createRunner(successfulExecutor(20), { maxConcurrentJobs: 1 });
+    const first = await createQueuedJob(jobService);
+    const second = await createQueuedJob(jobService);
+
+    runner.submit(first.id);
+    runner.submit(second.id);
+    await waitFor(async () => (await jobService.get(first.id))?.status === "running");
+    await expect(jobService.get(second.id)).resolves.toMatchObject({ status: "queued" });
+    await waitFor(async () => (await jobService.get(first.id))?.status === "succeeded");
+    await waitFor(async () => (await jobService.get(second.id))?.status === "succeeded");
+  });
+
+  it("resubmits queued Jobs during startup recovery", async () => {
+    const { jobService, runner } = createRunner(successfulExecutor());
+    const queued = await createQueuedJob(jobService);
+
+    await runner.recoverJobs();
+
+    await waitFor(async () => (await jobService.get(queued.id))?.status === "succeeded");
+  });
+
+  it("does not enqueue the same Job twice", async () => {
+    const counter = { value: 0 };
+    const { jobService, runner } = createRunner(countingSuccessfulExecutor(counter, 10), { maxConcurrentJobs: 1 });
+    const job = await createQueuedJob(jobService);
+
+    runner.submit(job.id);
+    runner.submit(job.id);
+    await waitFor(async () => (await jobService.get(job.id))?.status === "succeeded");
+
+    expect(counter.value).toBe(1);
   });
 
   it("cancels a running Job without converting it into a Worker failure", async () => {

@@ -12,26 +12,39 @@ export interface VisioJobRunnerOptions {
   store: FoundationStore;
   jobService: JobService;
   executor: VisioExecutor;
+  maxConcurrentJobs?: number;
 }
 
 export class VisioJobRunner {
   private readonly active = new Map<string, ActiveVisioJob>();
+  private readonly pending: string[] = [];
+  private readonly pendingIds = new Set<string>();
+  private readonly maxConcurrentJobs: number;
+  private draining = false;
   private closing = false;
 
-  constructor(private readonly options: VisioJobRunnerOptions) {}
+  constructor(private readonly options: VisioJobRunnerOptions) {
+    this.maxConcurrentJobs = Math.max(1, Math.floor(options.maxConcurrentJobs ?? 1));
+  }
 
   submit(jobId: string): void {
-    if (this.closing || this.active.has(jobId)) return;
-    const controller = new AbortController();
-    const promise = this.run(jobId, controller);
-    this.active.set(jobId, { controller, promise });
-    void promise.catch(() => {});
+    if (this.closing || this.active.has(jobId) || this.pendingIds.has(jobId)) return;
+    this.pending.push(jobId);
+    this.pendingIds.add(jobId);
+    this.scheduleDrain();
   }
 
   async cancel(jobId: string): Promise<Job> {
     const job = await this.requireJob(jobId);
     if (!this.isCancellable(job.status)) {
       throw new FoundationError(ApiErrorCode.JOB_NOT_CANCELLABLE, `Job cannot transition from ${job.status}`, 409);
+    }
+
+    const pendingIndex = this.pending.indexOf(jobId);
+    if (pendingIndex >= 0) {
+      this.pending.splice(pendingIndex, 1);
+      this.pendingIds.delete(jobId);
+      return this.options.jobService.cancel(jobId);
     }
 
     const active = this.active.get(jobId);
@@ -52,10 +65,48 @@ export class VisioJobRunner {
     }
   }
 
+  async recoverJobs(): Promise<void> {
+    const jobs = await this.options.store.listJobs();
+    for (const job of jobs) {
+      if (job.type !== "visio-export") continue;
+      if (job.status === "running") await this.options.jobService.expire(job.id);
+      if (job.status === "queued") this.submit(job.id);
+    }
+  }
+
   async close(): Promise<void> {
     this.closing = true;
+    this.pending.length = 0;
+    this.pendingIds.clear();
     for (const active of this.active.values()) active.controller.abort();
     await Promise.all([...this.active.values()].map((active) => active.promise.catch(() => {})));
+  }
+
+  private scheduleDrain(): void {
+    if (this.draining || this.closing) return;
+    this.draining = true;
+    void this.drain().finally(() => {
+      this.draining = false;
+      if (!this.closing && this.pending.length > 0 && this.active.size < this.maxConcurrentJobs) this.scheduleDrain();
+    }).catch(() => {});
+  }
+
+  private async drain(): Promise<void> {
+    while (!this.closing && this.active.size < this.maxConcurrentJobs && this.pending.length > 0) {
+      const jobId = this.pending.shift();
+      if (!jobId) continue;
+      this.pendingIds.delete(jobId);
+      const job = await this.options.store.getJob(jobId);
+      if (!job || job.type !== "visio-export" || job.status !== "queued") continue;
+
+      const controller = new AbortController();
+      const promise = this.run(jobId, controller);
+      this.active.set(jobId, { controller, promise });
+      void promise.finally(() => {
+        this.active.delete(jobId);
+        this.scheduleDrain();
+      }).catch(() => {});
+    }
   }
 
   private async run(jobId: string, controller: AbortController): Promise<void> {
