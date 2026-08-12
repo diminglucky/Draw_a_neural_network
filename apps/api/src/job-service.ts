@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ApiErrorCode, FoundationError, type Job, type JobStatus } from "./domain.js";
+import { ApiErrorCode, FoundationError, type Job, type JobStatus, type VisioJobCreationResult } from "./domain.js";
 import type { FoundationStore } from "./store.js";
 
 interface JobServiceOptions {
@@ -15,23 +15,17 @@ export class JobService {
   }
 
   async create(input: { userId: string; deviceId: string; type: Job["type"]; input: unknown }): Promise<Job> {
-    const job: Job = {
-      id: randomUUID(),
-      userId: input.userId,
-      deviceId: input.deviceId,
-      type: input.type,
-      status: "queued",
-      input: input.input,
-      output: null,
-      errorCode: null,
-      errorMessage: null,
-      createdAt: this.now().toISOString(),
-      startedAt: null,
-      completedAt: null,
-    };
+    const job = this.newJob(input);
     await this.options.store.createJob(job);
     await this.audit(job, "job.created", {});
     return job;
+  }
+
+  async createVisioIdempotent(input: { userId: string; deviceId: string; input: unknown; idempotencyKey: string; requestHash: string }): Promise<VisioJobCreationResult> {
+    const job = this.newJob({ userId: input.userId, deviceId: input.deviceId, type: "visio-export", input: input.input });
+    const result = await this.options.store.createVisioJobIdempotent({ job, idempotencyKey: input.idempotencyKey, requestHash: input.requestHash });
+    if (!result.duplicate) await this.audit(job, "job.created", {});
+    return result;
   }
 
   async get(id: string): Promise<Job | null> {
@@ -85,6 +79,23 @@ export class JobService {
     const job = await this.options.store.getJob(id);
     if (!job) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
     return job;
+  }
+
+  private newJob(input: { userId: string; deviceId: string; type: Job["type"]; input: unknown }): Job {
+    return {
+      id: randomUUID(),
+      userId: input.userId,
+      deviceId: input.deviceId,
+      type: input.type,
+      status: "queued",
+      input: input.input,
+      output: null,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: this.now().toISOString(),
+      startedAt: null,
+      completedAt: null,
+    };
   }
 
   private assertStatus(job: Job, allowed: JobStatus[]): void {

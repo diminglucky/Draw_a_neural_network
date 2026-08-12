@@ -83,6 +83,34 @@ export function buildAgentRequestHeaders(token, key) {
   };
 }
 
+export function buildVisioExportRequestHeaders(token, key) {
+  return buildAgentRequestHeaders(token, key);
+}
+
+export async function exportDiagramToVisio(diagram, options = {}) {
+  if (!diagram || typeof diagram !== "object" || Array.isArray(diagram) || !Array.isArray(diagram.nodes) || !Array.isArray(diagram.edges)) {
+    throw new Error("Visio 导出需要有效的 diagram");
+  }
+  const token = String(options.token ?? "").trim();
+  if (!token) throw new Error("在线授权后才能导出到 Visio");
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  if (typeof fetchImpl !== "function") throw new Error("当前环境不支持网络请求");
+  const apiBase = (options.apiBase || globalThis.SYNAPSE_API_BASE || "http://127.0.0.1:4180").replace(/\/$/, "");
+  const key = String(options.idempotencyKey || createIdempotencyKey(options.randomUUIDFactory));
+  const response = await fetchImpl(`${apiBase}/api/visio/export`, {
+    method: "POST",
+    headers: buildVisioExportRequestHeaders(token, key),
+    body: JSON.stringify({ diagram }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error?.message || `Visio 导出失败 (${response.status})`);
+  const output = body?.output;
+  if (body?.type !== "visio-export" || body?.status !== "succeeded" || !output?.path || output?.readback?.valid !== true) {
+    throw new Error("Visio 导出返回了无效结果");
+  }
+  return body;
+}
+
 function readToken(storage = globalThis.localStorage) {
   try { return storage?.getItem("synapse.accessToken") || ""; } catch { return ""; }
 }
@@ -185,9 +213,38 @@ function mountAgentChat() {
       conversationId = body.conversationId || conversationId;
       (body.stages || []).forEach(setStage);
       const answer = body.response || {};
-      resultNode.innerHTML = `<div class="agent-chat-answer"><p>${escapeHtml(textContent(answer.text || answer.summary || "Agent 未返回说明"))}</p><div class="agent-chat-meta"><span>confidence ${escapeHtml(answer.confidence ?? "-")}</span></div><h4>证据</h4>${renderList(answer.evidence, "暂无证据") }<h4>警告</h4>${renderList(answer.warnings, "无")}</div>${body.diagram ? '<button type="button" class="primary-button" data-agent-apply>应用到画布</button>' : ""}`;
+      resultNode.innerHTML = `<div class="agent-chat-answer"><p>${escapeHtml(textContent(answer.text || answer.summary || "Agent 未返回说明"))}</p><div class="agent-chat-meta"><span>confidence ${escapeHtml(answer.confidence ?? "-")}</span></div><h4>证据</h4>${renderList(answer.evidence, "暂无证据") }<h4>警告</h4>${renderList(answer.warnings, "无")}</div>${body.diagram ? '<div class="agent-chat-result-actions"><button type="button" class="primary-button" data-agent-apply>应用到画布</button><button type="button" class="ghost-button" data-agent-visio-export>导出到 Visio</button></div>' : ""}`;
       resultNode.hidden = false;
       resultNode.querySelector("[data-agent-apply]")?.addEventListener("click", () => { if (typeof globalThis.synapseApplyAgentDiagram === "function") globalThis.synapseApplyAgentDiagram(body.diagram); });
+      resultNode.querySelector("[data-agent-visio-export]")?.addEventListener("click", async (event) => {
+        const exportButton = event.currentTarget;
+        if (!(exportButton instanceof HTMLButtonElement) || busy) return;
+        busy = true;
+        exportButton.disabled = true;
+        refreshLock();
+        setError("");
+        statusNode.textContent = "阶段：visio-exporting";
+        try {
+          const exportJob = await exportDiagramToVisio(body.diagram, {
+            apiBase,
+            token: readToken(),
+            idempotencyKey: createIdempotencyKey(),
+          });
+          const readback = exportJob.output.readback;
+          const exportResult = document.createElement("p");
+          exportResult.className = "agent-chat-visio-result";
+          exportResult.textContent = `Visio 导出成功：${exportJob.output.path}（${readback.shapeCount} 个形状，${readback.connectorCount} 条连接线）`;
+          resultNode.appendChild(exportResult);
+          statusNode.textContent = "阶段：visio-completed";
+        } catch (error) {
+          statusNode.textContent = "阶段：visio-failed";
+          setError(error instanceof Error ? error.message : "Visio 导出失败");
+        } finally {
+          busy = false;
+          exportButton.disabled = false;
+          refreshLock();
+        }
+      });
       statusNode.textContent = "阶段：completed";
       messageInput.value = "";
       attachments = []; renderAttachments();

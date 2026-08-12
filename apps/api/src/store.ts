@@ -11,6 +11,7 @@ import type {
   Session,
   Subscription,
   User,
+  VisioJobCreationResult,
 } from "./domain.js";
 
 export interface FoundationStore {
@@ -35,6 +36,7 @@ export interface FoundationStore {
   createSubscription(subscription: Subscription): Promise<Subscription>;
   getCurrentSubscription(userId: string): Promise<Subscription | null>;
   createJob(job: Job): Promise<Job>;
+  createVisioJobIdempotent(input: { job: Job; idempotencyKey: string; requestHash: string }): Promise<VisioJobCreationResult>;
   getJob(id: string): Promise<Job | null>;
   listJobs(): Promise<Job[]>;
   updateJob(job: Job): Promise<Job>;
@@ -51,6 +53,7 @@ export class InMemoryFoundationStore implements FoundationStore {
   private readonly sessions = new Map<string, Session>();
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly jobs = new Map<string, Job>();
+  private readonly visioJobsByIdempotency = new Map<string, string>();
   private readonly audits: AuditRecord[] = [];
   private readonly agentUsagePeriods = new Map<string, { limit: number; consumed: number }>();
   private readonly agentUsageReservations = new Map<string, AgentUsageReservation>();
@@ -161,6 +164,22 @@ export class InMemoryFoundationStore implements FoundationStore {
   async createJob(job: Job): Promise<Job> {
     this.jobs.set(job.id, job);
     return job;
+  }
+
+  async createVisioJobIdempotent(input: { job: Job; idempotencyKey: string; requestHash: string }): Promise<VisioJobCreationResult> {
+    const index = `${input.job.userId}:${input.job.type}:${input.idempotencyKey}`;
+    const existingId = this.visioJobsByIdempotency.get(index);
+    if (existingId) {
+      const existing = this.jobs.get(existingId);
+      if (existing) {
+        const existingInput = existing.input && typeof existing.input === "object" ? existing.input as Record<string, unknown> : {};
+        return { job: existing, duplicate: true, requestHashMatches: existingInput.requestHash === input.requestHash };
+      }
+      this.visioJobsByIdempotency.delete(index);
+    }
+    this.jobs.set(input.job.id, input.job);
+    this.visioJobsByIdempotency.set(index, input.job.id);
+    return { job: input.job, duplicate: false, requestHashMatches: true };
   }
 
   async getJob(id: string): Promise<Job | null> {

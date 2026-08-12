@@ -6,6 +6,7 @@ import { JobService } from "./job-service.js";
 import { SessionService } from "./session-service.js";
 import { signAccessToken, verifyAccessToken, verifyPassword } from "./security.js";
 import type { FoundationStore } from "./store.js";
+import type { VisioExecutor } from "./adapters.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -67,6 +68,7 @@ interface RouteOptions {
   sessionSecret: string;
   admin: { email: string; passwordHash: string };
   agentService?: AgentServiceContract;
+  visioExecutor: VisioExecutor;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -168,6 +170,25 @@ function objectField(value: unknown, field: string): Record<string, unknown> {
     throw validationError(`${field} must be an object`, { field, reason: "invalid_type" });
   }
   return value as Record<string, unknown>;
+}
+
+function parseVisioExportBody(request: FastifyRequest): { diagram: Record<string, unknown>; idempotencyKey: string } {
+  const input = body(request);
+  const diagram = objectField(input.diagram, "diagram");
+  if (!Array.isArray(diagram.nodes)) {
+    throw validationError("diagram.nodes must be an array", { field: "diagram.nodes", reason: "invalid_type" });
+  }
+  if (!Array.isArray(diagram.edges)) {
+    throw validationError("diagram.edges must be an array", { field: "diagram.edges", reason: "invalid_type" });
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "outputPath")) {
+    throw validationError("outputPath is controlled by the Visio Worker", { field: "outputPath", reason: "forbidden" });
+  }
+  return { diagram, idempotencyKey: idempotencyKey(request) };
+}
+
+function visioRequestHash(diagram: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(diagram)).digest("hex");
 }
 
 function requiredStringField(value: unknown, field: string): string {
@@ -351,6 +372,47 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const input = body(request);
     const job = await options.jobService.create({ userId: access.user.id, deviceId: access.device.id, type: input.type, input: input.input });
     return reply.code(201).send(job);
+  });
+
+  app.post("/api/visio/export", async (request, reply) => {
+    const access = await requireUser(request, options);
+    const input = parseVisioExportBody(request);
+    const requestHash = visioRequestHash(input.diagram);
+    const created = await options.jobService.createVisioIdempotent({
+      userId: access.user.id,
+      deviceId: access.device.id,
+      input: { diagram: input.diagram, idempotencyKey: input.idempotencyKey, requestHash },
+      idempotencyKey: input.idempotencyKey,
+      requestHash,
+    });
+    if (created.duplicate) {
+      if (!created.requestHashMatches) {
+        throw new FoundationError(ApiErrorCode.VISIO_IDEMPOTENCY_KEY_REUSED, "Idempotency-Key has already been used for a different Visio diagram", 409, {
+          requestHashMatches: false,
+          jobId: created.job.id,
+        });
+      }
+      return reply.code(200).send(created.job);
+    }
+    const job = created.job;
+    await options.jobService.start(job.id);
+
+    try {
+      const result = await options.visioExecutor.executeDiagram({ jobId: job.id, diagram: input.diagram });
+      return reply.code(201).send(await options.jobService.succeed(job.id, {
+        path: result.path,
+        readback: result.readback,
+      }));
+    } catch (error) {
+      const code: ApiErrorCode = error instanceof FoundationError && Object.values(ApiErrorCode).includes(error.code as ApiErrorCode)
+        ? error.code as ApiErrorCode
+        : ApiErrorCode.VISIO_EXECUTION_FAILED;
+      const message = error instanceof Error ? error.message : "Visio Worker execution failed";
+      await options.jobService.fail(job.id, code, message);
+      throw error instanceof FoundationError
+        ? error
+        : new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, message, 502);
+    }
   });
 
   app.get("/api/jobs/:id", async (request) => {

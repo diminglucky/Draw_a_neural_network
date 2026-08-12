@@ -3,8 +3,10 @@ import {
   AGENT_LIMITS,
   buildAgentRequestHeaders,
   buildAgentPayload,
+  buildVisioExportRequestHeaders,
   createIdempotencyKey,
   escapeHtml,
+  exportDiagramToVisio,
   isAgentAuthorized,
   validateAttachment,
   validateMessage,
@@ -51,6 +53,47 @@ describe("Agent Chat client contracts", () => {
       "Idempotency-Key": "fixed-agent-key",
     });
     expect(JSON.stringify(headers)).not.toContain("apiKey");
+  });
+
+  it("exports a validated Agent diagram through the authenticated Visio route", async () => {
+    let request;
+    const result = await exportDiagramToVisio({ nodes: [], edges: [] }, {
+      apiBase: "http://127.0.0.1:4180",
+      token: "bearer-token",
+      idempotencyKey: "visio-export-1",
+      fetchImpl: async (url, init) => {
+        request = { url, init };
+        return {
+          ok: true,
+          status: 201,
+          async json() {
+            return {
+              type: "visio-export",
+              status: "succeeded",
+              output: { path: "C:\\exports\\job-1.vsdx", readback: { valid: true, shapeCount: 2, connectorCount: 1 } },
+            };
+          },
+        };
+      },
+    });
+
+    expect(request.url).toBe("http://127.0.0.1:4180/api/visio/export");
+    expect(request.init.method).toBe("POST");
+    expect(request.init.headers).toEqual(buildVisioExportRequestHeaders("bearer-token", "visio-export-1"));
+    expect(JSON.parse(request.init.body)).toEqual({ diagram: { nodes: [], edges: [] } });
+    expect(result.output.readback).toEqual({ valid: true, shapeCount: 2, connectorCount: 1 });
+  });
+
+  it("surfaces an explicit Visio export error from the API", async () => {
+    await expect(exportDiagramToVisio({ nodes: [], edges: [] }, {
+      token: "bearer-token",
+      idempotencyKey: "visio-export-2",
+      fetchImpl: async () => ({
+        ok: false,
+        status: 503,
+        async json() { return { error: { code: "VISIO_EXECUTOR_NOT_CONFIGURED", message: "Visio Worker is not configured" } }; },
+      }),
+    })).rejects.toThrow("Visio Worker is not configured");
   });
 
   it("escapes assistant text before it is inserted into the UI", () => {

@@ -12,6 +12,8 @@ import { createFoundationStore } from "./store-factory.js";
 import { createLeaseCoordinator } from "./lease-factory.js";
 import type { LeaseCoordinator } from "./lease-coordinator.js";
 import { createAgentServiceForConfig } from "./agent-runtime.js";
+import { NotConnectedVisioExecutor, type VisioExecutor } from "./adapters.js";
+import { VisioWorkerClient } from "./visio-worker-client.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -20,6 +22,18 @@ export interface BuildAppOptions {
   admin?: { email: string; passwordHash: string };
   leaseCoordinator?: LeaseCoordinator;
   agentService?: AgentServiceContract;
+  visioExecutor?: VisioExecutor;
+}
+
+function createVisioExecutorForConfig(config: AppConfig): VisioExecutor {
+  if (!config.visioWorkerPath) return new NotConnectedVisioExecutor();
+  if (!config.visioOutputRoot) throw new Error("VISIO_OUTPUT_ROOT is required when VISIO_WORKER_PATH is configured");
+  return new VisioWorkerClient({
+    workerPath: config.visioWorkerPath,
+    outputRoot: config.visioOutputRoot,
+    mode: config.visioWorkerMode,
+    timeoutMs: config.visioWorkerTimeoutMs,
+  });
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -41,6 +55,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     sessionSecret: options.sessionSecret ?? config.sessionSecret,
     admin: options.admin ?? { email: "admin@example.com", passwordHash: "" },
     agentService: options.agentService,
+    visioExecutor: options.visioExecutor ?? createVisioExecutorForConfig(config),
   });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof FoundationError) {

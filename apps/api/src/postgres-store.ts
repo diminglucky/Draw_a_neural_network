@@ -11,6 +11,7 @@ import type {
   Session,
   Subscription,
   User,
+  VisioJobCreationResult,
 } from "./domain.js";
 import type { FoundationStore } from "./store.js";
 
@@ -430,6 +431,44 @@ export class PostgresFoundationStore implements FoundationStore {
       [job.id, job.userId, job.deviceId, job.type, job.status, JSON.stringify(job.input), job.output === null ? null : JSON.stringify(job.output), job.errorCode, job.errorMessage, job.createdAt, job.startedAt, job.completedAt],
     );
     return mapJob(result.rows[0]);
+  }
+
+  async createVisioJobIdempotent(input: { job: Job; idempotencyKey: string; requestHash: string }): Promise<VisioJobCreationResult> {
+    const client = await this.pool.connect();
+    const columns = "id, user_id, device_id, type, status, input, output, error_code, error_message, created_at, started_at, completed_at";
+    try {
+      await client.query("BEGIN");
+      const inserted = await client.query(
+        `INSERT INTO jobs (id, user_id, device_id, type, status, input, output, error_code, error_message, created_at, started_at, completed_at)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12)
+         ON CONFLICT (user_id, type, ((input->>'idempotencyKey')))
+           WHERE type = 'visio-export' AND input ? 'idempotencyKey'
+         DO NOTHING
+         RETURNING ${columns}`,
+        [input.job.id, input.job.userId, input.job.deviceId, input.job.type, input.job.status, JSON.stringify(input.job.input), input.job.output === null ? null : JSON.stringify(input.job.output), input.job.errorCode, input.job.errorMessage, input.job.createdAt, input.job.startedAt, input.job.completedAt],
+      );
+      if (inserted.rows[0]) {
+        await client.query("COMMIT");
+        return { job: mapJob(inserted.rows[0]), duplicate: false, requestHashMatches: true };
+      }
+      const existing = await client.query(
+        `SELECT ${columns}
+         FROM jobs
+         WHERE user_id = $1 AND type = 'visio-export' AND input->>'idempotencyKey' = $2
+         FOR UPDATE`,
+        [input.job.userId, input.idempotencyKey],
+      );
+      if (!existing.rows[0]) throw new Error("Visio idempotency conflict did not return the existing Job");
+      const existingJob = mapJob(existing.rows[0]);
+      const existingInput = existingJob.input && typeof existingJob.input === "object" ? existingJob.input as Record<string, unknown> : {};
+      await client.query("COMMIT");
+      return { job: existingJob, duplicate: true, requestHashMatches: existingInput.requestHash === input.requestHash };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getJob(id: string): Promise<Job | null> {

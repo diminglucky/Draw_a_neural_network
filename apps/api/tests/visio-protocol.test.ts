@@ -13,7 +13,7 @@ describe("Visio Worker protocol", () => {
     });
 
     expect(request.protocolVersion).toBe(1);
-    expect(request.diagram.figure.title).toBe("CNN");
+    expect(request.diagram.figure?.title).toBe("CNN");
   });
 
   it("rejects an unsupported protocol version and a non-vsdx output", () => {

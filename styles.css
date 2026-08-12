@@ -1077,11 +1077,29 @@ kbd {
 
 .agent-chat-header,
 .agent-chat-actions,
+.agent-chat-result-actions,
 .agent-chat-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.agent-chat-result-actions {
+  gap: 8px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.agent-chat-visio-result {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(68, 145, 101, 0.35);
+  border-radius: 10px;
+  color: #215c3a;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .agent-chat-header h2 {

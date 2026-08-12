@@ -5,6 +5,8 @@ export const ApiErrorCode = {
   AGENT_QUOTA_EXCEEDED: "AGENT_QUOTA_EXCEEDED",
   AGENT_IDEMPOTENCY_KEY_REUSED: "AGENT_IDEMPOTENCY_KEY_REUSED",
   VISIO_EXECUTOR_NOT_CONFIGURED: "VISIO_EXECUTOR_NOT_CONFIGURED",
+  VISIO_EXECUTION_FAILED: "VISIO_EXECUTION_FAILED",
+  VISIO_IDEMPOTENCY_KEY_REUSED: "VISIO_IDEMPOTENCY_KEY_REUSED",
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
   INVALID_TOKEN: "INVALID_TOKEN",
   DEVICE_NOT_AUTHORIZED: "DEVICE_NOT_AUTHORIZED",
@@ -112,6 +114,12 @@ export interface Job {
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+}
+
+export interface VisioJobCreationResult {
+  job: Job;
+  duplicate: boolean;
+  requestHashMatches: boolean;
 }
 
 export interface AuditRecord {

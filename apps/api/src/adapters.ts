@@ -64,10 +64,16 @@ export interface VisioHealthResult {
   reason?: string;
 }
 
+export interface VisioReadback {
+  valid: boolean;
+  shapeCount: number;
+  connectorCount: number;
+}
+
 export interface VisioExecutor {
   healthCheck(): Promise<VisioHealthResult>;
-  executeDiagram(input: { jobId: string }): Promise<{ path: string }>;
-  readback(input: { path: string }): Promise<{ valid: boolean; shapeCount: number }>;
+  executeDiagram(input: { jobId: string; diagram?: unknown }): Promise<{ path: string; readback: VisioReadback }>;
+  readback(input: { path: string }): Promise<VisioReadback>;
 }
 
 export interface OpenAIResponsesAgentProviderOptions {
@@ -192,11 +198,11 @@ export class NotConnectedVisioExecutor implements VisioExecutor {
     return { connected: false, reason: ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED };
   }
 
-  async executeDiagram(_input: { jobId: string }): Promise<{ path: string }> {
+  async executeDiagram(_input: { jobId: string; diagram?: unknown }): Promise<{ path: string; readback: VisioReadback }> {
     throw new FoundationError(ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED, "Visio executor is not configured", 503);
   }
 
-  async readback(_input: { path: string }): Promise<{ valid: boolean; shapeCount: number }> {
+  async readback(_input: { path: string }): Promise<VisioReadback> {
     throw new FoundationError(ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED, "Visio executor is not configured", 503);
   }
 }

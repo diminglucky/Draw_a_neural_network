@@ -9,6 +9,7 @@ const migration = readFileSync(resolve(process.cwd(), "apps/api/sql/001_foundati
 const fencingMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/002_session_fencing.sql"), "utf8");
 const challengeMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/003_device_challenges.sql"), "utf8");
 const usageMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/004_agent_usage_ledger.sql"), "utf8");
+const visioJobIdempotencyMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/005_visio_job_idempotency.sql"), "utf8");
 const userId = `smoke-${randomUUID()}`;
 const email = `${userId}@example.com`;
 const deviceOneId = `device-${randomUUID()}`;
@@ -34,6 +35,7 @@ try {
   await first.query(challengeMigration);
   const usageSchema = await first.query("SELECT to_regclass('public.agent_usage_ledger') AS usage_table");
   if (!usageSchema.rows[0]?.usage_table) await first.query(usageMigration);
+  await first.query(visioJobIdempotencyMigration);
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,

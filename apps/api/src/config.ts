@@ -9,6 +9,10 @@ const environmentSchema = z.object({
   REDIS_URL: z.string().url().optional(),
   DATABASE_URL: z.string().url().optional(),
   REQUIRE_DEVICE_PROOF: z.enum(["true", "false"]).optional(),
+  VISIO_WORKER_PATH: z.string().trim().min(1).optional(),
+  VISIO_OUTPUT_ROOT: z.string().trim().min(1).optional(),
+  VISIO_WORKER_MODE: z.enum(["mock", "live"]).default("mock"),
+  VISIO_WORKER_TIMEOUT_MS: z.coerce.number().int().min(1000).max(600000).default(120000),
 });
 
 export interface AppConfig {
@@ -20,6 +24,10 @@ export interface AppConfig {
   redisUrl?: string;
   databaseUrl?: string;
   requireDeviceProof: boolean;
+  visioWorkerPath?: string;
+  visioOutputRoot?: string;
+  visioWorkerMode: "mock" | "live";
+  visioWorkerTimeoutMs: number;
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): AppConfig {
@@ -46,5 +54,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
     redisUrl: parsed.REDIS_URL,
     databaseUrl: parsed.DATABASE_URL,
     requireDeviceProof: parsed.NODE_ENV === "production" || parsed.REQUIRE_DEVICE_PROOF === "true",
+    visioWorkerPath: parsed.VISIO_WORKER_PATH,
+    visioOutputRoot: parsed.VISIO_OUTPUT_ROOT,
+    visioWorkerMode: parsed.VISIO_WORKER_MODE,
+    visioWorkerTimeoutMs: parsed.VISIO_WORKER_TIMEOUT_MS,
   };
 }

@@ -25,6 +25,14 @@ describe("production persistence boundary", () => {
     expect(sql).toContain("agentChatsPerMonth");
   });
 
+  it("contains the durable Visio export idempotency index migration", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/005_visio_job_idempotency.sql"), "utf8");
+
+    expect(sql).toContain("CREATE UNIQUE INDEX IF NOT EXISTS jobs_visio_idempotency_idx");
+    expect(sql).toContain("input->>'idempotencyKey'");
+    expect(sql).toContain("WHERE type = 'visio-export'");
+  });
+
   it("rejects memory storage in production", () => {
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: "production-secret-production-secret", STORAGE_DRIVER: "memory" })).toThrow(/development-only/);
   });

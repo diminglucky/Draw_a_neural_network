@@ -34,7 +34,7 @@ The current Windows-first development slice includes:
 - server-issued device ids are write-once bound to the DPAPI key and reused after Electron restart;
 - server-side authorization for the existing diagram-analysis endpoint.
 
-The current slice includes the PostgreSQL adapter, a Redis lease adapter with an in-memory test mode, and the Windows DPAPI device-key bridge. It does not claim to include the real OpenAI provider, Vision code understanding, Visio COM automation, signed installer, or `.vsdx` export.
+The current slice includes the PostgreSQL adapter, a Redis lease adapter with an in-memory test mode, the Windows DPAPI device-key bridge, and a controlled Visio Worker/API boundary. It does not claim live Visio COM acceptance, signed installer delivery, or independently inspected `.vsdx` output until those gates are run.
 
 ### Run on Windows locally
 
@@ -77,7 +77,7 @@ Optional local services are defined in `infra/docker-compose.yml`:
 docker compose -f infra/docker-compose.yml up -d
 ```
 
-The SQL migration is mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; set `STORAGE_DRIVER=postgres` and `DATABASE_URL` before starting the API. Verify persistence with:
+The SQL migrations are mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; set `STORAGE_DRIVER=postgres` and `DATABASE_URL` before starting the API. For an existing database, apply the incremental SQL files in order, including `apps/api/sql/005_visio_job_idempotency.sql`, before enabling Visio export. That migration gives each user one durable Visio Job per `Idempotency-Key` and prevents repeated COM execution. Verify persistence with:
 
 ```powershell
 npm run api:smoke:postgres
@@ -119,11 +119,11 @@ The analysis endpoint now requires an active Foundation API session even when `O
 
 ## Agent diagram bridge boundary
 
-The browser canvas remains the first renderer for the Agent MVP. The chat UI is expected to submit an authorized request to the Foundation API, receive a validated canvas-compatible `diagram`, and then call `window.synapseApplyAgentDiagram(diagram)` to replace the current editable canvas document. This bridge reuses the same document-application path as the existing code/image workflows, so manual editing, SVG/PNG export, JSON export, and JSON re-import continue to work on the applied result.
+The browser canvas remains the first renderer for the Agent MVP. The chat UI submits an authorized request to the Foundation API, receives a validated canvas-compatible `diagram`, and offers two explicit actions: `应用到画布` calls `window.synapseApplyAgentDiagram(diagram)`, while `导出到 Visio` sends the same diagram to the authenticated `/api/visio/export` route. This bridge reuses the same document-application path as the existing code/image workflows, so manual editing, SVG/PNG export, JSON export, JSON re-import, and controlled `.vsdx` export remain separate user actions.
 
 For local development, the Agent path is allowed to use a deterministic local provider so the browser UI can be exercised without claiming real model analysis. When an OpenAI-backed provider is configured, the request remains server-side: the browser only sends the existing Foundation bearer token to the API and never receives provider API keys or raw provider credentials. In other words, the canvas only consumes validated diagram JSON, not raw model output, raw SVG, or direct provider responses.
 
-Microsoft Visio remains a follow-up adapter, not a browser responsibility. The current bridge only applies a browser-renderable canvas document; it does not claim `.vsdx` export, COM automation, or desktop execution. A future Windows Visio adapter should consume the same validated IR/diagram boundary rather than bypassing the browser or exposing desktop control to the model.
+Microsoft Visio remains a Worker responsibility, not a browser responsibility. The browser bridge only applies a browser-renderable canvas document; the separate Visio export route consumes the same validated diagram boundary rather than bypassing the browser or exposing desktop control to the model.
 
 ### Device proof and Electron boundary
 
@@ -134,6 +134,33 @@ $env:REQUIRE_DEVICE_PROOF = "true"
 ```
 
 The browser gate delegates `getIdentity()` and `signChallenge(challenge)` to `globalThis.synapseDeviceKey` when proof is required. In the final Windows client this object must be exposed through a preload/IPC bridge whose private key is held by the Electron main process and protected by Windows DPAPI. The current browser bootstrap identity is only a development/test fallback and is not commercial device security.
+
+### Visio Worker export boundary
+
+The Visio integration is an independent Windows Worker boundary. The Node API never holds a Visio COM object: an authenticated `POST /api/visio/export` request creates a user-owned `visio-export` Job, sends a normalized diagram over one JSON-lines request to a per-job C# Worker process, and publishes the `.vsdx` path only after the Worker has performed readback validation.
+
+Build the Worker solution from PowerShell:
+
+```powershell
+dotnet build workers/visio-worker/VisioWorker.sln
+```
+
+Run the headless mock Worker smoke without Microsoft Visio:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/visio-worker-mock-smoke.ps1
+```
+
+Configure the API with a Worker executable and an output root when enabling export:
+
+```powershell
+$env:VISIO_WORKER_PATH = "C:\path\to\VisioWorker.Host.exe"
+$env:VISIO_OUTPUT_ROOT = "C:\path\to\visio-exports"
+$env:VISIO_WORKER_MODE = "mock" # use live only on a machine with Microsoft Visio
+$env:VISIO_WORKER_TIMEOUT_MS = "120000"
+```
+
+When `VISIO_WORKER_PATH` is absent, the API intentionally returns `VISIO_EXECUTOR_NOT_CONFIGURED` with HTTP 503. The default `mock` mode is a development/CI artifact generator and is never evidence of live Visio COM acceptance. The live acceptance gate additionally requires an installed Visio instance, a successful `.vsdx` readback, and independent close/reopen inspection. The Worker uses only native basic shapes and connectors; GitHub projects were consulted as implementation references and are not runtime dependencies.
 
 ## Code Generation
 
@@ -205,7 +232,7 @@ This repository now has a runnable foundation, not a finished paid product. Befo
 1. complete signed Electron packaging, auto-update signing, uninstall/reinstall policy, and clean-machine acceptance around the native Windows DPAPI implementation;
 2. extend Agent/OpenAI governance with token-based cost limits, bounded retries/timeouts, and production redaction/usage accounting; the current MVP already keeps providers behind the API, enforces a PostgreSQL-capable monthly `agentChatRequests` usage ledger with `Idempotency-Key` protection, records provider-neutral request/completion/failure/rejection audit metadata, and excludes message/file contents from audit records;
 3. the Network IR and deterministic validated publication-layout pipeline are implemented for the browser MVP; independent production/host acceptance remains separate from the focused tests and local deterministic smoke;
-4. implement the `VisioExecutor` through a controlled Windows worker and validate readback/export;
+4. complete live Visio COM acceptance, independent `.vsdx` inspection, signed Worker packaging, and operational recovery tests; the controlled Worker/API boundary and headless mock path are implemented, but this repository does not claim live COM acceptance until those gates are run;
 5. add billing-provider webhooks, entitlement reconciliation, rate limiting, abuse detection, backups, migrations, and operational alerts;
 6. package/sign the Windows client and perform clean-machine, upgrade, revoke, offline, reconnect, and concurrent-login acceptance tests.
 
