@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { ApiErrorCode } from "../src/domain.js";
 import { VisioWorkerClient } from "../src/visio-worker-client.js";
 
 const fixtureDiagram = {
@@ -51,5 +52,28 @@ describe("VisioWorkerClient", () => {
       path: expect.stringMatching(/job-client-alias-1\.vsdx$/),
       readback: { valid: true, shapeCount: 1, connectorCount: 0 },
     });
+  });
+
+  it("aborts a running Worker when the signal is cancelled", async () => {
+    const workerScript = path.join(process.cwd(), "apps/api/tests/fixtures/visio-worker-fake-hang.mjs");
+    const client = new VisioWorkerClient({
+      workerPath: process.execPath,
+      workerArgs: [workerScript],
+      outputRoot,
+      mode: "mock",
+      timeoutMs: 10_000,
+    });
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const result = client.executeDiagram({ jobId: "job-client-abort-1", diagram: fixtureDiagram }, { signal: controller.signal });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    controller.abort();
+
+    await expect(result).rejects.toMatchObject({
+      code: ApiErrorCode.VISIO_EXECUTION_FAILED,
+      details: { reason: "cancelled", jobId: "job-client-abort-1" },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 });

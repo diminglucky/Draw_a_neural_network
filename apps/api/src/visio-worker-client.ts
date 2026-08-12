@@ -46,7 +46,7 @@ export class VisioWorkerClient implements VisioExecutor {
     }
   }
 
-  async executeDiagram(input: { jobId: string; diagram?: unknown }): Promise<{ path: string; readback: VisioReadback }> {
+  async executeDiagram(input: { jobId: string; diagram?: unknown }, options: { signal?: AbortSignal } = {}): Promise<{ path: string; readback: VisioReadback }> {
     if (!input.diagram) {
       throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "A diagram is required for Visio export", 400, { field: "diagram" });
     }
@@ -60,7 +60,7 @@ export class VisioWorkerClient implements VisioExecutor {
       outputPath,
       diagram: normalizeDiagram(input.diagram),
     };
-    const response = await this.runWorker(request);
+    const response = await this.runWorker(request, options.signal);
 
     if (response.status === "failed") {
       const workerError = response.error;
@@ -95,7 +95,7 @@ export class VisioWorkerClient implements VisioExecutor {
     throw new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Standalone readback must be returned by executeDiagram", 501, { path: input.path });
   }
 
-  private runWorker(request: VisioWorkerRequest): Promise<VisioWorkerResponse> {
+  private runWorker(request: VisioWorkerRequest, signal?: AbortSignal): Promise<VisioWorkerResponse> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.options.workerPath, [
         ...this.workerArgs,
@@ -107,6 +107,24 @@ export class VisioWorkerClient implements VisioExecutor {
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let abortListener: (() => void) | undefined;
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        if (abortListener && signal) signal.removeEventListener("abort", abortListener);
+      };
+      const finishReject = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const finishResolve = (response: VisioWorkerResponse) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(response);
+      };
       const timer = setTimeout(() => {
         finishReject(new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Visio Worker timed out", 504, {
           reason: "timeout",
@@ -116,18 +134,18 @@ export class VisioWorkerClient implements VisioExecutor {
         child.kill();
       }, this.timeoutMs);
 
-      const finishReject = (error: unknown) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
+      abortListener = () => {
+        finishReject(new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Visio Worker was cancelled", 499, {
+          reason: "cancelled",
+          jobId: request.jobId,
+        }));
+        child.kill();
       };
-      const finishResolve = (response: VisioWorkerResponse) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(response);
-      };
+      if (signal?.aborted) {
+        abortListener();
+        return;
+      }
+      signal?.addEventListener("abort", abortListener, { once: true });
 
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
