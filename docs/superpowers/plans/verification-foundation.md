@@ -42,6 +42,21 @@ Latest source verification on 2026-08-11:
 - 63 tests passed;
 - `npm run api:check`, `npx tsc --noEmit`, JavaScript syntax checks, and `git diff --check` passed.
 
+Admin control-plane V1 verification on 2026-08-12:
+
+- 26 Vitest files passed; 87 tests passed, including user/device status transitions, affected-session revocation, audit records, invalid admin mutations, disabled-session boundaries, admin-page helpers, and client-gate lock behavior after `SESSION_REVOKED`;
+- `npm run api:check`, `npx tsc --noEmit`, admin/desktop/client JavaScript syntax checks, and `git diff --check` passed;
+- PostgreSQL and Redis smoke tests passed;
+- `npm run api:smoke:admin:durable` passed against the running PostgreSQL and Redis containers: administrator disable/enable, persisted session revocation, persisted user/session audit records, and fresh login after re-enable;
+- temporary live HTTP acceptance passed: register/login, administrator disable, old-token rejection, administrator re-enable, fresh-login requirement, and admin page/script HTTP 200;
+- the live HTTP acceptance used the development in-memory API and did not claim Electron DPAPI process acceptance.
+
+Windows Electron verification on 2026-08-12:
+
+- `npm run desktop:smoke` passed with Electron 43.3.0, stable public key/device ID, and a valid challenge signature;
+- `npm run desktop:rebuild` passed for `argon2` and `vendor/win-dpapi`;
+- a real Electron window login, restart, administrator revocation, heartbeat lock, and re-login flow remains a separate pending host-UI acceptance gate.
+
 ## Local host acceptance
 
 1. Start `npm run api:dev` and confirm `GET http://127.0.0.1:4180/health` returns `{ "status": "ok" }`.

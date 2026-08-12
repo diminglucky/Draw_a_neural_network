@@ -181,11 +181,14 @@ export class SessionService {
     if (!session) throw new FoundationError(ApiErrorCode.SESSION_NOT_FOUND, "Session was not found", 404);
     const now = this.now();
     await this.assertLiveSession(session, now);
+    const user = await this.options.store.getUser(session.userId);
+    if (!user) throw new FoundationError(ApiErrorCode.USER_NOT_FOUND, "User was not found", 404);
+    if (user.status === "disabled") throw new FoundationError(ApiErrorCode.USER_DISABLED, "User is not active", 403);
     const device = await this.options.store.getDevice(session.deviceId);
-    if (device) {
-      device.lastSeenAt = now.toISOString();
-      await this.options.store.updateDevice(device);
-    }
+    if (!device) throw new FoundationError(ApiErrorCode.DEVICE_NOT_FOUND, "Device was not found", 404);
+    if (device.status === "disabled") throw new FoundationError(ApiErrorCode.DEVICE_NOT_AUTHORIZED, "Device is not authorized for this user", 403);
+    device.lastSeenAt = now.toISOString();
+    await this.options.store.updateDevice(device);
     return session;
   }
 
@@ -198,6 +201,8 @@ export class SessionService {
     const device = await this.options.store.getDevice(session.deviceId);
     if (!user) throw new FoundationError(ApiErrorCode.USER_NOT_FOUND, "User was not found", 404);
     if (!device) throw new FoundationError(ApiErrorCode.DEVICE_NOT_FOUND, "Device was not found", 404);
+    if (user.status === "disabled") throw new FoundationError(ApiErrorCode.USER_DISABLED, "User is not active", 403);
+    if (device.status === "disabled") throw new FoundationError(ApiErrorCode.DEVICE_NOT_AUTHORIZED, "Device is not authorized for this user", 403);
     return { user, device, session, subscription: await this.options.store.getCurrentSubscription(user.id) };
   }
 

@@ -8,6 +8,7 @@
     "api:check": "tsx scripts/check-foundation.mjs",
     "api:smoke:postgres": "node scripts/postgres-smoke.mjs",
     "api:smoke:redis": "tsx scripts/redis-smoke.mjs",
+    "api:smoke:admin:durable": "tsx scripts/durable-admin-control-plane-smoke.mjs",
     "desktop:dev": "electron apps/desktop/main.mjs",
     "desktop:rebuild": "electron-rebuild -f -w win-dpapi",
     "desktop:smoke": "electron scripts/desktop-dpapi-smoke.mjs"

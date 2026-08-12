@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyGateState, renderAdminTable, GATE_STATE } from "./auth-gate.js";
+import { applyGateState, createAuthGate, renderAdminTable, GATE_STATE } from "./auth-gate.js";
 
 function fakeElement() {
   return {
@@ -17,6 +17,15 @@ function fakeElement() {
     },
     query: new Map(),
     querySelector(selector) { return this.query.get(selector) ?? null; },
+  };
+}
+
+function fakeStorage(values = {}) {
+  return {
+    values: new Map(Object.entries(values)),
+    getItem(key) { return this.values.get(key) ?? null; },
+    setItem(key, value) { this.values.set(key, value); },
+    removeItem(key) { this.values.delete(key); },
   };
 }
 
@@ -62,6 +71,27 @@ describe("client authorization gate", () => {
     expect(root.hidden).toBe(false);
     expect(root.dataset.state).toBe(GATE_STATE.LOCKED);
     expect(root.classList.contains("is-authorized")).toBe(false);
+  });
+
+  it("clears the token and locks when an administrator revoked the server session", async () => {
+    const root = fakeElement();
+    const status = fakeElement();
+    root.query.set("[data-gate-status]", status);
+    const storage = fakeStorage({ "synapse.accessToken": "revoked-token" });
+    const gate = createAuthGate({
+      root,
+      storage,
+      fetchImpl: async () => ({
+        ok: false,
+        status: 401,
+        async json() { return { error: { message: "Session is no longer active", code: "SESSION_REVOKED" } }; },
+      }),
+    });
+
+    expect(await gate.heartbeat()).toBe(false);
+    expect(storage.getItem("synapse.accessToken")).toBeNull();
+    expect(gate.getState()).toBe(GATE_STATE.LOCKED);
+    expect(status.textContent).toContain("会话已失效");
   });
 });
 

@@ -164,9 +164,25 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     return { users: await options.adminService.listUsers() };
   });
 
+  app.post("/api/admin/users/:id/status", async (request) => {
+    const claims = await requireAdmin(request, options);
+    const id = (request.params as { id: string }).id;
+    const input = body(request);
+    const user = await options.adminService.setUserStatus(id, String(input.status ?? ""), claims.sub, String(input.reason ?? ""));
+    return { user: publicUser(user) };
+  });
+
   app.get("/api/admin/devices", async (request) => {
     await requireAdmin(request, options);
     return { devices: await options.adminService.listDevices() };
+  });
+
+  app.post("/api/admin/devices/:id/status", async (request) => {
+    const claims = await requireAdmin(request, options);
+    const id = (request.params as { id: string }).id;
+    const input = body(request);
+    const device = await options.adminService.setDeviceStatus(id, String(input.status ?? ""), claims.sub, String(input.reason ?? ""));
+    return { device };
   });
 
   app.get("/api/admin/sessions", async (request) => {

@@ -27,11 +27,18 @@ button { cursor: pointer; }
 .admin-wide { grid-column: 1 / -1; }
 .card-heading { margin-bottom: 10px; }
 .card-heading h2 { margin: 0; font-size: 17px; }
+.table-tools { display: flex; gap: 8px; margin-bottom: 10px; }
+.table-tools input, .table-tools select { min-width: 0; padding: 8px 10px; font-size: 12px; }
+.table-tools input { flex: 1; }
+.table-tools select { width: 118px; color: #d5d8f6; background: #0c1024; border: 1px solid #3d426d; border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { padding: 9px 7px; border-bottom: 1px solid rgba(174,181,255,.12); text-align: left; vertical-align: top; }
 th { color: #aab0d4; font-weight: 500; }
 td { color: #e3e6ff; word-break: break-word; }
 .revoke-button { padding: 5px 8px; color: #ffc0c8; background: #4a263d; border: 1px solid #a54d6a; border-radius: 6px; }
+.status-button { padding: 5px 8px; border-radius: 6px; }
+.status-disable { color: #ffc0c8; background: #4a263d; border: 1px solid #a54d6a; }
+.status-enable { color: #b8f4dc; background: #1e4b46; border: 1px solid #4ba98e; }
 .admin-status { min-height: 18px; color: #83e5c3; font-size: 13px; }
 @media (max-width: 1100px) { .metric-grid { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 760px) { .admin-shell { width: min(100% - 20px, 1480px); padding-top: 18px; } .metric-grid, .admin-grid { grid-template-columns: 1fr 1fr; } .admin-wide { grid-column: 1 / -1; overflow-x: auto; } .admin-header { align-items: flex-start; flex-direction: column; } }
