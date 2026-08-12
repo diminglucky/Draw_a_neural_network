@@ -79,4 +79,24 @@ describe("agent runtime wiring", () => {
     expect(diagram.validation?.summary?.overlapCount).toBe(0);
     expect(diagram.nodes.every((node) => node.bwStyle)).toBe(true);
   });
+
+  it("runs the journal U-Net preset through the production IR parser and layout", async () => {
+    const config = loadConfig({
+      NODE_ENV: "development",
+      STORAGE_DRIVER: "memory",
+      SESSION_SECRET: TEST_SECRET,
+    });
+
+    const service = createAgentServiceForConfig(config);
+    const result = await service.chat({
+      userId: "user-1",
+      message: "Draw a U-Net for biomedical segmentation with encoder decoder skip connections.",
+      attachments: [],
+    });
+    const diagram = result.diagram as { figure?: { title?: string }; nodes?: Array<{ label?: string; subtitle?: string }> };
+
+    expect(diagram.figure?.title).toBe("U-Net Encoder-Decoder Architecture");
+    expect(diagram.nodes?.some((node) => node.label === "Skip concat II")).toBe(true);
+    expect(diagram.nodes?.some((node) => node.subtitle === "128 + 128 channels")).toBe(true);
+  });
 });

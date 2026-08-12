@@ -5,6 +5,7 @@ import {
   buildAgentPayload,
   buildVisioExportRequestHeaders,
   cancelVisioExportJob,
+  confirmAgentCanvasMutation,
   createIdempotencyKey,
   escapeHtml,
   exportDiagramToVisio,
@@ -48,6 +49,37 @@ describe("Agent Chat client contracts", () => {
     expect(JSON.stringify(payload)).not.toContain("apiKey");
   });
 
+  it("includes only the current canvas snapshot when requested", () => {
+    const canvas = {
+      figure: { title: "Current" },
+      paletteName: "dopamine",
+      nodes: [{ id: "input", type: "tensor", x: 0, y: 0, w: 100, h: 100, label: "Input", subtitle: "", stage: 0, color: "#00e5ff" }],
+      edges: [],
+    };
+    const payload = buildAgentPayload("modify the current diagram", [], "conversation-2", canvas);
+    expect(payload.canvas).toEqual(canvas);
+    expect(JSON.stringify(payload)).not.toContain("apiKey");
+    expect(JSON.stringify(payload)).not.toContain("SYNAPSE_API_BASE");
+  });
+
+  it("projects unsafe canvas metadata out of the Agent payload", () => {
+    const payload = buildAgentPayload("inspect the current diagram", [], "conversation-3", {
+      figure: { title: "Current", apiKey: "secret", serviceConfig: { baseUrl: "https://internal" } },
+      paletteName: "dopamine",
+      nodes: [{ id: "input", type: "tensor", x: 0, y: 0, w: 100, h: 100, label: "Input", subtitle: "", stage: 0, color: "#00e5ff", command: "powershell" }],
+      edges: [],
+    });
+
+    expect(payload.canvas).toEqual({
+      figure: { title: "Current" },
+      paletteName: "dopamine",
+      nodes: [{ id: "input", type: "tensor", x: 0, y: 0, w: 100, h: 100, label: "Input", subtitle: "", stage: 0, color: "#00e5ff" }],
+      edges: [],
+    });
+    expect(JSON.stringify(payload)).not.toContain("secret");
+    expect(JSON.stringify(payload)).not.toContain("powershell");
+  });
+
   it("creates a bounded idempotency key and sends it with the bearer request", () => {
     const key = createIdempotencyKey(() => "fixed-agent-key");
     const headers = buildAgentRequestHeaders("bearer-token", key);
@@ -59,6 +91,12 @@ describe("Agent Chat client contracts", () => {
       "Idempotency-Key": "fixed-agent-key",
     });
     expect(JSON.stringify(headers)).not.toContain("apiKey");
+  });
+
+  it("sends the configured relay API key only as a transient request header", () => {
+    const headers = buildAgentRequestHeaders("bearer-token", "agent-key", "sk-user-relay");
+    expect(headers["X-Synapse-Provider-Api-Key"]).toBe("sk-user-relay");
+    expect(JSON.stringify(headers)).not.toContain("SYNAPSE_API_BASE");
   });
 
   it("submits a validated Agent diagram as a queued Visio Job", async () => {
@@ -177,5 +215,11 @@ describe("Agent Chat client contracts", () => {
     expect(isAgentAuthorized({ gateState: "authorized", token: "bearer" })).toBe(true);
     expect(isAgentAuthorized({ gateState: "locked", token: "bearer" })).toBe(false);
     expect(isAgentAuthorized({ gateState: "authorized", token: "" })).toBe(false);
+  });
+
+  it("requires an explicit positive confirmation for Agent canvas mutation", () => {
+    expect(confirmAgentCanvasMutation("replace", () => false)).toBe(false);
+    expect(confirmAgentCanvasMutation("replace", () => true)).toBe(true);
+    expect(confirmAgentCanvasMutation("replace", null)).toBe(false);
   });
 });

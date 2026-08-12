@@ -10,6 +10,8 @@ type AgentChatCall = {
   conversationId: string;
   message: string;
   attachments: Array<{ name: string; mimeType: string; data: string; kind: string }>;
+  canvas?: Record<string, unknown>;
+  providerApiKey?: string;
 };
 
 function createAgentService() {
@@ -165,6 +167,70 @@ describe("agent chat routes", () => {
     });
     expect(JSON.stringify(agentAudits)).not.toContain(attachment.data);
     expect(JSON.stringify(agentAudits)).not.toContain("Please draft a CNN from this code");
+  });
+
+  it("passes the transient relay API key without writing it to the audit record", async () => {
+    const { app, agent, store, headers } = await createAuthorizedApp();
+    apps.add(app);
+    const providerApiKey = "sk-user-relay-secret";
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "agent-user-key-1", "x-synapse-provider-api-key": providerApiKey },
+      payload: { message: "draw a CNN" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(agent.calls[0]?.providerApiKey).toBe(providerApiKey);
+    const audits = await store.listAuditRecords();
+    expect(JSON.stringify(audits)).not.toContain(providerApiKey);
+  });
+
+  it("passes a bounded current canvas snapshot to the Agent and returns actions", async () => {
+    const { app, agent, headers } = await createAuthorizedApp();
+    apps.add(app);
+
+    const canvas = {
+      figure: { title: "Current CNN" },
+      paletteName: "dopamine",
+      nodes: [{ id: "input", type: "tensor", x: 100, y: 100, w: 120, h: 180, label: "Input", subtitle: "224 x 224 x 3", stage: 0, color: "#00e5ff" }],
+      edges: [],
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "canvas-context-1" },
+      payload: { message: "把当前图改成 ResNet", canvas },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(agent.calls[0]?.canvas).toEqual(canvas);
+    expect(response.json()).toHaveProperty("actions");
+    expect(response.json()).toHaveProperty("diagramIntent");
+  });
+
+  it("rejects canvas fields that are not part of the canonical Agent snapshot", async () => {
+    const { app, agent, headers } = await createAuthorizedApp();
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "canvas-unsafe-1" },
+      payload: {
+        message: "Inspect this canvas",
+        canvas: {
+          figure: { title: "Current", apiKey: "secret", serviceConfig: { baseUrl: "https://internal" } },
+          nodes: [{ id: "input", type: "tensor", x: 0, y: 0, w: 100, h: 100, label: "Input", subtitle: "", stage: 0, color: "#00e5ff", command: "powershell" }],
+          edges: [],
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.details).toMatchObject({ field: "canvas", reason: "invalid_canvas" });
+    expect(agent.calls).toHaveLength(0);
   });
 
   it.each([

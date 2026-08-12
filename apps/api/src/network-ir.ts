@@ -72,6 +72,7 @@ const nodeSchema = z
     id: idSchema,
     kind: z.enum(supportedNodeKinds),
     label: z.string().trim().min(1),
+    subtitle: z.string().max(512).optional().default(""),
     tensor: tensorSchema.nullable().optional().default(null),
     stage: z.number().int().nonnegative(),
     confidence: confidenceSchema.nullable().optional().default(null),

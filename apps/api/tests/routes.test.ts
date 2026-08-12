@@ -58,6 +58,31 @@ describe("foundation HTTP API", () => {
     expect(accessToken).toEqual(expect.any(String));
   });
 
+  it("does not trust stale client ownership fields during registration", async () => {
+    const registered = await app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        email: "fresh-device-owner@example.com",
+        password: "password-123",
+        device: {
+          id: "stale-device-id",
+          userId: "stale-user-id",
+          name: "Research PC",
+          publicKey: "public-key-b",
+          fingerprintHash: "fingerprint-b",
+          clientVersion: "0.1.0",
+          osVersion: "Windows 11",
+        },
+      },
+    });
+
+    expect(registered.statusCode).toBe(201);
+    expect(registered.json().user.id).not.toBe("stale-user-id");
+    expect(registered.json().device.userId).toBe(registered.json().user.id);
+    expect(registered.json().device.id).not.toBe("stale-device-id");
+  });
+
   it("returns the current access and creates a foundation job", async () => {
     const session = await app.inject({
       method: "GET",

@@ -8,6 +8,7 @@ import { signAccessToken, verifyAccessToken, verifyPassword } from "./security.j
 import type { FoundationStore } from "./store.js";
 import type { VisioExecutor } from "./adapters.js";
 import type { VisioJobRunner } from "./visio-job-runner.js";
+import { parseCanvasSnapshot, type CanvasSnapshot } from "./agent-actions.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -15,6 +16,7 @@ const MAX_ATTACHMENTS = 6;
 const MAX_CODE_CHARACTERS = 200_000;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
+const MAX_PROVIDER_API_KEY_LENGTH = 512;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const AGENT_USAGE_METRIC = "agentChatRequests" as const;
 
@@ -46,6 +48,8 @@ export interface AgentChatInput {
   conversationId: string;
   message: string;
   attachments: AgentAttachmentInput[];
+  canvas?: CanvasSnapshot;
+  providerApiKey?: string;
 }
 
 export interface AgentChatResult {
@@ -55,6 +59,8 @@ export interface AgentChatResult {
   response: unknown;
   networkIR?: unknown;
   diagram?: unknown;
+  diagramIntent?: "replace" | "modify" | "explain";
+  actions?: unknown;
 }
 
 export interface AgentServiceContract {
@@ -121,7 +127,21 @@ function idempotencyKey(request: FastifyRequest): string {
   return key;
 }
 
-function agentRequestHash(input: { hashConversationId: string | null; message: string; attachments: AgentAttachmentInput[] }): string {
+function providerApiKey(request: FastifyRequest): string | undefined {
+  const value = request.headers["x-synapse-provider-api-key"];
+  if (value == null) return undefined;
+  if (Array.isArray(value) || typeof value !== "string") {
+    throw validationError("Provider API key must be a string", { field: "x-synapse-provider-api-key", reason: "invalid_type" });
+  }
+  const key = value.trim();
+  if (!key) return undefined;
+  if (key.length > MAX_PROVIDER_API_KEY_LENGTH) {
+    throw validationError("Provider API key exceeds the maximum length", { field: "x-synapse-provider-api-key", reason: "limit_exceeded", max: MAX_PROVIDER_API_KEY_LENGTH });
+  }
+  return key;
+}
+
+function agentRequestHash(input: { hashConversationId: string | null; message: string; attachments: AgentAttachmentInput[]; canvas?: CanvasSnapshot }): string {
   return createHash("sha256").update(JSON.stringify({
     conversationId: input.hashConversationId,
     message: input.message,
@@ -130,6 +150,7 @@ function agentRequestHash(input: { hashConversationId: string | null; message: s
       mimeType: attachment.mimeType,
       data: attachment.data,
     })),
+    canvas: input.canvas ?? null,
   })).digest("hex");
 }
 
@@ -220,7 +241,7 @@ function normalizedBase64(value: string, field: string): { normalized: string; b
   return { normalized, bytes };
 }
 
-function parseAgentBody(request: FastifyRequest): { conversationId: string; hashConversationId: string | null; message: string; attachments: AgentAttachmentInput[] } {
+function parseAgentBody(request: FastifyRequest): { conversationId: string; hashConversationId: string | null; message: string; attachments: AgentAttachmentInput[]; canvas?: CanvasSnapshot } {
   const input = objectField(request.body, "body");
   const message = requiredStringField(input.message, "message");
   if (!message.trim()) {
@@ -284,11 +305,21 @@ function parseAgentBody(request: FastifyRequest): { conversationId: string; hash
     return { name, mimeType, data: normalized, kind };
   });
 
+  let canvas: CanvasSnapshot | undefined;
+  if (input.canvas !== undefined) {
+    try {
+      canvas = parseCanvasSnapshot(input.canvas);
+    } catch (error) {
+      throw validationError(error instanceof Error ? error.message : "canvas is invalid", { field: "canvas", reason: "invalid_canvas" });
+    }
+  }
+
   return {
     conversationId: trimmedConversationId ?? randomUUID(),
     hashConversationId: trimmedConversationId ?? null,
     message,
     attachments,
+    ...(canvas ? { canvas } : {}),
   };
 }
 
@@ -300,7 +331,14 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const user = await options.sessionService.registerUser({ email: String(input.email ?? ""), password: String(input.password ?? "") });
     const deviceInput = input.device;
     const device = deviceInput
-      ? await options.sessionService.registerDevice({ userId: user.id, ...deviceInput })
+      ? await options.sessionService.registerDevice({
+        userId: user.id,
+        name: String(deviceInput.name ?? "Windows device"),
+        publicKey: String(deviceInput.publicKey ?? ""),
+        fingerprintHash: String(deviceInput.fingerprintHash ?? ""),
+        clientVersion: String(deviceInput.clientVersion ?? ""),
+        osVersion: String(deviceInput.osVersion ?? ""),
+      })
       : null;
     return reply.code(201).send({ user: publicUser(user), device });
   });
@@ -497,9 +535,11 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
       messageChars: input.message.length,
       attachmentCount: input.attachments.length,
       attachmentKinds: input.attachments.map((attachment) => attachment.kind),
+      ...(input.canvas ? { canvasNodeCount: input.canvas.nodes.length, canvasEdgeCount: input.canvas.edges.length } : {}),
       usage: usageDetails(reservation),
     });
 
+    const requestProviderApiKey = providerApiKey(request);
     let result: AgentChatResult;
     try {
       result = await options.agentService.chat({
@@ -507,6 +547,8 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
         conversationId: input.conversationId,
         message: input.message,
         attachments: input.attachments,
+        ...(input.canvas ? { canvas: input.canvas } : {}),
+        ...(requestProviderApiKey ? { providerApiKey: requestProviderApiKey } : {}),
       });
     } catch (error) {
       await options.store.finalizeAgentUsage({
@@ -544,6 +586,8 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
       response: result.response,
       networkIR: result.networkIR ?? null,
       diagram: result.diagram ?? null,
+      diagramIntent: result.diagramIntent ?? "replace",
+      actions: result.actions ?? { actions: [] },
       usage: usageDetails(finalized ?? reservation),
     };
   });

@@ -1,4 +1,6 @@
-const API_BASE = (globalThis.SYNAPSE_API_BASE || "http://127.0.0.1:4180").replace(/\/$/, "");
+import { FIXED_FOUNDATION_API_URL } from "../client/api-base.js";
+
+const API_BASE = FIXED_FOUNDATION_API_URL;
 const TOKEN_KEY = "synapse.adminAccessToken";
 const tokenStore = globalThis.localStorage;
 const state = {

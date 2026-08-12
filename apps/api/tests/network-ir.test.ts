@@ -96,6 +96,15 @@ describe("Network IR schema and validation", () => {
     });
   });
 
+  it("accepts a publication subtitle on nodes for tensor-shape captions", () => {
+    const ir = createValidIR();
+    ir.nodes[1].subtitle = "64 channels / stride 2";
+
+    const parsed = parseNetworkIR(ir);
+
+    expect(parsed.nodes[1].subtitle).toBe("64 channels / stride 2");
+  });
+
   it("reports duplicate node ids", () => {
     const ir = createValidIR();
     ir.nodes[2].id = "conv-1";

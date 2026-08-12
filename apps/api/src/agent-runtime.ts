@@ -20,6 +20,7 @@ export interface AgentRuntimeEnvironment {
 export interface ResolvedAgentProvider {
   kind: AgentProviderKind;
   provider: AgentProvider;
+  providerForApiKey: (apiKey: string) => AgentProvider;
 }
 
 export interface AgentRuntimeOptions {
@@ -31,6 +32,11 @@ export function resolveAgentProvider(
   environment: AgentRuntimeEnvironment = process.env,
 ): ResolvedAgentProvider {
   const apiKey = environment.OPENAI_API_KEY?.trim();
+  const providerForApiKey = (userApiKey: string) => createOpenAIResponsesAgentProvider({
+    apiKey: userApiKey,
+    model: environment.OPENAI_MODEL,
+    baseUrl: environment.OPENAI_BASE_URL,
+  });
   if (apiKey) {
     return {
       kind: "openai-responses",
@@ -39,6 +45,7 @@ export function resolveAgentProvider(
         model: environment.OPENAI_MODEL,
         baseUrl: environment.OPENAI_BASE_URL,
       }),
+      providerForApiKey,
     };
   }
 
@@ -46,12 +53,14 @@ export function resolveAgentProvider(
     return {
       kind: "local-deterministic",
       provider: createLocalDeterministicAgentProvider(),
+      providerForApiKey,
     };
   }
 
   return {
     kind: "not-configured",
     provider: new NotConfiguredAgentProvider(),
+    providerForApiKey,
   };
 }
 
@@ -63,6 +72,7 @@ export function createAgentServiceForConfig(
   const resolved = resolveAgentProvider(config, environment);
   return new AgentService({
     provider: resolved.provider,
+    providerForApiKey: resolved.providerForApiKey,
     parseNetworkIR,
     validateNetworkIR: (value) => {
       const result = validateNetworkIR(value);

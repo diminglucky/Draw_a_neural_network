@@ -1,5 +1,6 @@
 import { ApiErrorCode, FoundationError } from "./domain.js";
 import type { AgentAttachment, AgentDraftOutput, AgentEvidence, AgentProvider } from "./adapters.js";
+import { applyCanvasActions, parseCanvasActionSet, type CanvasActionSet, type CanvasSnapshot } from "./agent-actions.js";
 
 export type AgentStageName = "received" | "analyzing" | "building_ir" | "layouting" | "validating" | "completed" | "failed";
 
@@ -15,6 +16,8 @@ export interface AgentChatInput {
   conversationId?: string;
   message: string;
   attachments?: AgentAttachment[];
+  canvas?: CanvasSnapshot;
+  providerApiKey?: string;
 }
 
 export interface AgentChatResponse {
@@ -33,6 +36,8 @@ export interface AgentChatResult {
   response: AgentChatResponse;
   networkIR: unknown;
   diagram: unknown;
+  diagramIntent: "replace" | "modify" | "explain";
+  actions: CanvasActionSet;
 }
 
 export interface AgentChatOptions {
@@ -41,6 +46,7 @@ export interface AgentChatOptions {
 
 export interface AgentServiceOptions {
   provider: AgentProvider;
+  providerForApiKey?: (apiKey: string) => AgentProvider;
   parseNetworkIR: (value: unknown) => unknown;
   validateNetworkIR?: (value: unknown) => boolean | { valid: boolean; warnings?: string[] };
   layoutNetworkIR?: (value: unknown) => unknown;
@@ -50,6 +56,7 @@ export interface AgentServiceOptions {
 
 export class AgentService {
   private readonly provider: AgentProvider;
+  private readonly providerForApiKey?: (apiKey: string) => AgentProvider;
   private readonly parseNetworkIR: (value: unknown) => unknown;
   private readonly validateNetworkIR: (value: unknown) => { valid: boolean; warnings: string[] };
   private readonly layoutNetworkIR: (value: unknown) => unknown;
@@ -58,6 +65,7 @@ export class AgentService {
 
   constructor(options: AgentServiceOptions) {
     this.provider = options.provider;
+    this.providerForApiKey = options.providerForApiKey;
     this.parseNetworkIR = options.parseNetworkIR;
     this.validateNetworkIR = (value) => {
       const result = options.validateNetworkIR?.(value);
@@ -77,6 +85,8 @@ export class AgentService {
       conversationId,
       message: input.message,
       attachments: normalizeAttachments(input.attachments),
+      ...(input.canvas ? { canvas: input.canvas } : {}),
+      ...(input.providerApiKey ? { providerApiKey: input.providerApiKey } : {}),
     };
     const stages: AgentStageRecord[] = [];
     const pushStage = (name: AgentStageName, status: "completed" | "failed" = "completed", details?: Record<string, unknown>) => {
@@ -90,7 +100,12 @@ export class AgentService {
 
     try {
       pushStage("analyzing");
-      const draft = await this.provider.buildDraft(normalizedInput);
+      const provider = normalizedInput.providerApiKey && this.providerForApiKey
+        ? this.providerForApiKey(normalizedInput.providerApiKey)
+        : this.provider;
+      const draft = await provider.buildDraft(normalizedInput);
+      const actions = parseCanvasActionSet(draft.actions ?? { actions: [] });
+      if (normalizedInput.canvas && actions.actions.length > 0) applyCanvasActions(normalizedInput.canvas, actions);
 
       pushStage("building_ir");
       const networkIR = this.parseNetworkIR(draft.networkIR);
@@ -121,6 +136,8 @@ export class AgentService {
         response,
         networkIR,
         diagram,
+        diagramIntent: draft.diagramIntent ?? "replace",
+        actions,
       };
     } catch (error) {
       const foundationError = toFoundationError(error);

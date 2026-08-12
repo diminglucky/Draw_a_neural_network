@@ -278,6 +278,15 @@
         <button class="icon-button" type="button" data-agent-close aria-label="关闭 Agent 对话">×</button>
       </div>
       <p class="agent-chat-lock" data-agent-lock role="status">请先完成在线授权，Agent 对话已锁定</p>
+      <section class="agent-provider-settings" aria-label="Agent 中转站设置">
+        <label class="agent-chat-label" for="agentProviderApiKey">中转站 API Key</label>
+        <div class="agent-provider-key-row">
+          <input id="agentProviderApiKey" data-agent-provider-key type="password" autocomplete="off" placeholder="填写你的中转站 API Key" />
+          <button class="ghost-button" data-agent-provider-key-save type="button">保存</button>
+          <button class="ghost-button" data-agent-provider-key-clear type="button">清除</button>
+        </div>
+        <p class="agent-provider-key-hint" data-agent-provider-key-status>URL 由客户端固定，Key 仅用于本次应用会话。</p>
+      </section>
       <div class="agent-chat-messages" data-agent-result hidden aria-live="polite"></div>
       <p class="agent-chat-error" data-agent-error role="alert" hidden></p>
       <p class="agent-chat-status" data-agent-status>准备发送</p>

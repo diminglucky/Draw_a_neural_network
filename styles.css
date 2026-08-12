@@ -1134,6 +1134,41 @@ kbd {
   background: rgba(49, 92, 255, 0.08);
 }
 
+.agent-provider-settings {
+  padding: 10px;
+  border: 1px solid rgba(18, 31, 51, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.agent-provider-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+}
+
+.agent-provider-key-row input {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(18, 31, 51, 0.14);
+  border-radius: 9px;
+  color: var(--ink);
+  background: #fff;
+}
+
+.agent-provider-key-row input:focus {
+  border-color: rgba(49, 92, 255, 0.5);
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(49, 92, 255, 0.1);
+}
+
+.agent-provider-key-hint {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .agent-chat-error {
   padding: 8px 10px;
   color: #a33127;

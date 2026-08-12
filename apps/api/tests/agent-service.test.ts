@@ -239,6 +239,53 @@ describe("agent service orchestration", () => {
     expect(requestBody.text.format.name).toBe("network_ir");
   });
 
+  it("sends bounded canvas context to OpenAI and separates safe actions from network IR", async () => {
+    const [{ createOpenAIResponsesAgentProvider }] = await Promise.all([loadAdaptersModule()]);
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        output: [{
+          type: "message",
+          content: [{
+            type: "output_text",
+            text: JSON.stringify({
+              figure: { id: "figure-1", title: "Updated", description: "Updated figure" },
+              nodes: [{ id: "input", kind: "input", label: "Input", stage: 0, confidence: 0.9, sourceEvidence: [] }, { id: "output", kind: "output", label: "Output", stage: 1, confidence: 0.9, sourceEvidence: [] }],
+              edges: [{ source: "input", target: "output", kind: "flow", label: "flow", shape: null, skip: false, confidence: 0.9, sourceEvidence: [] }],
+              groups: [], annotations: [], style: {}, layout: {},
+              diagramIntent: "modify",
+              actions: { actions: [{ type: "update_figure", patch: { title: "Updated" } }] },
+            }),
+          }],
+        }],
+      }),
+    }));
+    const provider = createOpenAIResponsesAgentProvider({
+      apiKey: "sk-test",
+      fetchImpl,
+      parseNetworkIR: createNetworkIrHarness().parseNetworkIR,
+    });
+
+    const result = await provider.buildDraft({
+      userId: "user-1",
+      conversationId: "conv-openai-canvas",
+      message: "Rename the current figure",
+      attachments: [],
+      canvas: {
+        figure: { title: "Current" },
+        paletteName: "dopamine",
+        nodes: [{ id: "input", type: "tensor", x: 0, y: 0, w: 100, h: 100, label: "Input", subtitle: "", stage: 0, color: "#00e5ff" }, { id: "output", type: "output", x: 200, y: 0, w: 100, h: 100, label: "Output", subtitle: "", stage: 1, color: "#ff4fd8" }],
+        edges: [{ id: "edge-1", source: "input", target: "output", label: "flow", type: "signal", color: "#2846d8" }],
+      },
+    });
+
+    expect(result.diagramIntent).toBe("modify");
+    expect(result.actions.actions).toEqual([{ type: "update_figure", patch: { title: "Updated" } }]);
+    const requestBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body ?? "{}"));
+    expect(requestBody.input[0].content[0].text).toContain("Current canvas snapshot");
+  });
+
   it("reports stage progression in order during a successful run", async () => {
     const [{ AgentService }, { createLocalDeterministicAgentProvider }] = await Promise.all([
       loadAgentServiceModule(),
@@ -269,6 +316,34 @@ describe("agent service orchestration", () => {
     expect(observed).toEqual(["received", "analyzing", "building_ir", "layouting", "validating", "completed"]);
   });
 
+  it("uses a request-scoped provider when the desktop supplies a relay API key", async () => {
+    const [{ AgentService }, { createLocalDeterministicAgentProvider }] = await Promise.all([
+      loadAgentServiceModule(),
+      loadAdaptersModule(),
+    ]);
+    const networkIr = createNetworkIrHarness();
+    const selectedKeys: string[] = [];
+    const service = new AgentService({
+      provider: createLocalDeterministicAgentProvider(),
+      providerForApiKey: (apiKey) => {
+        selectedKeys.push(apiKey);
+        return createLocalDeterministicAgentProvider();
+      },
+      ...networkIr,
+      now: () => "2026-08-12T10:20:00.000Z",
+    });
+
+    const result = await service.chat({
+      userId: "user-1",
+      message: "draw a CNN",
+      attachments: [],
+      providerApiKey: "sk-relay-user-key",
+    });
+
+    expect(result.status).toBe("completed");
+    expect(selectedKeys).toEqual(["sk-relay-user-key"]);
+  });
+
   it("fails with AGENT_PROVIDER_NOT_CONFIGURED when no real provider is configured", async () => {
     const [{ AgentService }, { NotConfiguredAgentProvider }] = await Promise.all([
       loadAgentServiceModule(),
@@ -297,5 +372,59 @@ describe("agent service orchestration", () => {
         ]),
       },
     });
+  });
+
+  it("returns a safe canvas modification action when the user asks to change the current diagram", async () => {
+    const [{ AgentService }, { createLocalDeterministicAgentProvider }] = await Promise.all([
+      loadAgentServiceModule(),
+      loadAdaptersModule(),
+    ]);
+    const networkIr = createNetworkIrHarness();
+    const service = new AgentService({
+      provider: createLocalDeterministicAgentProvider(),
+      ...networkIr,
+      createConversationId: () => "conv-edit-1",
+    });
+
+    const result = await service.chat({
+      userId: "user-1",
+      message: "把 conv1 改成 128 channels，并把标题改成 ResNet-50 revision",
+      canvas: {
+        figure: { title: "ResNet" },
+        paletteName: "dopamine",
+        nodes: [
+          { id: "input", type: "tensor", x: 100, y: 100, w: 120, h: 180, label: "Input", subtitle: "224 x 224 x 3", stage: 0, color: "#00e5ff" },
+          { id: "conv1", type: "conv", x: 300, y: 100, w: 120, h: 220, label: "Conv 1", subtitle: "64 channels", stage: 1, color: "#ff2aa3" },
+        ],
+        edges: [{ id: "edge-input-conv1", source: "input", target: "conv1", label: "features", type: "signal", color: "#2846d8" }],
+      },
+    } as any);
+
+    expect(result.diagramIntent).toBe("modify");
+    expect(result.actions.actions).toEqual(expect.arrayContaining([
+      { type: "update_node", id: "conv1", patch: { subtitle: "128 channels" } },
+      { type: "update_figure", patch: { title: "ResNet-50 revision" } },
+    ]));
+  });
+
+  it.each([
+    { name: "ResNet", message: "Draw a ResNet-50 residual CNN with skip connections.", requiredKinds: ["add", "residual", "classifier"], requireSkip: true },
+    { name: "U-Net", message: "Draw a U-Net for biomedical segmentation with encoder decoder skip connections.", requiredKinds: ["concat", "upsample", "conv"], requireSkip: true },
+    { name: "ViT", message: "Draw a Vision Transformer with patch embedding, multi-head attention and MLP blocks.", requiredKinds: ["embedding", "attention", "transformer-block"], requireSkip: false },
+  ])("builds a publication topology preset for $name", async ({ message, requiredKinds, requireSkip }) => {
+    const [{ AgentService }, { createLocalDeterministicAgentProvider }] = await Promise.all([
+      loadAgentServiceModule(),
+      loadAdaptersModule(),
+    ]);
+    const service = new AgentService({
+      provider: createLocalDeterministicAgentProvider(),
+      ...createNetworkIrHarness(),
+    });
+
+    const result = await service.chat({ userId: "user-1", message, attachments: [] });
+    const ir = result.networkIR as { nodes: Array<{ kind: string }>; edges: Array<{ kind?: string; skip?: boolean }> };
+    const kinds = new Set(ir.nodes.map((node) => node.kind));
+    for (const kind of requiredKinds) expect(kinds.has(kind)).toBe(true);
+    if (requireSkip) expect(ir.edges.some((edge) => edge.kind === "skip" || edge.skip === true)).toBe(true);
   });
 });

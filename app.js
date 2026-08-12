@@ -1,6 +1,7 @@
 import { createEdge, createNode, createTemplate, defaultFigure, modelLibrary } from "./models.js";
 import { setupAIWorkflow } from "./ai-workflow.js";
 import { setupCodeWorkflow } from "./code-workflow.js";
+import { applyCanvasActions, assertFreshCanvasPreview, cloneCanvasValue, previewCanvasActions, projectCanvasSnapshot } from "./canvas-actions.js";
 
 const svg = document.querySelector("#networkCanvas");
 const statusText = document.querySelector("#statusText");
@@ -86,6 +87,8 @@ const palettes = {
 };
 
 const stackPartTypes = new Set(["conv", "volume-stack", "flatten", "dense-layer"]);
+let pendingAgentAction = null;
+let pendingAgentDiagram = null;
 
 function loadTemplate(name, options = {}) {
   const template = createTemplate(name);
@@ -178,10 +181,52 @@ function applyDiagramDocument(document, options = {}) {
   return true;
 }
 
-function applyAgentDiagram(diagram) {
-  return applyDiagramDocument(diagram, {
+function createAgentDiagramPreview(diagram) {
+  const normalized = normalizeDiagramDocument(diagram);
+  if (!normalized) throw new Error("Agent replacement diagram is invalid");
+  const safeDiagram = projectCanvasSnapshot(normalized);
+  return previewCanvasActions(getCanvasDocument(), {
+    actions: [{ type: "replace_document", document: safeDiagram }],
+  });
+}
+
+function previewAgentDiagram(diagram) {
+  const preview = createAgentDiagramPreview(diagram);
+  const token = globalThis.crypto?.randomUUID?.() || `agent-diagram-preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  pendingAgentDiagram = { fingerprint: JSON.stringify(diagram), token };
+  return { ...preview, token };
+}
+
+function applyAgentDiagram(diagram, token) {
+  assertFreshCanvasPreview(pendingAgentDiagram, diagram, token);
+  const preview = createAgentDiagramPreview(diagram);
+  pendingAgentDiagram = null;
+  return applyDiagramDocument(preview.document, {
     message: "Agent diagram applied to the canvas",
   });
+}
+
+function getCanvasDocument() {
+  return projectCanvasSnapshot({
+    figure: state.figure,
+    paletteName: state.paletteName,
+    nodes: state.nodes,
+    edges: state.edges,
+  });
+}
+
+function previewAgentActions(actionSet) {
+  const preview = previewCanvasActions(getCanvasDocument(), actionSet, { normalizeDocument: normalizeDiagramDocument });
+  const token = globalThis.crypto?.randomUUID?.() || `agent-preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  pendingAgentAction = { fingerprint: JSON.stringify(actionSet), token };
+  return { ...preview, token };
+}
+
+function applyAgentActions(actionSet, token) {
+  assertFreshCanvasPreview(pendingAgentAction, actionSet, token);
+  pendingAgentAction = null;
+  const preview = previewCanvasActions(getCanvasDocument(), actionSet, { normalizeDocument: normalizeDiagramDocument });
+  return applyDiagramDocument(preview.document, { message: "Agent 画布修改已应用" });
 }
 
 function normalizeDiagramDocument(document) {
@@ -1962,7 +2007,16 @@ bindInspector();
 setupAIWorkflow({ applyDiagramDocument, setStatus });
 setupCodeWorkflow({ applyDiagramDocument, setStatus });
 window.synapseApplyAgentDiagram = applyAgentDiagram;
+window.synapsePreviewAgentDiagram = previewAgentDiagram;
+window.synapseGetCanvasDocument = getCanvasDocument;
+window.synapsePreviewAgentActions = previewAgentActions;
+window.synapseApplyAgentActions = applyAgentActions;
 window.__synapseTestApply = applyDiagramDocument;
+window.__synapseTestCanvasActions = {
+  getCanvasDocument,
+  previewAgentActions,
+  applyAgentActionsToDocument: (document, actionSet) => applyCanvasActions(document, actionSet, { normalizeDocument: normalizeDiagramDocument }),
+};
 const previewTemplate = new URLSearchParams(window.location.search).get("previewTemplate");
 if (previewTemplate && modelLibrary.some((item) => item.id === previewTemplate)) {
   loadTemplate(previewTemplate, { render: false, persist: false, message: `预览 ${previewTemplate} 模板，不覆盖当前草稿` });

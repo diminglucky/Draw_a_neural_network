@@ -1,3 +1,7 @@
+import { projectCanvasSnapshot } from "./canvas-actions.js";
+import { resolveFoundationApiBase } from "./apps/client/api-base.js";
+import { clearProviderApiKey, maskProviderApiKey, readProviderApiKey, saveProviderApiKey } from "./apps/client/provider-key.js";
+
 export const AGENT_LIMITS = Object.freeze({
   messageChars: 12000,
   attachments: 6,
@@ -43,7 +47,7 @@ export function validateAttachments(attachments = []) {
   return { ok: true };
 }
 
-export function buildAgentPayload(message, attachments = [], conversationId = "") {
+export function buildAgentPayload(message, attachments = [], conversationId = "", canvas = undefined) {
   const messageCheck = validateMessage(message);
   if (!messageCheck.ok) throw new Error(messageCheck.error);
   const attachmentCheck = validateAttachments(attachments);
@@ -52,6 +56,7 @@ export function buildAgentPayload(message, attachments = [], conversationId = ""
     ...(conversationId ? { conversationId } : {}),
     message: String(message),
     attachments: attachments.map(({ name, mimeType, kind, data }) => ({ name, mimeType, kind, data })),
+    ...(canvas && typeof canvas === "object" ? { canvas: projectCanvasSnapshot(canvas) } : {}),
   };
 }
 
@@ -68,6 +73,10 @@ export function isAgentAuthorized({ gateState, token } = {}) {
   return gateState === "authorized" && Boolean(String(token ?? "").trim());
 }
 
+export function confirmAgentCanvasMutation(message, confirmImpl = globalThis.confirm) {
+  return typeof confirmImpl === "function" && confirmImpl(String(message)) === true;
+}
+
 export function createIdempotencyKey(randomUUIDFactory = globalThis.crypto?.randomUUID?.bind(globalThis.crypto)) {
   const generated = typeof randomUUIDFactory === "function"
     ? randomUUIDFactory()
@@ -75,12 +84,15 @@ export function createIdempotencyKey(randomUUIDFactory = globalThis.crypto?.rand
   return String(generated).slice(0, 128);
 }
 
-export function buildAgentRequestHeaders(token, key) {
-  return {
+export function buildAgentRequestHeaders(token, key, providerApiKey = "") {
+  const headers = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${String(token ?? "")}`,
     "Idempotency-Key": String(key),
   };
+  const relayKey = String(providerApiKey ?? "").trim();
+  if (relayKey) headers["X-Synapse-Provider-Api-Key"] = relayKey;
+  return headers;
 }
 
 export function buildVisioExportRequestHeaders(token, key) {
@@ -101,7 +113,7 @@ function visioRequestContext(options = {}) {
   if (!token) throw new Error("在线授权后才能导出到 Visio");
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("当前环境不支持网络请求");
-  const apiBase = (options.apiBase || globalThis.SYNAPSE_API_BASE || "http://127.0.0.1:4180").replace(/\/$/, "");
+  const apiBase = resolveFoundationApiBase(options);
   return { token, fetchImpl, apiBase };
 }
 
@@ -252,6 +264,10 @@ function mountAgentChat() {
   const resultNode = drawer.querySelector("[data-agent-result]");
   const errorNode = drawer.querySelector("[data-agent-error]");
   const sendButton = drawer.querySelector("[data-agent-send]");
+  const providerKeyInput = drawer.querySelector("[data-agent-provider-key]");
+  const providerKeySave = drawer.querySelector("[data-agent-provider-key-save]");
+  const providerKeyClear = drawer.querySelector("[data-agent-provider-key-clear]");
+  const providerKeyStatus = drawer.querySelector("[data-agent-provider-key-status]");
   let attachments = [];
   let conversationId = "";
   let busy = false;
@@ -271,9 +287,30 @@ function mountAgentChat() {
   };
   const setError = (message = "") => { renderVisioError(errorNode, message); };
   const setStage = (stage) => { statusNode.textContent = stage?.name ? `阶段：${stage.name}` : "准备发送"; };
+  const refreshProviderKey = () => {
+    const key = readProviderApiKey();
+    if (providerKeyInput) providerKeyInput.value = key;
+    if (providerKeyStatus) providerKeyStatus.textContent = key
+      ? `已配置 ${maskProviderApiKey(key)}；仅在本次应用会话中使用。`
+      : "URL 由客户端固定，Key 仅用于本次应用会话。";
+  };
 
   toggle.addEventListener("click", () => { drawer.classList.toggle("is-open"); refreshLock(); if (!drawer.classList.contains("is-open")) toggle.focus(); });
   drawer.querySelector("[data-agent-close]")?.addEventListener("click", () => { drawer.classList.remove("is-open"); toggle.focus(); });
+  providerKeySave?.addEventListener("click", () => {
+    try {
+      saveProviderApiKey(providerKeyInput?.value || "");
+      refreshProviderKey();
+      setError("");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "API Key 保存失败");
+    }
+  });
+  providerKeyClear?.addEventListener("click", () => {
+    clearProviderApiKey();
+    refreshProviderKey();
+  });
+  refreshProviderKey();
   fileInput.addEventListener("change", async () => {
     setError("");
     const selected = [...fileInput.files];
@@ -290,16 +327,19 @@ function mountAgentChat() {
     if (!messageCheck.ok) { setError(messageCheck.error); return; }
     busy = true; refreshLock(); resultNode.hidden = true; statusNode.textContent = "阶段：received";
     try {
-      const payload = buildAgentPayload(message, attachments, conversationId);
+      const canvas = typeof globalThis.synapseGetCanvasDocument === "function" ? globalThis.synapseGetCanvasDocument() : undefined;
+      const payload = buildAgentPayload(message, attachments, conversationId, canvas);
       const requestKey = createIdempotencyKey();
-      const apiBase = (globalThis.SYNAPSE_API_BASE || "http://127.0.0.1:4180").replace(/\/$/, "");
-      const response = await fetch(`${apiBase}/api/agent/chat`, { method: "POST", headers: buildAgentRequestHeaders(readToken(), requestKey), body: JSON.stringify(payload) });
+      const apiBase = resolveFoundationApiBase();
+      const response = await fetch(`${apiBase}/api/agent/chat`, { method: "POST", headers: buildAgentRequestHeaders(readToken(), requestKey, readProviderApiKey()), body: JSON.stringify(payload) });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error?.message || `Agent 请求失败 (${response.status})`);
       conversationId = body.conversationId || conversationId;
       (body.stages || []).forEach(setStage);
       const answer = body.response || {};
-      resultNode.innerHTML = `<div class="agent-chat-answer"><p>${escapeHtml(textContent(answer.text || answer.summary || "Agent 未返回说明"))}</p><div class="agent-chat-meta"><span>confidence ${escapeHtml(answer.confidence ?? "-")}</span></div><h4>证据</h4>${renderList(answer.evidence, "暂无证据") }<h4>警告</h4>${renderList(answer.warnings, "无")}</div>${body.diagram ? '<div class="agent-chat-result-actions"><button type="button" class="primary-button" data-agent-apply>应用到画布</button><button type="button" class="ghost-button" data-agent-visio-export>导出到 Visio</button></div>' : ""}`;
+      const hasActions = Array.isArray(body.actions?.actions) && body.actions.actions.length > 0;
+      const resultActions = body.diagram ? `<div class="agent-chat-result-actions">${hasActions ? '<button type="button" class="ghost-button" data-agent-preview>预览修改</button><button type="button" class="primary-button" data-agent-apply-actions>应用修改</button>' : ""}<button type="button" class="${hasActions ? "ghost-button" : "primary-button"}" data-agent-apply>应用完整图</button><button type="button" class="ghost-button" data-agent-visio-export>导出到 Visio</button></div>` : "";
+      resultNode.innerHTML = `<div class="agent-chat-answer"><p>${escapeHtml(textContent(answer.text || answer.summary || "Agent 未返回说明"))}</p><div class="agent-chat-meta"><span>confidence ${escapeHtml(answer.confidence ?? "-")}</span><span>intent ${escapeHtml(body.diagramIntent || "replace")}</span></div><h4>证据</h4>${renderList(answer.evidence, "暂无证据") }<h4>警告</h4>${renderList(answer.warnings, "无")}</div>${resultActions}<div class="agent-chat-action-preview" data-agent-action-preview hidden></div>`;
       resultNode.hidden = false;
       resultNode.querySelector("[data-agent-visio-export]")?.addEventListener("click", async (event) => {
         const exportButton = event.currentTarget;
@@ -360,7 +400,35 @@ function mountAgentChat() {
           refreshLock();
         }
       });
-      resultNode.querySelector("[data-agent-apply]")?.addEventListener("click", () => { if (typeof globalThis.synapseApplyAgentDiagram === "function") globalThis.synapseApplyAgentDiagram(body.diagram); });
+      resultNode.querySelector("[data-agent-apply]")?.addEventListener("click", () => {
+        if (typeof globalThis.synapsePreviewAgentDiagram !== "function" || typeof globalThis.synapseApplyAgentDiagram !== "function") return;
+        try {
+          const diagramPreview = globalThis.synapsePreviewAgentDiagram(body.diagram);
+          if (!confirmAgentCanvasMutation("确认将 Agent 生成的完整图替换当前画布吗？")) return;
+          globalThis.synapseApplyAgentDiagram(body.diagram, diagramPreview.token);
+        } catch (error) { setError(error instanceof Error ? error.message : "应用完整图失败"); }
+      });
+      let actionPreview;
+      const renderActionPreview = () => {
+        const previewNode = resultNode.querySelector("[data-agent-action-preview]");
+        if (!previewNode || typeof globalThis.synapsePreviewAgentActions !== "function") return false;
+        try {
+          actionPreview = globalThis.synapsePreviewAgentActions(body.actions);
+          previewNode.textContent = `已生成修改预览：${actionPreview.summary}`;
+          previewNode.hidden = false;
+          return true;
+        } catch (error) {
+          setError(error instanceof Error ? error.message : "动作预览失败");
+          return false;
+        }
+      };
+      resultNode.querySelector("[data-agent-preview]")?.addEventListener("click", renderActionPreview);
+      resultNode.querySelector("[data-agent-apply-actions]")?.addEventListener("click", () => {
+        if (typeof globalThis.synapseApplyAgentActions !== "function") return;
+        if (!renderActionPreview()) return;
+        if (!confirmAgentCanvasMutation("确认将这些结构化修改应用到当前画布吗？")) return;
+        try { globalThis.synapseApplyAgentActions(body.actions, actionPreview.token); } catch (error) { setError(error instanceof Error ? error.message : "应用画布修改失败"); }
+      });
       statusNode.textContent = "阶段：completed";
       messageInput.value = "";
       attachments = []; renderAttachments();

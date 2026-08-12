@@ -1,4 +1,5 @@
 import { createDeviceKeyProvider } from "./device-key-provider.js";
+import { resolveFoundationApiBase } from "./api-base.js";
 
 export const GATE_STATE = Object.freeze({
   LOCKED: "locked",
@@ -95,7 +96,7 @@ export function createAuthGate(options = {}) {
   const root = options.root || globalThis.document?.querySelector?.("#foundationGate");
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const storage = getStorage(options.storage);
-  const apiBase = (options.apiBase || globalThis.SYNAPSE_API_BASE || "http://127.0.0.1:4180").replace(/\/$/, "");
+  const apiBase = resolveFoundationApiBase(options);
   const requireDeviceProof = readDeviceProofRequirement(options);
   const deviceProvider = options.deviceProvider || createDeviceKeyProvider({
     bridge: options.deviceBridge,
