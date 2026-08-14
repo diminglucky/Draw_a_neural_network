@@ -5,6 +5,118 @@
 **目标工作树：** `C:\项目\code\Draw_a_neural_network\.worktrees\commercial-foundation`（`codex/commercial-foundation`）<br>
 **替代的产品方向：** 不再以「VGG / ResNet / U-Net / ViT 模板集合」作为默认架构；改为可理解任意混合输入、可证明结构正确性、可组合地生成论文级神经网络图的编译 Agent。
 
+## 0. 2026-08-14 执行基线：从“安全导出原型”回到“高质量神经网络图编译器”
+
+### 0.1 当前结论与禁止性声明
+
+当前分支已经具备认证、Draft、Network IR、五个专用 grammar、确定性 preview、受限 Visio 协议和 Universal export 的一部分安全边界。这些能力是后半段基础，不能被描述为下列产品能力已经完成：
+
+```text
+禁止宣称：任意代码或草图已被可靠理解。
+禁止宣称：当前五个 grammar 等于支持任意神经网络。
+禁止宣称：mock/协议测试等于真实 Visio 顶刊图已经绘制成功。
+禁止宣称：单张 VGG16 图达到目标即代表通用能力成立。
+```
+
+本设计的第一优先级从“继续扩展 Job、导出 API 或按模型名增加模板”调整为：建立一条可审计、可读回、可视觉验收的端到端编译路径。安全导出和持久化闭环仍必须完成，但只在阻塞该路径时继续扩展；不得挤占结构理解、组件化图形表达、布局和真实 Visio 质量验证的资源。
+
+### 0.2 第一条端到端能力线
+
+首个交付切片不以模型名称为功能入口，而以四个结构上互补的黄金样本作为同一通用编译器的验收压力集：
+
+| 样本 | 结构压力 | 必须证明的通用能力 |
+|---|---|---|
+| VGG16 | feature-map 阶段、重复卷积、池化、分类头 | `TensorVolume`、`RepeatGroup`、`StageRegion`、尺度/通道注释 |
+| ResNet-18/50 | projection、residual add、重复 block | `ResidualSkip`、`Merge(add)`、跨 stage 的稳定锚点和路由 |
+| U-Net | 对称 encoder/decoder、跨尺度 skip、concat | `ScaleTransition`、`Merge(concat)`、双侧层次和非穿越 skip 路由 |
+| ViT | patch embedding、token sequence、Transformer repeat、attention/head | `TokenSequence`、`Attention`、`RepeatGroup`、抽象粒度切换 |
+
+这四个样本不是四套硬编码模板。每个样本必须先经同一 `SourcePack → EvidenceGraph → Architecture IR v3` 合同，再由同一组件组合器、布局器和 Visio renderer 消费。若新的网络只能通过 `if (modelName === ...)` 成功，则该实现不计入本阶段完成。
+
+### 0.3 第一阶段输入边界和分期选择
+
+Phase A.1 的首要输入是**静态可解析的 PyTorch 代码**，支持 `nn.Module`、常见 layer constructor、`forward` 内的顺序调用、module reuse、`+`/`torch.add`、`torch.cat`、显式池化/上采样和可定位的 repeat 线索。分析器不执行用户代码，不加载权重，不访问网络，不运行 `forward`；遇到动态控制流、自定义 CUDA、反射、运行时 shape 或无法解析的外部调用时，必须返回覆盖范围与 unresolved，而不是猜测。
+
+草图、截图、Keras、ONNX 和参考图仍属于产品目标，但分期如下：
+
+| 阶段 | 可作为结构事实的来源 | 不能做的事情 |
+|---|---|---|
+| Phase A.1 | 静态 PyTorch、用户明确文字确认 | 从图片或动态代码臆造拓扑 |
+| Phase A.2 | Keras Functional / ONNX graph | 用模型名称填补缺失层或边 |
+| Phase A.3 | 真实视觉模型从草图/截图提取带 region evidence 的候选 | 将低置信 OCR/箭头直接变为可导出的事实 |
+| Phase F | 受控的额外 analyzer 与组件 | 修改通用层来迁就一个网络名称 |
+
+### 0.4 组件优先，而不是 grammar 优先
+
+第一阶段实现顺序必须先落地以下通用语义组件和对应 Visio native-shape 映射，再把现有五个 grammar 降级为“可选的高质量组合策略”：
+
+```text
+TensorVolume         输入/中间 feature map，支持平面、堆叠和斜投影。
+TokenSequence        patch/token/query 序列，支持压缩的重复表示。
+OperatorBlock        Conv、Norm、Activation、Pooling、Embedding、MLP 等操作摘要。
+RepeatGroup          稳定的 ×N 语义和可展开/折叠单元边界。
+StageRegion          主叙事阶段、局部模块、图例和 inset 的视觉层级。
+ScaleTransition      下采样、上采样、reshape、flatten、patchify 的类型化连接。
+Merge                Add、Concat、gated sum 的多输入语义、端口数和标签。
+ResidualSkip         残差/跨尺度 skip，具有独立 route、层级和箭头策略。
+Attention            self/cross attention 的 Q/K/V 或摘要表达，不伪造细节。
+```
+
+每个组件必须具备：稳定 semantic ID、IR source mapping、允许的输入/输出表示、最小/首选尺寸、图例规则、灰度策略、Visio primitive 映射，以及针对重叠/文本/路由/缩放的 QA 规则。任何组件都不得直接保存像素坐标、Visio command、文件路径或自由脚本文本。
+
+### 0.5 通用 DAG fallback 是不可省略的交付
+
+无法由专用 grammar 获得高置信组合时，系统必须使用 `ComposableDagFigureCompiler`，而不是降级为等权矩形流程图或错误套用 CNN/Transformer 模板。它的规则是：
+
+1. 保留已验证的主数据路径、branch、merge、skip、feedback 和 group 层次；
+2. 根据表示类型选择 TensorVolume、TokenSequence 或 OperatorBlock；
+3. 只压缩有明确 `RepeatGroup` 证据的连续子图；
+4. 把复杂局部子图放入 inset，并以 source mapping 连接主图；
+5. 对无法确定的 Add/Concat、repeat count、edge direction 或 output semantics 产生一个最高信息价值问题；
+6. 在关键 unresolved 未解决时允许 preview-safe draft，但禁止生成最终 VSDX。
+
+该 fallback 是“任意网络”承诺的最低可靠保障；它的质量门槛是结构完整与叙事清楚，而不是强行模仿任一论文模板。
+
+### 0.6 顶刊质量的可验收定义
+
+“顶刊感”不是模型产生的主观色彩偏好，必须转写为可测量规则。每个 benchmark 图必须同时通过：
+
+| 维度 | 不可接受的结果 | 最低验收 |
+|---|---|---|
+| 结构 | 漏失 branch/merge/skip，或把 Add 画成 Concat | 关键节点、边、端口与 gold IR 一一可追溯 |
+| 叙事 | 所有模块同权、主路径不可辨认 | 主路径、阶段、重点模块与辅助关系有明确层级 |
+| 几何 | 形状重叠、箭头穿过文字、端点脱离 shape | layout/readback 均验证 bounds、route 和 endpoint |
+| 可读性 | 50% 缩放或灰度下标签/关键关系不可读 | 100%/70%/50% 彩色和灰度六张预览均无 blocking QA |
+| 一致性 | 预览、VSDX、PDF、PNG 内容不同 | source mapping、artifact hash、Visio readback 对账一致 |
+| 可编辑性 | 输出为图片或扁平化对象 | VSDX 重新打开后仍可找到 native Shapes、Groups、Connectors 和 Shape Data |
+
+人工视觉审阅是独立门：每个黄金样本必须有至少一张完整页面预览与一张 50% 灰度预览，由维护者确认视觉层级、色彩克制、空白、模块比例和论文叙事；自动 QA 不能替代该审阅。
+
+### 0.7 完成门与报告纪律
+
+第一条端到端能力线只有同时满足下列条件才可以报告“可绘制首批通用神经网络图”：
+
+1. 四个样本从原始静态 PyTorch 输入生成 evidence、IR、FigurePlan 和 preview；
+2. 至少一个未知于专用 grammar 的组合网络通过 `ComposableDagFigureCompiler`，而非被降级成线性流程图；
+3. 每个图存在结构反例测试：把 add 改为 concat、删除 skip、改变 repeat 或交换 branch，系统必须拒绝错误的 gold 断言或请求澄清；
+4. 每个样本生成可编辑 VSDX、PDF、PNG，并在真实 Windows/Visio 主机进行保存、关闭、重开与 readback 验收；
+5. visual QA、缩放/灰度预览和人工审阅全部记录为独立证据；
+6. 外部 Provider、桌面安装包、真实 relay、PostgreSQL/Redis、取消与重启恢复仍按各自验收门单独报告，不因上述任一 green 而自动完成。
+
+### 0.8 实施优先级
+
+后续实施计划必须遵循下列顺序，任何新 grammar、GNN/message passing 或新的导出表结构都不得跳过前置门：
+
+```text
+P0  静态 PyTorch Source Analyzer + Evidence Graph + Architecture IR v3 迁移。
+P1  Figure Component contract + ComposableDagFigureCompiler + 四个 gold IR/反例。
+P2  Publication layout/style tokens + 缩放/灰度/人工视觉 benchmark。
+P3  FigurePlan → Visio native Shapes renderer + real-host readback/golden acceptance。
+P4  Keras/ONNX analyzer、草图真实视觉理解、Graph/Message Passing 等受控扩展。
+```
+
+每个优先级只能在前一项的 focused tests、全量 API tests、类型检查、diff check 和对应真实环境验收记录完成后推进。P0–P3 是产品绘制能力主线；导出持久化、后台队列和部署闭环作为支撑项与其并行，但不得取代主线。
+
 ---
 
 ## 1. 决策摘要
