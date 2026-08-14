@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFoundationUiUrl, createDeviceKeyIpc, loadNativeDpapi, scheduleDesktopStartup } from "./main.mjs";
+import { buildFoundationUiUrl, createDesktopShellIpc, createDeviceKeyIpc, loadNativeDpapi, scheduleDesktopStartup } from "./main.mjs";
 import { exposeDeviceKeyBridge } from "./preload.cjs";
 
 describe("Electron device-key bridge", () => {
@@ -65,11 +65,12 @@ describe("Electron device-key bridge", () => {
 
     exposeDeviceKeyBridge({ contextBridge, ipcRenderer });
 
-    expect(Object.keys(exposed)).toEqual(["synapseDeviceKey"]);
+    expect(Object.keys(exposed)).toEqual(["synapseDeviceKey", "synapseDesktop"]);
     expect(Object.keys(exposed.synapseDeviceKey)).toEqual(["getIdentity", "signChallenge", "bindDeviceId"]);
     await expect(exposed.synapseDeviceKey.getIdentity()).resolves.toEqual({ channel: "device-key:get-identity", value: undefined });
     await expect(exposed.synapseDeviceKey.signChallenge("challenge")).resolves.toEqual({ channel: "device-key:sign-challenge", value: "challenge" });
     await expect(exposed.synapseDeviceKey.bindDeviceId("server-device-1")).resolves.toEqual({ channel: "device-key:bind-device", value: "server-device-1" });
+    await expect(exposed.synapseDesktop.openPath("C:\\exports\\network.vsdx")).resolves.toEqual({ channel: "shell:open-path", value: "C:\\exports\\network.vsdx" });
   });
 
   it("fails clearly when native DPAPI is requested outside Windows", async () => {
@@ -77,5 +78,16 @@ describe("Electron device-key bridge", () => {
 
     await expect(loadNativeDpapi({ platformName: "linux", importer })).rejects.toMatchObject({ code: "DESKTOP_WINDOWS_REQUIRED" });
     expect(importer).not.toHaveBeenCalled();
+  });
+
+  it("opens only absolute .vsdx files through the Electron shell", async () => {
+    const handlers = new Map();
+    const ipcMain = { handle: (channel, callback) => handlers.set(channel, callback) };
+    const shell = { openPath: vi.fn(async () => "") };
+    createDesktopShellIpc({ ipcMain, shell });
+
+    await expect(handlers.get("shell:open-path")({}, "C:\\exports\\network.vsdx")).resolves.toBe("C:\\exports\\network.vsdx");
+    await expect(handlers.get("shell:open-path")({}, "C:\\exports\\network.txt")).rejects.toMatchObject({ code: "DESKTOP_PATH_INVALID" });
+    expect(shell.openPath).toHaveBeenCalledWith("C:\\exports\\network.vsdx");
   });
 });

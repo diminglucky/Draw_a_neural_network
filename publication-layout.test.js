@@ -183,3 +183,41 @@ test("accepts the formal NetworkIR shape returned by AgentService", () => {
   assert.equal(skip.route.kind, "skip-lane");
   assert.equal(layout.validation.ok, true);
 });
+
+test("preserves VGG16 visual metadata for the Visio worker", () => {
+  const layout = layoutNetworkIR({
+    figure: { id: "vgg16", title: "VGG16 Architecture", description: "publication" },
+    nodes: [
+      { id: "block-1", kind: "conv", stage: 0, label: "Conv + ReLU", subtitle: "224 x 224 x 64", tensor: { shape: [224, 224, 64] }, visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 2, depth: 6, perspective: true, color: "#4f86c6" },
+      { id: "block-3", kind: "conv", stage: 1, label: "Conv + ReLU", subtitle: "56 x 56 x 256", tensor: { shape: [56, 56, 256] }, visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 3, depth: 10, perspective: true, color: "#4f86c6", visualEncoding: { visiblePlaneCount: 6, extrusionDepthFu: 24, projection: "oblique-3d", spatialShape: [56, 56] } },
+      { id: "pool-1", kind: "pool", stage: 2, label: "MaxPool 2x2", subtitle: "112 x 112", visualRole: "pooling-block", layerRole: "max-pooling", repeatCount: 1, depth: 2, perspective: true, color: "#c65b5b" },
+    ],
+    edges: [{ source: "block-1", target: "block-3", kind: "flow" }, { source: "block-3", target: "pool-1", kind: "flow" }],
+  });
+  assert.equal(layout.nodes[0].visualRole, "feature-map-stack");
+  assert.equal(layout.nodes[0].layerRole, "convolution-relu");
+  assert.equal(layout.nodes[0].repeatCount, 2);
+  assert.equal(layout.nodes[0].perspective, true);
+  assert.deepEqual(layout.nodes.find((node) => node.id === "block-3").visualEncoding, {
+    visiblePlaneCount: 6,
+    extrusionDepthFu: 24,
+    projection: "oblique-3d",
+    spatialShape: [56, 56],
+  });
+  assert.equal(layout.nodes.find((node) => node.id === "pool-1").visualRole, "pooling-block");
+});
+
+test("attaches a validated Figure Plan V3 only for the VGG16 publication preset", () => {
+  const layout = layoutNetworkIR({
+    figure: { id: "vgg16", title: "VGG16 Architecture", description: "publication" },
+    nodes: [
+      { id: "input", kind: "input", stage: 0, label: "Input image", tensor: { shape: [224, 224, 3] }, visualRole: "feature-map-stack", layerRole: "input", channelCount: 3, visualEncoding: { visiblePlaneCount: 3, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [224, 224] } },
+      { id: "block-1", kind: "conv", stage: 1, label: "Conv + ReLU", tensor: { shape: [224, 224, 64] }, visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 2, channelCount: 64, visualEncoding: { visiblePlaneCount: 6, extrusionDepthFu: 24, projection: "oblique-3d", spatialShape: [224, 224] } },
+    ],
+    edges: [{ source: "input", target: "block-1", kind: "forward" }],
+  });
+  assert.equal(layout.figurePlan.version, 1);
+  assert.equal(layout.figurePlan.validation.valid, true);
+  assert.equal(layout.figurePlan.styleId, "vgg-tensor-plate-v3");
+  assert.equal(layout.figurePlan.primitiveGroups[1].kind, "feature-map-stack");
+});

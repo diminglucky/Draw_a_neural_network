@@ -46,7 +46,11 @@ internal static class Program
                     Diagram = request.Diagram,
                 };
             }
-            response = await new WorkerRequestProcessor(outputRoot).ProcessAsync(request).ConfigureAwait(false);
+            response = await new WorkerRequestProcessor(
+                outputRoot,
+                visible: HasFlag(args, "--visible"),
+                attachToRunning: HasFlag(args, "--attach-to-running")
+            ).ProcessAsync(request).ConfigureAwait(false);
         }
         catch (Exception error)
         {
@@ -57,6 +61,8 @@ internal static class Program
         await Console.Out.FlushAsync().ConfigureAwait(false);
         return response.Status == "succeeded" ? 0 : 1;
     }
+
+    private static bool HasFlag(string[] args, string name) => args.Any(argument => string.Equals(argument, name, StringComparison.OrdinalIgnoreCase));
 
     private static string? ReadOption(string[] args, string name)
     {

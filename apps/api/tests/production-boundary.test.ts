@@ -25,6 +25,16 @@ describe("production persistence boundary", () => {
     expect(sql).toContain("agentChatsPerMonth");
   });
 
+  it("contains the append-only FigureDraft revision migration", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/006_figure_drafts.sql"), "utf8");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS figure_drafts");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS figure_draft_revisions");
+    expect(sql).toContain("PRIMARY KEY (draft_id, revision)");
+    expect(sql).toContain("current_revision");
+    expect(sql).toContain("BEFORE UPDATE OR DELETE ON figure_draft_revisions");
+    expect(sql).toMatch(/RAISE EXCEPTION[^;]+append-only/i);
+  });
+
   it("contains the durable Visio export idempotency index migration", () => {
     const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/005_visio_job_idempotency.sql"), "utf8");
 

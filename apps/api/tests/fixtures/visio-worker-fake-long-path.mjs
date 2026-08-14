@@ -16,7 +16,18 @@ process.stdin.on("end", async () => {
     jobId: request.jobId,
     status: "succeeded",
     path: returnedPath,
-    readback: { valid: true, shapeCount: 1, connectorCount: 0 },
+    readback: {
+      valid: true,
+      shapeCount: 1,
+      connectorCount: 0,
+      expectedPrimitiveIds: [],
+      actualPrimitiveIds: [],
+      missingPrimitiveIds: [],
+      expectedConnectorIds: [],
+      actualConnectorIds: [],
+      missingConnectorIds: [],
+      shapeDataFailures: [],
+    },
     error: null,
   }) + "\n");
 });

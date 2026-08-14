@@ -172,11 +172,13 @@ Configure the API with a Worker executable and an output root when enabling expo
 ```powershell
 $env:VISIO_WORKER_PATH = "C:\path\to\VisioWorker.Host.exe"
 $env:VISIO_OUTPUT_ROOT = "C:\path\to\visio-exports"
-$env:VISIO_WORKER_MODE = "mock" # use live only on a machine with Microsoft Visio
+$env:VISIO_WORKER_MODE = "live" # use mock only for headless CI
+$env:VISIO_VISIBLE = "true"
+$env:VISIO_ATTACH_TO_RUNNING = "false" # set true only when explicitly reusing an existing Visio instance
 $env:VISIO_WORKER_TIMEOUT_MS = "120000"
 ```
 
-When `VISIO_WORKER_PATH` is absent, the API intentionally returns `VISIO_EXECUTOR_NOT_CONFIGURED` with HTTP 503. The default `mock` mode is a development/CI artifact generator and is never evidence of live Visio COM acceptance. The live acceptance gate additionally requires an installed Visio instance, a successful `.vsdx` readback, and independent close/reopen inspection. The Worker uses only native basic shapes and connectors; GitHub projects were consulted as implementation references and are not runtime dependencies.
+In development, when `VISIO_WORKER_PATH` is absent, the API searches the packaged Worker location and the repository's Release/Debug build locations automatically. The output root defaults to a temporary Synapse directory when a Worker is discovered. An explicit path remains authoritative. `VISIO_VISIBLE=true` makes the live COM instance visible, while `VISIO_ATTACH_TO_RUNNING=true` asks the Worker to reuse an already-running Visio instance when possible. The Electron desktop bridge exposes a restricted `openPath` action for the validated final `.vsdx`; the browser never executes a shell command. The default `mock` mode is a headless CI artifact generator and is never evidence of live Visio COM acceptance. The live acceptance gate additionally requires an installed Visio instance, a successful `.vsdx` readback, and independent close/reopen inspection. The Worker uses only native basic shapes and connectors; GitHub projects were consulted as implementation references and are not runtime dependencies.
 
 ## Code Generation
 

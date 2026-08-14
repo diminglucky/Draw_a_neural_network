@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_LIMITS,
   buildAgentRequestHeaders,
@@ -9,10 +9,13 @@ import {
   createIdempotencyKey,
   escapeHtml,
   exportDiagramToVisio,
+  getFigureDraftPreview,
   getVisioExportJob,
   isAgentAuthorized,
   isVisioJobCancellable,
+  openVisioPath,
   renderVisioError,
+  renderFigureDraftCard,
   submitVisioExport,
   validateAttachment,
   validateMessage,
@@ -188,6 +191,13 @@ describe("Agent Chat client contracts", () => {
     expect(isVisioJobCancellable("succeeded")).toBe(false);
   });
 
+  it("opens a completed .vsdx through the desktop bridge", async () => {
+    const openPath = vi.fn(async (value) => value);
+    await expect(openVisioPath("C:\\exports\\network.vsdx", { openPath })).resolves.toBe("C:\\exports\\network.vsdx");
+    expect(openPath).toHaveBeenCalledWith("C:\\exports\\network.vsdx");
+    await expect(openVisioPath("C:\\exports\\network.vsdx", null)).rejects.toThrow("桌面 Visio 打开桥接不可用");
+  });
+
   it("renders API error messages as text instead of HTML", () => {
     const node = { hidden: true, textContent: "" };
     renderVisioError(node, `<img src=x onerror="bad()">`);
@@ -221,5 +231,22 @@ describe("Agent Chat client contracts", () => {
     expect(confirmAgentCanvasMutation("replace", () => false)).toBe(false);
     expect(confirmAgentCanvasMutation("replace", () => true)).toBe(true);
     expect(confirmAgentCanvasMutation("replace", null)).toBe(false);
+  });
+
+  it("fetches an owner-scoped publication preview only with the bearer token", async () => {
+    let request;
+    const preview = await getFigureDraftPreview("draft/one", {
+      apiBase: "http://127.0.0.1:4180",
+      token: "bearer-token",
+      fetchImpl: async (url, init) => {
+        request = { url, init };
+        return { ok: true, status: 200, async json() { return { draft: { id: "draft/one", status: "ready_for_preview" }, grammar: { id: "cnn-classifier", version: 1 }, qa: { blocking: [], warnings: [] }, plan: { coordinateSpace: { width: 1, height: 1 }, regions: [], primitives: [], relations: [], annotations: [] } }; } };
+      },
+    });
+
+    expect(request).toEqual({ url: "http://127.0.0.1:4180/api/figure-drafts/draft%2Fone/preview", init: { method: "GET", headers: { Authorization: "Bearer bearer-token" } } });
+    expect(preview.grammar.id).toBe("cnn-classifier");
+    expect(renderFigureDraftCard({ id: "draft-1", status: "needs_confirmation", currentRevision: 1 })).not.toContain("data-agent-figure-preview");
+    expect(renderFigureDraftCard({ id: "draft-1", status: "ready_for_preview", currentRevision: 1 })).toContain("data-agent-figure-preview");
   });
 });

@@ -2,6 +2,7 @@ const CHANNELS = Object.freeze({
   getIdentity: "device-key:get-identity",
   signChallenge: "device-key:sign-challenge",
   bindDeviceId: "device-key:bind-device",
+  openPath: "shell:open-path",
 });
 
 function exposeDeviceKeyBridge({ contextBridge, ipcRenderer } = {}) {
@@ -14,6 +15,9 @@ function exposeDeviceKeyBridge({ contextBridge, ipcRenderer } = {}) {
     bindDeviceId: (deviceId) => ipcRenderer.invoke(CHANNELS.bindDeviceId, deviceId),
   });
   contextBridge.exposeInMainWorld("synapseDeviceKey", api);
+  contextBridge.exposeInMainWorld("synapseDesktop", Object.freeze({
+    openPath: (path) => ipcRenderer.invoke(CHANNELS.openPath, path),
+  }));
   return api;
 }
 

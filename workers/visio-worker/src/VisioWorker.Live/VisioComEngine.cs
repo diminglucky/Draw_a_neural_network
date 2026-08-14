@@ -5,9 +5,46 @@ namespace VisioWorker.Live;
 
 public sealed record VisioComEngineOptions(bool AttachToRunning = false, bool Visible = false, string OutputRoot = "");
 
+public static class PublicationRenderPalette
+{
+    public static (int R, int G, int B) FeatureMapFrontFill => (247, 251, 255);
+    public static (int R, int G, int B) FeatureMapMidFill => (225, 238, 248);
+    public static (int R, int G, int B) FeatureMapRearFill => (197, 219, 237);
+    public static (int R, int G, int B) FeatureMapOutline => (55, 96, 132);
+    public static (int R, int G, int B) TransitionFill => (247, 249, 251);
+    public static (int R, int G, int B) DenseFill => (232, 244, 241);
+    public static (int R, int G, int B) DenseAccent => (72, 139, 130);
+    public static (int R, int G, int B) ScoreFill => (253, 246, 227);
+    public static (int R, int G, int B) ScoreAccent => (189, 145, 65);
+
+    public static (int R, int G, int B) FeatureMapPlaneFill((int R, int G, int B) baseColor, int backOffset)
+    {
+        if (backOffset <= 0) return baseColor;
+        var factor = Math.Min(0.72, 0.36 * backOffset);
+        return (
+            (int)(baseColor.R * factor + 255 * (1 - factor)),
+            (int)(baseColor.G * factor + 255 * (1 - factor)),
+            (int)(baseColor.B * factor + 255 * (1 - factor)));
+    }
+
+    public static (int R, int G, int B) FeatureMapStackFill(int backOffset) => backOffset switch
+    {
+        <= 0 => FeatureMapFrontFill,
+        1 => FeatureMapMidFill,
+        _ => FeatureMapRearFill,
+    };
+}
+
+public static class PublicationTensorGeometry
+{
+    public static double FeatureMapFaceDepthInches(double extrusionDepthInches) => Math.Clamp(extrusionDepthInches * 0.14, 0.04, 0.07);
+    public static double StackPlaneOffsetInches(double extrusionDepthInches) => Math.Clamp(extrusionDepthInches * 0.35, 0.11, 0.17);
+    public static double TransitionFaceDepthInches => 0.045;
+}
+
 public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 {
-    private const double PageHeightInches = 15.0;
+    private const double PageHeightInches = 9.5;
     private readonly VisioComEngineOptions _options;
     private readonly ComStaRunner _runner;
 
@@ -25,14 +62,19 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         var temporaryPath = finalPath + $".{Guid.NewGuid():N}.partial.vsdx";
         try
         {
-            var result = await _runner.InvokeAsync(() => RenderOnComThread(document, temporaryPath)).WaitAsync(cancellationToken).ConfigureAwait(false);
-            if (!result.Valid || !File.Exists(temporaryPath)) throw new WorkerProtocolException("Visio readback did not validate the temporary output");
-            File.Move(temporaryPath, finalPath, overwrite: true);
+            var result = await _runner.InvokeAsync(() => RenderOnComThread(document, temporaryPath, finalPath)).WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (!result.Valid || !File.Exists(finalPath)) throw new WorkerProtocolException("Visio readback did not validate the final output");
             return result with { DiagnosticPath = finalPath };
         }
         catch (COMException error)
         {
+            TryDelete(finalPath);
             throw new WorkerProtocolException($"Visio COM operation failed: {error.Message}", error);
+        }
+        catch
+        {
+            TryDelete(finalPath);
+            throw;
         }
         finally
         {
@@ -42,12 +84,13 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
     public ValueTask DisposeAsync() => _runner.DisposeAsync();
 
-    private ReadbackResult RenderOnComThread(DiagramDocument document, string temporaryPath)
+    private ReadbackResult RenderOnComThread(DiagramDocument document, string temporaryPath, string finalPath)
     {
         dynamic? app = null;
         dynamic? docs = null;
         dynamic? doc = null;
         bool launched = false;
+        bool keepVisibleDocumentOpen = false;
         try
         {
             app = ConnectVisio(out launched);
@@ -56,29 +99,62 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             docs = app.Documents;
             doc = docs.Add("");
             dynamic page = doc.Pages.Item(1);
-            TrySetPageSize(page);
+            var figurePlan = document.FigurePlan;
+            var pageHeight = figurePlan?.PageHeightInches ?? PageHeightInches;
+            TrySetPageSize(page, figurePlan?.PageWidthInches ?? 26, pageHeight);
 
-            foreach (var node in document.Nodes) DrawNode(page, node);
-            foreach (var connector in document.Connectors) DrawConnector(page, connector);
-            foreach (var stage in document.StageLabels.Select((label, index) => (label, index)))
+            if (figurePlan is null)
             {
-                dynamic stageLabel = page.DrawRectangle(0.25, PageHeightInches - 0.55 - stage.index * 0.35, 2.2, PageHeightInches - 0.25 - stage.index * 0.35);
-                stageLabel.Text = stage.label;
-                TrySet(() => stageLabel.NameU = $"synapse.stage.{stage.index}");
+                foreach (var node in document.Nodes) DrawNode(page, node);
+                foreach (var connector in document.Connectors) DrawConnector(page, connector, pageHeight);
+                DrawTitle(page, document.Title, pageHeight, 26);
+                DrawStageLabels(page, document);
+                DrawLegend(page);
+            }
+            else
+            {
+                foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveGroup(page, group, pageHeight);
+                foreach (var connector in figurePlan.Connectors) DrawConnector(page, connector, pageHeight);
+                if (figurePlan.Labels is { Count: > 0 })
+                {
+                    foreach (var label in figurePlan.Labels) DrawFigurePlanLabel(page, label, pageHeight);
+                }
+                else
+                {
+                    foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveLabel(page, group, group.Bounds.XInches, pageHeight - group.Bounds.YInches + 0.05, group.Bounds.XInches + group.Bounds.WidthInches, pageHeight - group.Bounds.YInches + 0.34);
+                }
+                DrawTitle(page, document.Title, pageHeight, figurePlan.PageWidthInches);
             }
 
             doc.SaveAs(temporaryPath);
             doc.Close();
             doc = null;
-            doc = docs.Open(temporaryPath);
+            File.Move(temporaryPath, finalPath, overwrite: true);
+            doc = docs.Open(finalPath);
             dynamic readbackPage = doc.Pages.Item(1);
             var shapeCount = Convert.ToInt32(readbackPage.Shapes.Count, System.Globalization.CultureInfo.InvariantCulture);
-            var connectorCount = CountNamedShapes(readbackPage, "synapse.edge.");
-            doc.Close();
-            doc = null;
-            if (shapeCount < document.Nodes.Count || connectorCount != document.Connectors.Count)
-                throw new WorkerProtocolException($"Visio readback count mismatch: shapes={shapeCount}, connectors={connectorCount}");
-            return new ReadbackResult(true, shapeCount, connectorCount);
+            var readback = figurePlan is null
+                ? ReadbackValidator.Legacy(shapeCount, CountNamedShapes(readbackPage, "synapse.edge."))
+                : ReadFigurePlanReadback(readbackPage, figurePlan, shapeCount);
+            if (!readback.Valid)
+            {
+                throw new WorkerProtocolException(
+                    $"Visio semantic readback mismatch: missing primitives=[{string.Join(",", readback.MissingPrimitiveIds)}], "
+                    + $"missing connectors=[{string.Join(",", readback.MissingConnectorIds)}], "
+                    + $"shape data failures=[{string.Join(";", readback.ShapeDataFailures)}]");
+            }
+            if (VisioDocumentLifecycle.ShouldCloseDocumentAfterReadback(_options.Visible))
+            {
+                doc.Close();
+                doc = null;
+            }
+            else
+            {
+                TrySet(() => app.Visible = true);
+                if (VisioDocumentLifecycle.ShouldFitVisibleDocument(_options.Visible)) TryFitDocumentWindow(doc);
+                keepVisibleDocumentOpen = true;
+            }
+            return readback;
         }
         catch (WorkerProtocolException)
         {
@@ -90,8 +166,8 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
         finally
         {
-            TryClose(doc);
-            if (launched) TryQuit(app);
+            if (!keepVisibleDocumentOpen) TryClose(doc);
+            if (launched && !keepVisibleDocumentOpen) TryQuit(app);
             ReleaseCom(doc);
             ReleaseCom(docs);
             ReleaseCom(app);
@@ -121,15 +197,472 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         var y1 = PageHeightInches - node.YInches - node.HeightInches;
         var x2 = x1 + node.WidthInches;
         var y2 = y1 + node.HeightInches;
-        dynamic shape = page.DrawRectangle(x1, y1, x2, y2);
-        shape.Text = string.IsNullOrWhiteSpace(node.Subtitle) ? node.Label : $"{node.Label}\n{node.Subtitle}";
+        var visualRole = node.VisualRole?.Trim().ToLowerInvariant() ?? "standard";
+        dynamic shape = visualRole switch
+        {
+            "feature-map-stack" => DrawFeatureMapStack(page, node, x1, y1, x2, y2),
+            "pooling-block" => DrawPoolingBlock(page, node, x1, y1, x2, y2),
+            "fully-connected" => DrawFullyConnectedBlock(page, node, x1, y1, x2, y2),
+            "softmax-block" => DrawSoftmaxBlock(page, node, x1, y1, x2, y2),
+            _ => DrawStandardBlock(page, node, x1, y1, x2, y2),
+        };
         TrySet(() => shape.NameU = $"synapse.node.{SanitizeName(node.Id)}");
         foreach (var property in node.ShapeData) TrySetShapeData(shape, property.Key, property.Value);
+        DrawTextLabel(page, node, x1, y2 + 0.06, x2, y2 + 0.42);
     }
 
-    private static void DrawConnector(dynamic page, VisioConnector connector)
+    private static dynamic DrawStandardBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
     {
-        var points = connector.Points.SelectMany(point => new[] { point.X, PageHeightInches - point.Y }).Cast<object>().ToArray();
+        dynamic shape = page.DrawRectangle(x1, y1, x2, y2);
+        ApplyFill(shape, ParseColor(node.Color, 79, 134, 198), 1.4);
+        return shape;
+    }
+
+    private static dynamic DrawFeatureMapStack(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    {
+        var depth = Math.Clamp(node.Depth, 2, 12);
+        var offset = Math.Min(0.12, Math.Min(node.WidthInches, node.HeightInches) / Math.Max(12, depth * 2.0));
+        dynamic? front = null;
+        var fill = ParseColor(node.Color, 79, 134, 198);
+        for (var index = depth - 1; index >= 0; index--)
+        {
+            var planeX1 = x1 + offset * index;
+            var planeY1 = y1 + (node.Perspective ? offset * index : 0);
+            var planeX2 = x2 + offset * index;
+            var planeY2 = y2 + (node.Perspective ? offset * index : 0);
+            dynamic plane = page.DrawRectangle(planeX1, planeY1, planeX2, planeY2);
+            ApplyFill(plane, index == 0 ? fill : Blend(fill, 0.58), 1.1);
+            TrySet(() => plane.NameU = $"synapse.node.{SanitizeName(node.Id)}.plane.{index}");
+            if (index == 0) front = plane;
+        }
+        return front!;
+    }
+
+    private static dynamic DrawPoolingBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    {
+        var width = Math.Max(0.18, (x2 - x1) * 0.62);
+        var height = Math.Max(0.28, (y2 - y1) * 0.72);
+        var center = (x1 + x2) / 2;
+        dynamic shape = page.DrawRectangle(center - width / 2, y1 + (y2 - y1 - height) / 2, center + width / 2, y1 + (y2 - y1 + height) / 2);
+        ApplyFill(shape, ParseColor(node.Color, 198, 91, 91), 1.6);
+        return shape;
+    }
+
+    private static dynamic DrawFullyConnectedBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    {
+        var depth = Math.Clamp(node.Depth, 2, 5);
+        var offset = Math.Min(0.1, (x2 - x1) / Math.Max(12, depth * 2.0));
+        dynamic? front = null;
+        var fill = ParseColor(node.Color, 88, 166, 166);
+        for (var index = depth - 1; index >= 0; index--)
+        {
+            dynamic plane = page.DrawRectangle(x1 + offset * index, y1 + offset * index, x2 + offset * index, y2 + offset * index);
+            ApplyFill(plane, index == 0 ? fill : Blend(fill, 0.62), 1.2);
+            TrySet(() => plane.NameU = $"synapse.node.{SanitizeName(node.Id)}.plane.{index}");
+            if (index == 0) front = plane;
+        }
+        return front!;
+    }
+
+    private static dynamic DrawSoftmaxBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    {
+        var width = Math.Max(0.2, (x2 - x1) * 0.74);
+        var center = (x1 + x2) / 2;
+        dynamic shape = page.DrawRectangle(center - width / 2, y1, center + width / 2, y2);
+        ApplyFill(shape, ParseColor(node.Color, 201, 163, 78), 1.8);
+        return shape;
+    }
+
+    private static void DrawPrimitiveGroup(dynamic page, VisioPrimitiveGroup group, double pageHeight)
+    {
+        var x1 = group.Bounds.XInches;
+        var y1 = pageHeight - group.Bounds.YInches - group.Bounds.HeightInches;
+        var x2 = x1 + group.Bounds.WidthInches;
+        var y2 = y1 + group.Bounds.HeightInches;
+        var (fill, lineWeight) = group.Kind switch
+        {
+            "feature-map-stack" => (PublicationRenderPalette.FeatureMapFrontFill, 1.15),
+            "downsample-transition" => (PublicationRenderPalette.TransitionFill, 1.0),
+            "pooling-wedge" => (PublicationRenderPalette.TransitionFill, 1.0),
+            "pooling-prism" => (PublicationRenderPalette.TransitionFill, 1.0),
+            "dense-vector-layer" => (PublicationRenderPalette.DenseFill, 1.0),
+            "score-vector-layer" => (PublicationRenderPalette.ScoreFill, 1.0),
+            _ => (PublicationRenderPalette.FeatureMapFrontFill, 1.0),
+        };
+
+        if (string.Equals(group.Kind, "input-rgb-tile", StringComparison.Ordinal))
+        {
+            DrawInputRgbTile(page, group, x1, y1, x2, y2);
+        }
+        else if (string.Equals(group.Kind, "feature-map-stack", StringComparison.Ordinal))
+        {
+            DrawFeatureMapPlaneStack(page, group, x1, y1, x2, y2, fill, lineWeight);
+        }
+        else if (string.Equals(group.Kind, "downsample-transition", StringComparison.Ordinal))
+        {
+            DrawDownsampleTransition(page, group, x1, y1, x2, y2, fill, lineWeight);
+        }
+        else if (string.Equals(group.Kind, "pooling-wedge", StringComparison.Ordinal))
+        {
+            DrawPoolingWedge(page, group, x1, y1, x2, y2, fill, lineWeight);
+        }
+        else if (string.Equals(group.Kind, "flatten-ribbon", StringComparison.Ordinal))
+        {
+            DrawFlattenRibbon(page, group, x1, y1, x2, y2);
+        }
+        else if (string.Equals(group.Kind, "dense-vector-layer", StringComparison.Ordinal))
+        {
+            DrawDenseVectorLayer(page, group, x1, y1, x2, y2);
+        }
+        else if (string.Equals(group.Kind, "score-vector-layer", StringComparison.Ordinal))
+        {
+            DrawScoreVectorLayer(page, group, x1, y1, x2, y2);
+        }
+        else if (HasPrismFaces(group))
+        {
+            DrawPrismFaces(page, group, x1, y1, x2, y2, fill, lineWeight, group.Id);
+        }
+        else
+        {
+            dynamic shape = page.DrawRectangle(x1, y1, x2, y2);
+            ApplyFill(shape, fill, lineWeight);
+            NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
+        }
+
+    }
+
+    private static dynamic DrawClosedPolygon(dynamic page, double[] points)
+    {
+        return page.DrawPolyline(points, 0);
+    }
+
+    private static void DrawFeatureMapPlaneStack(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
+    {
+        var planeCount = group.PrimitiveIds.Count(id => id.EndsWith(".front", StringComparison.Ordinal));
+        if (planeCount < 1) throw new WorkerProtocolException($"Feature-map stack {group.Id} has no planned front plane.");
+        var xOffset = PublicationTensorGeometry.StackPlaneOffsetInches(group.ExtrusionDepthInches);
+        var yOffset = xOffset * 0.66;
+        var faceDepth = PublicationTensorGeometry.FeatureMapFaceDepthInches(group.ExtrusionDepthInches);
+        for (var plane = 1; plane <= planeCount; plane++)
+        {
+            var backOffset = planeCount - plane;
+            var planeFill = PublicationRenderPalette.FeatureMapStackFill(backOffset);
+            DrawFeatureMapFaces(
+                page,
+                group,
+                x1 + xOffset * backOffset,
+                y1 + yOffset * backOffset,
+                x2 + xOffset * backOffset,
+                y2 + yOffset * backOffset,
+                planeFill,
+                lineWeight,
+                group.Id + $".plane-{plane}",
+                faceDepth);
+        }
+    }
+
+    private static void DrawFeatureMapFaces(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, string primitivePrefix, double faceDepth)
+    {
+        var depthY = faceDepth * 0.72;
+        dynamic front = page.DrawRectangle(x1, y1, x2, y2);
+        ApplyFill(front, fill, lineWeight);
+        TrySet(() => front.CellsU("LineColor").FormulaU = $"RGB({PublicationRenderPalette.FeatureMapOutline.R},{PublicationRenderPalette.FeatureMapOutline.G},{PublicationRenderPalette.FeatureMapOutline.B})");
+        NameAndAnnotatePrimitive(front, group, RequiredFaceId(group, primitivePrefix, "front"));
+        dynamic top = DrawClosedPolygon(page, new double[] { x1, y2, x2, y2, x2 + faceDepth, y2 + depthY, x1 + faceDepth, y2 + depthY, x1, y2 });
+        ApplyFill(top, Shade(fill, 0.96), lineWeight);
+        TrySet(() => top.CellsU("LineColor").FormulaU = $"RGB({PublicationRenderPalette.FeatureMapOutline.R},{PublicationRenderPalette.FeatureMapOutline.G},{PublicationRenderPalette.FeatureMapOutline.B})");
+        NameAndAnnotatePrimitive(top, group, RequiredFaceId(group, primitivePrefix, "top"));
+        dynamic side = DrawClosedPolygon(page, new double[] { x2, y1, x2, y2, x2 + faceDepth, y2 + depthY, x2 + faceDepth, y1 + depthY, x2, y1 });
+        ApplyFill(side, Shade(fill, 0.88), lineWeight);
+        TrySet(() => side.CellsU("LineColor").FormulaU = $"RGB({PublicationRenderPalette.FeatureMapOutline.R},{PublicationRenderPalette.FeatureMapOutline.G},{PublicationRenderPalette.FeatureMapOutline.B})");
+        NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, primitivePrefix, "side"));
+    }
+
+    private static void DrawInputRgbTile(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    {
+        const double tileOffset = 0.12;
+        var colors = new[]
+        {
+            ("red", (250, 242, 242), (193, 107, 107)),
+            ("green", (241, 248, 244), (91, 148, 115)),
+            ("blue", (240, 247, 253), (73, 125, 174)),
+        };
+        for (var index = 0; index < colors.Length; index++)
+        {
+            var offset = (colors.Length - 1 - index) * tileOffset;
+            dynamic tile = page.DrawRectangle(x1 + offset, y1 + offset, x2 + offset, y2 + offset);
+            ApplyFill(tile, colors[index].Item2, 1.15);
+            TrySet(() => tile.CellsU("LineColor").FormulaU = $"RGB({colors[index].Item3.Item1},{colors[index].Item3.Item2},{colors[index].Item3.Item3})");
+            NameAndAnnotatePrimitive(tile, group, group.Id + "." + colors[index].Item1);
+            if (index == colors.Length - 1) DrawInputTileGrid(page, x1 + offset, y1 + offset, x2 + offset, y2 + offset);
+        }
+    }
+
+    private static void DrawInputTileGrid(dynamic page, double x1, double y1, double x2, double y2)
+    {
+        for (var division = 1; division < 4; division++)
+        {
+            var x = x1 + (x2 - x1) * division / 4.0;
+            var y = y1 + (y2 - y1) * division / 4.0;
+            dynamic vertical = page.DrawLine(x, y1, x, y2);
+            dynamic horizontal = page.DrawLine(x1, y, x2, y);
+            TrySet(() => vertical.CellsU("LineColor").FormulaU = "RGB(198,216,230)");
+            TrySet(() => horizontal.CellsU("LineColor").FormulaU = "RGB(198,216,230)");
+            TrySet(() => vertical.CellsU("LineWeight").FormulaU = "0.35 pt");
+            TrySet(() => horizontal.CellsU("LineWeight").FormulaU = "0.35 pt");
+        }
+    }
+
+    private static void DrawDownsampleTransition(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
+    {
+        var inputSpatial = ReadPositiveInteger(group, "synapse.inputSpatialSize", fallback: 2);
+        var outputSpatial = ReadPositiveInteger(group, "synapse.outputSpatialSize", fallback: 1);
+        var scale = Math.Clamp(Math.Pow((double)outputSpatial / inputSpatial, 0.4), 0.48, 0.9);
+        var rightHeight = Math.Max(0.2, (y2 - y1) * scale);
+        var centerY = (y1 + y2) / 2;
+        var rightY1 = centerY - rightHeight / 2;
+        var rightY2 = centerY + rightHeight / 2;
+        var skewX = PublicationTensorGeometry.TransitionFaceDepthInches;
+        var skewY = PublicationTensorGeometry.TransitionFaceDepthInches * 0.72;
+
+        dynamic front = DrawClosedPolygon(page, new double[] { x1, y1, x2, rightY1, x2, rightY2, x1, y2, x1, y1 });
+        ApplyFill(front, fill, 0.75);
+        TrySet(() => front.CellsU("LineColor").FormulaU = "RGB(164,181,194)");
+        NameAndAnnotatePrimitive(front, group, RequiredFaceId(group, "front"));
+        dynamic top = DrawClosedPolygon(page, new double[] { x1, y2, x2, rightY2, x2 + skewX, rightY2 + skewY, x1 + skewX, y2 + skewY, x1, y2 });
+        ApplyFill(top, Shade(fill, 0.98), 0.7);
+        TrySet(() => top.CellsU("LineColor").FormulaU = "RGB(164,181,194)");
+        NameAndAnnotatePrimitive(top, group, RequiredFaceId(group, "top"));
+        dynamic side = DrawClosedPolygon(page, new double[] { x2, rightY1, x2, rightY2, x2 + skewX, rightY2 + skewY, x2 + skewX, rightY1 + skewY, x2, rightY1 });
+        ApplyFill(side, Shade(fill, 0.94), 0.7);
+        TrySet(() => side.CellsU("LineColor").FormulaU = "RGB(164,181,194)");
+        NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, "side"));
+    }
+
+    private static void DrawFlattenRibbon(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    {
+        var rightHeight = Math.Max(0.16, Math.Min(0.32, (y2 - y1) * 0.28));
+        var centerY = (y1 + y2) / 2;
+        dynamic ribbon = DrawClosedPolygon(page, new double[] { x1, y1, x2, centerY - rightHeight / 2, x2, centerY + rightHeight / 2, x1, y2, x1, y1 });
+        ApplyFill(ribbon, PublicationRenderPalette.TransitionFill, 0.95);
+        TrySet(() => ribbon.CellsU("LineColor").FormulaU = "RGB(100,124,144)");
+        NameAndAnnotatePrimitive(ribbon, group, group.Id + ".ribbon");
+    }
+
+    private static void DrawDenseVectorLayer(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    {
+        dynamic frame = page.DrawRectangle(x1, y1, x2, y2);
+        ApplyFill(frame, PublicationRenderPalette.DenseFill, 0.9);
+        TrySet(() => frame.CellsU("LineColor").FormulaU = "RGB(72,139,130)");
+        NameAndAnnotatePrimitive(frame, group, group.Id + ".frame");
+        DrawVectorUnits(page, group, x1, y1, x2, y2, "unit", PublicationRenderPalette.DenseAccent);
+    }
+
+    private static void DrawScoreVectorLayer(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    {
+        dynamic frame = page.DrawRectangle(x1, y1, x2, y2);
+        ApplyFill(frame, PublicationRenderPalette.ScoreFill, 0.9);
+        TrySet(() => frame.CellsU("LineColor").FormulaU = "RGB(189,145,65)");
+        NameAndAnnotatePrimitive(frame, group, group.Id + ".frame");
+        var scores = group.PrimitiveIds.Where(id => id.StartsWith(group.Id + ".score-", StringComparison.Ordinal)).ToArray();
+        var slot = (y2 - y1) / (scores.Length + 1);
+        for (var index = 0; index < scores.Length; index++)
+        {
+            var y = y2 - (index + 1) * slot;
+            var width = (x2 - x1) * (0.32 + 0.58 * ((index % 4) + 1) / 4.0);
+            dynamic score = page.DrawRectangle(x1 + 0.07, y - 0.025, x1 + 0.07 + width, y + 0.025);
+            ApplyFill(score, PublicationRenderPalette.ScoreAccent, 0.5);
+            NameAndAnnotatePrimitive(score, group, scores[index]);
+        }
+    }
+
+    private static void DrawVectorUnits(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, string prefix, (int R, int G, int B) accent)
+    {
+        var ids = group.PrimitiveIds.Where(id => id.StartsWith(group.Id + "." + prefix + "-", StringComparison.Ordinal)).ToArray();
+        var slot = (y2 - y1) / (ids.Length + 1);
+        var diameter = Math.Min(0.11, Math.Max(0.06, (x2 - x1) * 0.42));
+        var centerX = (x1 + x2) / 2;
+        for (var index = 0; index < ids.Length; index++)
+        {
+            var centerY = y2 - (index + 1) * slot;
+            dynamic unit = page.DrawOval(centerX - diameter / 2, centerY - diameter / 2, centerX + diameter / 2, centerY + diameter / 2);
+            ApplyFill(unit, accent, 0.5);
+            NameAndAnnotatePrimitive(unit, group, ids[index]);
+        }
+    }
+
+    private static void DrawPoolingWedge(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
+    {
+        var inset = Math.Min((y2 - y1) * 0.22, 0.24);
+        var skewX = Math.Max(0.06, Math.Abs(group.SkewXInches));
+        var skewY = Math.Max(0.05, Math.Abs(group.SkewYInches));
+        dynamic front = DrawClosedPolygon(page, new double[] { x1, y1, x2, y1 + inset, x2, y2 - inset, x1, y2, x1, y1 });
+        ApplyFill(front, fill, lineWeight);
+        NameAndAnnotatePrimitive(front, group, RequiredFaceId(group, "front"));
+        dynamic top = DrawClosedPolygon(page, new double[] { x1, y2, x2, y2 - inset, x2 + skewX, y2 - inset + skewY, x1 + skewX, y2 + skewY, x1, y2 });
+        ApplyFill(top, Shade(fill, 0.94), lineWeight);
+        NameAndAnnotatePrimitive(top, group, RequiredFaceId(group, "top"));
+        dynamic side = DrawClosedPolygon(page, new double[] { x2, y1 + inset, x2, y2 - inset, x2 + skewX, y2 - inset + skewY, x2 + skewX, y1 + inset + skewY, x2, y1 + inset });
+        ApplyFill(side, Shade(fill, 0.82), lineWeight);
+        NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, "side"));
+    }
+
+    private static void DrawPrismFaces(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, string primitivePrefix)
+    {
+        var skewX = Math.Max(0.06, Math.Abs(group.SkewXInches));
+        var skewY = Math.Max(0.05, Math.Abs(group.SkewYInches));
+        dynamic front = page.DrawRectangle(x1, y1, x2, y2);
+        ApplyFill(front, fill, lineWeight);
+        NameAndAnnotatePrimitive(front, group, RequiredFaceId(group, primitivePrefix, "front"));
+        dynamic top = DrawClosedPolygon(page, new double[] { x1, y2, x2, y2, x2 + skewX, y2 + skewY, x1 + skewX, y2 + skewY, x1, y2 });
+        ApplyFill(top, Shade(fill, 0.94), lineWeight);
+        NameAndAnnotatePrimitive(top, group, RequiredFaceId(group, primitivePrefix, "top"));
+        dynamic side = DrawClosedPolygon(page, new double[] { x2, y1, x2, y2, x2 + skewX, y2 + skewY, x2 + skewX, y1 + skewY, x2, y1 });
+        ApplyFill(side, Shade(fill, 0.82), lineWeight);
+        NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, primitivePrefix, "side"));
+    }
+
+    private static bool HasPrismFaces(VisioPrimitiveGroup group) =>
+        group.PrimitiveIds.Contains(group.Id + ".front", StringComparer.Ordinal)
+        && group.PrimitiveIds.Contains(group.Id + ".top", StringComparer.Ordinal)
+        && group.PrimitiveIds.Contains(group.Id + ".side", StringComparer.Ordinal);
+
+    private static string RequiredFaceId(VisioPrimitiveGroup group, string face) =>
+        group.PrimitiveIds.Single(id => string.Equals(id, group.Id + "." + face, StringComparison.Ordinal));
+
+    private static string RequiredFaceId(VisioPrimitiveGroup group, string primitivePrefix, string face) =>
+        group.PrimitiveIds.Single(id => string.Equals(id, primitivePrefix + "." + face, StringComparison.Ordinal));
+
+    private static void NameAndAnnotatePrimitive(dynamic shape, VisioPrimitiveGroup group, string primitiveId)
+    {
+        TrySet(() => shape.NameU = $"synapse.primitive.{SanitizeName(primitiveId)}");
+        foreach (var property in group.ShapeData) TrySetShapeData(shape, property.Key, property.Value);
+        TrySetShapeData(shape, "synapse.primitiveId", primitiveId);
+    }
+
+    private static void DrawPrimitiveLabel(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    {
+        dynamic label = page.DrawRectangle(x1, y1, x2, y2);
+        var repeat = group.ShapeData.TryGetValue("synapse.repeatCount", out var repeatCount) && repeatCount != "1" ? " x" + repeatCount : "";
+        var tensor = group.ShapeData.TryGetValue("synapse.tensorShape", out var tensorShape) ? tensorShape : "";
+        label.Text = string.IsNullOrWhiteSpace(tensor) ? group.Id + repeat : group.Id + repeat + "\n" + tensor;
+        TrySet(() => label.NameU = $"synapse.label.{SanitizeName(group.Id)}");
+        TrySet(() => label.CellsU("FillPattern").FormulaU = "0");
+        TrySet(() => label.CellsU("LinePattern").FormulaU = "0");
+        TrySet(() => label.CellsU("Char.Size").FormulaU = "8 pt");
+        TrySet(() => label.CellsU("Para.HorzAlign").FormulaU = "1");
+    }
+
+    private static void DrawFigurePlanLabel(dynamic page, VisioFigureLabel label, double pageHeight)
+    {
+        var x1 = label.XInches;
+        var y1 = pageHeight - label.YInches - label.HeightInches;
+        var x2 = x1 + label.WidthInches;
+        var y2 = y1 + label.HeightInches;
+        dynamic shape = page.DrawRectangle(x1, y1, x2, y2);
+        shape.Text = label.Text;
+        TrySet(() => shape.NameU = $"synapse.label.{SanitizeName(label.Id)}");
+        TrySet(() => shape.CellsU("FillPattern").FormulaU = "0");
+        TrySet(() => shape.CellsU("LinePattern").FormulaU = "0");
+        TrySet(() => shape.CellsU("Char.Font").FormulaU = "FONT(\"Arial\")");
+        TrySet(() => shape.CellsU("Char.Size").FormulaU = $"{label.FontSizePt.ToString(System.Globalization.CultureInfo.InvariantCulture)} pt");
+        if (label.Id.EndsWith(".heading", StringComparison.Ordinal)) TrySet(() => shape.CellsU("Char.Style").FormulaU = "1");
+        TrySet(() => shape.CellsU("Para.HorzAlign").FormulaU = "1");
+    }
+
+    private static void DrawTextLabel(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    {
+        dynamic label = page.DrawRectangle(x1, y1, x2, y2);
+        var repeatLabel = node.RepeatCount > 1 ? $" x{node.RepeatCount}" : "";
+        label.Text = string.IsNullOrWhiteSpace(node.TensorShape) ? $"{node.Label}{repeatLabel}" : $"{node.Label}{repeatLabel}\n{node.TensorShape}";
+        TrySet(() => label.NameU = $"synapse.label.{SanitizeName(node.Id)}");
+        TrySet(() => label.CellsU("FillPattern").FormulaU = "0");
+        TrySet(() => label.CellsU("LinePattern").FormulaU = "0");
+        TrySet(() => label.CellsU("Char.Size").FormulaU = "9 pt");
+        TrySet(() => label.CellsU("Para.HorzAlign").FormulaU = "1");
+    }
+
+    private static void DrawTitle(dynamic page, string title, double pageHeight, double pageWidth)
+    {
+        dynamic label = page.DrawRectangle(0.45, pageHeight - 0.65, Math.Max(0.9, pageWidth - 0.45), pageHeight - 0.2);
+        label.Text = title;
+        TrySet(() => label.NameU = "synapse.title");
+        TrySet(() => label.CellsU("FillPattern").FormulaU = "0");
+        TrySet(() => label.CellsU("LinePattern").FormulaU = "0");
+        TrySet(() => label.CellsU("Char.Font").FormulaU = "FONT(\"Arial\")");
+        TrySet(() => label.CellsU("Char.Size").FormulaU = "12 pt");
+        TrySet(() => label.CellsU("Char.Style").FormulaU = "1");
+        TrySet(() => label.CellsU("Para.HorzAlign").FormulaU = "1");
+    }
+
+    private static void DrawStageLabels(dynamic page, DiagramDocument document)
+    {
+        if (document.StageLabels.Count > 8) return;
+        foreach (var stage in document.StageLabels.Select((label, index) => (label, index)))
+        {
+            var nodes = document.Nodes.Where(node => node.Stage == stage.index).ToArray();
+            if (nodes.Length == 0) continue;
+            var x = nodes.Average(node => node.XInches + node.WidthInches / 2);
+            dynamic label = page.DrawRectangle(x - 0.55, 0.34, x + 0.55, 0.62);
+            label.Text = stage.label;
+            TrySet(() => label.NameU = $"synapse.stage.{stage.index}");
+            TrySet(() => label.CellsU("FillPattern").FormulaU = "0");
+            TrySet(() => label.CellsU("LinePattern").FormulaU = "0");
+            TrySet(() => label.CellsU("Char.Size").FormulaU = "6 pt");
+            TrySet(() => label.CellsU("Para.HorzAlign").FormulaU = "1");
+        }
+    }
+
+    private static void DrawLegend(dynamic page)
+    {
+        var items = new[] { ("Convolution + ReLU", 79, 134, 198), ("Max Pooling", 198, 91, 91), ("Fully Connected + ReLU", 88, 166, 166), ("Softmax", 201, 163, 78) };
+        var x = 0.55;
+        foreach (var item in items)
+        {
+            dynamic swatch = page.DrawRectangle(x, 0.72, x + 0.22, 0.94);
+            ApplyFill(swatch, (item.Item2, item.Item3, item.Item4), 1.0);
+            TrySet(() => swatch.NameU = $"synapse.legend.{SanitizeName(item.Item1)}");
+            dynamic label = page.DrawRectangle(x + 0.28, 0.68, x + 2.15, 0.98);
+            label.Text = item.Item1;
+            TrySet(() => label.CellsU("FillPattern").FormulaU = "0");
+            TrySet(() => label.CellsU("LinePattern").FormulaU = "0");
+            TrySet(() => label.CellsU("Char.Size").FormulaU = "6 pt");
+            x += 6.05;
+        }
+    }
+
+    private static void ApplyFill(dynamic shape, (int R, int G, int B) color, double lineWeight)
+    {
+        TrySet(() => shape.CellsU("FillPattern").FormulaU = "1");
+        TrySet(() => shape.CellsU("FillForegnd").FormulaU = $"RGB({color.R},{color.G},{color.B})");
+        TrySet(() => shape.CellsU("LineColor").FormulaU = $"RGB({Math.Max(0, color.R - 35)},{Math.Max(0, color.G - 35)},{Math.Max(0, color.B - 35)})");
+        TrySet(() => shape.CellsU("LineWeight").FormulaU = $"{lineWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)} pt");
+    }
+
+    private static (int R, int G, int B) ParseColor(string? value, int fallbackR, int fallbackG, int fallbackB)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 7 || value[0] != '#') return (fallbackR, fallbackG, fallbackB);
+        return (Convert.ToInt32(value[1..3], 16), Convert.ToInt32(value[3..5], 16), Convert.ToInt32(value[5..7], 16));
+    }
+
+    private static (int R, int G, int B) Blend((int R, int G, int B) color, double factor) =>
+        ((int)(color.R * factor + 255 * (1 - factor)), (int)(color.G * factor + 255 * (1 - factor)), (int)(color.B * factor + 255 * (1 - factor)));
+
+    private static (int R, int G, int B) Shade((int R, int G, int B) color, double factor) =>
+        ((int)(color.R * factor), (int)(color.G * factor), (int)(color.B * factor));
+
+    private static int ReadPositiveInteger(VisioPrimitiveGroup group, string key, int fallback)
+    {
+        return group.ShapeData.TryGetValue(key, out var raw)
+            && int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var value)
+            && value > 0
+            ? value
+            : fallback;
+    }
+
+    private static void DrawConnector(dynamic page, VisioConnector connector, double pageHeight)
+    {
+        var points = connector.Points.SelectMany(point => new[] { point.X, pageHeight - point.Y }).Cast<object>().ToArray();
         dynamic shape;
         try
         {
@@ -139,9 +672,12 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         {
             var first = connector.Points[0];
             var last = connector.Points[^1];
-            shape = page.DrawLine(first.X, PageHeightInches - first.Y, last.X, PageHeightInches - last.Y);
+            shape = page.DrawLine(first.X, pageHeight - first.Y, last.X, pageHeight - last.Y);
         }
         TrySet(() => shape.NameU = $"synapse.edge.{SanitizeName(connector.Id)}");
+        TrySet(() => shape.CellsU("EndArrow").FormulaU = "4");
+        TrySet(() => shape.CellsU("LineColor").FormulaU = "RGB(75, 91, 120)");
+        TrySet(() => shape.CellsU("LineWeight").FormulaU = "1.2 pt");
     }
 
     private static int CountNamedShapes(dynamic page, string prefix)
@@ -155,10 +691,68 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return count;
     }
 
-    private static void TrySetPageSize(dynamic page)
+    private static ReadbackResult ReadFigurePlanReadback(dynamic page, VisioFigurePlan plan, int shapeCount)
     {
-        TrySet(() => page.PageSheet.CellsU("PageWidth").FormulaU = "26 in");
-        TrySet(() => page.PageSheet.CellsU("PageHeight").FormulaU = "15 in");
+        var primitiveByShapeName = plan.PrimitiveGroups
+            .SelectMany(group => group.PrimitiveIds.Select(primitiveId => new { ShapeName = PrimitiveShapeName(primitiveId), PrimitiveId = primitiveId, Group = group }))
+            .ToDictionary(item => item.ShapeName, StringComparer.OrdinalIgnoreCase);
+        var connectorByShapeName = plan.Connectors
+            .ToDictionary(connector => ConnectorShapeName(connector.Id), connector => connector.Id, StringComparer.OrdinalIgnoreCase);
+        var primitives = new List<ReadbackPrimitive>();
+        var connectors = new List<string>();
+
+        foreach (dynamic shape in page.Shapes)
+        {
+            string name = Convert.ToString(shape.NameU, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+            if (primitiveByShapeName.TryGetValue(name, out var primitive))
+            {
+                var data = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var key in primitive.Group.ShapeData.Keys.Append("synapse.primitiveId"))
+                {
+                    var value = TryReadShapeData(shape, key);
+                    if (value is not null) data[key] = value;
+                }
+                primitives.Add(new ReadbackPrimitive(primitive.PrimitiveId, data));
+            }
+            if (connectorByShapeName.TryGetValue(name, out var connectorId)) connectors.Add(connectorId);
+        }
+
+        return ReadbackValidator.Validate(plan, primitives, connectors, shapeCount);
+    }
+
+    private static string? TryReadShapeData(dynamic shape, string key)
+    {
+        try
+        {
+            var rowName = new string(key.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
+            dynamic cell = shape.CellsU($"Prop.{rowName}");
+            try
+            {
+                return Convert.ToString(cell.ResultStr[0], System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                var formula = Convert.ToString(cell.FormulaU, System.Globalization.CultureInfo.InvariantCulture);
+                if (string.IsNullOrWhiteSpace(formula)) return null;
+                return formula.Length >= 2 && formula[0] == '"' && formula[^1] == '"'
+                    ? formula[1..^1].Replace("\"\"", "\"")
+                    : formula;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string PrimitiveShapeName(string primitiveId) => $"synapse.primitive.{SanitizeName(primitiveId)}";
+
+    private static string ConnectorShapeName(string connectorId) => $"synapse.edge.{SanitizeName(connectorId)}";
+
+    private static void TrySetPageSize(dynamic page, double pageWidth, double pageHeight)
+    {
+        TrySet(() => page.PageSheet.CellsU("PageWidth").FormulaU = $"{pageWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)} in");
+        TrySet(() => page.PageSheet.CellsU("PageHeight").FormulaU = $"{pageHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)} in");
         TrySet(() => page.PageSheet.CellsU("PageScale").FormulaU = "1 in");
         TrySet(() => page.PageSheet.CellsU("DrawingScale").FormulaU = "1 in");
     }
@@ -167,9 +761,10 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
     {
         try
         {
-            shape.AddNamedRow(243, key, 0);
-            shape.CellsU($"Prop.{key}.Label").FormulaU = $"\"{key}\"";
-            shape.CellsU($"Prop.{key}").FormulaU = $"\"{value.Replace("\"", "\"\"")}\"";
+            var rowName = new string(key.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
+            shape.AddNamedRow(243, rowName, 0);
+            shape.CellsU($"Prop.{rowName}.Label").FormulaU = $"\"{key}\"";
+            shape.CellsU($"Prop.{rowName}").FormulaU = $"\"{value.Replace("\"", "\"\"")}\"";
         }
         catch { }
     }
@@ -184,6 +779,22 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
     {
         if (doc is null) return;
         TrySet(() => doc.Close());
+    }
+
+    private static void TryFitDocumentWindow(dynamic? doc)
+    {
+        if (doc is null) return;
+        dynamic? window = null;
+        try
+        {
+            window = doc.Windows.Item(1);
+            window.ViewFit();
+        }
+        catch { }
+        finally
+        {
+            ReleaseCom(window);
+        }
     }
 
     private static void TryQuit(dynamic? app)

@@ -30,6 +30,13 @@ public sealed class WorkerReadback
     public bool Valid { get; init; }
     public int ShapeCount { get; init; }
     public int ConnectorCount { get; init; }
+    public IReadOnlyList<string> ExpectedPrimitiveIds { get; init; } = [];
+    public IReadOnlyList<string> ActualPrimitiveIds { get; init; } = [];
+    public IReadOnlyList<string> MissingPrimitiveIds { get; init; } = [];
+    public IReadOnlyList<string> ExpectedConnectorIds { get; init; } = [];
+    public IReadOnlyList<string> ActualConnectorIds { get; init; } = [];
+    public IReadOnlyList<string> MissingConnectorIds { get; init; } = [];
+    public IReadOnlyList<string> ShapeDataFailures { get; init; } = [];
 }
 
 public sealed class WorkerError
@@ -41,10 +48,14 @@ public sealed class WorkerError
 public sealed class WorkerRequestProcessor
 {
     private readonly string _outputRoot;
+    private readonly bool _visible;
+    private readonly bool _attachToRunning;
 
-    public WorkerRequestProcessor(string outputRoot)
+    public WorkerRequestProcessor(string outputRoot, bool visible = false, bool attachToRunning = false)
     {
         _outputRoot = outputRoot;
+        _visible = visible;
+        _attachToRunning = attachToRunning;
     }
 
     public async Task<WorkerResponse> ProcessAsync(WorkerRequest request, CancellationToken cancellationToken = default)
@@ -57,7 +68,7 @@ public sealed class WorkerRequestProcessor
             IVisioEngine engine = request.Mode.Equals("mock", StringComparison.OrdinalIgnoreCase)
                 ? new MockVisioEngine()
                 : request.Mode.Equals("live", StringComparison.OrdinalIgnoreCase)
-                    ? new VisioWorker.Live.VisioComEngine(new VisioWorker.Live.VisioComEngineOptions(OutputRoot: _outputRoot))
+                    ? new VisioWorker.Live.VisioComEngine(new VisioWorker.Live.VisioComEngineOptions(AttachToRunning: _attachToRunning, Visible: _visible, OutputRoot: _outputRoot))
                     : throw new WorkerProtocolException($"Unsupported Worker mode: {request.Mode}");
             try
             {
@@ -69,7 +80,19 @@ public sealed class WorkerRequestProcessor
                     JobId = request.JobId,
                     Status = "succeeded",
                     Path = outputPath,
-                    Readback = new WorkerReadback { Valid = readback.Valid, ShapeCount = readback.ShapeCount, ConnectorCount = readback.ConnectorCount },
+                    Readback = new WorkerReadback
+                    {
+                        Valid = readback.Valid,
+                        ShapeCount = readback.ShapeCount,
+                        ConnectorCount = readback.ConnectorCount,
+                        ExpectedPrimitiveIds = readback.ExpectedPrimitiveIds,
+                        ActualPrimitiveIds = readback.ActualPrimitiveIds,
+                        MissingPrimitiveIds = readback.MissingPrimitiveIds,
+                        ExpectedConnectorIds = readback.ExpectedConnectorIds,
+                        ActualConnectorIds = readback.ActualConnectorIds,
+                        MissingConnectorIds = readback.MissingConnectorIds,
+                        ShapeDataFailures = readback.ShapeDataFailures,
+                    },
                     Error = null,
                 };
             }

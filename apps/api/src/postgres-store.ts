@@ -7,12 +7,20 @@ import type {
   AuditRecord,
   Device,
   DeviceChallenge,
+  FigureDraft,
+  FigureDraftRevision,
+  FigureDraftStatus,
   Job,
   Session,
   Subscription,
   User,
   VisioJobCreationResult,
 } from "./domain.js";
+import {
+  assertFigureDraftPayloadStatus,
+  parseFigureDraftRevisionPayload,
+  type FigureDraftRevisionPayload,
+} from "./figure-draft-payload.js";
 import type { FoundationStore } from "./store.js";
 
 export interface QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> {
@@ -22,7 +30,7 @@ export interface QueryResult<Row extends Record<string, unknown> = Record<string
 
 export interface PoolClientLike {
   query(text: string, values?: readonly unknown[]): Promise<QueryResult>;
-  release(): void;
+  release(error?: Error): void;
 }
 
 export interface PoolLike {
@@ -41,6 +49,11 @@ function requiredTimestamp(value: unknown): string {
   const result = timestamp(value);
   if (!result) throw new Error("Database row is missing a required timestamp");
   return result;
+}
+
+function figureDraftStatus(value: unknown): FigureDraftStatus {
+  if (value === "needs_confirmation" || value === "ready_for_preview" || value === "failed") return value;
+  throw new Error("Database row contains an invalid figure draft status");
 }
 
 function json<T>(value: unknown, fallback: T): T {
@@ -83,6 +96,31 @@ function mapDeviceChallenge(row: Row): DeviceChallenge {
     value: String(row.challenge),
     expiresAt: requiredTimestamp(row.expires_at),
     consumedAt: timestamp(row.consumed_at),
+    createdAt: requiredTimestamp(row.created_at),
+  };
+}
+
+function mapFigureDraft(row: Row): FigureDraft {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    conversationId: String(row.conversation_id),
+    status: figureDraftStatus(row.status),
+    currentRevision: Number(row.current_revision),
+    createdAt: requiredTimestamp(row.created_at),
+    updatedAt: requiredTimestamp(row.updated_at),
+  };
+}
+
+function mapFigureDraftRevision(row: Row): FigureDraftRevision {
+  const status = figureDraftStatus(row.status);
+  const payload = parseFigureDraftRevisionPayload(json(row.payload, {}), { statusCode: 500 });
+  assertFigureDraftPayloadStatus(payload, status, 500);
+  return {
+    draftId: String(row.draft_id),
+    revision: Number(row.revision),
+    status,
+    payload,
     createdAt: requiredTimestamp(row.created_at),
   };
 }
@@ -173,11 +211,122 @@ function uniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505");
 }
 
+async function failFigureDraftTransaction(client: PoolClientLike, error: unknown): Promise<never> {
+  try {
+    await client.query("ROLLBACK");
+  } catch {
+    // Preserve the original SQL/mapping error. The client is destroyed below.
+  }
+  const releaseError = error instanceof Error ? error : new Error("Figure draft transaction failed");
+  try {
+    client.release(releaseError);
+  } catch {
+    // pg release is synchronous; a release failure must not mask the original error.
+  }
+  throw error;
+}
+
 export class PostgresFoundationStore implements FoundationStore {
   constructor(private readonly pool: PoolLike) {}
 
   async close(): Promise<void> {
     await this.pool.end?.();
+  }
+
+  async createFigureDraft(
+    draft: Omit<FigureDraft, "currentRevision">,
+    payload: FigureDraftRevisionPayload,
+  ): Promise<{ draft: FigureDraft; revision: FigureDraftRevision }> {
+    const validatedPayload = parseFigureDraftRevisionPayload(payload);
+    assertFigureDraftPayloadStatus(validatedPayload, draft.status);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const created = await client.query(
+        `INSERT INTO figure_drafts (id,user_id,conversation_id,status,current_revision,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,1,$5,$6) RETURNING *`,
+        [draft.id, draft.userId, draft.conversationId, draft.status, draft.createdAt, draft.updatedAt],
+      );
+      const revision = await client.query(
+        `INSERT INTO figure_draft_revisions (draft_id,revision,status,payload,created_at)
+         VALUES ($1,1,$2,$3,$4) RETURNING *`,
+        [draft.id, draft.status, JSON.stringify(validatedPayload), draft.createdAt],
+      );
+      const mapped = {
+        draft: mapFigureDraft(created.rows[0]),
+        revision: mapFigureDraftRevision(revision.rows[0]),
+      };
+      await client.query("COMMIT");
+      client.release();
+      return mapped;
+    } catch (error) {
+      return failFigureDraftTransaction(client, error);
+    }
+  }
+
+  async getFigureDraft(userId: string, draftId: string): Promise<FigureDraft | null> {
+    const result = await this.pool.query(
+      "SELECT * FROM figure_drafts WHERE id = $1 AND user_id = $2",
+      [draftId, userId],
+    );
+    return result.rows[0] ? mapFigureDraft(result.rows[0]) : null;
+  }
+
+  async getFigureDraftRevision(
+    userId: string,
+    draftId: string,
+    revision: number,
+  ): Promise<FigureDraftRevision | null> {
+    const result = await this.pool.query(
+      `SELECT r.* FROM figure_draft_revisions r
+       JOIN figure_drafts d ON d.id = r.draft_id
+       WHERE d.user_id = $1 AND r.draft_id = $2 AND r.revision = $3`,
+      [userId, draftId, revision],
+    );
+    return result.rows[0] ? mapFigureDraftRevision(result.rows[0]) : null;
+  }
+
+  async appendFigureDraftRevision(input: {
+    userId: string;
+    draftId: string;
+    expectedRevision: number;
+    status: FigureDraftStatus;
+    payload: FigureDraftRevisionPayload;
+    createdAt: string;
+  }): Promise<{ conflict: boolean; draft: FigureDraft | null; revision: FigureDraftRevision | null }> {
+    const payload = parseFigureDraftRevisionPayload(input.payload);
+    assertFigureDraftPayloadStatus(payload, input.status);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const updated = await client.query(
+        `UPDATE figure_drafts
+         SET status = $4, current_revision = current_revision + 1, updated_at = $5
+         WHERE id = $1 AND user_id = $2 AND current_revision = $3
+         RETURNING *`,
+        [input.draftId, input.userId, input.expectedRevision, input.status, input.createdAt],
+      );
+      if (!updated.rows[0]) {
+        await client.query("ROLLBACK");
+        client.release();
+        return { conflict: true, draft: null, revision: null };
+      }
+      const revision = await client.query(
+        `INSERT INTO figure_draft_revisions (draft_id,revision,status,payload,created_at)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [input.draftId, input.expectedRevision + 1, input.status, JSON.stringify(payload), input.createdAt],
+      );
+      const mapped = {
+        conflict: false,
+        draft: mapFigureDraft(updated.rows[0]),
+        revision: mapFigureDraftRevision(revision.rows[0]),
+      };
+      await client.query("COMMIT");
+      client.release();
+      return mapped;
+    } catch (error) {
+      return failFigureDraftTransaction(client, error);
+    }
   }
 
   async createUser(user: User): Promise<User> {

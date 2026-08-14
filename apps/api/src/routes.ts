@@ -1,14 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { ApiErrorCode, FoundationError, type User } from "./domain.js";
+import { ApiErrorCode, FoundationError, type FigureDraft, type FigureDraftRevision, type User } from "./domain.js";
 import { AdminService } from "./admin-service.js";
 import { JobService } from "./job-service.js";
 import { SessionService } from "./session-service.js";
 import { signAccessToken, verifyAccessToken, verifyPassword } from "./security.js";
 import type { FoundationStore } from "./store.js";
-import type { VisioExecutor } from "./adapters.js";
+import type { AgentDraftOutput, VisioExecutor } from "./adapters.js";
 import type { VisioJobRunner } from "./visio-job-runner.js";
 import { parseCanvasSnapshot, type CanvasSnapshot } from "./agent-actions.js";
+import { parseCanonicalNetworkIR, type CanonicalNetworkIR } from "./network-ir-v2.js";
+import type { AgentTaskIntent } from "./agent-intent.js";
+import { parseEvidenceBundle, publicEvidenceSummary, type EvidenceBundle, type EvidenceKind } from "./evidence-bundle.js";
+import { FigureDraftService, type FigureDraftConfirmation } from "./figure-draft-service.js";
+import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -19,6 +24,10 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 const MAX_PROVIDER_API_KEY_LENGTH = 512;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const AGENT_USAGE_METRIC = "agentChatRequests" as const;
+const TRUSTED_AGENT_PROVIDERS = new Set<AgentDraftOutput["provider"]>([
+  "local-deterministic",
+  "openai-responses",
+]);
 
 const CODE_MIME_TYPES = new Set([
   "text/plain",
@@ -61,6 +70,7 @@ export interface AgentChatResult {
   diagram?: unknown;
   diagramIntent?: "replace" | "modify" | "explain";
   actions?: unknown;
+  figureAnalysis?: unknown;
 }
 
 export interface AgentServiceContract {
@@ -75,6 +85,8 @@ interface RouteOptions {
   sessionSecret: string;
   admin: { email: string; passwordHash: string };
   agentService?: AgentServiceContract;
+  figureDraftService: FigureDraftService;
+  figureDraftPreviewService: FigureDraftPreviewService;
   visioExecutor: VisioExecutor;
   visioJobRunner: VisioJobRunner;
 }
@@ -168,6 +180,12 @@ function usageDetails(reservation: { metric: string; periodStart: string; limit:
   };
 }
 
+function trustedAgentProvider(value: unknown): AgentDraftOutput["provider"] | undefined {
+  return typeof value === "string" && TRUSTED_AGENT_PROVIDERS.has(value as AgentDraftOutput["provider"])
+    ? value as AgentDraftOutput["provider"]
+    : undefined;
+}
+
 async function auditAgentChat(
   store: FoundationStore,
   actorId: string,
@@ -184,6 +202,374 @@ async function auditAgentChat(
     targetId: conversationId,
     reason: null,
     metadata: { conversationId, ...metadata },
+    createdAt: new Date().toISOString(),
+  });
+}
+
+type PublicEvidenceValue = string | number | boolean | string[] | null;
+
+interface PublicFigureAnalysis {
+  status: "needs_confirmation" | "ready_for_preview";
+  taskIntent: AgentTaskIntent;
+  evidence: Array<{
+    id: string;
+    subject: string;
+    predicate: string;
+    value: PublicEvidenceValue;
+    confidence: number;
+    source: { sourceId: string; kind: EvidenceKind; name: string };
+  }>;
+  canonicalNetworkIR: CanonicalNetworkIR;
+  blockingQuestions: Array<{ id: string; question: string; candidateValues: string[] }>;
+  warnings: string[];
+  readyForVisio: false;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+const UNSAFE_PUBLIC_TEXT_PATTERNS = [
+  /\bdata:[^\s,]+(?:;base64)?[,:]/i,
+  /\bbase64(?:\s+payload)?\s*[:=,]/i,
+  /-----BEGIN[^\r\n-]*PRIVATE KEY-----/i,
+  /["']?\b(?:api[_-]?key|access[_-]?token)\b["']?\s*[:=]/i,
+  /\b(?:bearer\s+[a-z0-9._-]{8,}|(?:sk|pk|ghp|github_pat|xox[bp]|AIza|AKIA)[-_]?[a-z0-9_-]{6,})\b/i,
+  /(?:<\/?(?:svg|xml|visio|shape|connects?)\b|<\?xml|<!doctype\b)[^>]*>/i,
+  /\b(?:visio\s+com|visio\.application|createobject\s*\(\s*["']visio|comobject|vba|sub\s+\w+|end\s+sub|shell\s*\(|powershell|cmd(?:\.exe)?\s*[/\\-]|bash\s+-c|sh\s+-c|os\.system|subprocess\.(?:run|popen)|python\s+-[cm]|import\s+(?:os|subprocess)|from\s+(?:os|subprocess)\s+import|javascript:|eval\s*\(|process\.env|document\.)\b/i,
+  /\b(?:moveto|lineto|bezier(?:to)?|addshape|addconnector|connector|beginx|endx)\s*\(/i,
+];
+
+function safeText(value: unknown, max: number): value is string {
+  return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= max
+    && !UNSAFE_PUBLIC_TEXT_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function safeIdentifier(value: unknown, max = 128): value is string {
+  return safeText(value, max) && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value);
+}
+
+function boundedArray(value: unknown, max: number): unknown[] | null {
+  return Array.isArray(value) && value.length <= max ? value : null;
+}
+
+function boundedTextList(value: unknown, maxItems: number, maxTextLength: number, requireIdentifier = false): string[] | null {
+  const list = boundedArray(value, maxItems);
+  if (!list || !list.every((item) => requireIdentifier ? safeIdentifier(item, maxTextLength) : safeText(item, maxTextLength))) return null;
+  return [...list] as string[];
+}
+
+function publicEvidenceValue(value: unknown): PublicEvidenceValue | undefined {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) return [...value];
+  return undefined;
+}
+
+function projectTaskIntent(value: unknown): AgentTaskIntent | null {
+  const input = record(value);
+  const constraints = record(input?.userConstraints);
+  if (!input || !constraints
+    || !["analyze_network", "create_figure", "revise_figure", "explain_structure", "render_to_visio", "export_preview"].includes(String(input.action))
+    || !["text", "code", "model", "sketch", "reference_image", "mixed"].includes(String(input.sourceMode))
+    || !["structure_only", "paper_overview", "architecture_detail", "module_detail", "visio_document"].includes(String(input.requestedArtifact))
+    || (input.referencesDraftId !== null && !safeIdentifier(input.referencesDraftId))
+    || !["auto", "landscape", "portrait"].includes(String(constraints.orientation))
+    || !["compact", "standard", "detailed"].includes(String(constraints.density))
+    || !["auto", "color", "grayscale"].includes(String(constraints.printMode))
+    || typeof constraints.requiresNativeVisio !== "boolean") return null;
+
+  return {
+    action: input.action as AgentTaskIntent["action"],
+    sourceMode: input.sourceMode as AgentTaskIntent["sourceMode"],
+    requestedArtifact: input.requestedArtifact as AgentTaskIntent["requestedArtifact"],
+    referencesDraftId: input.referencesDraftId as string | null,
+    userConstraints: {
+      orientation: constraints.orientation as AgentTaskIntent["userConstraints"]["orientation"],
+      density: constraints.density as AgentTaskIntent["userConstraints"]["density"],
+      printMode: constraints.printMode as AgentTaskIntent["userConstraints"]["printMode"],
+      requiresNativeVisio: constraints.requiresNativeVisio,
+    },
+  };
+}
+
+function projectEvidenceBundle(value: unknown): EvidenceBundle | null {
+  const incomingFacts = boundedArray(value, 256);
+  if (!incomingFacts) return null;
+  const sources = new Map<string, { id: string; kind: EvidenceKind; name: string }>();
+  const facts: Array<Record<string, unknown>> = [];
+
+  for (const value of incomingFacts) {
+    const fact = record(value);
+    const source = record(fact?.source);
+    const evidenceValue = publicEvidenceValue(fact?.value);
+    if (!fact || !source || evidenceValue === undefined
+      || !safeIdentifier(fact.id) || !safeText(fact.subject, 128) || !safeText(fact.predicate, 128)
+      || typeof fact.confidence !== "number" || !Number.isFinite(fact.confidence)
+      || !safeIdentifier(source.sourceId) || !safeText(source.name, 256)
+      || !["text", "code", "model", "image"].includes(String(source.kind))) return null;
+
+    const publicSource = { id: source.sourceId, kind: source.kind as EvidenceKind, name: source.name };
+    const previous = sources.get(publicSource.id);
+    if (previous && (previous.kind !== publicSource.kind || previous.name !== publicSource.name)) return null;
+    sources.set(publicSource.id, publicSource);
+    facts.push({
+      id: fact.id,
+      subject: fact.subject,
+      predicate: fact.predicate,
+      value: evidenceValue,
+      confidence: fact.confidence,
+      source: { sourceId: publicSource.id, kind: publicSource.kind, locator: null, excerpt: null },
+    });
+  }
+  if (sources.size > 6) return null;
+
+  try {
+    return parseEvidenceBundle({ version: 1, sources: [...sources.values()], facts, unresolved: [] });
+  } catch {
+    return null;
+  }
+}
+
+function finiteOrNull(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function nullableBoundedText(value: unknown, max: number): value is string | null {
+  return value === null || safeText(value, max);
+}
+
+function projectCanonicalNetworkIR(value: unknown, evidence: EvidenceBundle): CanonicalNetworkIR | null {
+  const input = record(value);
+  if (!input) return null;
+  const figure = record(input.figure);
+  const tensors = boundedArray(input.tensors, 128);
+  const nodes = boundedArray(input.nodes, 128);
+  const edges = boundedArray(input.edges, 256);
+  const groups = boundedArray(input.groups, 64);
+  const unresolved = boundedArray(input.unresolved, 16);
+  if (!figure || !tensors || !nodes || !edges || !groups || !unresolved
+    || !safeIdentifier(figure.id) || !safeText(figure.title, 256) || !nullableBoundedText(figure.description, 512)) return null;
+
+  const projectedTensors = tensors.map((value) => {
+    const tensor = record(value);
+    const shape = boundedArray(tensor?.shape, 8);
+    const axes = boundedTextList(tensor?.axes, 8, 128, true);
+    const consumers = boundedTextList(tensor?.consumerNodeIds, 64, 128, true);
+    if (!tensor || !shape || !axes || !consumers || !safeIdentifier(tensor.id) || !safeText(tensor.name, 256)
+      || !nullableBoundedText(tensor.dtype, 128) || !nullableBoundedText(tensor.producerNodeId, 128)) return null;
+    return {
+      id: tensor.id, name: tensor.name, shape: [...shape], axes, semanticRole: tensor.semanticRole,
+      dtype: tensor.dtype, producerNodeId: tensor.producerNodeId, consumerNodeIds: consumers,
+    };
+  });
+  if (projectedTensors.some((item) => item === null)) return null;
+
+  const projectedNodes = nodes.map((value) => {
+    const node = record(value);
+    const inputs = boundedTextList(node?.inputTensorIds, 64, 128, true);
+    const outputs = boundedTextList(node?.outputTensorIds, 64, 128, true);
+    const evidenceIds = boundedTextList(node?.sourceEvidenceIds, 256, 128, true);
+    const repeat = record(node?.repeats);
+    if (!node || !inputs || !outputs || !evidenceIds || !safeIdentifier(node.id) || !finiteOrNull(node.confidence)) return null;
+    if (node.repeats !== null && (!repeat || typeof repeat.count !== "number" || !Number.isFinite(repeat.count))) return null;
+    const repeatUnits = node.repeats === null ? null : boundedTextList(repeat?.unitNodeIds, 128, 128, true);
+    if (node.repeats !== null && !repeatUnits) return null;
+    return {
+      id: node.id, op: node.op, inputTensorIds: inputs, outputTensorIds: outputs,
+      confidence: node.confidence, sourceEvidenceIds: evidenceIds,
+      repeats: node.repeats === null ? null : { count: repeat!.count, unitNodeIds: repeatUnits! },
+    };
+  });
+  if (projectedNodes.some((item) => item === null)) return null;
+
+  const projectedEdges = edges.map((value) => {
+    const edge = record(value);
+    const tensorIds = boundedTextList(edge?.tensorIds, 64, 128, true);
+    const evidenceIds = boundedTextList(edge?.evidenceIds, 256, 128, true);
+    if (!edge || !tensorIds || !evidenceIds || !safeIdentifier(edge.id) || !safeIdentifier(edge.sourceNodeId)
+      || !safeIdentifier(edge.targetNodeId) || !finiteOrNull(edge.confidence)) return null;
+    return {
+      id: edge.id, sourceNodeId: edge.sourceNodeId, targetNodeId: edge.targetNodeId, relation: edge.relation,
+      tensorIds, confidence: edge.confidence, evidenceIds,
+    };
+  });
+  if (projectedEdges.some((item) => item === null)) return null;
+
+  const projectedGroups = groups.map((value) => {
+    const group = record(value);
+    const nodeIds = boundedTextList(group?.nodeIds, 128, 128, true);
+    const evidenceIds = boundedTextList(group?.sourceEvidenceIds, 256, 128, true);
+    if (!group || !nodeIds || !evidenceIds || !safeIdentifier(group.id) || !safeText(group.label, 256) || !finiteOrNull(group.confidence)) return null;
+    return { id: group.id, label: group.label, nodeIds, confidence: group.confidence, sourceEvidenceIds: evidenceIds };
+  });
+  if (projectedGroups.some((item) => item === null)) return null;
+
+  const projectedUnresolved = unresolved.map((value) => {
+    const item = record(value);
+    const candidates = boundedTextList(item?.candidateValues, 8, 256);
+    const evidenceIds = boundedTextList(item?.evidenceIds, 256, 128, true);
+    if (!item || !candidates || !evidenceIds || !safeIdentifier(item.id) || !safeText(item.question, 512)) return null;
+    return { id: item.id, question: item.question, severity: item.severity, candidateValues: candidates, evidenceIds };
+  });
+  if (projectedUnresolved.some((item) => item === null)) return null;
+
+  const projected = {
+    version: input.version,
+    figure: { id: figure.id, title: figure.title, description: figure.description },
+    tensors: projectedTensors,
+    nodes: projectedNodes,
+    edges: projectedEdges,
+    groups: projectedGroups,
+    unresolved: projectedUnresolved,
+  };
+
+  try {
+    return parseCanonicalNetworkIR(projected, evidence);
+  } catch {
+    return null;
+  }
+}
+
+function projectFigureAnalysis(value: unknown): PublicFigureAnalysis | null {
+  const input = record(value);
+  if (!input || (input.status !== "needs_confirmation" && input.status !== "ready_for_preview")) return null;
+  const taskIntent = projectTaskIntent(input.taskIntent);
+  const evidenceBundle = projectEvidenceBundle(input.evidence);
+  const canonicalNetworkIR = evidenceBundle ? projectCanonicalNetworkIR(input.canonicalNetworkIR, evidenceBundle) : null;
+  const warnings = boundedTextList(input.warnings, 16, 512);
+  const incomingQuestions = boundedArray(input.blockingQuestions, 16);
+  if (!taskIntent || !evidenceBundle || !canonicalNetworkIR || !warnings || !incomingQuestions) return null;
+  const validatedQuestions = incomingQuestions.map((value) => {
+    const question = record(value);
+    const candidates = boundedTextList(question?.candidateValues, 8, 256);
+    if (!question || !candidates || candidates.length < 2 || new Set(candidates).size !== candidates.length
+      || !safeIdentifier(question.id) || !safeText(question.question, 512)) return null;
+    return { id: question.id, question: question.question, candidateValues: candidates };
+  });
+  if (validatedQuestions.some((item) => item === null)) return null;
+  if ((input.status === "needs_confirmation" && validatedQuestions.length !== 1)
+    || (input.status === "ready_for_preview" && validatedQuestions.length !== 0)) return null;
+  const blockingQuestions = validatedQuestions as PublicFigureAnalysis["blockingQuestions"];
+
+  return {
+    status: input.status,
+    taskIntent,
+    evidence: publicEvidenceSummary(evidenceBundle),
+    canonicalNetworkIR,
+    blockingQuestions,
+    warnings,
+    readyForVisio: false,
+  };
+}
+
+function publicFigureDraft(draft: FigureDraft) {
+  return {
+    id: draft.id,
+    conversationId: draft.conversationId,
+    status: draft.status,
+    currentRevision: draft.currentRevision,
+    createdAt: draft.createdAt,
+    updatedAt: draft.updatedAt,
+  };
+}
+
+function agentChatDraftSummary(draft: FigureDraft) {
+  return {
+    id: draft.id,
+    status: draft.status,
+    currentRevision: draft.currentRevision,
+  };
+}
+
+function publicFigureDraftRevision(revision: FigureDraftRevision) {
+  if (revision.status === "failed") {
+    return {
+      revision: revision.revision,
+      status: revision.status,
+      createdAt: revision.createdAt,
+      analysis: null,
+    };
+  }
+  const payload = record(revision.payload);
+  const analysis = payload ? projectFigureAnalysis({ ...payload, status: revision.status }) : null;
+  if (!analysis) {
+    throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Figure draft revision payload is invalid", 500);
+  }
+  return {
+    revision: revision.revision,
+    status: revision.status,
+    createdAt: revision.createdAt,
+    analysis,
+  };
+}
+
+function parseFigureDraftConfirmation(request: FastifyRequest): { expectedRevision: number; answer: FigureDraftConfirmation } {
+  const input = objectField(request.body, "body");
+  const expectedRevision = input.expectedRevision;
+  if (typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+    throw validationError("expectedRevision must be a positive integer", { field: "expectedRevision", reason: "invalid_value" });
+  }
+  const answer = objectField(input.answer, "answer");
+  if (!safeIdentifier(answer.questionId) || !safeText(answer.value, 256)) {
+    throw validationError("answer must contain a valid questionId and value", { field: "answer", reason: "invalid_value" });
+  }
+  return {
+    expectedRevision,
+    answer: { questionId: answer.questionId, value: answer.value },
+  };
+}
+
+async function auditFigureDraft(
+  store: FoundationStore,
+  actorId: string,
+  action: string,
+  draftId: string,
+  revision: ReturnType<typeof publicFigureDraftRevision>,
+): Promise<void> {
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId,
+    action,
+    targetType: "figure-draft",
+    targetId: draftId,
+    reason: null,
+    metadata: {
+      draftId,
+      revision: revision.revision,
+      status: revision.status,
+      blockingQuestionCount: revision.analysis?.blockingQuestions.length ?? 0,
+      warningCount: revision.analysis?.warnings.length ?? 0,
+    },
+    createdAt: new Date().toISOString(),
+  });
+}
+
+async function auditFigureDraftPreview(
+  store: FoundationStore,
+  actorId: string,
+  draftId: string,
+  preview: { draft: { revision: number; status: string }; grammar: { id: string; version: number }; plan: { target: string; primitives: unknown[]; relations: unknown[]; annotations: unknown[] } },
+): Promise<void> {
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId,
+    action: "figure-draft.preview.read",
+    targetType: "figure-draft",
+    targetId: draftId,
+    reason: null,
+    metadata: {
+      draftId,
+      revision: preview.draft.revision,
+      status: preview.draft.status,
+      grammarId: preview.grammar.id,
+      grammarVersion: preview.grammar.version,
+      target: preview.plan.target,
+      primitiveCount: preview.plan.primitives.length,
+      relationCount: preview.plan.relations.length,
+      annotationCount: preview.plan.annotations.length,
+    },
     createdAt: new Date().toISOString(),
   });
 }
@@ -407,6 +793,56 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     };
   });
 
+  app.get("/api/figure-drafts/:draftId", async (request) => {
+    const access = await requireUser(request, options);
+    const draftId = (request.params as { draftId: string }).draftId;
+    const snapshot = await options.figureDraftService.get(access.user.id, draftId);
+    if (!snapshot) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft was not found", 404);
+    const revision = publicFigureDraftRevision(snapshot.revision);
+    await auditFigureDraft(options.store, access.user.id, "figure-draft.read", draftId, revision);
+    return { draft: publicFigureDraft(snapshot.draft), revision };
+  });
+
+  app.get("/api/figure-drafts/:draftId/preview", async (request) => {
+    const access = await requireUser(request, options);
+    const draftId = (request.params as { draftId: string }).draftId;
+    const preview = await options.figureDraftPreviewService.compile(access.user.id, draftId);
+    await auditFigureDraftPreview(options.store, access.user.id, draftId, preview);
+    return preview;
+  });
+
+  app.get("/api/figure-drafts/:draftId/revisions/:revision", async (request) => {
+    const access = await requireUser(request, options);
+    const { draftId, revision: revisionParam } = request.params as { draftId: string; revision: string };
+    const snapshot = await options.figureDraftService.get(access.user.id, draftId);
+    if (!snapshot) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft was not found", 404);
+    const revisionNumber = Number(revisionParam);
+    if (!Number.isSafeInteger(revisionNumber) || revisionNumber < 1) {
+      throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft revision was not found", 404);
+    }
+    const storedRevision = await options.store.getFigureDraftRevision(access.user.id, draftId, revisionNumber);
+    if (!storedRevision) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft revision was not found", 404);
+    const revision = publicFigureDraftRevision(storedRevision);
+    await auditFigureDraft(options.store, access.user.id, "figure-draft.revision.read", draftId, revision);
+    return { draft: publicFigureDraft(snapshot.draft), revision };
+  });
+
+  app.post("/api/figure-drafts/:draftId/confirm", async (request) => {
+    const access = await requireUser(request, options);
+    const draftId = (request.params as { draftId: string }).draftId;
+    const input = parseFigureDraftConfirmation(request);
+    const confirmed = await options.figureDraftService.confirm(access.user.id, draftId, input.expectedRevision, input.answer);
+    if (confirmed.conflict) {
+      throw new FoundationError("FIGURE_DRAFT_REVISION_CONFLICT", "Figure draft revision is no longer current", 409);
+    }
+    if (!confirmed.draft || !confirmed.revision) {
+      throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Figure draft confirmation did not produce a revision", 500);
+    }
+    const revision = publicFigureDraftRevision(confirmed.revision);
+    await auditFigureDraft(options.store, access.user.id, "figure-draft.confirmed", draftId, revision);
+    return { draft: publicFigureDraft(confirmed.draft), revision };
+  });
+
   app.post("/api/jobs", async (request, reply) => {
     const access = await requireUser(request, options);
     const input = body(request);
@@ -565,22 +1001,58 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     }
 
     const provider = result.response && typeof result.response === "object" && "provider" in result.response
-      ? result.response.provider
+      ? trustedAgentProvider(result.response.provider)
       : undefined;
+    const figureAnalysis = projectFigureAnalysis(result.figureAnalysis);
+    const conversationId = result.conversationId ?? input.conversationId;
+    let draft: ReturnType<typeof agentChatDraftSummary> | undefined;
+    if (figureAnalysis) {
+      try {
+        const created = await options.figureDraftService.createFromAnalysis(
+          access.user.id,
+          conversationId,
+          figureAnalysis,
+        );
+        draft = agentChatDraftSummary(created.draft);
+      } catch (error) {
+        await options.store.finalizeAgentUsage({
+          id: reservation.id,
+          state: "failed",
+          outcome: "draft_error",
+          errorCode: error instanceof FoundationError ? error.code : "INTERNAL_ERROR",
+        });
+        await auditAgentChat(options.store, access.user.id, "agent.chat.failed", conversationId, {
+          errorCode: error instanceof FoundationError ? error.code : "INTERNAL_ERROR",
+          usage: usageDetails(reservation),
+        });
+        throw error;
+      }
+    }
     const finalized = await options.store.finalizeAgentUsage({
       id: reservation.id,
       state: "completed",
       outcome: "completed",
       ...(typeof provider === "string" ? { provider } : {}),
     });
-    await auditAgentChat(options.store, access.user.id, "agent.chat.completed", result.conversationId ?? input.conversationId, {
+    await auditAgentChat(options.store, access.user.id, "agent.chat.completed", conversationId, {
       status: result.status,
       ...(typeof provider === "string" ? { provider } : {}),
+      ...(figureAnalysis ? {
+        figureAnalysisStatus: figureAnalysis.status,
+        blockingQuestionCount: figureAnalysis.blockingQuestions.length,
+        canonicalNodeCount: figureAnalysis.canonicalNetworkIR.nodes.length,
+        canonicalEdgeCount: figureAnalysis.canonicalNetworkIR.edges.length,
+      } : {}),
+      ...(draft ? {
+        draftId: draft.id,
+        draftRevision: draft.currentRevision,
+        draftStatus: draft.status,
+      } : {}),
       usage: usageDetails(finalized ?? reservation),
     });
 
     return {
-      conversationId: result.conversationId ?? input.conversationId,
+      conversationId,
       status: result.status,
       stages: result.stages ?? [],
       response: result.response,
@@ -588,6 +1060,8 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
       diagram: result.diagram ?? null,
       diagramIntent: result.diagramIntent ?? "replace",
       actions: result.actions ?? { actions: [] },
+      ...(figureAnalysis ? { figureAnalysis } : {}),
+      ...(draft ? { draft } : {}),
       usage: usageDetails(finalized ?? reservation),
     };
   });

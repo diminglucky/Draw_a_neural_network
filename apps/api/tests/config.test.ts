@@ -20,12 +20,16 @@ describe("storage configuration", () => {
       VISIO_WORKER_MODE: "live",
       VISIO_WORKER_TIMEOUT_MS: "45000",
       VISIO_MAX_CONCURRENCY: "2",
+      VISIO_VISIBLE: "true",
+      VISIO_ATTACH_TO_RUNNING: "true",
     })).toMatchObject({
       visioWorkerPath: "C:\\tools\\visio-worker.exe",
       visioOutputRoot: "C:\\exports",
       visioWorkerMode: "live",
       visioWorkerTimeoutMs: 45000,
       visioMaxConcurrency: 2,
+      visioVisible: true,
+      visioAttachToRunning: true,
     });
   });
 
@@ -34,6 +38,8 @@ describe("storage configuration", () => {
       visioWorkerMode: "mock",
       visioWorkerTimeoutMs: 120000,
       visioMaxConcurrency: 1,
+      visioVisible: false,
+      visioAttachToRunning: false,
     });
   });
 

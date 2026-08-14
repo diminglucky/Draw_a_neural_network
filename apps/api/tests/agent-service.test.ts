@@ -9,6 +9,36 @@ async function loadAdaptersModule() {
   return import("../src/adapters.js");
 }
 
+function validProviderProposal() {
+  return {
+    provider: "openai-responses",
+    responseText: "A bounded analysis proposal is ready.",
+    summary: "Analysis proposal ready for deterministic validation.",
+    overallConfidence: 0.8,
+    taskIntentSuggestion: {},
+    evidence: [{
+      id: "fact-message",
+      subject: "request",
+      predicate: "architecture",
+      value: "input to output",
+      confidence: 0.8,
+      source: { sourceId: "source-message", kind: "text", locator: null, excerpt: null },
+    }],
+    networkCandidate: {
+      figure: { id: "figure-1", title: "Draft", description: null },
+      nodes: [
+        { id: "input", kind: "input", label: "Input", stage: 0, confidence: 0.9, sourceEvidence: [] },
+        { id: "output", kind: "output", label: "Output", stage: 1, confidence: 0.9, sourceEvidence: [] },
+      ],
+      edges: [{ source: "input", target: "output", kind: "flow", skip: false, confidence: 0.9, sourceEvidence: [] }],
+      groups: [],
+    },
+    unresolved: [],
+    figureIntentSuggestion: {},
+    warnings: [],
+  };
+}
+
 function createNetworkIrHarness() {
   return {
     parseNetworkIR(value: unknown) {
@@ -75,9 +105,10 @@ describe("agent service orchestration", () => {
     expect(result.stages.map((stage: { name: string }) => stage.name)).toEqual([
       "received",
       "analyzing",
+      "evidence",
       "building_ir",
-      "layouting",
       "validating",
+      "layouting",
       "completed",
     ]);
     expect(result.response.provider).toBe("local-deterministic");
@@ -85,6 +116,35 @@ describe("agent service orchestration", () => {
     expect((result.networkIR as { nodes: Array<{ kind: string }> }).nodes.map((node) => node.kind)).toEqual(
       expect.arrayContaining(["input", "conv", "pool", "dense", "output"]),
     );
+  });
+
+  it("returns v2 analysis readiness without removing legacy diagram compatibility", async () => {
+    const [{ AgentService }, { createLocalDeterministicAgentProvider }] = await Promise.all([
+      loadAgentServiceModule(),
+      loadAdaptersModule(),
+    ]);
+    const service = new AgentService({
+      provider: createLocalDeterministicAgentProvider(),
+      ...createNetworkIrHarness(),
+      createConversationId: () => "conv-v2-compat",
+      now: () => "2026-08-13T10:00:00.000Z",
+    });
+
+    const result = await service.chat({
+      userId: "user-1",
+      message: "Analyze this CNN: input, Conv2d, MaxPool2d, Linear, output.",
+      attachments: [],
+    });
+
+    expect(result.networkIR).toBeTruthy();
+    expect(result.diagram).toBeTruthy();
+    expect(result.figureAnalysis).toMatchObject({
+      status: "ready_for_preview",
+      taskIntent: expect.objectContaining({ action: "analyze_network" }),
+      canonicalNetworkIR: expect.objectContaining({ version: 2 }),
+      blockingQuestions: [],
+      readyForVisio: false,
+    });
   });
 
   it("merges mixed code and image attachments into local evidence without claiming real vision", async () => {
@@ -205,7 +265,7 @@ describe("agent service orchestration", () => {
           type: "message",
           content: [{
             type: "output_text",
-            text: JSON.stringify({ nodes: [{ id: "input", kind: "input" }, { id: "output", kind: "output" }], edges: [{ source: "input", target: "output" }] }),
+            text: JSON.stringify(validProviderProposal()),
           }],
         }],
       }),
@@ -236,7 +296,7 @@ describe("agent service orchestration", () => {
       type: "json_schema",
       strict: true,
     });
-    expect(requestBody.text.format.name).toBe("network_ir");
+    expect(requestBody.text.format.name).toBe("analysis_proposal");
   });
 
   it("sends bounded canvas context to OpenAI and separates safe actions from network IR", async () => {
@@ -249,14 +309,7 @@ describe("agent service orchestration", () => {
           type: "message",
           content: [{
             type: "output_text",
-            text: JSON.stringify({
-              figure: { id: "figure-1", title: "Updated", description: "Updated figure" },
-              nodes: [{ id: "input", kind: "input", label: "Input", stage: 0, confidence: 0.9, sourceEvidence: [] }, { id: "output", kind: "output", label: "Output", stage: 1, confidence: 0.9, sourceEvidence: [] }],
-              edges: [{ source: "input", target: "output", kind: "flow", label: "flow", shape: null, skip: false, confidence: 0.9, sourceEvidence: [] }],
-              groups: [], annotations: [], style: {}, layout: {},
-              diagramIntent: "modify",
-              actions: { actions: [{ type: "update_figure", patch: { title: "Updated" } }] },
-            }),
+            text: JSON.stringify(validProviderProposal()),
           }],
         }],
       }),
@@ -270,7 +323,7 @@ describe("agent service orchestration", () => {
     const result = await provider.buildDraft({
       userId: "user-1",
       conversationId: "conv-openai-canvas",
-      message: "Rename the current figure",
+      message: "Rename the current figure title to Updated",
       attachments: [],
       canvas: {
         figure: { title: "Current" },
@@ -283,7 +336,56 @@ describe("agent service orchestration", () => {
     expect(result.diagramIntent).toBe("modify");
     expect(result.actions.actions).toEqual([{ type: "update_figure", patch: { title: "Updated" } }]);
     const requestBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body ?? "{}"));
-    expect(requestBody.input[0].content[0].text).toContain("Current canvas snapshot");
+    expect(requestBody.input[0].content[0].text).toContain("Legacy compatibility canvas context");
+  });
+
+  it("projects oversized legacy canvas context before sending it to OpenAI", async () => {
+    const [{ createOpenAIResponsesAgentProvider }] = await Promise.all([loadAdaptersModule()]);
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(validProviderProposal()) }] }],
+      }),
+      body: init?.body,
+    }));
+    const provider = createOpenAIResponsesAgentProvider({
+      apiKey: "sk-test",
+      fetchImpl,
+      parseNetworkIR: createNetworkIrHarness().parseNetworkIR,
+    });
+    const nodes = Array.from({ length: 80 }, (_, index) => ({
+      id: `oversized-node-${index}`,
+      type: "tensor",
+      x: index,
+      y: index,
+      w: 100,
+      h: 80,
+      label: `Node ${index}`,
+      subtitle: "x".repeat(400),
+      stage: index,
+      color: "#00e5ff",
+      shellCommand: "powershell -c whoami",
+    }));
+
+    await provider.buildDraft({
+      userId: "user-1",
+      conversationId: "conv-openai-oversized-canvas",
+      message: "Explain the current figure",
+      attachments: [],
+      canvas: {
+        figure: { title: "Current", outputPath: "C:\\output\\figure.vsdx" },
+        paletteName: "dopamine",
+        nodes,
+        edges: Array.from({ length: 80 }, (_, index) => ({ id: `edge-${index}`, source: `oversized-node-${index}`, target: `oversized-node-${(index + 1) % 80}`, label: "flow", type: "signal", color: "#2846d8" })),
+      } as any,
+    });
+
+    const requestText = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body ?? "{}")).input[0].content[0].text as string;
+    expect(requestText).not.toContain("oversized-node-79");
+    expect(requestText).not.toContain("shellCommand");
+    expect(requestText).not.toContain("outputPath");
+    expect(requestText.length).toBeLessThan(12000);
   });
 
   it("reports stage progression in order during a successful run", async () => {
@@ -313,7 +415,7 @@ describe("agent service orchestration", () => {
       },
     );
 
-    expect(observed).toEqual(["received", "analyzing", "building_ir", "layouting", "validating", "completed"]);
+    expect(observed).toEqual(["received", "analyzing", "evidence", "building_ir", "validating", "layouting", "completed"]);
   });
 
   it("uses a request-scoped provider when the desktop supplies a relay API key", async () => {
@@ -323,11 +425,15 @@ describe("agent service orchestration", () => {
     ]);
     const networkIr = createNetworkIrHarness();
     const selectedKeys: string[] = [];
+    const defaultProvider = createLocalDeterministicAgentProvider();
+    const selectedProvider = createLocalDeterministicAgentProvider();
+    const defaultAnalysis = vi.spyOn(defaultProvider, "buildAnalysisProposal");
+    const selectedAnalysis = vi.spyOn(selectedProvider, "buildAnalysisProposal");
     const service = new AgentService({
-      provider: createLocalDeterministicAgentProvider(),
+      provider: defaultProvider,
       providerForApiKey: (apiKey) => {
         selectedKeys.push(apiKey);
-        return createLocalDeterministicAgentProvider();
+        return selectedProvider;
       },
       ...networkIr,
       now: () => "2026-08-12T10:20:00.000Z",
@@ -342,6 +448,8 @@ describe("agent service orchestration", () => {
 
     expect(result.status).toBe("completed");
     expect(selectedKeys).toEqual(["sk-relay-user-key"]);
+    expect(defaultAnalysis).not.toHaveBeenCalled();
+    expect(selectedAnalysis).toHaveBeenCalled();
   });
 
   it("fails with AGENT_PROVIDER_NOT_CONFIGURED when no real provider is configured", async () => {
@@ -426,5 +534,38 @@ describe("agent service orchestration", () => {
     const kinds = new Set(ir.nodes.map((node) => node.kind));
     for (const kind of requiredKinds) expect(kinds.has(kind)).toBe(true);
     if (requireSkip) expect(ir.edges.some((edge) => edge.kind === "skip" || edge.skip === true)).toBe(true);
+  });
+
+  it("builds the canonical VGG16 preset with publication visual metadata", async () => {
+    const [{ createLocalDeterministicAgentProvider }] = await Promise.all([loadAdaptersModule()]);
+    const provider = createLocalDeterministicAgentProvider();
+    const result = await provider.buildDraft({
+      userId: "user-1",
+      conversationId: "vgg16-1",
+      message: "Draw VGG16 with publication-quality feature map stacks.",
+      attachments: [],
+    });
+    const ir = result.networkIR as { figure: { title: string }; nodes: Array<Record<string, any>>; edges: Array<Record<string, any>> };
+    expect(ir.figure.title).toBe("VGG16 Architecture");
+    expect(ir.nodes.filter((node) => node.kind === "conv")).toHaveLength(5);
+    expect(ir.nodes.filter((node) => node.kind === "pool")).toHaveLength(5);
+    expect(ir.nodes.filter((node) => node.kind === "dense")).toHaveLength(2);
+    expect(ir.nodes.filter((node) => node.kind === "classifier")).toHaveLength(1);
+    expect(ir.nodes.filter((node) => node.kind === "conv").map((node) => [node.repeatCount, node.tensor?.shape])).toEqual([
+      [2, [224, 224, 64]],
+      [2, [112, 112, 128]],
+      [3, [56, 56, 256]],
+      [3, [28, 28, 512]],
+      [3, [14, 14, 512]],
+    ]);
+    expect(ir.nodes.at(-1)?.visualRole).toBe("softmax-block");
+    expect(ir.nodes.find((node) => node.id === "block-3")?.visualEncoding).toEqual({
+      visiblePlaneCount: 6,
+      extrusionDepthFu: 24,
+      projection: "oblique-3d",
+      spatialShape: [56, 56],
+    });
+    expect(ir.nodes.at(-1)?.metadata).toEqual({ contains: ["fc8-logits", "softmax"] });
+    expect(ir.edges.length).toBeGreaterThanOrEqual(ir.nodes.length - 1);
   });
 });

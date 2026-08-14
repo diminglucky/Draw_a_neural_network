@@ -1,8 +1,9 @@
 import { ApiErrorCode, FoundationError } from "./domain.js";
 import type { AgentAttachment, AgentDraftOutput, AgentEvidence, AgentProvider } from "./adapters.js";
 import { applyCanvasActions, parseCanvasActionSet, type CanvasActionSet, type CanvasSnapshot } from "./agent-actions.js";
+import { PublicationFigureAgent, type FigureAnalysisResult } from "./publication-figure-agent.js";
 
-export type AgentStageName = "received" | "analyzing" | "building_ir" | "layouting" | "validating" | "completed" | "failed";
+export type AgentStageName = "received" | "analyzing" | "evidence" | "building_ir" | "validating" | "layouting" | "completed" | "failed";
 
 export interface AgentStageRecord {
   name: AgentStageName;
@@ -38,6 +39,7 @@ export interface AgentChatResult {
   diagram: unknown;
   diagramIntent: "replace" | "modify" | "explain";
   actions: CanvasActionSet;
+  figureAnalysis?: FigureAnalysisResult;
 }
 
 export interface AgentChatOptions {
@@ -103,21 +105,31 @@ export class AgentService {
       const provider = normalizedInput.providerApiKey && this.providerForApiKey
         ? this.providerForApiKey(normalizedInput.providerApiKey)
         : this.provider;
+      const figureAnalysis = await new PublicationFigureAgent({ provider }).analyze({
+        userId: normalizedInput.userId,
+        conversationId: normalizedInput.conversationId,
+        message: normalizedInput.message,
+        attachments: normalizedInput.attachments,
+        draftRef: null,
+        ...(normalizedInput.canvas ? { canvas: normalizedInput.canvas } : {}),
+      });
+
+      pushStage("evidence");
+
+      pushStage("building_ir");
       const draft = await provider.buildDraft(normalizedInput);
       const actions = parseCanvasActionSet(draft.actions ?? { actions: [] });
       if (normalizedInput.canvas && actions.actions.length > 0) applyCanvasActions(normalizedInput.canvas, actions);
-
-      pushStage("building_ir");
       const networkIR = this.parseNetworkIR(draft.networkIR);
-
-      pushStage("layouting");
-      const diagram = this.layoutNetworkIR(networkIR);
 
       pushStage("validating");
       const validation = this.validateNetworkIR(networkIR);
       if (!validation.valid) {
         throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Validated network IR is invalid", 502);
       }
+
+      pushStage("layouting");
+      const diagram = this.layoutNetworkIR(networkIR);
 
       const response: AgentChatResponse = {
         provider: draft.provider,
@@ -138,6 +150,7 @@ export class AgentService {
         diagram,
         diagramIntent: draft.diagramIntent ?? "replace",
         actions,
+        figureAnalysis,
       };
     } catch (error) {
       const foundationError = toFoundationError(error);

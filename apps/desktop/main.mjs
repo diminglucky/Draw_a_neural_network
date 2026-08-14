@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { extname, isAbsolute, join } from "node:path";
 import { MAX_DEVICE_CHALLENGE_BYTES, MAX_DEVICE_ID_LENGTH, createDeviceKeyStore } from "./device-key-store.mjs";
-import { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
+import { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL, SHELL_OPEN_PATH_CHANNEL } from "./channels.mjs";
 
 export { DEVICE_KEY_BIND_DEVICE_CHANNEL, DEVICE_KEY_GET_IDENTITY_CHANNEL, DEVICE_KEY_SIGN_CHALLENGE_CHANNEL } from "./channels.mjs";
 export const DEFAULT_FOUNDATION_UI_URL = "http://127.0.0.1:4173";
@@ -20,6 +20,21 @@ function bridgeError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+export function createDesktopShellIpc({ ipcMain, shell } = {}) {
+  if (!ipcMain || typeof ipcMain.handle !== "function") throw new TypeError("ipcMain.handle is required");
+  if (!shell || typeof shell.openPath !== "function") throw new TypeError("Electron shell.openPath is required");
+
+  ipcMain.handle(SHELL_OPEN_PATH_CHANNEL, async (_event, value) => {
+    if (typeof value !== "string" || !isAbsolute(value) || extname(value).toLowerCase() !== ".vsdx") {
+      throw bridgeError("DESKTOP_PATH_INVALID", "Only an absolute .vsdx path can be opened");
+    }
+    const error = await shell.openPath(value);
+    if (error) throw bridgeError("DESKTOP_PATH_OPEN_FAILED", error);
+    return value;
+  });
+  return Object.freeze({ channels: Object.freeze([SHELL_OPEN_PATH_CHANNEL]) });
 }
 
 export function buildFoundationUiUrl(uiUrl, requireDeviceProof) {
@@ -67,7 +82,7 @@ export async function startDesktopApp({ electron, dpapi, uiUrl = process.env.FOU
   if (!electron?.app || !electron?.BrowserWindow || !electron?.ipcMain) throw new TypeError("Electron app, BrowserWindow, and ipcMain are required");
   if (!dpapi) throw new TypeError("Windows DPAPI implementation is required");
 
-  const { app, BrowserWindow, ipcMain } = electron;
+  const { app, BrowserWindow, ipcMain, shell } = electron;
   await app.whenReady();
   const storageRoot = userDataPath || app.getPath("userData");
   const deviceKeyStore = keyStoreFactory({
@@ -75,6 +90,7 @@ export async function startDesktopApp({ electron, dpapi, uiUrl = process.env.FOU
     dpapi,
   });
   createDeviceKeyIpc({ ipcMain, deviceKeyStore });
+  createDesktopShellIpc({ ipcMain, shell });
 
   const window = new BrowserWindow({
     webPreferences: {

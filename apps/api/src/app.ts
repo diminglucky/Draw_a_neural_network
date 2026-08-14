@@ -15,6 +15,8 @@ import { createAgentServiceForConfig } from "./agent-runtime.js";
 import { NotConnectedVisioExecutor, type VisioExecutor } from "./adapters.js";
 import { VisioWorkerClient } from "./visio-worker-client.js";
 import { VisioJobRunner } from "./visio-job-runner.js";
+import { FigureDraftService } from "./figure-draft-service.js";
+import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -23,6 +25,8 @@ export interface BuildAppOptions {
   admin?: { email: string; passwordHash: string };
   leaseCoordinator?: LeaseCoordinator;
   agentService?: AgentServiceContract;
+  figureDraftService?: FigureDraftService;
+  figureDraftPreviewService?: FigureDraftPreviewService;
   visioExecutor?: VisioExecutor;
   visioJobRunner?: VisioJobRunner;
 }
@@ -35,6 +39,8 @@ function createVisioExecutorForConfig(config: AppConfig): VisioExecutor {
     outputRoot: config.visioOutputRoot,
     mode: config.visioWorkerMode,
     timeoutMs: config.visioWorkerTimeoutMs,
+    visible: config.visioVisible,
+    attachToRunning: config.visioAttachToRunning,
   });
 }
 
@@ -47,6 +53,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const sessionService = new SessionService({ store, leaseSeconds: 90, accessTokenTtlSeconds: 900, challengeTtlSeconds: 120, requireDeviceProof: config.requireDeviceProof, sessionSecret: options.sessionSecret ?? config.sessionSecret, leaseCoordinator: options.leaseCoordinator });
   const jobService = new JobService({ store });
   const adminService = new AdminService(store, sessionService);
+  const figureDraftService = options.figureDraftService ?? new FigureDraftService({ store });
+  const figureDraftPreviewService = options.figureDraftPreviewService ?? new FigureDraftPreviewService({ figureDraftService });
   const visioExecutor = options.visioExecutor ?? createVisioExecutorForConfig(config);
   const visioJobRunner = options.visioJobRunner ?? new VisioJobRunner({ store, jobService, executor: visioExecutor, maxConcurrentJobs: config.visioMaxConcurrency });
   const app = Fastify({ logger: false });
@@ -59,6 +67,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     sessionSecret: options.sessionSecret ?? config.sessionSecret,
     admin: options.admin ?? { email: "admin@example.com", passwordHash: "" },
     agentService: options.agentService,
+    figureDraftService,
+    figureDraftPreviewService,
     visioExecutor,
     visioJobRunner,
   });

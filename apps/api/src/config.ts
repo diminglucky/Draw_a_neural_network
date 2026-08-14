@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveVisioWorkerPath } from "./visio-discovery.js";
 
 const environmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -11,7 +14,9 @@ const environmentSchema = z.object({
   REQUIRE_DEVICE_PROOF: z.enum(["true", "false"]).optional(),
   VISIO_WORKER_PATH: z.string().trim().min(1).optional(),
   VISIO_OUTPUT_ROOT: z.string().trim().min(1).optional(),
-  VISIO_WORKER_MODE: z.enum(["mock", "live"]).default("mock"),
+  VISIO_WORKER_MODE: z.enum(["mock", "live"]).optional(),
+  VISIO_VISIBLE: z.enum(["true", "false"]).optional(),
+  VISIO_ATTACH_TO_RUNNING: z.enum(["true", "false"]).optional(),
   VISIO_WORKER_TIMEOUT_MS: z.coerce.number().int().min(1000).max(600000).default(120000),
   VISIO_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(1),
 });
@@ -28,6 +33,8 @@ export interface AppConfig {
   visioWorkerPath?: string;
   visioOutputRoot?: string;
   visioWorkerMode: "mock" | "live";
+  visioVisible: boolean;
+  visioAttachToRunning: boolean;
   visioWorkerTimeoutMs: number;
   visioMaxConcurrency: number;
 }
@@ -47,6 +54,15 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
     throw new Error("REDIS_URL is required when LEASE_DRIVER=redis");
   }
 
+  const autoWorkerPath = parsed.NODE_ENV === "test" ? undefined : resolveVisioWorkerPath({
+    explicitPath: parsed.VISIO_WORKER_PATH,
+    cwd: process.cwd(),
+    resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath,
+  });
+  const visioWorkerPath = parsed.VISIO_WORKER_PATH?.trim() || autoWorkerPath;
+  const visioWorkerMode = parsed.VISIO_WORKER_MODE || (parsed.NODE_ENV === "test" ? "mock" : visioWorkerPath ? "live" : "mock");
+  const visioOutputRoot = parsed.VISIO_OUTPUT_ROOT?.trim() || (autoWorkerPath ? join(tmpdir(), "synapse-studio-visio") : undefined);
+
   return {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
@@ -56,9 +72,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
     redisUrl: parsed.REDIS_URL,
     databaseUrl: parsed.DATABASE_URL,
     requireDeviceProof: parsed.NODE_ENV === "production" || parsed.REQUIRE_DEVICE_PROOF === "true",
-    visioWorkerPath: parsed.VISIO_WORKER_PATH,
-    visioOutputRoot: parsed.VISIO_OUTPUT_ROOT,
-    visioWorkerMode: parsed.VISIO_WORKER_MODE,
+    visioWorkerPath,
+    visioOutputRoot,
+    visioWorkerMode,
+    visioVisible: parsed.VISIO_VISIBLE ? parsed.VISIO_VISIBLE === "true" : visioWorkerMode === "live",
+    visioAttachToRunning: parsed.VISIO_ATTACH_TO_RUNNING === "true",
     visioWorkerTimeoutMs: parsed.VISIO_WORKER_TIMEOUT_MS,
     visioMaxConcurrency: parsed.VISIO_MAX_CONCURRENCY,
   };

@@ -1,5 +1,7 @@
 param(
-  [switch]$KeepOutput
+  [switch]$KeepOutput,
+  [switch]$Visible,
+  [switch]$AttachToRunning
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +39,10 @@ try {
     }
   }
   $json = $request | ConvertTo-Json -Depth 12 -Compress
-  $responseLines = @($json | dotnet run --no-restore --no-build --project workers/visio-worker/src/VisioWorker.Host/VisioWorker.Host.csproj -- --mode live --output-root $root)
+  $workerArgs = @("--mode", "live", "--output-root", $root)
+  if ($Visible) { $workerArgs += "--visible" }
+  if ($AttachToRunning) { $workerArgs += "--attach-to-running" }
+  $responseLines = @($json | dotnet run --no-restore --no-build --project workers/visio-worker/src/VisioWorker.Host/VisioWorker.Host.csproj -- @workerArgs)
   $exitCode = $LASTEXITCODE
   if ($exitCode -ne 0) {
     throw "Visio COM Worker failed with exit code ${exitCode}: $($responseLines -join " ")"

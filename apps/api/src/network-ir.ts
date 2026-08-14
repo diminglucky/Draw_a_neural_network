@@ -42,6 +42,26 @@ const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 const idSchema = z.string().trim().min(1);
 const nullableStringSchema = z.string().trim().min(1).nullable().optional().default(null);
 const confidenceSchema = z.number().min(0).max(1);
+const visualRoleSchema = z.enum(["standard", "feature-map-stack", "pooling-block", "fully-connected", "softmax-block"]);
+const colorSchema = z.string().trim().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional().default(null);
+const visualEncodingSchema = z
+  .object({
+    visiblePlaneCount: z.number().int().min(1).max(12),
+    extrusionDepthFu: z.number().int().min(0).max(120),
+    projection: z.enum(["flat", "oblique-3d"]),
+    spatialShape: z.array(z.number().int().positive()).min(2).max(3),
+  })
+  .strict()
+  .nullable()
+  .optional()
+  .default(null);
+const nodeMetadataSchema = z
+  .object({
+    contains: z.array(z.string().trim().min(1)).optional().default([]),
+  })
+  .strict()
+  .optional()
+  .default({ contains: [] });
 
 const sourceEvidenceSchema = z
   .object({
@@ -77,6 +97,15 @@ const nodeSchema = z
     stage: z.number().int().nonnegative(),
     confidence: confidenceSchema.nullable().optional().default(null),
     sourceEvidence: z.array(sourceEvidenceSchema).optional().default([]),
+    visualRole: visualRoleSchema.optional().default("standard"),
+    layerRole: z.string().trim().min(1).optional().default("network-node"),
+    repeatCount: z.number().int().positive().optional().default(1),
+    channelCount: z.number().int().positive().nullable().optional().default(null),
+    depth: z.number().int().positive().optional().default(1),
+    perspective: z.boolean().optional().default(false),
+    color: colorSchema,
+    visualEncoding: visualEncodingSchema,
+    metadata: nodeMetadataSchema,
   })
   .strict();
 

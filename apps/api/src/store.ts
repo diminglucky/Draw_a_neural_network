@@ -7,14 +7,36 @@ import type {
   AuditRecord,
   Device,
   DeviceChallenge,
+  FigureDraft,
+  FigureDraftRevision,
+  FigureDraftStatus,
   Job,
   Session,
   Subscription,
   User,
   VisioJobCreationResult,
 } from "./domain.js";
+import {
+  assertFigureDraftPayloadStatus,
+  parseFigureDraftRevisionPayload,
+  type FigureDraftRevisionPayload,
+} from "./figure-draft-payload.js";
 
 export interface FoundationStore {
+  createFigureDraft(
+    draft: Omit<FigureDraft, "currentRevision">,
+    payload: FigureDraftRevisionPayload,
+  ): Promise<{ draft: FigureDraft; revision: FigureDraftRevision }>;
+  getFigureDraft(userId: string, draftId: string): Promise<FigureDraft | null>;
+  getFigureDraftRevision(userId: string, draftId: string, revision: number): Promise<FigureDraftRevision | null>;
+  appendFigureDraftRevision(input: {
+    userId: string;
+    draftId: string;
+    expectedRevision: number;
+    status: FigureDraftStatus;
+    payload: FigureDraftRevisionPayload;
+    createdAt: string;
+  }): Promise<{ conflict: boolean; draft: FigureDraft | null; revision: FigureDraftRevision | null }>;
   createUser(user: User): Promise<User>;
   findUserByEmail(email: string): Promise<User | null>;
   getUser(id: string): Promise<User | null>;
@@ -47,6 +69,8 @@ export interface FoundationStore {
 }
 
 export class InMemoryFoundationStore implements FoundationStore {
+  private readonly figureDrafts = new Map<string, FigureDraft>();
+  private readonly figureDraftRevisions = new Map<string, FigureDraftRevision>();
   private readonly users = new Map<string, User>();
   private readonly devices = new Map<string, Device>();
   private readonly deviceChallenges = new Map<string, DeviceChallenge>();
@@ -58,6 +82,64 @@ export class InMemoryFoundationStore implements FoundationStore {
   private readonly agentUsagePeriods = new Map<string, { limit: number; consumed: number }>();
   private readonly agentUsageReservations = new Map<string, AgentUsageReservation>();
   private readonly agentUsageByIdempotency = new Map<string, string>();
+
+  async createFigureDraft(
+    draft: Omit<FigureDraft, "currentRevision">,
+    payload: FigureDraftRevisionPayload,
+  ): Promise<{ draft: FigureDraft; revision: FigureDraftRevision }> {
+    const validatedPayload = parseFigureDraftRevisionPayload(payload);
+    assertFigureDraftPayloadStatus(validatedPayload, draft.status);
+    const stored = { ...draft, currentRevision: 1 };
+    const revision: FigureDraftRevision = {
+      draftId: draft.id,
+      revision: 1,
+      status: draft.status,
+      payload: structuredClone(validatedPayload),
+      createdAt: draft.createdAt,
+    };
+    this.figureDrafts.set(stored.id, stored);
+    this.figureDraftRevisions.set(`${draft.id}:1`, revision);
+    return { draft: { ...stored }, revision: structuredClone(revision) };
+  }
+
+  async getFigureDraft(userId: string, draftId: string): Promise<FigureDraft | null> {
+    const draft = this.figureDrafts.get(draftId);
+    return draft?.userId === userId ? { ...draft } : null;
+  }
+
+  async getFigureDraftRevision(userId: string, draftId: string, revision: number): Promise<FigureDraftRevision | null> {
+    if (!(await this.getFigureDraft(userId, draftId))) return null;
+    const stored = this.figureDraftRevisions.get(`${draftId}:${revision}`);
+    if (!stored) return null;
+    const payload = parseFigureDraftRevisionPayload(stored.payload, { statusCode: 500 });
+    assertFigureDraftPayloadStatus(payload, stored.status, 500);
+    return { ...structuredClone(stored), payload };
+  }
+
+  async appendFigureDraftRevision(input: {
+    userId: string;
+    draftId: string;
+    expectedRevision: number;
+    status: FigureDraftStatus;
+    payload: FigureDraftRevisionPayload;
+    createdAt: string;
+  }): Promise<{ conflict: boolean; draft: FigureDraft | null; revision: FigureDraftRevision | null }> {
+    const payload = parseFigureDraftRevisionPayload(input.payload);
+    assertFigureDraftPayloadStatus(payload, input.status);
+    const draft = this.figureDrafts.get(input.draftId);
+    if (!draft || draft.userId !== input.userId || draft.currentRevision !== input.expectedRevision) return { conflict: true, draft: null, revision: null };
+    const revision: FigureDraftRevision = {
+      draftId: draft.id,
+      revision: draft.currentRevision + 1,
+      status: input.status,
+      payload: structuredClone(payload),
+      createdAt: input.createdAt,
+    };
+    const updated = { ...draft, status: input.status, currentRevision: revision.revision, updatedAt: input.createdAt };
+    this.figureDrafts.set(updated.id, updated);
+    this.figureDraftRevisions.set(`${revision.draftId}:${revision.revision}`, revision);
+    return { conflict: false, draft: { ...updated }, revision: structuredClone(revision) };
+  }
 
   async createUser(user: User): Promise<User> {
     this.users.set(user.id, user);

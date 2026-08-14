@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Session } from "../src/domain.js";
+import type { FigureDraftRevisionPayload } from "../src/figure-draft-payload.js";
 import { PostgresFoundationStore, type PoolLike, type QueryResult } from "../src/postgres-store.js";
 
 const userRow = {
@@ -11,6 +12,73 @@ const userRow = {
   created_at: "2026-08-11T00:00:00.000Z",
   last_login_at: null,
 };
+
+function safeRevisionPayload(): FigureDraftRevisionPayload {
+  return {
+    taskIntent: {
+      action: "analyze_network" as const,
+      sourceMode: "code" as const,
+      requestedArtifact: "structure_only" as const,
+      referencesDraftId: null,
+      userConstraints: {
+        orientation: "auto" as const,
+        density: "standard" as const,
+        printMode: "auto" as const,
+        requiresNativeVisio: false,
+      },
+    },
+    evidence: [{
+      id: "fact-input",
+      subject: "input",
+      predicate: "declares",
+      value: "input tensor",
+      confidence: 0.9,
+      source: { sourceId: "source-1", kind: "code" as const, name: "model.py" },
+    }],
+    canonicalNetworkIR: {
+      version: 2 as const,
+      figure: { id: "figure-1", title: "CNN", description: null },
+      tensors: [],
+      nodes: [{
+        id: "input",
+        op: "input" as const,
+        inputTensorIds: [],
+        outputTensorIds: [],
+        confidence: 0.9,
+        sourceEvidenceIds: ["fact-input"],
+        repeats: null,
+      }],
+      edges: [],
+      groups: [],
+      unresolved: [],
+    },
+    blockingQuestions: [],
+    resolvedConfirmations: [],
+    warnings: [],
+    readyForVisio: false as const,
+  };
+}
+
+const draftRow = {
+  id: "draft-1",
+  user_id: "user-1",
+  conversation_id: "conversation-1",
+  status: "ready_for_preview",
+  current_revision: 1,
+  created_at: "2026-08-14T00:00:00.000Z",
+  updated_at: "2026-08-14T00:00:00.000Z",
+};
+
+function draftInput() {
+  return {
+    id: "draft-1",
+    userId: "user-1",
+    conversationId: "conversation-1",
+    status: "ready_for_preview" as const,
+    createdAt: "2026-08-14T00:00:00.000Z",
+    updatedAt: "2026-08-14T00:00:00.000Z",
+  };
+}
 
 function fakePool(result: QueryResult = { rows: [userRow], rowCount: 1 }) {
   const calls: Array<{ text: string; values: readonly unknown[] }> = [];
@@ -34,6 +102,220 @@ function fakePool(result: QueryResult = { rows: [userRow], rowCount: 1 }) {
 }
 
 describe("PostgresFoundationStore", () => {
+  it("creates revision 1 transactionally and maps the persisted draft", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const releaseErrors: Array<Error | undefined> = [];
+    const revisionRow = {
+      draft_id: "draft-1", revision: 1, status: "ready_for_preview", payload: JSON.stringify(safeRevisionPayload()),
+      created_at: "2026-08-14T00:00:00.000Z",
+    };
+    const client = {
+      async query(text: string, values: readonly unknown[] = []) {
+        calls.push({ text, values });
+        if (text.includes("INSERT INTO figure_drafts")) return { rows: [draftRow], rowCount: 1 };
+        if (text.includes("INSERT INTO figure_draft_revisions")) return { rows: [revisionRow], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      },
+      release(error?: Error) { releaseErrors.push(error); },
+    };
+    const pool: PoolLike = { async query() { return { rows: [], rowCount: 0 }; }, async connect() { return client; } };
+    const store = new PostgresFoundationStore(pool);
+
+    const created = await store.createFigureDraft(draftInput(), safeRevisionPayload());
+
+    expect(created).toMatchObject({
+      draft: { id: "draft-1", userId: "user-1", currentRevision: 1 },
+      revision: { draftId: "draft-1", revision: 1, payload: safeRevisionPayload() },
+    });
+    expect(calls[0]?.text).toBe("BEGIN");
+    expect(calls.some((call) => call.text.includes("INSERT INTO figure_drafts") && call.values.includes("user-1"))).toBe(true);
+    expect(calls.at(-1)?.text).toBe("COMMIT");
+    expect(releaseErrors).toEqual([undefined]);
+  });
+
+  it("preserves the original draft insert error and destroys the client when rollback also fails", async () => {
+    const calls: string[] = [];
+    const insertError = new Error("draft revision insert failed");
+    const releaseErrors: Array<Error | undefined> = [];
+    const client = {
+      async query(text: string) {
+        calls.push(text);
+        if (text.includes("INSERT INTO figure_draft_revisions")) throw insertError;
+        if (text.includes("INSERT INTO figure_drafts")) return { rows: [draftRow], rowCount: 1 };
+        if (text === "ROLLBACK") throw new Error("rollback connection failure");
+        return { rows: [], rowCount: 0 };
+      },
+      release(error?: Error) { releaseErrors.push(error); },
+    };
+    const pool: PoolLike = { async query() { return { rows: [], rowCount: 0 }; }, async connect() { return client; } };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.createFigureDraft(draftInput(), safeRevisionPayload())).rejects.toBe(insertError);
+
+    expect(calls.at(-1)).toBe("ROLLBACK");
+    expect(releaseErrors).toEqual([insertError]);
+  });
+
+  it("rejects an unsafe payload before opening a PostgreSQL transaction", async () => {
+    let connected = false;
+    const pool: PoolLike = {
+      async query() { return { rows: [], rowCount: 0 }; },
+      async connect() {
+        connected = true;
+        throw new Error("must not connect for an invalid payload");
+      },
+    };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.createFigureDraft(
+      draftInput(),
+      { ...safeRevisionPayload(), outputPath: "C:\\secret\\figure.vsdx" } as unknown as FigureDraftRevisionPayload,
+    )).rejects.toThrow(/payload|forbidden|unrecognized|invalid/i);
+    expect(connected).toBe(false);
+  });
+
+  it("appends revision 2 after a successful owner-scoped CAS and releases a healthy client", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const releaseErrors: Array<Error | undefined> = [];
+    const nextPayload = {
+      ...safeRevisionPayload(),
+      resolvedConfirmations: [{ questionId: "merge-kind", value: "add" }],
+    };
+    const updatedRow = { ...draftRow, current_revision: 2, updated_at: "2026-08-14T00:01:00.000Z" };
+    const client = {
+      async query(text: string, values: readonly unknown[] = []) {
+        calls.push({ text, values });
+        if (text.includes("UPDATE figure_drafts")) return { rows: [updatedRow], rowCount: 1 };
+        if (text.includes("INSERT INTO figure_draft_revisions")) {
+          return { rows: [{ draft_id: "draft-1", revision: 2, status: "ready_for_preview", payload: JSON.stringify(nextPayload), created_at: "2026-08-14T00:01:00.000Z" }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      release(error?: Error) { releaseErrors.push(error); },
+    };
+    const pool: PoolLike = { async query() { return { rows: [], rowCount: 0 }; }, async connect() { return client; } };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.appendFigureDraftRevision({
+      userId: "user-1",
+      draftId: "draft-1",
+      expectedRevision: 1,
+      status: "ready_for_preview",
+      payload: nextPayload,
+      createdAt: "2026-08-14T00:01:00.000Z",
+    })).resolves.toMatchObject({
+      conflict: false,
+      draft: { userId: "user-1", currentRevision: 2 },
+      revision: { revision: 2, payload: nextPayload },
+    });
+
+    expect(calls[0]?.text).toBe("BEGIN");
+    expect(calls.some((call) => call.text.includes("UPDATE figure_drafts") && call.values.slice(0, 3).join(":") === "draft-1:user-1:1")).toBe(true);
+    expect(calls.some((call) => call.text.includes("INSERT INTO figure_draft_revisions") && call.values.includes(2))).toBe(true);
+    expect(calls.at(-1)?.text).toBe("COMMIT");
+    expect(releaseErrors).toEqual([undefined]);
+  });
+
+  it("rolls back a failed revision append and destroys the client with the original error", async () => {
+    const calls: string[] = [];
+    const insertError = new Error("append revision insert failed");
+    const releaseErrors: Array<Error | undefined> = [];
+    const client = {
+      async query(text: string) {
+        calls.push(text);
+        if (text.includes("UPDATE figure_drafts")) return { rows: [{ ...draftRow, current_revision: 2 }], rowCount: 1 };
+        if (text.includes("INSERT INTO figure_draft_revisions")) throw insertError;
+        return { rows: [], rowCount: 0 };
+      },
+      release(error?: Error) { releaseErrors.push(error); },
+    };
+    const pool: PoolLike = { async query() { return { rows: [], rowCount: 0 }; }, async connect() { return client; } };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.appendFigureDraftRevision({
+      userId: "user-1",
+      draftId: "draft-1",
+      expectedRevision: 1,
+      status: "ready_for_preview",
+      payload: safeRevisionPayload(),
+      createdAt: "2026-08-14T00:01:00.000Z",
+    })).rejects.toBe(insertError);
+
+    expect(calls.at(-1)).toBe("ROLLBACK");
+    expect(calls).not.toContain("COMMIT");
+    expect(releaseErrors).toEqual([insertError]);
+  });
+
+  it("rolls back a CAS conflict and releases the client as healthy", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const releaseErrors: Array<Error | undefined> = [];
+    const client = {
+      async query(text: string, values: readonly unknown[] = []) {
+        calls.push({ text, values });
+        return { rows: [], rowCount: 0 };
+      },
+      release(error?: Error) { releaseErrors.push(error); },
+    };
+    const pool: PoolLike = { async query() { return { rows: [], rowCount: 0 }; }, async connect() { return client; } };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.appendFigureDraftRevision({
+      userId: "user-1",
+      draftId: "draft-1",
+      expectedRevision: 1,
+      status: "ready_for_preview",
+      payload: safeRevisionPayload(),
+      createdAt: "2026-08-14T00:00:00.000Z",
+    })).resolves.toMatchObject({ conflict: true });
+
+    expect(calls.some((call) => call.text.includes("UPDATE figure_drafts") && call.values.includes(1))).toBe(true);
+    expect(calls.at(-1)?.text).toBe("ROLLBACK");
+    expect(releaseErrors).toEqual([undefined]);
+  });
+
+  it("binds both draft and revision reads to the owning user", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const pool: PoolLike = {
+      async query(text, values = []) {
+        calls.push({ text, values });
+        if (text.includes("FROM figure_draft_revisions")) {
+          return { rows: [{ draft_id: "draft-1", revision: 1, status: "ready_for_preview", payload: JSON.stringify(safeRevisionPayload()), created_at: "2026-08-14T00:00:00.000Z" }], rowCount: 1 };
+        }
+        return { rows: [draftRow], rowCount: 1 };
+      },
+      async connect() { throw new Error("not used"); },
+    };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.getFigureDraft("user-1", "draft-1")).resolves.toMatchObject({ userId: "user-1" });
+    await expect(store.getFigureDraftRevision("user-1", "draft-1", 1)).resolves.toMatchObject({ draftId: "draft-1", revision: 1 });
+
+    expect(calls[0]?.text).toMatch(/id\s*=\s*\$1\s+AND\s+user_id\s*=\s*\$2/i);
+    expect(calls[0]?.values).toEqual(["draft-1", "user-1"]);
+    expect(calls[1]?.text).toMatch(/JOIN figure_drafts d[\s\S]+d\.user_id\s*=\s*\$1[\s\S]+r\.draft_id\s*=\s*\$2[\s\S]+r\.revision\s*=\s*\$3/i);
+    expect(calls[1]?.values).toEqual(["user-1", "draft-1", 1]);
+  });
+
+  it("revalidates PostgreSQL revision payloads on read", async () => {
+    const pool: PoolLike = {
+      async query() {
+        return {
+          rows: [{
+            draft_id: "draft-1",
+            revision: 1,
+            status: "ready_for_preview",
+            payload: JSON.stringify({ ...safeRevisionPayload(), requestHeaders: { authorization: "Bearer secret" } }),
+            created_at: "2026-08-14T00:00:00.000Z",
+          }],
+          rowCount: 1,
+        };
+      },
+      async connect() { throw new Error("not used"); },
+    };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.getFigureDraftRevision("user-1", "draft-1", 1)).rejects.toThrow(/payload|forbidden|unrecognized|invalid/i);
+  });
   it("maps a user row and uses parameterized SQL for writes", async () => {
     const { pool, calls } = fakePool();
     const store = new PostgresFoundationStore(pool);

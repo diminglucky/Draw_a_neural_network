@@ -17,6 +17,8 @@ export interface VisioWorkerClientOptions {
   outputRoot: string;
   mode: "mock" | "live";
   timeoutMs?: number;
+  visible?: boolean;
+  attachToRunning?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -58,7 +60,7 @@ export class VisioWorkerClient implements VisioExecutor {
       jobId: input.jobId,
       mode: this.options.mode,
       outputPath,
-      diagram: normalizeDiagram(input.diagram),
+      diagram: normalizeVisioDiagram(input.diagram),
     };
     const response = await this.runWorker(request, options.signal);
 
@@ -95,15 +97,17 @@ export class VisioWorkerClient implements VisioExecutor {
     throw new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Standalone readback must be returned by executeDiagram", 501, { path: input.path });
   }
 
+
+
   private runWorker(request: VisioWorkerRequest, signal?: AbortSignal): Promise<VisioWorkerResponse> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.options.workerPath, [
-        ...this.workerArgs,
-        "--mode",
-        this.options.mode,
-        "--output-root",
-        this.outputRoot,
-      ], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      const child = spawn(this.options.workerPath, buildVisioWorkerArguments({
+        workerArgs: this.workerArgs,
+        mode: this.options.mode,
+        outputRoot: this.outputRoot,
+        visible: this.options.visible,
+        attachToRunning: this.options.attachToRunning,
+      }), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -207,7 +211,23 @@ export class VisioWorkerClient implements VisioExecutor {
   }
 }
 
-function normalizeDiagram(value: unknown): VisioWorkerRequest["diagram"] {
+export function buildVisioWorkerArguments(options: {
+  workerArgs?: string[];
+  mode: "mock" | "live";
+  outputRoot: string;
+  visible?: boolean;
+  attachToRunning?: boolean;
+}): string[] {
+  return [
+    ...(options.workerArgs ?? []),
+    "--mode", options.mode,
+    "--output-root", options.outputRoot,
+    ...(options.visible ? ["--visible"] : []),
+    ...(options.attachToRunning ? ["--attach-to-running"] : []),
+  ];
+}
+
+export function normalizeVisioDiagram(value: unknown): VisioWorkerRequest["diagram"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "diagram must be an object", 400, { field: "diagram" });
   }
@@ -217,6 +237,7 @@ function normalizeDiagram(value: unknown): VisioWorkerRequest["diagram"] {
     : {};
   const nodes = Array.isArray(source.nodes) ? source.nodes : [];
   const edges = Array.isArray(source.edges) ? source.edges : [];
+  const figurePlan = normalizeFigurePlan(source.figurePlan);
   return {
     figure: {
       ...figure,
@@ -236,6 +257,13 @@ function normalizeDiagram(value: unknown): VisioWorkerRequest["diagram"] {
         y: node.y ?? 0,
         width: node.width ?? node.w ?? 1,
         height: node.height ?? node.h ?? 1,
+        tensorShape: node.tensorShape ?? node.subtitle ?? "",
+        visualRole: node.visualRole ?? "standard",
+        layerRole: node.layerRole ?? "network-node",
+        repeatCount: node.repeatCount ?? 1,
+        depth: node.depth ?? 1,
+        perspective: node.perspective ?? false,
+        color: node.color ?? null,
       };
     }),
     edges: edges.map((value) => {
@@ -249,6 +277,29 @@ function normalizeDiagram(value: unknown): VisioWorkerRequest["diagram"] {
         points: Array.isArray(edge.points) ? edge.points : Array.isArray(route.points) ? route.points : [],
       };
     }),
+    ...(figurePlan ? { figurePlan } : {}),
+  };
+}
+
+function normalizeFigurePlan(value: unknown): Record<string, unknown> | undefined {
+  if (value == null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "figurePlan must be an object", 400, { field: "diagram.figurePlan" });
+  }
+  const plan = value as Record<string, unknown>;
+  const coordinateSpace = plan.coordinateSpace;
+  if (!coordinateSpace || typeof coordinateSpace !== "object" || Array.isArray(coordinateSpace)) {
+    throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "figurePlan.coordinateSpace must be an object", 400, { field: "diagram.figurePlan.coordinateSpace" });
+  }
+  const groups = Array.isArray(plan.primitiveGroups) ? plan.primitiveGroups : null;
+  if (plan.version !== 1 || !groups) {
+    throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "figurePlan must use version 1 with primitiveGroups", 400, { field: "diagram.figurePlan" });
+  }
+  return {
+    version: 1,
+    coordinateSpace,
+    primitiveGroups: groups,
+    connectors: Array.isArray(plan.connectors) ? plan.connectors : [],
   };
 }
 

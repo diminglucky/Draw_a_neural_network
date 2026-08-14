@@ -1092,6 +1092,73 @@ kbd {
   margin-top: 10px;
 }
 
+.publication-figure-card {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(28, 61, 115, 0.18);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(237, 246, 255, 0.92), rgba(255, 255, 255, 0.96));
+  box-shadow: 0 10px 24px rgba(19, 45, 85, 0.08);
+}
+
+.publication-figure-card__meta,
+.publication-figure-card__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #23466f;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.publication-figure-card__meta span,
+.publication-figure-card__summary span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(38, 105, 193, 0.1);
+}
+
+.publication-figure-card__preview {
+  margin-top: 10px;
+  overflow: auto;
+  border: 1px solid rgba(23, 47, 86, 0.14);
+  border-radius: 10px;
+  background: #f9fbff;
+}
+
+.publication-figure-svg {
+  display: block;
+  width: 100%;
+  min-width: 520px;
+  height: auto;
+  background: #fff;
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+.publication-figure-page { fill: #fff; }
+.publication-figure-region rect { fill: rgba(231, 242, 255, 0.58); stroke: #b7d0ed; stroke-width: 1.4; }
+.publication-figure-region-label { fill: #456885; font-size: 14px; font-weight: 800; letter-spacing: 0.04em; }
+.publication-figure-tensor rect { fill: url(#publication-figure-tensor-gradient); stroke: #123f75; stroke-width: 1.5; }
+.publication-figure-tensor path:first-child { fill: #75b8f2; stroke: #123f75; stroke-width: 1.2; }
+.publication-figure-tensor path:last-child { fill: #1e5f9c; stroke: #123f75; stroke-width: 1.2; }
+.publication-figure-block rect { fill: #f3b85a; stroke: #9a5a13; stroke-width: 1.5; }
+.publication-figure-block path { stroke: #9a5a13; stroke-width: 1.2; }
+.publication-figure-relation, .publication-figure-flow-primitive { stroke: #23394e; fill: none; }
+.publication-figure-relation.light { stroke: #8aa1b9; }
+.publication-figure-relation.mid { stroke: #4e7599; }
+.publication-figure-residual { fill: none; stroke: #c45b46; stroke-width: 2.4; stroke-dasharray: 7 5; }
+.publication-figure-merge { fill: #f4d56b; stroke: #875f08; stroke-width: 1.5; }
+.publication-figure-annotation-track { fill: rgba(244, 248, 252, 0.86); stroke: #cbd9e8; stroke-dasharray: 4 4; }
+.publication-figure-annotation { fill: #1f344a; font-weight: 650; }
+.publication-figure-arrow-head { fill: #23394e; }
+.publication-figure-svg--grayscale .publication-figure-tensor rect,
+.publication-figure-svg--grayscale .publication-figure-tensor path { fill: #d9dde3; stroke: #2d3742; }
+.publication-figure-svg--grayscale .publication-figure-block rect,
+.publication-figure-svg--grayscale .publication-figure-merge { fill: #f0f1f3; stroke: #2d3742; }
+.publication-figure-svg--grayscale .publication-figure-residual { stroke: #111; }
+
 .agent-chat-visio-result {
   margin: 10px 0 0;
   padding: 8px 10px;

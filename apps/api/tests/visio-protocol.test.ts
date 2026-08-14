@@ -35,7 +35,18 @@ describe("Visio Worker protocol", () => {
       jobId: "j",
       status: "succeeded",
       path: "C:\\x.vsdx",
-      readback: { valid: true, shapeCount: 2, connectorCount: 1 },
+      readback: {
+        valid: true,
+        shapeCount: 2,
+        connectorCount: 1,
+        expectedPrimitiveIds: [],
+        actualPrimitiveIds: [],
+        missingPrimitiveIds: [],
+        expectedConnectorIds: [],
+        actualConnectorIds: [],
+        missingConnectorIds: [],
+        shapeDataFailures: [],
+      },
       error: null,
     }).status).toBe("succeeded");
 

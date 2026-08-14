@@ -28,6 +28,9 @@ public sealed class ProtocolRoundTripTests
             Assert.True(response.Readback?.Valid);
             Assert.Equal(3, response.Readback?.ShapeCount);
             Assert.Equal(2, response.Readback?.ConnectorCount);
+            Assert.Empty(response.Readback?.ExpectedPrimitiveIds ?? ["unexpected"]);
+            Assert.Empty(response.Readback?.MissingPrimitiveIds ?? ["unexpected"]);
+            Assert.Empty(response.Readback?.ShapeDataFailures ?? ["unexpected"]);
             Assert.True(File.Exists(request.OutputPath));
         }
         finally

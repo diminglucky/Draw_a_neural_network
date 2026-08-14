@@ -1,6 +1,7 @@
 import { projectCanvasSnapshot } from "./canvas-actions.js";
 import { resolveFoundationApiBase } from "./apps/client/api-base.js";
 import { clearProviderApiKey, maskProviderApiKey, readProviderApiKey, saveProviderApiKey } from "./apps/client/provider-key.js";
+import { previewSummary, renderPublicationFigurePreview } from "./publication-figure-preview.js";
 
 export const AGENT_LIMITS = Object.freeze({
   messageChars: 12000,
@@ -97,6 +98,32 @@ export function buildAgentRequestHeaders(token, key, providerApiKey = "") {
 
 export function buildVisioExportRequestHeaders(token, key) {
   return buildAgentRequestHeaders(token, key);
+}
+
+export async function getFigureDraftPreview(draftId, options = {}) {
+  const id = String(draftId ?? "").trim();
+  const token = String(options.token ?? "").trim();
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  if (!id) throw new Error("Figure Draft id is required");
+  if (!token) throw new Error("在线授权后才能预览论文图稿");
+  if (typeof fetchImpl !== "function") throw new Error("当前环境不支持网络请求");
+  const apiBase = options.apiBase || resolveFoundationApiBase(options);
+  const response = await fetchImpl(`${apiBase}/api/figure-drafts/${encodeURIComponent(id)}/preview`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+    signal: options.signal,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error?.message || `论文图预览失败 (${response.status})`);
+  if (!body?.plan || body?.draft?.status !== "ready_for_preview") throw new Error("预览服务返回了无效图稿");
+  return body;
+}
+
+export function renderFigureDraftCard(draft) {
+  if (!draft || typeof draft !== "object" || !String(draft.id ?? "").trim()) return "";
+  const ready = draft.status === "ready_for_preview";
+  const status = ready ? "可预览" : draft.status === "needs_confirmation" ? "需要确认" : "分析中";
+  return `<section class="publication-figure-card" data-agent-figure-draft="${escapeHtml(draft.id)}"><div class="publication-figure-card__meta"><strong>Publication Figure Draft</strong><span>${escapeHtml(status)} · Revision ${escapeHtml(draft.currentRevision ?? "-")}</span></div>${ready ? '<button type="button" class="ghost-button" data-agent-figure-preview>预览论文图</button><div class="publication-figure-card__preview" data-agent-figure-preview-panel hidden></div>' : '<p class="agent-chat-muted">结构确认完成后可生成论文图预览。</p>'}</section>`;
 }
 
 const VISIO_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "expired"]);
@@ -207,6 +234,14 @@ export async function exportDiagramToVisio(diagram, options = {}) {
   const job = await submitVisioExport(diagram, options);
   if (VISIO_TERMINAL_STATUSES.has(job.status)) return job;
   return waitForVisioExport(job.id, options);
+}
+
+export async function openVisioPath(path, bridge = globalThis.synapseDesktop) {
+  const value = String(path ?? "").trim();
+  if (!value || !bridge || typeof bridge.openPath !== "function") {
+    throw new Error("桌面 Visio 打开桥接不可用");
+  }
+  return bridge.openPath(value);
 }
 
 function readToken(storage = globalThis.localStorage) {
@@ -339,8 +374,29 @@ function mountAgentChat() {
       const answer = body.response || {};
       const hasActions = Array.isArray(body.actions?.actions) && body.actions.actions.length > 0;
       const resultActions = body.diagram ? `<div class="agent-chat-result-actions">${hasActions ? '<button type="button" class="ghost-button" data-agent-preview>预览修改</button><button type="button" class="primary-button" data-agent-apply-actions>应用修改</button>' : ""}<button type="button" class="${hasActions ? "ghost-button" : "primary-button"}" data-agent-apply>应用完整图</button><button type="button" class="ghost-button" data-agent-visio-export>导出到 Visio</button></div>` : "";
-      resultNode.innerHTML = `<div class="agent-chat-answer"><p>${escapeHtml(textContent(answer.text || answer.summary || "Agent 未返回说明"))}</p><div class="agent-chat-meta"><span>confidence ${escapeHtml(answer.confidence ?? "-")}</span><span>intent ${escapeHtml(body.diagramIntent || "replace")}</span></div><h4>证据</h4>${renderList(answer.evidence, "暂无证据") }<h4>警告</h4>${renderList(answer.warnings, "无")}</div>${resultActions}<div class="agent-chat-action-preview" data-agent-action-preview hidden></div>`;
+      resultNode.innerHTML = `<div class="agent-chat-answer"><p>${escapeHtml(textContent(answer.text || answer.summary || "Agent 未返回说明"))}</p><div class="agent-chat-meta"><span>confidence ${escapeHtml(answer.confidence ?? "-")}</span><span>intent ${escapeHtml(body.diagramIntent || "replace")}</span></div><h4>证据</h4>${renderList(answer.evidence, "暂无证据") }<h4>警告</h4>${renderList(answer.warnings, "无")}</div>${renderFigureDraftCard(body.draft)}${resultActions}<div class="agent-chat-action-preview" data-agent-action-preview hidden></div>`;
       resultNode.hidden = false;
+      resultNode.querySelector("[data-agent-figure-preview]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        const card = button?.closest?.("[data-agent-figure-draft]");
+        const panel = card?.querySelector?.("[data-agent-figure-preview-panel]");
+        if (!(button instanceof HTMLButtonElement) || !panel || busy) return;
+        busy = true;
+        button.disabled = true;
+        refreshLock();
+        try {
+          const preview = await getFigureDraftPreview(card.dataset.agentFigureDraft, { token: readToken() });
+          const summary = previewSummary(preview);
+          panel.innerHTML = `<div class="publication-figure-card__summary"><span>${escapeHtml(summary.grammar)}</span><span>${escapeHtml(summary.status)}</span></div>${renderPublicationFigurePreview(preview)}${renderList(summary.warnings, "Visual QA 无警告")}`;
+          panel.hidden = false;
+        } catch (error) {
+          setError(error instanceof Error ? error.message : "论文图预览失败");
+        } finally {
+          busy = false;
+          button.disabled = false;
+          refreshLock();
+        }
+      });
       resultNode.querySelector("[data-agent-visio-export]")?.addEventListener("click", async (event) => {
         const exportButton = event.currentTarget;
         if (!(exportButton instanceof HTMLButtonElement) || busy) return;
@@ -387,7 +443,22 @@ function mountAgentChat() {
             const exportResult = document.createElement("p");
             exportResult.className = "agent-chat-visio-result";
             exportResult.textContent = `Visio 导出成功：${exportJob.output.path}（${readback.shapeCount} 个形状，${readback.connectorCount} 条连接线）`;
-            resultNode.appendChild(exportResult);
+            const openButton = document.createElement("button");
+            openButton.type = "button";
+            openButton.className = "ghost-button agent-chat-visio-open";
+            openButton.textContent = "在 Visio 中打开";
+            openButton.addEventListener("click", async () => {
+              openButton.disabled = true;
+              try {
+                await openVisioPath(exportJob.output.path);
+                setError("");
+              } catch (error) {
+                setError(error instanceof Error ? error.message : "Visio 文件打开失败");
+              } finally {
+                openButton.disabled = false;
+              }
+            });
+            resultNode.append(exportResult, openButton);
           } else if (exportJob.errorMessage) {
             setError(exportJob.errorMessage);
           }

@@ -1,5 +1,7 @@
 "use strict";
 
+import { buildPublicationFigurePlan } from "./publication-figure-plan.js";
+
 const DEFAULT_CANVAS = { width: 2600, height: 1500 };
 const DEFAULT_ARTBOARD = { x: 170, y: 160, width: 2260, height: 1060 };
 const PALETTE = {
@@ -52,7 +54,7 @@ function layoutNetworkIR(ir, options = {}) {
       const item = {
         ...node, stage: column.index, stageKey: column.id, columnX: column.x,
         x: Math.round(column.x - w / 2), y, w, h,
-        color: nodeColor(node, column.index, columns.length),
+        color: node.color || nodeColor(node, column.index, columns.length),
         bwStyle: nodeBw(node.type),
       };
       nodes.push(item);
@@ -65,6 +67,7 @@ function layoutNetworkIR(ir, options = {}) {
     figure: { title: normalized.title, subtitle: normalized.subtitle, stages: columns.map((column) => column.label) },
     paletteName, nodes: nodes.sort((a, b) => a.stage - b.stage || a.y - b.y || a.id.localeCompare(b.id)), edges,
   };
+  if (isVgg16Figure(ir, normalized.title)) layout.figurePlan = buildPublicationFigurePlan(ir);
   layout.validation = validatePublicationLayout(layout, { artboard, canvas: options.canvas || DEFAULT_CANVAS });
   return layout;
 }
@@ -126,7 +129,8 @@ function normalizeIR(ir) {
     if (!stageIds.has(stage)) throw new Error(`Node ${node.id || index} references unknown stage "${stage}".`);
     const type = String(node.type || formalNodeType(node.kind));
     const [w, h] = SIZES[type] || SIZES.default;
-    return { id: String(node.id || `node-${index + 1}`), type, stage, order: Number.isFinite(node.order) ? node.order : 1000, label: String(node.label || readableKind(node.kind) || `Node ${index + 1}`), subtitle: String(node.subtitle || tensorSubtitle(node.tensor)), w: Number.isFinite(node.w) ? Math.max(48, Math.round(node.w)) : w, h: Number.isFinite(node.h) ? Math.max(40, Math.round(node.h)) : h };
+    const visualEncoding = normalizeVisualEncoding(node.visualEncoding, node.depth, node.tensor);
+    return { id: String(node.id || `node-${index + 1}`), type, stage, order: Number.isFinite(node.order) ? node.order : 1000, label: String(node.label || readableKind(node.kind) || `Node ${index + 1}`), subtitle: String(node.subtitle || tensorSubtitle(node.tensor)), w: Number.isFinite(node.w) ? Math.max(48, Math.round(node.w)) : w, h: Number.isFinite(node.h) ? Math.max(40, Math.round(node.h)) : h, visualRole: String(node.visualRole || "standard"), layerRole: String(node.layerRole || "network-node"), repeatCount: Number.isInteger(node.repeatCount) && node.repeatCount > 0 ? node.repeatCount : 1, channelCount: Number.isInteger(node.channelCount) && node.channelCount > 0 ? node.channelCount : channelCountOf(node.tensor), depth: Number.isInteger(node.depth) && node.depth > 0 ? node.depth : visualEncoding.visiblePlaneCount, perspective: node.perspective === true, visualEncoding, color: typeof node.color === "string" ? node.color : null };
   });
   const edges = ir.edges.map((edge, index) => ({ source: String(edge.source || ""), target: String(edge.target || ""), type: formalEdgeType(edge), label: String(edge.label || edge.kind || ""), order: Number.isFinite(edge.order) ? edge.order : index }));
   return { title: String(ir.title || ir.figure?.title || "Neural Network Architecture"), subtitle: String(ir.subtitle || ir.figure?.description || "Deterministic publication-style layout"), stages, nodes, edges };
@@ -143,7 +147,19 @@ function formalNodeType(kind) {
 }
 function formalEdgeType(edge) { return edge.skip === true || edge.kind === "skip" ? "skip" : edge.kind === "attention" ? "attention" : String(edge.type || "signal"); }
 function readableKind(kind) { return typeof kind === "string" && kind ? kind.replace(/[-_]/g, " ").replace(/\b\w/g, (character) => character.toUpperCase()) : ""; }
-function tensorSubtitle(tensor) { return tensor && typeof tensor.shape === "string" ? tensor.shape : ""; }
+function tensorSubtitle(tensor) { return tensor && tensor.shape != null ? Array.isArray(tensor.shape) ? tensor.shape.join(" x ") : String(tensor.shape) : ""; }
+function channelCountOf(tensor) { const shape = tensor?.shape; const channel = Array.isArray(shape) ? shape.at(-1) : null; return Number.isInteger(channel) && channel > 0 ? channel : null; }
+function normalizeVisualEncoding(value, legacyDepth, tensor) {
+  const spatialShape = Array.isArray(value?.spatialShape) && value.spatialShape.length >= 2
+    ? value.spatialShape.slice(0, 3)
+    : Array.isArray(tensor?.shape) ? tensor.shape.slice(0, Math.min(3, tensor.shape.length)).filter(Number.isInteger) : [];
+  return {
+    visiblePlaneCount: Number.isInteger(value?.visiblePlaneCount) && value.visiblePlaneCount > 0 ? value.visiblePlaneCount : Number.isInteger(legacyDepth) && legacyDepth > 0 ? legacyDepth : 1,
+    extrusionDepthFu: Number.isInteger(value?.extrusionDepthFu) && value.extrusionDepthFu >= 0 ? value.extrusionDepthFu : 0,
+    projection: value?.projection === "oblique-3d" ? "oblique-3d" : "flat",
+    spatialShape,
+  };
+}
 function fitHeights(heights, available) { const total = heights.reduce((a, b) => a + b, 0); if (total <= available) return heights; const gapBudget = Math.max(0, available - 24 * Math.max(0, heights.length - 1)); const each = Math.max(40, Math.floor(gapBudget / Math.max(1, heights.length))); return heights.map(() => each); }
 function layoutEdges(edges, nodeMap, artboard) {
   const counts = new Map(); const skips = [];
@@ -160,5 +176,6 @@ function typePriority(type) { return ({ token: 10, "patch-grid": 20, tensor: 30,
 function validNodeBW(style) { return Boolean(style && typeof style.fillPattern === "string" && typeof style.strokePattern === "string" && typeof style.tone === "string"); }
 function validEdgeBW(style) { return Boolean(style && typeof style.linePattern === "string" && typeof style.weight === "string"); }
 function normalizeRect(value, fallback) { return { x: Number.isFinite(value?.x) ? value.x : fallback.x, y: Number.isFinite(value?.y) ? value.y : fallback.y, width: Number.isFinite(value?.width) ? value.width : fallback.width, height: Number.isFinite(value?.height) ? value.height : fallback.height }; }
+function isVgg16Figure(ir, title) { return String(ir?.figure?.id || "").toLowerCase() === "vgg16" || /^vgg16\b/i.test(String(title)); }
 
 export { layoutNetworkIR, validatePublicationLayout };

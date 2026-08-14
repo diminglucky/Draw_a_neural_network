@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { FoundationError } from "../src/domain.js";
 import { InMemoryFoundationStore } from "../src/store.js";
+import { vi } from "vitest";
 
 const TEST_SESSION_SECRET = "test-session-secret-test-session-secret";
+const NO_FIGURE_ANALYSIS = Symbol("no-figure-analysis");
 
 type AgentChatCall = {
   userId: string;
@@ -14,7 +16,115 @@ type AgentChatCall = {
   providerApiKey?: string;
 };
 
-function createAgentService() {
+function maliciousFigureAnalysis(options?: {
+  status?: "needs_confirmation" | "ready_for_preview";
+  blockingQuestions?: unknown[];
+  mutate?: (analysis: Record<string, any>) => void;
+}) {
+  const analysis: Record<string, any> = {
+    status: options?.status ?? "ready_for_preview",
+    taskIntent: {
+      action: "analyze_network",
+      sourceMode: "code",
+      requestedArtifact: "structure_only",
+      referencesDraftId: null,
+      userConstraints: {
+        orientation: "auto",
+        density: "standard",
+        printMode: "auto",
+        requiresNativeVisio: false,
+        visualRole: "malicious-visual-role",
+      },
+      outputPath: "C:\\sensitive\\task-intent.vsdx",
+    },
+    evidence: [{
+      id: "fact-network",
+      subject: "Network",
+      predicate: "contains",
+      value: "Conv2d",
+      confidence: 0.97,
+      source: {
+        sourceId: "source-text-1",
+        kind: "text",
+        name: "User request",
+        locator: "line 1: secret locator",
+        excerpt: "secret excerpt",
+        providerApiKey: "provider-key-inside-evidence",
+      },
+      primitiveIds: ["shape-1"],
+      coordinates: { x: 10, y: 20 },
+      outputPath: "C:\\sensitive\\evidence.vsdx",
+    }],
+    canonicalNetworkIR: {
+      version: 2,
+      figure: { id: "figure-1", title: "CNN", description: null, visualRole: "tensor-plate" },
+      tensors: [{
+        id: "tensor-1",
+        name: "input",
+        shape: [1],
+        axes: ["feature"],
+        semanticRole: "input",
+        dtype: null,
+        producerNodeId: "input",
+        consumerNodeIds: ["output"],
+        coordinates: { x: 0, y: 0 },
+      }],
+      nodes: [
+        {
+          id: "input",
+          op: "input",
+          inputTensorIds: [],
+          outputTensorIds: ["tensor-1"],
+          confidence: 0.97,
+          sourceEvidenceIds: ["fact-network"],
+          repeats: null,
+          coordinates: { x: 1, y: 2 },
+          primitiveIds: ["input-shape"],
+        },
+        {
+          id: "output",
+          op: "output",
+          inputTensorIds: ["tensor-1"],
+          outputTensorIds: [],
+          confidence: 0.97,
+          sourceEvidenceIds: ["fact-network"],
+          repeats: null,
+          outputPath: "C:\\sensitive\\output.vsdx",
+        },
+      ],
+      edges: [{
+        id: "edge-1",
+        sourceNodeId: "input",
+        targetNodeId: "output",
+        relation: "data",
+        tensorIds: ["tensor-1"],
+        confidence: 0.97,
+        evidenceIds: [],
+        coordinates: { beginX: 1, endX: 2 },
+      }],
+      groups: [],
+      unresolved: [],
+      primitiveIds: ["diagram-shape-1"],
+      outputPath: "C:\\sensitive\\diagram.vsdx",
+    },
+    blockingQuestions: options?.blockingQuestions ?? [],
+    warnings: ["Structural analysis only."],
+    readyForVisio: false,
+    providerApiKey: "provider-key-at-top-level",
+    requestHeaders: { "x-synapse-provider-api-key": "header-provider-key" },
+    figurePlan: { primitiveIds: ["plan-shape-1"], coordinates: { x: 300, y: 400 } },
+    primitiveIds: ["analysis-shape-1"],
+    coordinates: { x: 500, y: 600 },
+    outputPath: "C:\\sensitive\\analysis.vsdx",
+  };
+  options?.mutate?.(analysis);
+  return analysis;
+}
+
+function createAgentService(
+  figureAnalysis: unknown = maliciousFigureAnalysis(),
+  response: unknown = "Drafted a publication-style neural network diagram.",
+) {
   const calls: AgentChatCall[] = [];
   return {
     calls,
@@ -25,7 +135,7 @@ function createAgentService() {
           conversationId: input.conversationId,
           status: "completed",
           stages: ["received", "analyzing", "completed"],
-          response: "Drafted a publication-style neural network diagram.",
+          response,
           networkIR: {
             figure: { title: "ResNet draft" },
             nodes: [{ id: "input", kind: "input", label: "Input" }],
@@ -41,19 +151,24 @@ function createAgentService() {
             nodes: [{ id: "input", x: 0, y: 0 }],
             edges: [],
           },
+          ...(figureAnalysis === NO_FIGURE_ANALYSIS ? {} : { figureAnalysis }),
         };
       },
     },
   };
 }
 
-async function createAuthorizedApp(agentServiceOverride?: { chat(input: AgentChatCall): Promise<unknown> }) {
+async function createAuthorizedApp(
+  agentServiceOverride?: { chat(input: AgentChatCall): Promise<unknown> },
+  figureDraftService?: unknown,
+) {
   const agent = createAgentService();
   const store = new InMemoryFoundationStore();
   const app = buildApp({
     sessionSecret: TEST_SESSION_SECRET,
     store,
     agentService: agentServiceOverride ?? agent.service,
+    ...(figureDraftService ? { figureDraftService } : {}),
   } as any);
 
   const registered = await app.inject({
@@ -169,6 +284,59 @@ describe("agent chat routes", () => {
     expect(JSON.stringify(agentAudits)).not.toContain("Please draft a CNN from this code");
   });
 
+  it("persists a safe v2 analysis as revision 1 while preserving legacy chat fields", async () => {
+    const { app, headers, store } = await createAuthorizedApp();
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "agent-draft-revision-1" },
+      payload: { message: "Analyze this CNN" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const payload = response.json();
+    expect(payload).toMatchObject({
+      networkIR: expect.any(Object),
+      diagram: expect.any(Object),
+      diagramIntent: "replace",
+      actions: { actions: [] },
+      draft: {
+        id: expect.any(String),
+        status: "ready_for_preview",
+        currentRevision: 1,
+      },
+    });
+    expect(payload.draft).toEqual({
+      id: payload.draft.id,
+      status: "ready_for_preview",
+      currentRevision: 1,
+    });
+
+    const completedAudit = (await store.listAuditRecords()).find((record) => record.action === "agent.chat.completed");
+    const userId = completedAudit?.actorId;
+    if (typeof userId !== "string") throw new Error("completed chat audit must identify the user");
+    const persistedDraft = await store.getFigureDraft(userId, payload.draft.id);
+    const persistedRevision = await store.getFigureDraftRevision(userId, payload.draft.id, 1);
+    expect(persistedDraft).toMatchObject({
+      userId,
+      conversationId: payload.conversationId,
+      status: "ready_for_preview",
+      currentRevision: 1,
+    });
+    expect(persistedRevision).toMatchObject({
+      draftId: payload.draft.id,
+      revision: 1,
+      status: "ready_for_preview",
+      payload: expect.objectContaining({
+        blockingQuestions: [],
+        resolvedConfirmations: [],
+        readyForVisio: false,
+      }),
+    });
+  });
+
   it("passes the transient relay API key without writing it to the audit record", async () => {
     const { app, agent, store, headers } = await createAuthorizedApp();
     apps.add(app);
@@ -185,6 +353,267 @@ describe("agent chat routes", () => {
     expect(agent.calls[0]?.providerApiKey).toBe(providerApiKey);
     const audits = await store.listAuditRecords();
     expect(JSON.stringify(audits)).not.toContain(providerApiKey);
+  });
+
+  it("projects only whitelisted figureAnalysis fields and audit counts", async () => {
+    const { app, headers, store } = await createAuthorizedApp();
+    apps.add(app);
+    const providerApiKey = "relay-secret-must-not-return";
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "agent-v2-privacy-1", "x-synapse-provider-api-key": providerApiKey },
+      payload: { message: "Analyze a CNN", attachments: [] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const figureAnalysis = response.json().figureAnalysis;
+    expect(figureAnalysis).toMatchObject({
+      status: "ready_for_preview",
+      taskIntent: {
+        action: "analyze_network",
+        sourceMode: "code",
+        requestedArtifact: "structure_only",
+        referencesDraftId: null,
+        userConstraints: {
+          orientation: "auto",
+          density: "standard",
+          printMode: "auto",
+          requiresNativeVisio: false,
+        },
+      },
+      evidence: [{
+        id: "fact-network",
+        source: { sourceId: "source-text-1", kind: "text", name: "User request" },
+      }],
+      canonicalNetworkIR: expect.objectContaining({ version: 2 }),
+      blockingQuestions: [],
+      warnings: ["Structural analysis only."],
+      readyForVisio: false,
+    });
+    const serializedFigureAnalysis = JSON.stringify(figureAnalysis);
+    for (const sensitiveValue of [
+      providerApiKey,
+      "provider-key-inside-evidence",
+      "provider-key-at-top-level",
+      "header-provider-key",
+      "secret locator",
+      "secret excerpt",
+      "C:\\sensitive\\analysis.vsdx",
+      "C:\\sensitive\\diagram.vsdx",
+      "malicious-visual-role",
+      "analysis-shape-1",
+    ]) {
+      expect(serializedFigureAnalysis).not.toContain(sensitiveValue);
+    }
+    for (const sensitiveKey of ["locator", "excerpt", "visualRole", "coordinates", "outputPath", "primitiveIds", "providerApiKey", "requestHeaders", "figurePlan"]) {
+      expect(serializedFigureAnalysis).not.toContain(sensitiveKey);
+    }
+
+    const completedAudit = (await store.listAuditRecords()).find((record) => record.action === "agent.chat.completed");
+    expect(completedAudit?.metadata).toMatchObject({
+      figureAnalysisStatus: "ready_for_preview",
+      blockingQuestionCount: 0,
+      canonicalNodeCount: 2,
+      canonicalEdgeCount: 1,
+    });
+    const serializedAudit = JSON.stringify(completedAudit);
+    expect(serializedAudit).not.toContain("secret locator");
+    expect(serializedAudit).not.toContain("secret excerpt");
+    expect(serializedAudit).not.toContain("provider-key-at-top-level");
+    for (const sensitiveAuditKey of ["locator", "excerpt", "providerApiKey", "requestHeaders", "figurePlan", "primitiveIds", "coordinates", "outputPath"]) {
+      expect(serializedAudit).not.toContain(sensitiveAuditKey);
+    }
+  });
+
+  it("persists the one confirmation question from a safe v2 analysis without Visio authorization", async () => {
+    const agent = createAgentService(maliciousFigureAnalysis({
+      status: "needs_confirmation",
+      blockingQuestions: [
+        { id: "merge-kind", question: "Is this merge Add or Concat?", candidateValues: ["add", "concat"] },
+      ],
+    }));
+    const { app, headers, store } = await createAuthorizedApp(agent.service);
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "agent-needs-confirmation-1" },
+      payload: { message: "Analyze a possibly ambiguous network" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().figureAnalysis).toMatchObject({
+      status: "needs_confirmation",
+      readyForVisio: false,
+    });
+    expect(response.json().figureAnalysis.blockingQuestions).toEqual([
+      { id: "merge-kind", question: "Is this merge Add or Concat?", candidateValues: ["add", "concat"] },
+    ]);
+    expect(JSON.stringify(response.json().figureAnalysis)).not.toContain("ignored-second-question");
+    expect(response.json().draft).toEqual({
+      id: expect.any(String),
+      status: "needs_confirmation",
+      currentRevision: 1,
+    });
+    const completedAudit = (await store.listAuditRecords()).find((record) => record.action === "agent.chat.completed");
+    const userId = completedAudit?.actorId;
+    if (typeof userId !== "string") throw new Error("completed chat audit must identify the user");
+    const persistedRevision = await store.getFigureDraftRevision(userId, response.json().draft.id, 1);
+    expect(persistedRevision).toMatchObject({
+      status: "needs_confirmation",
+      payload: expect.objectContaining({
+        blockingQuestions: [
+          { id: "merge-kind", question: "Is this merge Add or Concat?", candidateValues: ["add", "concat"] },
+        ],
+        resolvedConfirmations: [],
+        readyForVisio: false,
+      }),
+    });
+  });
+
+  it.each([
+    ["no analysis", NO_FIGURE_ANALYSIS],
+    ["an unsafe analysis", maliciousFigureAnalysis({ mutate: (analysis) => { analysis.evidence[0].value = "sk-allowed-field-secret"; } })],
+    ["an analysis with inconsistent status and blocking questions", maliciousFigureAnalysis({
+      status: "ready_for_preview",
+      blockingQuestions: [{ id: "merge-kind", question: "Which merge?", candidateValues: ["add", "concat"] }],
+    })],
+    ["an analysis with multiple blocking questions", maliciousFigureAnalysis({
+      status: "needs_confirmation",
+      blockingQuestions: [
+        { id: "merge-kind", question: "Which merge?", candidateValues: ["add", "concat"] },
+        { id: "second-ambiguity", question: "Which skip path?", candidateValues: ["identity", "projection"] },
+      ],
+    })],
+  ])("omits an invalid FigureAnalysis and does not create a Draft for %s", async (_label, figureAnalysis) => {
+    const createFromAnalysis = vi.fn();
+    const agent = createAgentService(figureAnalysis);
+    const { app, headers, store } = await createAuthorizedApp(agent.service, {
+      createFromAnalysis,
+      get: vi.fn(),
+      confirm: vi.fn(),
+    });
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": `agent-no-draft-${_label.replaceAll(" ", "-")}` },
+      payload: { message: "Analyze this network" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).not.toHaveProperty("figureAnalysis");
+    expect(response.json()).not.toHaveProperty("draft");
+    expect(createFromAnalysis).not.toHaveBeenCalled();
+    const completedAudit = (await store.listAuditRecords()).find((record) => record.action === "agent.chat.completed");
+    expect(completedAudit?.metadata).not.toHaveProperty("figureAnalysisStatus");
+    expect(completedAudit?.metadata).not.toHaveProperty("blockingQuestionCount");
+  });
+
+  it("does not persist an untrusted response provider in usage or audit metadata", async () => {
+    const untrustedProvider = "sk-user-relay-secret";
+    const agent = createAgentService(NO_FIGURE_ANALYSIS, { provider: untrustedProvider });
+    const { app, headers, store } = await createAuthorizedApp(agent.service);
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "agent-untrusted-response-provider-1" },
+      payload: { message: "Analyze this network" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const audits = await store.listAuditRecords();
+    const requested = audits.find((record) => record.action === "agent.chat.requested");
+    const completed = audits.find((record) => record.action === "agent.chat.completed");
+    if (!requested?.actorId) throw new Error("requested audit must identify the user");
+    const duplicate = await store.reserveAgentUsage({
+      userId: requested.actorId,
+      metric: "agentChatRequests",
+      periodStart: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString(),
+      idempotencyKey: "agent-untrusted-response-provider-1",
+      requestHash: "not-the-original-hash",
+      amount: 1,
+      limit: 10,
+    });
+
+    expect(duplicate).toMatchObject({ duplicate: true, reservation: { state: "completed", provider: null } });
+    expect(completed?.metadata).not.toHaveProperty("provider");
+    expect(JSON.stringify({ duplicate, completed })).not.toContain(untrustedProvider);
+  });
+
+  it("omits figureAnalysis and audit counts when an allowed evidence value contains a recognizable provider key", async () => {
+    const agent = createAgentService(maliciousFigureAnalysis({
+      mutate: (analysis) => {
+        analysis.evidence[0].value = "sk-allowed-field-secret";
+      },
+    }));
+    const { app, headers, store } = await createAuthorizedApp(agent.service);
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "agent-unsafe-evidence-value-1" },
+      payload: { message: "Analyze this network" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).not.toHaveProperty("figureAnalysis");
+    const completedAudit = (await store.listAuditRecords()).find((record) => record.action === "agent.chat.completed");
+    expect(completedAudit?.metadata).not.toHaveProperty("figureAnalysisStatus");
+  });
+
+  it("omits figureAnalysis and audit counts when Canonical IR evidence is absent from public evidence", async () => {
+    const agent = createAgentService(maliciousFigureAnalysis({
+      mutate: (analysis) => {
+        analysis.canonicalNetworkIR.nodes[0].sourceEvidenceIds = ["fact-not-in-public-evidence"];
+      },
+    }));
+    const { app, headers, store } = await createAuthorizedApp(agent.service);
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": "agent-unknown-public-evidence-1" },
+      payload: { message: "Analyze this network" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).not.toHaveProperty("figureAnalysis");
+    const completedAudit = (await store.listAuditRecords()).find((record) => record.action === "agent.chat.completed");
+    expect(completedAudit?.metadata).not.toHaveProperty("figureAnalysisStatus");
+  });
+
+  it.each([
+    ["an oversized warning", (analysis: Record<string, any>) => { analysis.warnings = ["x".repeat(513)]; }],
+    ["an unsafe question candidate", (analysis: Record<string, any>) => {
+      analysis.status = "needs_confirmation";
+      analysis.blockingQuestions = [{ id: "merge-kind", question: "Which merge?", candidateValues: ["add", "powershell -Command invoke"] }];
+    }],
+    ["an unsafe evidence source name", (analysis: Record<string, any>) => { analysis.evidence[0].source.name = "sk-allowed-field-secret"; }],
+  ])("omits figureAnalysis and audit counts for %s", async (_label, mutate) => {
+    const agent = createAgentService(maliciousFigureAnalysis({ mutate }));
+    const { app, headers, store } = await createAuthorizedApp(agent.service);
+    apps.add(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/chat",
+      headers: { ...headers, "idempotency-key": `agent-unsafe-public-field-${_label.replace(/[^a-z]/gi, "-")}` },
+      payload: { message: "Analyze this network" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).not.toHaveProperty("figureAnalysis");
+    const completedAudit = (await store.listAuditRecords()).find((record) => record.action === "agent.chat.completed");
+    expect(completedAudit?.metadata).not.toHaveProperty("figureAnalysisStatus");
   });
 
   it("passes a bounded current canvas snapshot to the Agent and returns actions", async () => {

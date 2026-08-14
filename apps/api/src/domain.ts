@@ -1,9 +1,13 @@
+import type { FigureDraftRevisionPayload } from "./figure-draft-payload.js";
+
 export const ApiErrorCode = {
   ACCOUNT_ALREADY_IN_USE: "ACCOUNT_ALREADY_IN_USE",
   SESSION_REVOKED: "SESSION_REVOKED",
   AGENT_PROVIDER_NOT_CONFIGURED: "AGENT_PROVIDER_NOT_CONFIGURED",
   AGENT_QUOTA_EXCEEDED: "AGENT_QUOTA_EXCEEDED",
   AGENT_IDEMPOTENCY_KEY_REUSED: "AGENT_IDEMPOTENCY_KEY_REUSED",
+  FIGURE_STRUCTURE_NEEDS_CONFIRMATION: "FIGURE_STRUCTURE_NEEDS_CONFIRMATION",
+  FIGURE_ANALYSIS_INVALID: "FIGURE_ANALYSIS_INVALID",
   VISIO_EXECUTOR_NOT_CONFIGURED: "VISIO_EXECUTOR_NOT_CONFIGURED",
   VISIO_EXECUTION_FAILED: "VISIO_EXECUTION_FAILED",
   VISIO_IDEMPOTENCY_KEY_REUSED: "VISIO_IDEMPOTENCY_KEY_REUSED",
@@ -43,6 +47,25 @@ export class FoundationError extends Error {
 export type EntityStatus = "active" | "suspended" | "revoked" | "disabled";
 export type SessionStatus = "active" | "revoked" | "expired" | "logged_out";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired";
+export type FigureDraftStatus = "needs_confirmation" | "ready_for_preview" | "failed";
+
+export interface FigureDraft {
+  id: string;
+  userId: string;
+  conversationId: string;
+  status: FigureDraftStatus;
+  currentRevision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FigureDraftRevision {
+  draftId: string;
+  revision: number;
+  status: FigureDraftStatus;
+  payload: FigureDraftRevisionPayload;
+  createdAt: string;
+}
 
 export interface User {
   id: string;
