@@ -17,6 +17,7 @@ import { VisioWorkerClient } from "./visio-worker-client.js";
 import { VisioJobRunner } from "./visio-job-runner.js";
 import { FigureDraftService } from "./figure-draft-service.js";
 import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
+import { UniversalFigureExportService } from "./figure-export-service.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -29,6 +30,15 @@ export interface BuildAppOptions {
   figureDraftPreviewService?: FigureDraftPreviewService;
   visioExecutor?: VisioExecutor;
   visioJobRunner?: VisioJobRunner;
+  universalFigureExportService?: UniversalFigureExportService;
+  universalFigureExportRunner?: UniversalFigureExportRunnerContract;
+}
+
+export interface UniversalFigureExportRunnerContract {
+  submit(jobId: string): void | Promise<void>;
+  cancel?(jobId: string): Promise<unknown>;
+  recoverJobs?(): Promise<void>;
+  close?(): Promise<void>;
 }
 
 function createVisioExecutorForConfig(config: AppConfig): VisioExecutor {
@@ -71,9 +81,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     figureDraftPreviewService,
     visioExecutor,
     visioJobRunner,
+    universalFigureExportService: options.universalFigureExportService,
+    universalFigureExportRunner: options.universalFigureExportRunner,
   });
-  app.addHook("onReady", async () => { await visioJobRunner.recoverJobs(); });
-  app.addHook("onClose", async () => { await visioJobRunner.close(); });
+  app.addHook("onReady", async () => {
+    await visioJobRunner.recoverJobs();
+    await options.universalFigureExportRunner?.recoverJobs?.();
+  });
+  app.addHook("onClose", async () => {
+    await options.universalFigureExportRunner?.close?.();
+    await visioJobRunner.close();
+  });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof FoundationError) {
       return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message, requestId: request.id, details: error.details } });

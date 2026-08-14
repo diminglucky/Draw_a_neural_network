@@ -43,6 +43,25 @@ describe("production persistence boundary", () => {
     expect(sql).toContain("WHERE type = 'visio-export'");
   });
 
+  it("admits the separate universal figure export Job type in both fresh and migrated schemas", () => {
+    const foundation = readFileSync(resolve(process.cwd(), "apps/api/sql/001_foundation.sql"), "utf8");
+    const migration = readFileSync(resolve(process.cwd(), "apps/api/sql/007_universal_figure_export_jobs.sql"), "utf8");
+
+    expect(foundation).toContain("'universal-figure-export'");
+    expect(migration).toContain("'universal-figure-export'");
+    expect(migration).toContain("DROP CONSTRAINT IF EXISTS jobs_type_check");
+  });
+
+  it("contains durable Universal snapshot, viewed-preview, confirmation, and idempotency records", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/008_universal_figure_state.sql"), "utf8");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS plan_snapshots");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS viewed_plan_previews");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS plan_export_confirmation_nonces");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS universal_figure_export_requests");
+    expect(sql).toContain("consumed_at TIMESTAMPTZ NULL");
+    expect(sql).toContain("PRIMARY KEY (tenant_id, user_id, device_id, idempotency_key)");
+  });
+
   it("rejects memory storage in production", () => {
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: "production-secret-production-secret", STORAGE_DRIVER: "memory" })).toThrow(/development-only/);
   });

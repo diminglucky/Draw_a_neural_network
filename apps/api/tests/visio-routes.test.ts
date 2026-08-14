@@ -43,17 +43,53 @@ async function waitForJob(app: Awaited<ReturnType<typeof buildApp>>, authorizati
 }
 
 describe("Visio export routes", () => {
+  it("exposes browser-supplied diagrams only through the explicit legacy namespace", async () => {
+    const executor: VisioExecutor = {
+      healthCheck: async () => ({ connected: true }),
+      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } } as any),
+      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 } as any),
+    };
+    const { app, authorization } = await createAuthorizedApp(executor);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/legacy/visio-exports",
+        headers: { authorization, "idempotency-key": "legacy-namespace-1" },
+        payload: { diagram },
+      });
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toMatchObject({ type: "visio-export" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns an explicit error when the Worker is not configured", async () => {
     const { app, authorization } = await createAuthorizedApp();
     const response = await app.inject({
       method: "POST",
-      url: "/api/visio/export",
+      url: "/api/legacy/visio-exports",
       headers: { authorization, "idempotency-key": "visio-route-1" },
       payload: { diagram },
     });
 
     expect(response.statusCode).toBe(503);
     expect(response.json().error.code).toBe(ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED);
+  });
+
+  it("does not accept browser-supplied diagrams through the retired non-legacy endpoint", async () => {
+    const { app, authorization } = await createAuthorizedApp();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/visio/export",
+        headers: { authorization, "idempotency-key": "retired-visio-route-1" },
+        payload: { diagram },
+      });
+      expect(response.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
   });
 
   it("creates and completes a user-owned Visio export Job", async () => {
@@ -65,7 +101,7 @@ describe("Visio export routes", () => {
     const { app, authorization } = await createAuthorizedApp(executor);
     const response = await app.inject({
       method: "POST",
-      url: "/api/visio/export",
+      url: "/api/legacy/visio-exports",
       headers: { authorization, "idempotency-key": "visio-route-2" },
       payload: { diagram },
     });
@@ -115,8 +151,8 @@ describe("Visio export routes", () => {
     };
     const { app, authorization } = await createAuthorizedApp(executor);
     const headers = { authorization, "idempotency-key": "visio-repeat-1" };
-    const first = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram } });
-    const second = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram } });
+    const first = await app.inject({ method: "POST", url: "/api/legacy/visio-exports", headers, payload: { diagram } });
+    const second = await app.inject({ method: "POST", url: "/api/legacy/visio-exports", headers, payload: { diagram } });
 
     expect(first.statusCode).toBe(202);
     await waitForJob(app, authorization, first.json().id, "succeeded");
@@ -133,8 +169,8 @@ describe("Visio export routes", () => {
     };
     const { app, authorization } = await createAuthorizedApp(executor);
     const headers = { authorization, "idempotency-key": "visio-conflict-1" };
-    const first = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram } });
-    const second = await app.inject({ method: "POST", url: "/api/visio/export", headers, payload: { diagram: { ...diagram, figure: { title: "Different" } } } });
+    const first = await app.inject({ method: "POST", url: "/api/legacy/visio-exports", headers, payload: { diagram } });
+    const second = await app.inject({ method: "POST", url: "/api/legacy/visio-exports", headers, payload: { diagram: { ...diagram, figure: { title: "Different" } } } });
 
     expect(first.statusCode).toBe(202);
     expect(second.statusCode).toBe(409);
@@ -153,7 +189,7 @@ describe("Visio export routes", () => {
     const { app, authorization } = await createAuthorizedApp(executor);
     const request = app.inject({
       method: "POST",
-      url: "/api/visio/export",
+      url: "/api/legacy/visio-exports",
       headers: { authorization, "idempotency-key": "visio-cancel-1" },
       payload: { diagram },
     });

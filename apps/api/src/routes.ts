@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ApiErrorCode, FoundationError, type FigureDraft, type FigureDraftRevision, type User } from "./domain.js";
 import { AdminService } from "./admin-service.js";
 import { JobService } from "./job-service.js";
@@ -14,6 +14,7 @@ import type { AgentTaskIntent } from "./agent-intent.js";
 import { parseEvidenceBundle, publicEvidenceSummary, type EvidenceBundle, type EvidenceKind } from "./evidence-bundle.js";
 import { FigureDraftService, type FigureDraftConfirmation } from "./figure-draft-service.js";
 import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
+import { UniversalFigureExportService } from "./figure-export-service.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -89,6 +90,8 @@ interface RouteOptions {
   figureDraftPreviewService: FigureDraftPreviewService;
   visioExecutor: VisioExecutor;
   visioJobRunner: VisioJobRunner;
+  universalFigureExportService?: UniversalFigureExportService;
+  universalFigureExportRunner?: { submit(jobId: string): void | Promise<void>; cancel?(jobId: string): Promise<unknown> };
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -137,6 +140,86 @@ function idempotencyKey(request: FastifyRequest): string {
     throw validationError("Idempotency-Key contains unsupported characters", { field: "Idempotency-Key", reason: "invalid_characters" });
   }
   return key;
+}
+
+function universalFigureVersion(request: FastifyRequest): void {
+  const value = request.headers["accept-figure-version"];
+  if (value !== "3") {
+    throw validationError("Accept-Figure-Version: 3 is required for universal figure export", {
+      field: "Accept-Figure-Version",
+      reason: "unsupported_version",
+      supported: [3],
+    });
+  }
+}
+
+function parseUniversalFigureExportBody(request: FastifyRequest): { confirmationToken: string; idempotencyKey: string } {
+  const input = body(request);
+  const allowed = new Set(["confirmationToken", "idempotencyKey"]);
+  for (const key of Object.keys(input)) {
+    if (!allowed.has(key)) {
+      throw validationError("Universal figure export accepts only a confirmation token and idempotency key", {
+        field: key,
+        reason: "forbidden",
+      });
+    }
+  }
+  if (typeof input.confirmationToken !== "string" || !input.confirmationToken.trim()) {
+    throw validationError("confirmationToken is required", { field: "confirmationToken", reason: "required" });
+  }
+  if (typeof input.idempotencyKey !== "string" || !input.idempotencyKey.trim()) {
+    throw validationError("idempotencyKey is required", { field: "idempotencyKey", reason: "required" });
+  }
+  const key = input.idempotencyKey.trim();
+  if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH || !IDEMPOTENCY_KEY_PATTERN.test(key)) {
+    throw validationError("idempotencyKey is invalid", { field: "idempotencyKey", reason: "invalid" });
+  }
+  return { confirmationToken: input.confirmationToken.trim(), idempotencyKey: key };
+}
+
+function universalOwner(userId: string): { tenantId: string; userId: string } {
+  return { tenantId: `tenant-${userId}`, userId };
+}
+
+function publicUniversalFigureExportJob(job: Extract<import("./domain.js").Job, { type: "universal-figure-export" }> | import("./domain.js").Job) {
+  const base = {
+    id: job.id,
+    type: job.type,
+    status: job.status,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    pollUrl: `/api/jobs/${job.id}`,
+  };
+  if (job.status === "succeeded") {
+    const output = publicUniversalOutput(job.output);
+    return output ? { ...base, ...output } : { ...base, status: "failed", error: { code: ApiErrorCode.VISIO_EXECUTION_FAILED, message: "Universal figure export result was invalid" } };
+  }
+  if (job.status === "failed" || job.status === "expired") {
+    return { ...base, error: { code: ApiErrorCode.VISIO_EXECUTION_FAILED, message: "Universal figure export did not complete" } };
+  }
+  return base;
+}
+
+function publicUniversalOutput(value: unknown): { artifacts: Array<{ format: "vsdx" | "pdf" | "png"; sha256: string; bytes: number }>; readback: { valid: true; shapeCount: number; connectorCount: number }; rendererQa: Record<string, { passed: boolean }> } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const output = value as Record<string, unknown>;
+  if (!Array.isArray(output.artifacts) || !output.readback || typeof output.readback !== "object" || Array.isArray(output.readback) || !output.rendererQa || typeof output.rendererQa !== "object" || Array.isArray(output.rendererQa)) return null;
+  const artifacts = output.artifacts.map((artifact) => {
+    if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return null;
+    const candidate = artifact as Record<string, unknown>;
+    if ((candidate.format !== "vsdx" && candidate.format !== "pdf" && candidate.format !== "png") || typeof candidate.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(candidate.sha256) || !Number.isSafeInteger(candidate.bytes) || candidate.bytes <= 0) return null;
+    return { format: candidate.format, sha256: candidate.sha256, bytes: candidate.bytes };
+  });
+  if (artifacts.some((artifact) => artifact === null)) return null;
+  const readback = output.readback as Record<string, unknown>;
+  if (readback.valid !== true || !Number.isSafeInteger(readback.shapeCount) || readback.shapeCount < 0 || !Number.isSafeInteger(readback.connectorCount) || readback.connectorCount < 0) return null;
+  const rendererQa: Record<string, { passed: boolean }> = {};
+  for (const [name, check] of Object.entries(output.rendererQa as Record<string, unknown>)) {
+    if (!check || typeof check !== "object" || Array.isArray(check) || typeof (check as Record<string, unknown>).passed !== "boolean") return null;
+    rendererQa[name] = { passed: (check as Record<string, boolean>).passed };
+  }
+  return { artifacts: artifacts as Array<{ format: "vsdx" | "pdf" | "png"; sha256: string; bytes: number }>, readback: { valid: true, shapeCount: readback.shapeCount as number, connectorCount: readback.connectorCount as number }, rendererQa };
 }
 
 function providerApiKey(request: FastifyRequest): string | undefined {
@@ -545,6 +628,24 @@ async function auditFigureDraft(
   });
 }
 
+async function auditUniversalFigureExport(
+  store: FoundationStore,
+  actorId: string,
+  input: { draftId: string; revision: number; planId: string; planHash: string; jobId: string; duplicate: boolean },
+): Promise<void> {
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId,
+    action: "universal-figure-export.created",
+    targetType: "universal-figure-export",
+    targetId: input.jobId,
+    reason: null,
+    metadata: { draftId: input.draftId, revision: input.revision, planId: input.planId, planHash: input.planHash, duplicate: input.duplicate },
+    createdAt: new Date().toISOString(),
+  });
+}
+
 async function auditFigureDraftPreview(
   store: FoundationStore,
   actorId: string,
@@ -843,14 +944,83 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     return { draft: publicFigureDraft(confirmed.draft), revision };
   });
 
+  app.post("/api/figure-drafts/:draftId/revisions/:revision/exports", async (request, reply) => {
+    const access = await requireUser(request, options);
+    universalFigureVersion(request);
+    if (!options.universalFigureExportService || !options.universalFigureExportRunner) {
+      throw new FoundationError(ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED, "Universal figure export is not configured", 503);
+    }
+    const { draftId, revision: revisionParam } = request.params as { draftId: string; revision: string };
+    const revision = Number(revisionParam);
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+      throw validationError("Figure draft revision is invalid", { field: "revision", reason: "invalid" });
+    }
+    const input = parseUniversalFigureExportBody(request);
+    let created;
+    try {
+      created = await options.universalFigureExportService.create({
+        owner: universalOwner(access.user.id),
+        deviceId: access.device.id,
+        draftId,
+        revision,
+        confirmationToken: input.confirmationToken,
+        idempotencyKey: input.idempotencyKey,
+      });
+    } catch (error) {
+      throw validationError(error instanceof Error ? error.message : "Universal figure export request is invalid", { field: "confirmationToken", reason: "rejected" });
+    }
+    if (!created.duplicate) {
+      await options.store.createJob({
+        id: created.job.id,
+        userId: access.user.id,
+        deviceId: access.device.id,
+        type: "universal-figure-export",
+        status: "queued",
+        input: created.job.input,
+        output: null,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: created.job.createdAt,
+        startedAt: null,
+        completedAt: null,
+      });
+      await options.universalFigureExportRunner.submit(created.job.id);
+    }
+    await auditUniversalFigureExport(options.store, access.user.id, {
+      draftId,
+      revision,
+      planId: created.job.planId,
+      planHash: created.job.planHash,
+      jobId: created.job.id,
+      duplicate: created.duplicate,
+    });
+    reply.header("Figure-Version", "3");
+    return reply.code(created.duplicate ? 200 : 202).send({
+      id: created.job.id,
+      type: created.job.type,
+      status: created.job.status,
+      draftId: created.job.draftId,
+      revision: created.job.revision,
+      planId: created.job.planId,
+      planHash: created.job.planHash,
+      pollUrl: `/api/jobs/${created.job.id}`,
+    });
+  });
+
   app.post("/api/jobs", async (request, reply) => {
     const access = await requireUser(request, options);
     const input = body(request);
+    if (input.type === "universal-figure-export") {
+      throw validationError("Universal figure exports must be created from an exact viewed FigureDraft revision", {
+        field: "type",
+        reason: "dedicated_route_required",
+      });
+    }
     const job = await options.jobService.create({ userId: access.user.id, deviceId: access.device.id, type: input.type, input: input.input });
     return reply.code(201).send(job);
   });
 
-  app.post("/api/visio/export", async (request, reply) => {
+  const legacyVisioExportHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     const access = await requireUser(request, options);
     const input = parseVisioExportBody(request);
     const health = await options.visioExecutor.healthCheck();
@@ -877,13 +1047,15 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const job = created.job;
     options.visioJobRunner.submit(job.id);
     return reply.code(202).send({ ...job, pollUrl: `/api/jobs/${job.id}` });
-  });
+  };
+  app.post("/api/legacy/visio-exports", legacyVisioExportHandler);
 
   app.get("/api/jobs/:id", async (request) => {
     const access = await requireUser(request, options);
     const id = (request.params as { id: string }).id;
     const job = await options.jobService.get(id);
-    if (!job || job.userId !== access.user.id) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
+    if (!job || job.userId !== access.user.id || (job.type === "universal-figure-export" && job.deviceId !== access.device.id)) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
+    if (job.type === "universal-figure-export") return publicUniversalFigureExportJob(job);
     return job;
   });
 
@@ -893,6 +1065,7 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const job = await options.jobService.get(id);
     if (!job || job.userId !== access.user.id) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Job was not found", 404);
     if (job.type === "visio-export") return await options.visioJobRunner.cancel(id);
+    if (job.type === "universal-figure-export" && options.universalFigureExportRunner?.cancel) return await options.universalFigureExportRunner.cancel(id);
     return await options.jobService.cancel(id);
   });
 

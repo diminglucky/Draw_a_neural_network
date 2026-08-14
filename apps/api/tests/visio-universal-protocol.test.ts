@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSealedPlan, parseUniversalVisioWorkerRequest, verifySealedPlan } from "../src/visio-universal-protocol.js";
+import { createSealedPlan, parseAndVerifyUniversalVisioWorkerRequest, parseUniversalVisioWorkerRequest, verifySealedPlan } from "../src/visio-universal-protocol.js";
 
 function sealedInput(overrides: Record<string, unknown> = {}) {
   return {
@@ -27,5 +27,26 @@ describe("Universal Visio Worker protocol", () => {
     expect(() => verifySealedPlan({ ...sealedPlan, planHash: "a".repeat(64) }, { jobId: "job-1", tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", planId: "plan-1" }, "worker-secret", new Date("2026-08-14T00:00:00.000Z"))).toThrow(/signature|hash/i);
     expect(() => verifySealedPlan(sealedPlan, { jobId: "job-1", tenantId: "tenant-1", userId: "user-1", deviceId: "device-2", planId: "plan-1" }, "worker-secret", new Date("2026-08-14T00:00:00.000Z"))).toThrow(/binding/i);
     expect(() => verifySealedPlan(sealedPlan, { jobId: "job-1", tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", planId: "plan-1" }, "worker-secret", new Date("2026-08-14T00:16:00.000Z"))).toThrow(/expired/i);
+  });
+
+  it("performs the Worker-side parse and binding verification before any renderer can consume canonical plan bytes", () => {
+    const sealedPlan = createSealedPlan(sealedInput(), "worker-secret");
+
+    const verified = parseAndVerifyUniversalVisioWorkerRequest({
+      protocolVersion: 1,
+      requestId: "request-1",
+      jobId: "job-1",
+      mode: "mock",
+      sealedPlan,
+    }, { jobId: "job-1", tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", planId: "plan-1" }, "worker-secret", new Date("2026-08-14T00:00:00.000Z"));
+
+    expect(verified.canonicalPlanBytes).toEqual(Buffer.from('{"figureSet":"safe"}', "utf8"));
+    expect(() => parseAndVerifyUniversalVisioWorkerRequest({
+      protocolVersion: 1,
+      requestId: "request-1",
+      jobId: "job-1",
+      mode: "mock",
+      sealedPlan: { ...sealedPlan, planHash: "a".repeat(64) },
+    }, { jobId: "job-1", tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", planId: "plan-1" }, "worker-secret", new Date("2026-08-14T00:00:00.000Z"))).toThrow(/signature|hash/i);
   });
 });

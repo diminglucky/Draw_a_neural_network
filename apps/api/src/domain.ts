@@ -128,7 +128,7 @@ export interface Job {
   id: string;
   userId: string;
   deviceId: string;
-  type: "chat" | "code-analysis" | "image-analysis" | "visio-export";
+  type: "chat" | "code-analysis" | "image-analysis" | "visio-export" | "universal-figure-export";
   status: JobStatus;
   input: unknown;
   output: unknown | null;

@@ -77,7 +77,7 @@ Optional local services are defined in `infra/docker-compose.yml`:
 docker compose -f infra/docker-compose.yml up -d
 ```
 
-The SQL migrations are mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; set `STORAGE_DRIVER=postgres` and `DATABASE_URL` before starting the API. For an existing database, apply the incremental SQL files in order, including `apps/api/sql/005_visio_job_idempotency.sql`, before enabling Visio export. That migration gives each user one durable Visio Job per `Idempotency-Key` and prevents repeated COM execution. Verify persistence with:
+The SQL migrations are mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; set `STORAGE_DRIVER=postgres` and `DATABASE_URL` before starting the API. For an existing database, apply the incremental SQL files in order through `apps/api/sql/007_universal_figure_export_jobs.sql` before enabling Visio export. `005_visio_job_idempotency.sql` gives each user one durable legacy Visio Job per `Idempotency-Key` and prevents repeated COM execution; `007_universal_figure_export_jobs.sql` enables the separately typed Universal export Job. Verify persistence with:
 
 ```powershell
 npm run api:smoke:postgres

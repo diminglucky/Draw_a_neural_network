@@ -107,7 +107,7 @@ CREATE TABLE jobs (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
-  type TEXT NOT NULL CHECK (type IN ('chat', 'code-analysis', 'image-analysis', 'visio-export')),
+  type TEXT NOT NULL CHECK (type IN ('chat', 'code-analysis', 'image-analysis', 'visio-export', 'universal-figure-export')),
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'expired')),
   input JSONB NOT NULL,
   output JSONB NULL,
