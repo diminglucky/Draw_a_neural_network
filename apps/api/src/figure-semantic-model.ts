@@ -14,7 +14,7 @@ const nullableSummarySchema = z.string().trim().min(1).max(240).nullable().optio
 const semanticValueSchema = z.union([z.string().trim().max(240), z.number().finite(), z.boolean(), z.null()]);
 const forbiddenSemanticKey = /(?:^|_)(?:x|y|width|height|bounds|coordinate|coordinates|path|output|primitive|renderer|visio|svg|xml|command|script)(?:$|_)/i;
 
-export type FigureGrammarId = "cnn-classifier" | "encoder-decoder" | "residual-backbone" | "token-transformer";
+export type FigureGrammarId = "cnn-classifier" | "encoder-decoder" | "residual-backbone" | "token-transformer" | "multi-branch-fusion";
 
 export interface FigureSourceMapping {
   displayId: string;
@@ -60,7 +60,7 @@ const semanticRecordSchema = z.record(semanticValueSchema).superRefine((value, c
 const figureSemanticModelSchema = z.object({
   version: z.literal(1),
   grammar: z.object({
-    id: z.enum(["cnn-classifier", "encoder-decoder", "residual-backbone", "token-transformer"]),
+    id: z.enum(["cnn-classifier", "encoder-decoder", "residual-backbone", "token-transformer", "multi-branch-fusion"]),
     version: z.number().int().positive(),
   }).strict(),
   regions: z.array(z.object({

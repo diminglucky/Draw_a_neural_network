@@ -24,7 +24,7 @@ function grammar(id: "cnn-classifier" | "encoder-decoder" | "residual-backbone" 
 
 describe("GrammarRegistry", () => {
   it("registers the deterministic preview grammar families", () => {
-    expect(createPublicationGrammarRegistry().registeredIds()).toEqual(["cnn-classifier", "encoder-decoder", "residual-backbone", "token-transformer"]);
+    expect(createPublicationGrammarRegistry().registeredIds()).toEqual(["cnn-classifier", "encoder-decoder", "residual-backbone", "token-transformer", "multi-branch-fusion"]);
   });
 
   it("uses the grammar ID as a stable tie break instead of registration order", () => {

@@ -5,6 +5,7 @@ import { cnnClassifierGrammar } from "./grammars/cnn-classifier.js";
 import { encoderDecoderGrammar } from "./grammars/encoder-decoder.js";
 import { residualBackboneGrammar } from "./grammars/residual-backbone.js";
 import { tokenTransformerGrammar } from "./grammars/token-transformer.js";
+import { multiBranchFusionGrammar } from "./grammars/multi-branch-fusion.js";
 
 export interface GrammarScore {
   grammarId: FigureGrammarId;
@@ -92,5 +93,5 @@ function normalizeScore(grammar: FigureGrammar, score: GrammarScore): GrammarSco
 export { MINIMUM_SELECTION_SCORE };
 
 export function createPublicationGrammarRegistry(): GrammarRegistry {
-  return new GrammarRegistry([cnnClassifierGrammar, encoderDecoderGrammar, residualBackboneGrammar, tokenTransformerGrammar]);
+  return new GrammarRegistry([cnnClassifierGrammar, encoderDecoderGrammar, residualBackboneGrammar, tokenTransformerGrammar, multiBranchFusionGrammar]);
 }

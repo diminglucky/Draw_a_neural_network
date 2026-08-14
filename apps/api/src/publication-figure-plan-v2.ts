@@ -47,7 +47,7 @@ const planSchema = z.object({
   version: z.literal(2),
   target: z.literal("preview"),
   renderIntent: z.object({ density: z.enum(["compact", "standard", "detailed"]), printMode: z.enum(["color", "grayscale"]) }).strict(),
-  grammar: z.object({ id: z.enum(["cnn-classifier", "encoder-decoder", "residual-backbone", "token-transformer"]), version: z.number().int().positive() }).strict(),
+  grammar: z.object({ id: z.enum(["cnn-classifier", "encoder-decoder", "residual-backbone", "token-transformer", "multi-branch-fusion"]), version: z.number().int().positive() }).strict(),
   coordinateSpace: z.object({ unit: z.literal("figure-unit"), figureUnitInches: z.literal(0.01), origin: z.literal("top-left"), width: z.number().finite().positive(), height: z.number().finite().positive() }).strict(),
   regions: z.array(z.object({ id: idSchema, label: textSchema, role: z.string().trim().min(1).max(64), bounds: boundsSchema }).strict()).max(48),
   primitives: z.array(z.object({ id: idSchema, kind: z.enum(publicationPrimitiveKinds), bounds: boundsSchema, semantic: semanticSchema.default({}), sourceDisplayId: idSchema }).strict()).min(1).max(MAX_PRIMITIVES),
