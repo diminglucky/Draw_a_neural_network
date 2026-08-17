@@ -6,10 +6,10 @@ Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-m
 
 ## Current Focus
 
-- M2.1: Figure Component contract
-- Status: awaiting_acceptance
-- Outcome: Validated v3 IR maps to semantic components without model-name templates.
-- Next action: Review M2.1 evidence and accept the Figure Component contract.
+- M2.2: Composable DAG figure compiler
+- Status: planned
+- Outcome: Supported semantic DAGs compile deterministically with explicit topology limits.
+- Next action: Write the deterministic compiler implementation plan.
 
 ## Milestones
 
@@ -23,7 +23,7 @@ Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-m
 
 ## Executable Nodes
 
-- None
+- M2.2: Composable DAG figure compiler
 
 ## Open Blockers
 

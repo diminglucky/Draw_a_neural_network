@@ -7,7 +7,7 @@
     "architectureSpec": "docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md"
   },
   "updatedAt": "2026-08-17T12:45:00.000Z",
-  "currentFocus": "M2.1",
+  "currentFocus": "M2.2",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
     { "id": "M1", "title": "Static source analysis", "status": "accepted" },
@@ -71,8 +71,8 @@
       "id": "M2.1",
       "milestoneId": "M2",
       "title": "Figure Component contract",
-      "status": "awaiting_acceptance",
-      "previousStatus": "active",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M1.9"],
       "outcome": "Validated v3 IR maps to semantic components without model-name templates.",
       "acceptance": [
@@ -89,7 +89,7 @@
         { "kind": "commit", "satisfies": ["M2.1.quality"], "ref": "docs/evidence/2026-08-17-m2-1-figure-components.md", "summary": "The implementation commit is resolvable.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" },
         { "kind": "document", "satisfies": ["M2.1.quality"], "ref": "docs/evidence/2026-08-17-m2-1-figure-components.md", "summary": "The M2.1 verification record is tracked.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" }
       ],
-      "nextAction": "Review M2.1 evidence and accept the Figure Component contract.",
+      "nextAction": "Keep the accepted contract stable while compiler work proceeds.",
       "blockerIds": [],
       "successorId": null
     },
@@ -102,7 +102,7 @@
       "outcome": "Supported semantic DAGs compile deterministically with explicit topology limits.",
       "acceptance": [{ "id": "M2.2.compiler", "text": "The compiler consumes v3 IR and emits deterministic figure components.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [],
-      "nextAction": "Implement after M2.1 is accepted.",
+      "nextAction": "Write the deterministic compiler implementation plan.",
       "blockerIds": [],
       "successorId": null
     },
