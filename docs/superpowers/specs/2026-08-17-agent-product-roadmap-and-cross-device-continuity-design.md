@@ -117,12 +117,25 @@ A milestone is a product-level acceptance boundary. A node is the smallest indep
   "milestoneId": "M2",
   "title": "Figure Component contract and semantic compiler boundary",
   "status": "planned",
+  "previousStatus": null,
   "dependsOn": ["M1.9"],
   "outcome": "Validated v3 IR becomes semantic Figure Components without model-name templates or browser geometry.",
   "acceptance": [
-    "Gold IR fixtures cover CNN, residual backbone, encoder-decoder, and token transformer.",
-    "Unsupported topology returns explicit fallback or unresolved state rather than guessed structure.",
-    "Focused tests, full API tests, strict TypeScript, and diff checks pass."
+    {
+      "id": "M2.1.gold-fixtures",
+      "text": "Gold IR fixtures cover CNN, residual backbone, encoder-decoder, and token transformer.",
+      "requiredEvidenceKinds": ["test", "document"]
+    },
+    {
+      "id": "M2.1.explicit-fallback",
+      "text": "Unsupported topology returns explicit fallback or unresolved state rather than guessed structure.",
+      "requiredEvidenceKinds": ["test"]
+    },
+    {
+      "id": "M2.1.quality-gates",
+      "text": "Focused tests, full API tests, strict TypeScript, and diff checks pass.",
+      "requiredEvidenceKinds": ["test", "typecheck", "commit", "document"]
+    }
   ],
   "evidence": [],
   "nextAction": "Write and approve the M2.1 implementation plan.",
@@ -130,11 +143,14 @@ A milestone is a product-level acceptance boundary. A node is the smallest indep
 }
 ```
 
+Each acceptance item has a stable ID and explicitly names the evidence kinds required to accept it. Every accepted node must have evidence whose `satisfies` list includes every acceptance ID; the evidence records satisfying a specific item must collectively contain every kind named by that item. This relationship prevents a general test log from being used as unreviewed proof for every acceptance statement.
+
 An evidence record is reproducible and repository-bound:
 
 ```json
 {
   "kind": "test | typecheck | manual-visual-review | real-host | commit | tag | document",
+  "satisfies": ["M1.9.evidence"],
   "ref": "docs/evidence/2026-08-17-m0-m1-static-pytorch.md",
   "summary": "84 test files and 466 tests passed for the accepted M0/M1 slice.",
   "verifiedAt": "2026-08-17T00:00:00.000Z",
@@ -143,6 +159,28 @@ An evidence record is reproducible and repository-bound:
 ```
 
 `ref` must be repository-relative and tracked. `commit` is a full 40-character SHA that resolves locally. A `real-host` record also names its host class and artifact reference, but never a personal machine name or private absolute path.
+
+For example, an acceptance item requiring test, typecheck, commit, and document proof uses the following contract:
+
+```json
+{
+  "acceptance": [{
+    "id": "M1.9.evidence",
+    "text": "Full checks are recorded.",
+    "requiredEvidenceKinds": ["test", "typecheck", "commit", "document"]
+  }],
+  "evidence": [{
+    "kind": "test",
+    "satisfies": ["M1.9.evidence"],
+    "ref": "docs/evidence/2026-08-17-m0-m1-static-pytorch.md",
+    "summary": "466 tests passed.",
+    "verifiedAt": "2026-08-17T00:00:00.000Z",
+    "commit": "bc718abd9e323d991c32d759eb9d8f31bb741459"
+  }]
+}
+```
+
+The example's remaining typecheck, commit, and document records use the same `satisfies` ID. Each evidence record has a resolvable full commit SHA.
 
 ### 5.3 Statuses and Transitions
 
@@ -163,6 +201,8 @@ active -> blocked | awaiting_acceptance | deferred | superseded
 blocked -> active | deferred | superseded
 awaiting_acceptance -> active | blocked | accepted
 ```
+
+`previousStatus` is either `null` for a baseline node or the status immediately before the current committed transition. When present, it must follow this table. This small audit field lets validation reject an impossible transition without treating Git history as mutable ledger data.
 
 An accepted node is never reopened; new work uses a successor node. A node may become accepted only when every dependency is accepted, every acceptance statement has matching evidence, and it has a `commit` evidence record. A milestone becomes accepted only when all required child nodes are accepted.
 
