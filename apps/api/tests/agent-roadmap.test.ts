@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -50,6 +50,7 @@ function validState(): LedgerFixture {
         title: "Foundation acceptance",
         status: "accepted",
         previousStatus: "awaiting_acceptance",
+        bootstrapBaseline: false,
         dependsOn: [],
         outcome: "The foundation is accepted.",
         acceptance: [{
@@ -93,6 +94,7 @@ function validState(): LedgerFixture {
         title: "Preview contract",
         status: "planned",
         previousStatus: null,
+        bootstrapBaseline: true,
         dependsOn: ["M1.9"],
         outcome: "Create a preview contract.",
         acceptance: [{
@@ -110,15 +112,23 @@ function validState(): LedgerFixture {
   };
 }
 
-function expectInvalid(mutator: (state: ReturnType<typeof validState>) => void) {
+function nonBootstrapState(): LedgerFixture {
   const state = validState();
+  state.nodes[1].status = "active";
+  state.nodes[1].previousStatus = "planned";
+  for (const node of state.nodes) delete node.bootstrapBaseline;
+  return state;
+}
+
+function expectInvalid(mutator: (state: ReturnType<typeof validState>) => void) {
+  const state = nonBootstrapState();
   mutator(state);
   expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
 }
 
 describe("agent roadmap ledger", () => {
   it("requires matching evidence for each accepted acceptance item", () => {
-    const state = validState();
+    const state = nonBootstrapState();
     state.nodes[0].acceptance.push({
       id: "M1.9.second-check",
       text: "A separate check is recorded.",
@@ -180,6 +190,64 @@ describe("agent roadmap ledger", () => {
   it("rejects illegal state transitions", () => {
     expectInvalid((state) => {
       state.nodes[0].previousStatus = "planned";
+    });
+  });
+
+  it("permits a null previous status only for an explicit bootstrap baseline", () => {
+    expectInvalid((state) => {
+      state.nodes[0].previousStatus = null;
+      state.nodes[0].bootstrapBaseline = false;
+    });
+
+    const state = validState();
+    state.nodes[0].previousStatus = null;
+    state.nodes[0].bootstrapBaseline = true;
+    expect(() => validateProgramState(state, fixtures())).not.toThrow();
+  });
+
+  it("rejects evidence symlink escapes or asserts that symlinks are unsupported", () => {
+    const root = fixtureRoot();
+    const outside = mkdtempSync(resolve(tmpdir(), "agent-roadmap-outside-"));
+    const outsideEvidence = resolve(outside, "outside.md");
+    const link = resolve(root, "docs", "evidence", "escape.md");
+    writeFileSync(outsideEvidence, "Outside evidence\n", "utf8");
+
+    try {
+      symlinkSync(outsideEvidence, link, "file");
+    } catch (error) {
+      expect((error as NodeJS.ErrnoException).code).toMatch(/^(EPERM|EACCES|ENOSYS|UNKNOWN)$/);
+      return;
+    }
+
+    const state = nonBootstrapState();
+    state.nodes[0].evidence[0].ref = "docs/evidence/escape.md";
+    expect(() => validateProgramState(state, fixtures(root))).toThrow(RoadmapValidationError);
+  });
+
+  it("rejects sensitive values in free-text fields while accepting normal technical text", () => {
+    expect(() => validateProgramState(nonBootstrapState(), fixtures())).not.toThrow();
+    expectInvalid((state) => { state.nodes[1].title = "Investigate user-123 rendering"; });
+    expectInvalid((state) => { state.nodes[1].title = "Investigate userId=visitor-alpha rendering"; });
+    expectInvalid((state) => { state.nodes[1].outcome = "Review C:\\Users\\Alice\\private.md"; });
+    expectInvalid((state) => { state.nodes[1].nextAction = "Open workstation.internal for review"; });
+    expectInvalid((state) => { state.nodes[0].evidence[0].summary = "apiKey=sk_1234567890"; });
+  });
+
+  it("requires every child node to be accepted before its milestone is accepted", () => {
+    expectInvalid((state) => { state.milestones[1].status = "accepted"; });
+  });
+
+  it("requires every open blocker to appear in its node blocker IDs", () => {
+    expectInvalid((state) => {
+      state.blockers.push({
+        id: "B-M2-002",
+        nodeId: "M2.1",
+        severity: "medium",
+        summary: "An approval is pending.",
+        resolution: "Record the approval.",
+        openedAt: "2026-08-17T00:00:00.000Z",
+        status: "open",
+      });
     });
   });
 

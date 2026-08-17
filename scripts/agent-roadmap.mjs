@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -35,7 +35,7 @@ const NODE_ID = /^M[1-9]\d*\.[1-9]\d*$/;
 const ACCEPTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const SECRET_KEY = /(?:api[_-]?key|provider[_-]?key|password|secret|token|credential|authorization)/i;
-const SECRET_VALUE = /(?:\b(?:sk|pk|rk)_[A-Za-z0-9_-]{8,}\b|\bAIza[A-Za-z0-9_-]{20,}\b|\bBearer\s+\S+)/i;
+const SENSITIVE_VALUE = /(?:\b(?:sk|pk|rk)_[A-Za-z0-9_-]{8,}\b|\bAIza[A-Za-z0-9_-]{20,}\b|\bBearer\s+\S+|\b(?:api[_ -]?key|provider[_ -]?key|password|secret|token|credential|authorization|user(?:[_ -]?id)?|account(?:[_ -]?id)?|email)\s*[:=]\s*\S+|\buser-\d+\b|(?:\b[A-Za-z]:[\\/]|\\\\[^\\/\r\n]+[\\/][^\\/\r\n]+)|\b(?:localhost|(?:[a-z0-9-]+\.)+(?:local|internal|lan|home|corp|private))\b)/i;
 
 export class RoadmapValidationError extends Error {
   constructor(message) {
@@ -85,7 +85,7 @@ function expectTimestamp(value, label) {
 
 function assertNoSecretLikeValues(value, label = "state") {
   if (typeof value === "string") {
-    if (SECRET_VALUE.test(value)) fail(`${label} contains a secret-like value.`);
+    if (SENSITIVE_VALUE.test(value)) fail(`${label} contains sensitive data.`);
     return;
   }
   if (Array.isArray(value)) {
@@ -102,6 +102,7 @@ function assertNoSecretLikeValues(value, label = "state") {
 
 function resolveRepositoryFile(root, reference, label) {
   const normalizedRoot = resolve(root);
+  const physicalRoot = realpathSync.native(normalizedRoot);
   if (isAbsolute(reference)) fail(`${label} must be repository-relative.`);
   const candidate = resolve(normalizedRoot, reference);
   const pathFromRoot = relative(normalizedRoot, candidate);
@@ -109,7 +110,12 @@ function resolveRepositoryFile(root, reference, label) {
     fail(`${label} escapes the repository root.`);
   }
   if (!existsSync(candidate) || !statSync(candidate).isFile()) fail(`${label} must resolve to an existing file.`);
-  return pathFromRoot.split(sep).join("/");
+  const physicalCandidate = realpathSync.native(candidate);
+  const physicalPathFromRoot = relative(physicalRoot, physicalCandidate);
+  if (physicalPathFromRoot === "" || physicalPathFromRoot === ".." || physicalPathFromRoot.startsWith(`..${sep}`) || isAbsolute(physicalPathFromRoot)) {
+    fail(`${label} resolves outside the repository root.`);
+  }
+  return physicalPathFromRoot.split(sep).join("/");
 }
 
 function defaultCommitResolver(root, sha) {
@@ -192,7 +198,15 @@ function validateEvidence(evidence, acceptanceIds, root, resolveCommit, label) {
 }
 
 function validateTransition(node, label) {
-  if (node.previousStatus === null) return;
+  const isBootstrapBaseline = node.bootstrapBaseline === true;
+  if (node.bootstrapBaseline !== undefined && typeof node.bootstrapBaseline !== "boolean") {
+    fail(`${label}.bootstrapBaseline must be a boolean when provided.`);
+  }
+  if (node.previousStatus === null) {
+    if (!isBootstrapBaseline) fail(`${label}.previousStatus may be null only for an explicit bootstrap baseline.`);
+    return;
+  }
+  if (isBootstrapBaseline) fail(`${label}.bootstrapBaseline requires a null previousStatus.`);
   if (typeof node.previousStatus !== "string" || !NODE_STATUSES.has(node.previousStatus)) {
     fail(`${label}.previousStatus is invalid.`);
   }
@@ -208,7 +222,7 @@ function validateNodes(nodes, milestoneIds, root, resolveCommit) {
     const label = `nodes[${index}]`;
     expectExactKeys(node, new Set([
       "id", "milestoneId", "title", "status", "previousStatus", "dependsOn", "outcome",
-      "acceptance", "evidence", "nextAction", "blockerIds", "successorId",
+      "acceptance", "evidence", "nextAction", "blockerIds", "successorId", "bootstrapBaseline",
     ]), label);
     const id = expectRequiredString(node.id, `${label}.id`);
     if (!NODE_ID.test(id) || nodeIds.has(id)) fail(`${label}.id must be a unique node ID.`);
@@ -290,6 +304,14 @@ function validateBlockers(blockers, nodesById) {
     if (node.status === "blocked" && openBlockers.length === 0) fail(`Blocked node '${nodeId}' needs an open blocker.`);
     if (node.status !== "blocked" && openBlockers.length > 0) fail(`Only blocked nodes may reference open blockers.`);
   }
+
+  for (const [blockerId, blocker] of blockersById) {
+    if (blocker.status !== "open") continue;
+    const node = nodesById.get(blocker.nodeId);
+    if (!node.blockerIds.includes(blockerId)) {
+      fail(`Open blocker '${blockerId}' must appear in node '${blocker.nodeId}' blockerIds.`);
+    }
+  }
 }
 
 function validateAcceptedNodes(nodesById) {
@@ -309,6 +331,17 @@ function validateAcceptedNodes(nodesById) {
       const kinds = new Set(satisfyingRecords.map((record) => record.kind));
       for (const kind of acceptance.requiredEvidenceKinds) {
         if (!kinds.has(kind)) fail(`Accepted node '${nodeId}' lacks '${kind}' evidence for '${acceptance.id}'.`);
+      }
+    }
+  }
+}
+
+function validateAcceptedMilestones(milestones, nodesById) {
+  for (const milestone of milestones) {
+    if (milestone.status !== "accepted") continue;
+    for (const [nodeId, node] of nodesById) {
+      if (node.milestoneId === milestone.id && node.status !== "accepted") {
+        fail(`Accepted milestone '${milestone.id}' has non-accepted child node '${nodeId}'.`);
       }
     }
   }
@@ -342,6 +375,7 @@ export function validateProgramState(value, options = {}) {
   assertAcyclic(nodesById);
   validateBlockers(expectArray(normalized.blockers, "state.blockers"), nodesById);
   validateAcceptedNodes(nodesById);
+  validateAcceptedMilestones(milestones, nodesById);
 
   const focus = expectRequiredString(normalized.currentFocus, "state.currentFocus");
   const focusNode = nodesById.get(focus);

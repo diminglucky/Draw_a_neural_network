@@ -118,6 +118,7 @@ A milestone is a product-level acceptance boundary. A node is the smallest indep
   "title": "Figure Component contract and semantic compiler boundary",
   "status": "planned",
   "previousStatus": null,
+  "bootstrapBaseline": true,
   "dependsOn": ["M1.9"],
   "outcome": "Validated v3 IR becomes semantic Figure Components without model-name templates or browser geometry.",
   "acceptance": [
@@ -202,9 +203,9 @@ blocked -> active | deferred | superseded
 awaiting_acceptance -> active | blocked | accepted
 ```
 
-`previousStatus` is either `null` for a baseline node or the status immediately before the current committed transition. When present, it must follow this table. This small audit field lets validation reject an impossible transition without treating Git history as mutable ledger data.
+`previousStatus` is either the status immediately before the current committed transition or `null` for an explicitly marked `bootstrapBaseline: true` node. A node with `previousStatus: null` must carry that marker, and a marked bootstrap baseline must have `previousStatus: null`. When present, the previous status must follow this table. This small audit field lets validation reject an impossible transition without treating Git history as mutable ledger data.
 
-An accepted node is never reopened; new work uses a successor node. A node may become accepted only when every dependency is accepted, every acceptance statement has matching evidence, and it has a `commit` evidence record. A milestone becomes accepted only when all required child nodes are accepted.
+An accepted node is never reopened; new work uses a successor node. A node may become accepted only when every dependency is accepted, every acceptance statement has matching evidence, and it has a `commit` evidence record. A milestone becomes accepted only when all of its child nodes are accepted.
 
 ### 5.4 Blocker Contract
 
@@ -332,9 +333,9 @@ The verifier rejects the ledger when:
 4. `currentFocus` refers to a terminal node or a node that cannot execute without an explicit blocked state.
 5. A blocked node has no open blocker, or an open blocker lacks a resolution condition.
 6. An accepted node lacks required evidence, an existing evidence document, or a resolvable full commit SHA.
-7. An evidence reference is absolute, escapes the repository, is untracked/nonexistent, or contains secret-like values.
+7. An evidence reference is absolute, escapes the repository through path traversal or a symlink/junction, is untracked/nonexistent, or contains secret-like values.
 8. Generated `docs/ROADMAP.md` differs from renderer output.
-9. State contains API keys, Provider credentials, raw user source, user IDs, private hostnames, or external filesystem paths.
+9. State contains API keys, Provider credentials, raw user source, user IDs, private hostnames, or external filesystem paths, including in free-text titles, outcomes, next actions, or evidence summaries.
 
 ## 10. Testing and Acceptance
 
