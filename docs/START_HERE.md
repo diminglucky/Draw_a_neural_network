@@ -12,7 +12,11 @@ The current authoritative design is [2026-08-17-universal-compiler-repair-and-mi
 git fetch origin
 git switch agent
 git pull --ff-only
+npm ci
+npm run agent:status
 ```
+
+`docs/agent-program-state.json` 是当前产品状态的唯一账本，`docs/ROADMAP.md` 是由它生成的只读视图。开始实现前先查看 `agent:status` 的 current focus、依赖和 blocker；完成节点后必须更新证据并运行 `npm run agent:verify-roadmap`。
 
 先阅读 [通用编译器修复与迁移设计](superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md)，再修改代码或文档；2026-08-14 设计仅作为历史背景，不再作为当前实现依据。
 

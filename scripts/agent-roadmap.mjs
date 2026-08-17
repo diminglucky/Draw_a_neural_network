@@ -32,8 +32,8 @@ const TRANSITIONS = new Map([
   ["awaiting_acceptance", new Set(["active", "blocked", "accepted"])],
 ]);
 const COMMIT_SHA = /^[0-9a-f]{40}$/i;
-const MILESTONE_ID = /^M[1-9]\d*$/;
-const NODE_ID = /^M[1-9]\d*\.[1-9]\d*$/;
+const MILESTONE_ID = /^M\d+$/;
+const NODE_ID = /^M\d+\.[1-9]\d*$/;
 const ACCEPTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const SECRET_KEY = /(?:api[_-]?key|provider[_-]?key|password|secret|token|credential|authorization)/i;
@@ -423,16 +423,35 @@ export function loadProgramState(root, options = {}) {
 
 export function renderRoadmap(state) {
   const focus = state.nodes.find((node) => node.id === state.currentFocus);
+  const executableNodes = state.nodes.filter((node) => node.status === "planned" && node.dependsOn.every((id) => state.nodes.find((candidate) => candidate.id === id)?.status === "accepted"));
+  const openBlockers = state.blockers.filter((blocker) => blocker.status === "open");
   return [
     `# ${state.program.name} Roadmap`,
     "",
     `Branch: \`${state.program.branch}\``,
+    `Updated: \`${state.updatedAt}\``,
+    `Architecture: [${state.program.architectureSpec}](./${state.program.architectureSpec.replace(/^docs\//, "")})`,
     "",
     "## Current Focus",
     "",
     `- ${focus.id}: ${focus.title}`,
     `- Status: ${focus.status}`,
+    `- Outcome: ${focus.outcome}`,
     `- Next action: ${focus.nextAction}`,
+    "",
+    "## Milestones",
+    "",
+    "| Milestone | Status |",
+    "| --- | --- |",
+    ...state.milestones.map((milestone) => `| ${milestone.id} | ${milestone.status} |`),
+    "",
+    "## Executable Nodes",
+    "",
+    ...(executableNodes.length > 0 ? executableNodes.map((node) => `- ${node.id}: ${node.title}`) : ["- None"]),
+    "",
+    "## Open Blockers",
+    "",
+    ...(openBlockers.length > 0 ? openBlockers.map((blocker) => `- ${blocker.id}: ${blocker.summary}`) : ["- None"]),
     "",
   ].join("\n");
 }
@@ -441,7 +460,8 @@ export function buildStatus(state, git = {}) {
   const currentFocus = state.nodes.find((node) => node.id === state.currentFocus);
   const executableNodes = state.nodes.filter((node) => node.status === "planned" && node.dependsOn.every((id) => state.nodes.find((candidate) => candidate.id === id)?.status === "accepted"));
   return deepFreeze({
-    program: { name: state.program.name, branch: state.program.branch },
+    schemaVersion: state.schemaVersion,
+    program: { id: state.program.id, name: state.program.name, branch: state.program.branch, architectureSpec: state.program.architectureSpec },
     currentFocus,
     executableNodes,
     blockers: state.blockers.filter((blocker) => blocker.status === "open"),

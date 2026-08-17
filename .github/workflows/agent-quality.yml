@@ -1,0 +1,29 @@
+name: Agent Quality
+
+on:
+  push:
+    branches: [agent]
+  pull_request:
+    branches: [agent]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify roadmap
+        run: npm run agent:verify-roadmap -- --ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: API tests
+        run: npm run api:test
+      - name: Foundation boundary check
+        run: npm run api:check

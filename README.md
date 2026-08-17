@@ -6,7 +6,7 @@ The app is designed for people who want diagrams closer to PlotNeuralNet, NN-SVG
 
 ## Cross-computer start
 
-Before working on another machine, read [docs/START_HERE.md](docs/START_HERE.md) and the instructions for [coding agents](AGENTS.md), then use `git switch agent` to select the current product branch.
+Before working on another machine, read [docs/START_HERE.md](docs/START_HERE.md) and the instructions for [coding agents](AGENTS.md), then use `git switch agent` to select the current product branch. Run `npm run agent:status` after `git pull --ff-only`; the canonical state is [docs/agent-program-state.json](docs/agent-program-state.json) and the generated view is [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Highlights
 

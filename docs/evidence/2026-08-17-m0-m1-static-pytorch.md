@@ -2,16 +2,15 @@
 
 Date: 2026-08-17
 Branch: `agent`
-Worktree: `C:\项目\code\Draw_a_neural_network\.worktrees\commercial-foundation`
+Local and remote revision: `bae5b02f9bde4e026cf878e9e4f205040cf02f85`
 
-This record describes the verified local worktree state. It is intentionally not a release or remote-branch acceptance record.
+This record describes the accepted M0/M1 capability boundary on the synchronized `agent` branch. It is not a release or real-host acceptance record.
 
 ## Revision State
 
-- Local `HEAD`: `237a1dc5603c61902240b1653e13f4ed28389f36`
-- `origin/agent`: `d682bc92ec60bb10572fd64fb1f6447580561e1c`
-- The local worktree is ahead by six existing commits and also contains uncommitted M0/M1 changes.
-- The unrelated untracked GNN plan remains present and was not staged, removed, or modified.
+- Local `HEAD`: `bae5b02f9bde4e026cf878e9e4f205040cf02f85`
+- `origin/agent`: `bae5b02f9bde4e026cf878e9e4f205040cf02f85`
+- The worktree is clean and the branch has no upstream divergence.
 
 ## Implemented Boundary
 
@@ -28,7 +27,7 @@ This record describes the verified local worktree state. It is intentionally not
 Focused M1 tests:
 
 - onboarding: 1 passed
-- SourcePack: 6 passed
+- SourcePack: 7 passed
 - FigureAnalysisService: 4 passed
 - FigureAnalysis routes: 7 passed
 - Store contract: 20 passed
@@ -36,10 +35,10 @@ Focused M1 tests:
 
 Fresh full checks:
 
-- `npm.cmd run api:test`: 84 test files, 466 tests passed
-- `npx.cmd tsc --noEmit`: passed
-- `npm.cmd run api:check`: `Foundation boundary OK`
-- `git diff --check`: passed; only line-ending normalization warnings were reported
+- `npm run api:test`: 87 test files, 500 tests passed
+- `npx tsc --noEmit`: passed
+- `npm run api:check`: `Foundation boundary OK`
+- `git diff --check`: passed
 
 ## Not Accepted
 
@@ -52,4 +51,4 @@ Fresh full checks:
 | Real Windows/Visio create, save, close, reopen, native readback, PDF/PNG and visual QA | NOT_ACCEPTED | Existing mock/protocol tests are not real-host acceptance |
 | Electron packaging, signing, DPAPI clean-machine acceptance | NOT_ACCEPTED | Outside M0/M1 |
 
-The next permitted milestone is review and integration of this local M0/M1 change set. M2 work must not be described as complete based on this evidence.
+The next permitted milestone is M2.1 Figure Component contract design. M2 work must not be described as complete based on this evidence.
