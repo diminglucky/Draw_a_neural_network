@@ -23,11 +23,13 @@ describe("Publication visual QA", () => {
     const original = JSON.stringify(visualPlan);
     visualPlan.basePlan.components[1]!.bounds = { ...visualPlan.basePlan.components[0]!.bounds };
     visualPlan.basePlan.components[0]!.bounds.x = -1;
+    const beforeQa = JSON.stringify(visualPlan);
 
     const result = runPublicationVisualQa(visualPlan);
 
     expect(result.status).toBe("fail");
     expect(result.checks.filter((check) => !check.passed).map((check) => check.id)).toEqual(expect.arrayContaining(["component-bounds", "component-collision"]));
+    expect(JSON.stringify(visualPlan)).toBe(beforeQa);
     expect(JSON.stringify(visualPlan)).not.toBe(original);
   });
 
