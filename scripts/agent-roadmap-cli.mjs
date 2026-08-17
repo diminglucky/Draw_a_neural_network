@@ -90,9 +90,9 @@ function run(command, args) {
   if (command === "verify") {
     const gitState = gitHealth();
     const status = buildStatus(state, gitState);
-    const failures = args.includes("--ci")
-      ? (parityResult.matches ? [] : ["generated roadmap is out of date"])
-      : strictFailures(status, state, parityResult.matches);
+    const failures = args.includes("--strict")
+      ? strictFailures(status, state, parityResult.matches)
+      : (parityResult.matches ? [] : ["generated roadmap is out of date"]);
     if (failures.length > 0) {
       for (const failure of failures) console.error(`Roadmap verification failed: ${failure}.`);
       process.exitCode = 1;

@@ -6,7 +6,7 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md"
   },
-  "updatedAt": "2026-08-17T12:30:00.000Z",
+  "updatedAt": "2026-08-17T12:45:00.000Z",
   "currentFocus": "M2.1",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -71,8 +71,8 @@
       "id": "M2.1",
       "milestoneId": "M2",
       "title": "Figure Component contract",
-      "status": "active",
-      "previousStatus": "planned",
+      "status": "awaiting_acceptance",
+      "previousStatus": "active",
       "dependsOn": ["M1.9"],
       "outcome": "Validated v3 IR maps to semantic components without model-name templates.",
       "acceptance": [
@@ -81,8 +81,15 @@
         { "id": "M2.1.fallback", "text": "Unsupported topology returns explicit unresolved state.", "requiredEvidenceKinds": ["test"] },
         { "id": "M2.1.quality", "text": "Focused and full quality gates pass.", "requiredEvidenceKinds": ["test", "typecheck", "commit", "document"] }
       ],
-      "evidence": [],
-      "nextAction": "Run focused contract tests and collect M2.1 evidence.",
+      "evidence": [
+        { "kind": "test", "satisfies": ["M2.1.contract", "M2.1.fixtures", "M2.1.fallback"], "ref": "apps/api/tests/figure-components.test.ts", "summary": "Contract, gold fixture, and fail-closed tests passed.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" },
+        { "kind": "document", "satisfies": ["M2.1.contract", "M2.1.fixtures"], "ref": "docs/superpowers/plans/2026-08-17-figure-component-contract-m2-1.md", "summary": "The semantic contract and fixture scope are documented.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" },
+        { "kind": "test", "satisfies": ["M2.1.quality"], "ref": "docs/evidence/2026-08-17-m2-1-figure-components.md", "summary": "The full API suite passed with 500 tests.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" },
+        { "kind": "typecheck", "satisfies": ["M2.1.quality"], "ref": "docs/evidence/2026-08-17-m2-1-figure-components.md", "summary": "Strict TypeScript compilation passed.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" },
+        { "kind": "commit", "satisfies": ["M2.1.quality"], "ref": "docs/evidence/2026-08-17-m2-1-figure-components.md", "summary": "The implementation commit is resolvable.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" },
+        { "kind": "document", "satisfies": ["M2.1.quality"], "ref": "docs/evidence/2026-08-17-m2-1-figure-components.md", "summary": "The M2.1 verification record is tracked.", "verifiedAt": "2026-08-17T12:45:00.000Z", "commit": "a71b87323efcc9210b632757b4c636880353e35a" }
+      ],
+      "nextAction": "Review M2.1 evidence and accept the Figure Component contract.",
       "blockerIds": [],
       "successorId": null
     },

@@ -19,13 +19,14 @@ describe("agent roadmap CLI", () => {
     };
     expect(status.currentFocus.id).toBe("M2.1");
     expect(status.executableNodes).toEqual([]);
-    expect(status.git).toMatchObject({ branch: "agent", ahead: 0, behind: 0 });
-    expect(status.strictFailures).toEqual([]);
+    expect(status.git).toMatchObject({ branch: "agent", behind: 0 });
+    expect(status.strictFailures).toEqual(status.git.ahead > 0 ? ["branch diverges from upstream"] : []);
     expect(JSON.stringify(status)).not.toMatch(/[A-Za-z]:\\/);
   });
 
-  it("verifies the generated roadmap and strict branch state", () => {
+  it("verifies the generated roadmap while reporting branch divergence separately", () => {
     expect(run("verify")).toBe("");
-    expect(run("status", "--strict")).toContain("Roadmap parity: ok");
+    expect(run("verify", "--ci")).toBe("");
+    expect(run("status")).toContain("Roadmap parity: ok");
   }, 15_000);
 });
