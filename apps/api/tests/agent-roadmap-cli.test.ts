@@ -17,9 +17,9 @@ describe("agent roadmap CLI", () => {
       git: { branch: string; ahead: number; behind: number };
       strictFailures: string[];
     };
-    expect(status.currentFocus.id).toBe("M2.3");
+    expect(status.currentFocus.id).toBe("M2.4");
     expect(status.executableNodes).toHaveLength(1);
-    expect(status.executableNodes[0]).toMatchObject({ id: "M2.3", title: "Publication visual quality", status: "planned" });
+    expect(status.executableNodes[0]).toMatchObject({ id: "M2.4", title: "Owner-scoped v3 preview route", status: "planned" });
     expect(status.git).toMatchObject({ branch: "agent", behind: 0 });
     expect(status.strictFailures).toEqual(status.git.ahead > 0 ? ["branch diverges from upstream"] : []);
     expect(JSON.stringify(status)).not.toMatch(/[A-Za-z]:\\/);
