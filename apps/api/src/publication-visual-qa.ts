@@ -59,6 +59,7 @@ export function applyPublicationVisualTokens(basePlan: ComposableDagFigurePlan):
 export function runPublicationVisualQa(plan: PublicationVisualPlan): PublicationVisualQaResult {
   const checks = [
     check("style-token-contract", checkStyleTokenContract(plan), "Every component and connection has one registered publication style token."),
+    check("page-bounds", checkPageBounds(plan.basePlan.pageBounds), "The declared page has positive finite dimensions."),
     check("component-bounds", checkComponentBounds(plan), "All components stay within the declared page bounds."),
     check("route-bounds", checkRouteBounds(plan), "All connection route points stay within the declared page bounds."),
     check("component-collision", checkComponentCollisions(plan.basePlan.components), "No component bounds overlap."),
@@ -78,6 +79,10 @@ function check(id: string, passed: boolean, message: string): PublicationVisualQ
 
 function checkComponentBounds(plan: PublicationVisualPlan): boolean {
   return plan.basePlan.components.length > 0 && plan.basePlan.components.every((component) => within(plan.basePlan.pageBounds, component.bounds));
+}
+
+function checkPageBounds(page: FigureBounds): boolean {
+  return Number.isFinite(page.x) && Number.isFinite(page.y) && Number.isFinite(page.width) && Number.isFinite(page.height) && page.width > 0 && page.height > 0;
 }
 
 function checkRouteBounds(plan: PublicationVisualPlan): boolean {
@@ -150,8 +155,8 @@ function checkStyleTokenContract(plan: PublicationVisualPlan): boolean {
   const connectionIds = new Set(plan.basePlan.connections.map((connection) => connection.id));
   const componentStyleIds = new Set(plan.componentStyles.map((style) => style.semanticId));
   const connectionStyleIds = new Set(plan.connectionStyles.map((style) => style.semanticId));
-  return componentStyleIds.size === componentIds.size && [...componentIds].every((id) => componentStyleIds.has(id)) &&
-    connectionStyleIds.size === connectionIds.size && [...connectionIds].every((id) => connectionStyleIds.has(id)) &&
+  return plan.componentStyles.length === componentIds.size && componentStyleIds.size === componentIds.size && [...componentIds].every((id) => componentStyleIds.has(id)) &&
+    plan.connectionStyles.length === connectionIds.size && connectionStyleIds.size === connectionIds.size && [...connectionIds].every((id) => connectionStyleIds.has(id)) &&
     [...plan.componentStyles, ...plan.connectionStyles].every((style) => tokenIds.has(style.styleTokenId));
 }
 
