@@ -19,7 +19,7 @@ The plan retains typed ports, repeat semantics, module ownership, evidence IDs, 
 
 ## Quality gates
 
-- `npm run api:test`: 88 test files, 509 tests passed.
+- `npm run api:test`: 88 test files, 511 tests passed.
 - `npx tsc --noEmit`: passed.
 - `npm run api:check`: passed.
 - `npm run agent:verify-roadmap`: passed.
