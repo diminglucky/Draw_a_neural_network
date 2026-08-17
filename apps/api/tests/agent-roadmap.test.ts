@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  BOOTSTRAP_BASELINE_NODE_IDS,
   RoadmapValidationError,
   buildStatus,
   loadProgramState,
@@ -49,8 +50,8 @@ function validState(): LedgerFixture {
         milestoneId: "M1",
         title: "Foundation acceptance",
         status: "accepted",
-        previousStatus: "awaiting_acceptance",
-        bootstrapBaseline: false,
+        previousStatus: null,
+        bootstrapBaseline: true,
         dependsOn: [],
         outcome: "The foundation is accepted.",
         acceptance: [{
@@ -93,8 +94,6 @@ function validState(): LedgerFixture {
         milestoneId: "M2",
         title: "Preview contract",
         status: "planned",
-        previousStatus: null,
-        bootstrapBaseline: true,
         dependsOn: ["M1.9"],
         outcome: "Create a preview contract.",
         acceptance: [{
@@ -114,9 +113,27 @@ function validState(): LedgerFixture {
 
 function nonBootstrapState(): LedgerFixture {
   const state = validState();
+  state.nodes[0].previousStatus = "awaiting_acceptance";
   state.nodes[1].status = "active";
   state.nodes[1].previousStatus = "planned";
   for (const node of state.nodes) delete node.bootstrapBaseline;
+  return state;
+}
+
+function blockedState(): LedgerFixture {
+  const state = nonBootstrapState();
+  state.nodes[1].status = "blocked";
+  state.nodes[1].previousStatus = "active";
+  state.nodes[1].blockerIds = ["B-M2-003"];
+  state.blockers.push({
+    id: "B-M2-003",
+    nodeId: "M2.1",
+    severity: "medium",
+    summary: "Review is pending.",
+    resolution: "Record the review.",
+    openedAt: "2026-08-17T00:00:00.000Z",
+    status: "open",
+  });
   return state;
 }
 
@@ -193,16 +210,19 @@ describe("agent roadmap ledger", () => {
     });
   });
 
-  it("permits a null previous status only for an explicit bootstrap baseline", () => {
+  it("permits a null previous status only for fixed schema-v1 bootstrap baseline nodes", () => {
     expectInvalid((state) => {
       state.nodes[0].previousStatus = null;
       state.nodes[0].bootstrapBaseline = false;
     });
 
     const state = validState();
-    state.nodes[0].previousStatus = null;
-    state.nodes[0].bootstrapBaseline = true;
     expect(() => validateProgramState(state, fixtures())).not.toThrow();
+    expect(BOOTSTRAP_BASELINE_NODE_IDS).toEqual(new Set(["M0.9", "M1.9"]));
+
+    const nonBaseline = validState();
+    nonBaseline.nodes[0].id = "M2.9";
+    expect(() => validateProgramState(nonBaseline, fixtures())).toThrow(RoadmapValidationError);
   });
 
   it("rejects evidence symlink escapes or asserts that symlinks are unsupported", () => {
@@ -231,6 +251,26 @@ describe("agent roadmap ledger", () => {
     expectInvalid((state) => { state.nodes[1].outcome = "Review C:\\Users\\Alice\\private.md"; });
     expectInvalid((state) => { state.nodes[1].nextAction = "Open workstation.internal for review"; });
     expectInvalid((state) => { state.nodes[0].evidence[0].summary = "apiKey=sk_1234567890"; });
+  });
+
+  it("applies a controlled-summary policy to every free-text ledger field", () => {
+    expectInvalid((state) => { state.nodes[1].title = "class Net(nn.Module):\n  def forward(self, x): return x"; });
+    expectInvalid((state) => { state.nodes[1].outcome = "class Net(nn.Module): pass"; });
+    expectInvalid((state) => { state.nodes[1].nextAction = "def forward(x): return x"; });
+    expectInvalid((state) => { state.nodes[1].acceptance[0].text = "import torch"; });
+    expectInvalid((state) => { state.nodes[0].evidence[0].summary = "const draw = (x) => x"; });
+
+    const blockedSummary = blockedState();
+    blockedSummary.blockers[0].summary = "Use {node};";
+    expect(() => validateProgramState(blockedSummary, fixtures())).toThrow(RoadmapValidationError);
+
+    const blockedResolution = blockedState();
+    blockedResolution.blockers[0].resolution = "layer = nn.Conv2d(3, 16, 3)";
+    expect(() => validateProgramState(blockedResolution, fixtures())).toThrow(RoadmapValidationError);
+
+    expectInvalid((state) => { state.nodes[1].outcome = "x = y"; });
+
+    expectInvalid((state) => { state.nodes[1].title = "a".repeat(501); });
   });
 
   it("requires every child node to be accepted before its milestone is accepted", () => {

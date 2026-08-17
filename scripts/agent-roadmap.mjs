@@ -11,6 +11,8 @@ export const NODE_STATUSES = new Set([
   "deferred",
   "superseded",
 ]);
+export const BOOTSTRAP_BASELINE_NODE_IDS = new Set(["M0.9", "M1.9"]);
+export const CONTROLLED_SUMMARY_MAX_LENGTH = 500;
 
 const EVIDENCE_KINDS = new Set([
   "test",
@@ -36,6 +38,7 @@ const ACCEPTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const SECRET_KEY = /(?:api[_-]?key|provider[_-]?key|password|secret|token|credential|authorization)/i;
 const SENSITIVE_VALUE = /(?:\b(?:sk|pk|rk)_[A-Za-z0-9_-]{8,}\b|\bAIza[A-Za-z0-9_-]{20,}\b|\bBearer\s+\S+|\b(?:api[_ -]?key|provider[_ -]?key|password|secret|token|credential|authorization|user(?:[_ -]?id)?|account(?:[_ -]?id)?|email)\s*[:=]\s*\S+|\buser-\d+\b|(?:\b[A-Za-z]:[\\/]|\\\\[^\\/\r\n]+[\\/][^\\/\r\n]+)|\b(?:localhost|(?:[a-z0-9-]+\.)+(?:local|internal|lan|home|corp|private))\b)/i;
+const SOURCE_LIKE_SUMMARY = /(?:\bclass\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*:|\bdef\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*:|\b(?:from\s+\S+\s+)?import\s+[A-Za-z_$][\w$]*(?:\s|$)|\bfunction\s+[A-Za-z_$][\w$]*\s*\(|\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|\b[A-Za-z_$][\w$]*\s*=>|[{};]|\b[A-Za-z_$][\w$]*\s*=\s*(?![=>]))/;
 
 export class RoadmapValidationError extends Error {
   constructor(message) {
@@ -68,6 +71,17 @@ function expectExactKeys(value, allowed, label) {
 function expectRequiredString(value, label) {
   if (typeof value !== "string" || value.trim() === "") fail(`${label} must be a non-empty string.`);
   return value;
+}
+
+function expectControlledSummary(value, label) {
+  const summary = expectRequiredString(value, label);
+  if (summary.length > CONTROLLED_SUMMARY_MAX_LENGTH) {
+    fail(`${label} exceeds the controlled-summary length limit.`);
+  }
+  if (/[\r\n]/.test(summary)) fail(`${label} must be single-line controlled summary text.`);
+  if (SENSITIVE_VALUE.test(summary)) fail(`${label} contains sensitive data.`);
+  if (SOURCE_LIKE_SUMMARY.test(summary)) fail(`${label} contains source-like or executable syntax.`);
+  return summary;
 }
 
 function expectArray(value, label) {
@@ -134,7 +148,7 @@ function defaultCommitResolver(root, sha) {
 function validateProgram(program, root) {
   expectExactKeys(program, new Set(["id", "name", "branch", "architectureSpec"]), "program");
   expectRequiredString(program.id, "program.id");
-  expectRequiredString(program.name, "program.name");
+  expectControlledSummary(program.name, "program.name");
   expectRequiredString(program.branch, "program.branch");
   program.architectureSpec = resolveRepositoryFile(
     root,
@@ -150,7 +164,7 @@ function validateMilestones(milestones) {
     const id = expectRequiredString(milestone.id, `milestones[${index}].id`);
     if (!MILESTONE_ID.test(id) || ids.has(id)) fail(`milestones[${index}].id must be a unique milestone ID.`);
     if (!NODE_STATUSES.has(milestone.status)) fail(`milestones[${index}].status is invalid.`);
-    expectRequiredString(milestone.title, `milestones[${index}].title`);
+    expectControlledSummary(milestone.title, `milestones[${index}].title`);
     ids.add(id);
   }
   return ids;
@@ -162,7 +176,7 @@ function validateAcceptance(acceptance, label) {
     expectExactKeys(item, new Set(["id", "text", "requiredEvidenceKinds"]), `${label}[${index}]`);
     const id = expectRequiredString(item.id, `${label}[${index}].id`);
     if (!ACCEPTANCE_ID.test(id) || ids.has(id)) fail(`${label}[${index}].id must be unique and valid.`);
-    expectRequiredString(item.text, `${label}[${index}].text`);
+    expectControlledSummary(item.text, `${label}[${index}].text`);
     const kinds = expectArray(item.requiredEvidenceKinds, `${label}[${index}].requiredEvidenceKinds`);
     if (kinds.length === 0) fail(`${label}[${index}].requiredEvidenceKinds must not be empty.`);
     for (const kind of kinds) {
@@ -188,7 +202,7 @@ function validateEvidence(evidence, acceptanceIds, root, resolveCommit, label) {
       }
     }
     record.ref = resolveRepositoryFile(root, expectRequiredString(record.ref, `${recordLabel}.ref`), `${recordLabel}.ref`);
-    expectRequiredString(record.summary, `${recordLabel}.summary`);
+    expectControlledSummary(record.summary, `${recordLabel}.summary`);
     expectTimestamp(record.verifiedAt, `${recordLabel}.verifiedAt`);
     const commit = expectRequiredString(record.commit, `${recordLabel}.commit`);
     if (!COMMIT_SHA.test(commit) || !resolveCommit(commit)) {
@@ -202,8 +216,16 @@ function validateTransition(node, label) {
   if (node.bootstrapBaseline !== undefined && typeof node.bootstrapBaseline !== "boolean") {
     fail(`${label}.bootstrapBaseline must be a boolean when provided.`);
   }
+  if (node.previousStatus === undefined) {
+    if (node.status !== "planned" || node.bootstrapBaseline !== undefined) {
+      fail(`${label}.previousStatus may be omitted only for a newly planned node.`);
+    }
+    return;
+  }
   if (node.previousStatus === null) {
-    if (!isBootstrapBaseline) fail(`${label}.previousStatus may be null only for an explicit bootstrap baseline.`);
+    if (!isBootstrapBaseline || node.status !== "accepted" || !BOOTSTRAP_BASELINE_NODE_IDS.has(node.id)) {
+      fail(`${label}.previousStatus may be null only for a fixed accepted schema-v1 bootstrap baseline.`);
+    }
     return;
   }
   if (isBootstrapBaseline) fail(`${label}.bootstrapBaseline requires a null previousStatus.`);
@@ -229,9 +251,9 @@ function validateNodes(nodes, milestoneIds, root, resolveCommit) {
     if (!milestoneIds.has(node.milestoneId)) fail(`${label}.milestoneId must reference a known milestone.`);
     if (!NODE_STATUSES.has(node.status)) fail(`${label}.status is invalid.`);
     validateTransition(node, label);
-    expectRequiredString(node.title, `${label}.title`);
-    expectRequiredString(node.outcome, `${label}.outcome`);
-    expectRequiredString(node.nextAction, `${label}.nextAction`);
+    expectControlledSummary(node.title, `${label}.title`);
+    expectControlledSummary(node.outcome, `${label}.outcome`);
+    expectControlledSummary(node.nextAction, `${label}.nextAction`);
     const acceptance = expectArray(node.acceptance, `${label}.acceptance`);
     const acceptanceIds = validateAcceptance(acceptance, `${label}.acceptance`);
     const evidence = expectArray(node.evidence, `${label}.evidence`);
@@ -283,8 +305,8 @@ function validateBlockers(blockers, nodesById) {
     if (!nodesById.has(blocker.nodeId)) fail(`${label}.nodeId must reference a known node.`);
     if (!BLOCKER_SEVERITIES.has(blocker.severity)) fail(`${label}.severity is invalid.`);
     if (!BLOCKER_STATUSES.has(blocker.status)) fail(`${label}.status is invalid.`);
-    expectRequiredString(blocker.summary, `${label}.summary`);
-    expectRequiredString(blocker.resolution, `${label}.resolution`);
+    expectControlledSummary(blocker.summary, `${label}.summary`);
+    expectControlledSummary(blocker.resolution, `${label}.resolution`);
     expectTimestamp(blocker.openedAt, `${label}.openedAt`);
     blockersById.set(id, blocker);
   }

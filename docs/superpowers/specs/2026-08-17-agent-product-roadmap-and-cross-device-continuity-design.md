@@ -117,8 +117,6 @@ A milestone is a product-level acceptance boundary. A node is the smallest indep
   "milestoneId": "M2",
   "title": "Figure Component contract and semantic compiler boundary",
   "status": "planned",
-  "previousStatus": null,
-  "bootstrapBaseline": true,
   "dependsOn": ["M1.9"],
   "outcome": "Validated v3 IR becomes semantic Figure Components without model-name templates or browser geometry.",
   "acceptance": [
@@ -203,7 +201,9 @@ blocked -> active | deferred | superseded
 awaiting_acceptance -> active | blocked | accepted
 ```
 
-`previousStatus` is either the status immediately before the current committed transition or `null` for an explicitly marked `bootstrapBaseline: true` node. A node with `previousStatus: null` must carry that marker, and a marked bootstrap baseline must have `previousStatus: null`. When present, the previous status must follow this table. This small audit field lets validation reject an impossible transition without treating Git history as mutable ledger data.
+For schema version 1, a newly entered `planned` node omits `previousStatus`. `previousStatus: null` is reserved for the fixed accepted migration baselines `M0.9` and `M1.9`, each of which must explicitly carry `bootstrapBaseline: true`. No later `.9` node, or any other node ID, may use this exception. All transitioned nodes use the status immediately before the current committed transition, which must follow this table. This small audit field lets validation reject an impossible transition without treating Git history as mutable ledger data.
+
+All free-text ledger values are controlled summaries: program/milestone/node titles, outcomes, next actions, acceptance text, blocker summary/resolution, and evidence summaries must be single-line, at most 500 characters, free of sensitive data, and free of source signatures or executable/code-like syntax. This keeps user source and generated code out of the delivery-state ledger while allowing concise technical descriptions and repository-relative references in their dedicated fields.
 
 An accepted node is never reopened; new work uses a successor node. A node may become accepted only when every dependency is accepted, every acceptance statement has matching evidence, and it has a `commit` evidence record. A milestone becomes accepted only when all of its child nodes are accepted.
 
