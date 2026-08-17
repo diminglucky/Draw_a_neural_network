@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseVisioWorkerRequest, parseVisioWorkerResponse } from "../src/visio-protocol.js";
+import { completeVisioReadback } from "./fixtures/visio-readback.js";
 
 describe("Visio Worker protocol", () => {
   it("accepts a version-one mock request and preserves the diagram payload", () => {
@@ -26,6 +27,24 @@ describe("Visio Worker protocol", () => {
       outputPath: "C:\\exports\\job-1.json",
       diagram: { nodes: [], edges: [] },
     })).toThrow(/outputPath/);
+  });
+
+  it("requires and preserves complete native readback evidence", () => {
+    const readback = completeVisioReadback({
+      expectedPrimitiveIds: ["input"],
+      actualPrimitiveIds: ["input"],
+      expectedConnectorIds: ["edge-1"],
+      actualConnectorIds: ["edge-1"],
+    });
+    const parsed = parseVisioWorkerResponse({
+      protocolVersion: 1,
+      requestId: "request-1",
+      jobId: "job-1",
+      status: "succeeded",
+      path: "C:\\exports\\job-1.vsdx",
+      readback,
+    });
+    expect(parsed.readback).toEqual(readback);
   });
 
   it("accepts only succeeded responses with a valid readback or failed responses with an error", () => {
