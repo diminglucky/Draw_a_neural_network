@@ -6,7 +6,7 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md"
   },
-  "updatedAt": "2026-08-17T13:41:13.000Z",
+  "updatedAt": "2026-08-17T13:44:49.000Z",
   "currentFocus": "M2.4",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -120,7 +120,7 @@
       "outcome": "Layout, routing, contrast, grayscale, crop, scale, and source mapping pass QA.",
       "acceptance": [{ "id": "M2.3.qa", "text": "Server-side visual QA rejects unsafe figure plans.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [
-        { "kind": "test", "satisfies": ["M2.3.qa"], "ref": "apps/api/tests/publication-visual-qa.test.ts", "summary": "Valid publication plans pass while bounds, collision, route, mapping, scale, style, contrast, and grayscale failures are rejected.", "verifiedAt": "2026-08-17T13:41:13.000Z", "commit": "5f38b979fc309c7a89fcd0c19c641e61638e0b0f" },
+        { "kind": "test", "satisfies": ["M2.3.qa"], "ref": "apps/api/tests/publication-visual-qa.test.ts", "summary": "Valid publication plans pass while bounds, collision, route, mapping, scale, style, contrast, and grayscale failures are rejected.", "verifiedAt": "2026-08-17T13:44:49.000Z", "commit": "fdefb7f7d5c67208d39d41847d521d5fe7a862b7" },
         { "kind": "document", "satisfies": ["M2.3.qa"], "ref": "docs/evidence/2026-08-17-m2-3-publication-visual-qa.md", "summary": "The publication token seam, server-side QA checks, limits, and quality evidence are recorded.", "verifiedAt": "2026-08-17T13:41:13.000Z", "commit": "cdab926c2bb3baee9514bf908b9b7b09a92039cd" }
       ],
       "nextAction": "Keep the accepted visual QA boundary stable while preview work proceeds.",
