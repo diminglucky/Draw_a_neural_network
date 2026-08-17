@@ -22,7 +22,7 @@ git pull --ff-only
 
 静态/协议/mock 测试、源代码实现和真实 Windows/Visio 的创建、保存、关闭、重开与 readback 验收是不同的门。前两者通过时，仍不得宣称已经完成真实 Visio 或顶刊图验收。
 
-静态 PyTorch Source Analyzer 的 P0 支持范围仅限于已声明的 `nn.*` 模块和静态、线性的 `forward` 路径。分支、Add/Concat、模块复用、shape 推断、重复结构、Keras/ONNX，以及图像理解均不受支持；遇到动态控制流或动态运行时调用时，分析器会以阻断性 unresolved 拒绝猜测图结构。
+静态 PyTorch Source Analyzer 的 P0 支持范围仅限于已声明的 `nn.*` 模块、单一 `forward(self, value)` 定义、可证明的单变量线性 `self.<module>(value)` 调用链及显式返回。纯局部字面量注释变量可以忽略；其它未识别语句、分支、Add/Concat、模块复用、重复声明、shape 推断、重复结构、Keras/ONNX，以及图像理解均不受支持，并以带源码定位的阻断性 unresolved 拒绝猜测图结构。
 
 ## 当前优先级
 

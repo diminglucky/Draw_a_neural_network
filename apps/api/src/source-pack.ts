@@ -25,10 +25,14 @@ export interface SourcePack {
 
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const SOURCE_PACK_FIELDS = new Set(["sourceId", "name", "mimeType", "data", "sourceSha256"]);
 
 export function parsePyTorchSourcePack(input: unknown): SourcePack {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("SourcePack must be an object");
   const value = input as Record<string, unknown>;
+  for (const field of Object.keys(value)) {
+    if (!SOURCE_PACK_FIELDS.has(field)) throw new Error(`SourcePack field ${field} is unsupported`);
+  }
   if (typeof value.sourceId !== "string" || !IDENTIFIER_PATTERN.test(value.sourceId) || value.sourceId.length > 128) {
     throw new Error("SourcePack sourceId is invalid");
   }

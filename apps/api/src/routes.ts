@@ -178,8 +178,15 @@ function parseFigureAnalysisBody(request: FastifyRequest): Record<string, unknow
   return source;
 }
 
-function figureAnalysisRequestHash(source: Record<string, unknown>): string {
-  return createHash("sha256").update(JSON.stringify({ kind: "pytorch-source", source })).digest("hex");
+function figureAnalysisRequestHash(source: SourcePack): string {
+  return createHash("sha256").update(JSON.stringify({
+    kind: source.kind,
+    sourceId: source.sourceId,
+    name: source.name,
+    mimeType: source.mimeType,
+    sourceSha256: source.sourceSha256.toLowerCase(),
+    bytes: source.bytes,
+  })).digest("hex");
 }
 
 async function auditFigureAnalysis(
@@ -896,7 +903,7 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
         userId: access.user.id,
         source,
         idempotencyKey: key,
-        requestHash: figureAnalysisRequestHash(sourceInput),
+        requestHash: figureAnalysisRequestHash(source),
       });
     } catch (error) {
       if (error instanceof Error && /idempotency key was reused/i.test(error.message)) {

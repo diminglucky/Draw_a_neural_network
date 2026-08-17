@@ -156,6 +156,26 @@ describe("authenticated figure analysis routes", () => {
     expect(changed.json().error.details.requestHashMatches).toBe(false);
   });
 
+  it("treats a reordered but otherwise identical source descriptor as an idempotent replay", async () => {
+    const { app, authorization } = await createAuthorizedApp();
+    const headers = { authorization, "accept-figure-version": "3", "idempotency-key": "route-idempotency-order-1" };
+    const firstSource = sourcePayload(linearSource);
+    const reorderedSource = {
+      data: firstSource.data,
+      mimeType: firstSource.mimeType,
+      sourceSha256: firstSource.sourceSha256,
+      name: firstSource.name,
+      sourceId: firstSource.sourceId,
+    };
+
+    const first = await app.inject({ method: "POST", url: "/api/figure-analyses", headers, payload: { source: firstSource } });
+    const replay = await app.inject({ method: "POST", url: "/api/figure-analyses", headers, payload: { source: reorderedSource } });
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().id).toBe(first.json().id);
+  });
+
   it("enforces owner scope on reads and keeps audit data safe", async () => {
     const { app, store, authorization } = await createAuthorizedApp("owner-one@example.com");
     const secretCode = `${linearSource}\n# outputPath: C:\\sensitive\\figure.vsdx\n# api-key: provider-secret`;

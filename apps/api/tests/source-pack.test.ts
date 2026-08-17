@@ -60,6 +60,11 @@ describe("parsePyTorchSourcePack", () => {
     })).toThrow(/base64/i);
   });
 
+  it("rejects unknown source descriptor fields", () => {
+    expect(() => parsePyTorchSourcePack(inputFor("x = 1", { outputPath: "C:\\sensitive\\figure.vsdx" })))
+      .toThrow(/field|descriptor|unsupported/i);
+  });
+
   it("rejects empty source and source over the UTF-8 byte budget", () => {
     expect(() => parsePyTorchSourcePack(inputFor(""))).toThrow(/empty/i);
     const oversized = "x".repeat(200_001);

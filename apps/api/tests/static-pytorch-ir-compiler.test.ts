@@ -49,6 +49,16 @@ describe("compileStaticPyTorchToArchitectureIR", () => {
     expect(() => compileStaticPyTorchToArchitectureIR(analysis, { renderReady: true })).toThrow(/blocking unresolved/i);
   });
 
+  it("preserves a supported linear alias chain in the render-ready IR", () => {
+    const analysis = analyzeStaticPyTorchSource({
+      sourceId: "truncated-path", sourceSha256: "a".repeat(64),
+      code: "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n  self.b = nn.Linear(2,1)\n def forward(self,x):\n  x = self.a(x)\n  y = self.b(x)\n  return y",
+    });
+
+    const ir = compileStaticPyTorchToArchitectureIR(analysis, { renderReady: true });
+    expect(ir.nodes.map((node) => node.id)).toEqual(["terminal:input", "a", "b", "terminal:output"]);
+  });
+
   it("rejects a dynamic conditional expression in an inline forward body", () => {
     const analysis = analyzeStaticPyTorchSource({
       sourceId: "inline-dynamic", sourceSha256: "f".repeat(64),

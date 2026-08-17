@@ -96,4 +96,56 @@ describe("analyzeStaticPyTorchSource", () => {
     }));
     expect(result.unresolved[0]?.evidenceRefs).toHaveLength(1);
   });
+
+  it("preserves a supported linear alias chain instead of truncating the path", () => {
+    const result = analyzeStaticPyTorchSource({
+      sourceId: "truncated-path",
+      sourceSha256: "a".repeat(64),
+      code: "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n  self.b = nn.Linear(2,1)\n def forward(self,x):\n  x = self.a(x)\n  y = self.b(x)\n  return y",
+    });
+
+    expect(result.calls.map((call) => call.moduleId)).toEqual(["a", "b"]);
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it("blocks a forward body that has no explicit return", () => {
+    const result = analyzeStaticPyTorchSource({
+      sourceId: "missing-return",
+      sourceSha256: "b".repeat(64),
+      code: "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n def forward(self,x):\n  x = self.a(x)",
+    });
+
+    expect(result.unresolved).toContainEqual(expect.objectContaining({
+      code: "unsupported-forward",
+      severity: "blocking",
+    }));
+  });
+
+  it("blocks multiple forward definitions instead of merging their calls", () => {
+    const result = analyzeStaticPyTorchSource({
+      sourceId: "multiple-forward",
+      sourceSha256: "c".repeat(64),
+      code: "class A(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n def forward(self,x):\n  return self.a(x)\nclass B(nn.Module):\n def __init__(self):\n  self.b = nn.Linear(2,1)\n def forward(self,x):\n  return self.b(x)",
+    });
+
+    expect(result.unresolved).toContainEqual(expect.objectContaining({
+      code: "multiple-forward-definitions",
+      severity: "blocking",
+      locator: expect.objectContaining({ kind: "code", startLine: 9 }),
+    }));
+  });
+
+  it("blocks a module redeclaration instead of silently using the last constructor", () => {
+    const result = analyzeStaticPyTorchSource({
+      sourceId: "module-redeclaration",
+      sourceSha256: "d".repeat(64),
+      code: "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n  self.a = nn.ReLU()\n def forward(self,x):\n  return self.a(x)",
+    });
+
+    expect(result.unresolved).toContainEqual(expect.objectContaining({
+      code: "module-redeclaration",
+      severity: "blocking",
+      locator: expect.objectContaining({ kind: "code", startLine: 4 }),
+    }));
+  });
 });
