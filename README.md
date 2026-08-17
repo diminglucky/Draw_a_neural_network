@@ -4,6 +4,10 @@ Draw_a_neural_network is an editable neural-network architecture canvas for crea
 
 The app is designed for people who want diagrams closer to PlotNeuralNet, NN-SVG, VisualKeras, and Netron-inspired architecture figures, while still keeping every generated element editable on a canvas.
 
+## Cross-computer start
+
+Before working on another machine, read [docs/START_HERE.md](docs/START_HERE.md) and the instructions for [coding agents](AGENTS.md), then use `git switch agent` to select the current product branch.
+
 ## Highlights
 
 - Paper-style neural network diagrams with visible feature maps, channels, kernels, shape labels, skip paths, concat nodes, and 3D volumes.
