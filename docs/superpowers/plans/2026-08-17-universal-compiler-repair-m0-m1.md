@@ -4,7 +4,7 @@
 
 **Goal:** Restore the strict engineering quality gates and expose a bounded, authenticated static-linear PyTorch source-to-Architecture-IR-v3 analysis path without changing the existing v2 Agent/Canvas behavior.
 
-**Architecture:** M0 repairs the existing Visio readback type contract and route narrowing in isolation. M1 adds a versioned `SourcePack` and user-owned `FigureAnalysisRecord`, then routes static PyTorch source through the existing `EvidenceGraph` and v3 IR validator without invoking a Provider or any user code. The v3 analysis route is separate from legacy `/api/agent/chat`; v2 remains the compatibility path until an explicit later M2/M3 preview and export cutover is accepted.
+**Architecture:** M0 repairs the existing Visio readback type contract and route narrowing in isolation. M1 adds a versioned `SourcePack`, an immutable user-owned `FigureAnalysisRecord`, owner-scoped retained source material, and a safe public analysis projection, then routes static PyTorch source through the existing `EvidenceGraph` and v3 IR validator without invoking a Provider or any user code. The v3 analysis route is separate from legacy `/api/agent/chat`; v2 remains the compatibility path until an explicit later M2/M3 preview and export cutover is accepted.
 
 **Tech Stack:** TypeScript 5.9 strict mode, Fastify 5, Zod, PostgreSQL JSONB migrations, Vitest 3, existing FoundationStore/SessionService ownership and idempotency conventions.
 
@@ -18,9 +18,11 @@
 - P0.0 supports only declared `nn.*` modules on one static linear `forward` path. Branches, Add/Concat, skip, module reuse, dynamic shape, repeat, Keras/ONNX, images and arbitrary runtime reflection remain blocking unresolved or out of scope.
 - Provider credentials, raw source code, raw attachments, output paths, Worker protocol fields and internal file-system details must not enter public DTOs or audit records.
 - A blocking unresolved source cannot create a PlanSnapshot, preview artifact, export token or Worker Job.
+- `candidate_structure` and `needs_confirmation` are both pre-preview analysis states. Neither may create a PlanSnapshot, preview artifact, export token or Worker Job.
+- In the accepted M1 static-source flow, blocking unresolved input returns `candidate_structure`; `needs_confirmation` remains reserved for later explicit-confirmation states and is not emitted by the initial static analyzer route.
 - In M1, `ready_for_preview` means only that a validated Architecture IR v3 is eligible to enter the future M2 preview compiler; it does not mean a preview artifact, PlanSnapshot, export token or Worker Job already exists.
 - M0/M1 do not implement Figure Components, UniversalPreview route, real Visio acceptance, Keras/ONNX, image understanding or GNN.
-- Required verification at the end of each task is `npx vitest run <focused files>`, `npm run api:test`, `npx tsc --noEmit`, `npm run api:check`, and `git diff --check` over exact changed paths.
+- Each task ends with focused tests and exact-path diff checks. Intermediate M0 subtasks may temporarily carry already-known failures outside their edited files, but must not introduce new type, protocol or route regressions. Full `npm run api:test`, `npx tsc --noEmit`, `npm run api:check`, and `git diff --check` are required at the M0 and M1 completion gates and at any task that changes the v3 store or route contract.
 
 ---
 
@@ -66,7 +68,7 @@
 - Test: `apps/api/tests/visio-protocol.test.ts`
 
 **Interfaces:**
-- Consumes: `VisioReadback` from `apps/api/src/visio-protocol.ts`.
+- Consumes: `VisioReadback` from `apps/api/src/visio-readback.ts`.
 - Produces: `completeVisioReadback(overrides?: Partial<VisioReadback>): VisioReadback` with all required primitive, connector and shape-data arrays.
 
 - [ ] **Step 1: Write the failing fixture-contract test**
@@ -110,7 +112,7 @@ Expected: FAIL because `completeVisioReadback` does not exist.
 Create the factory with explicit valid defaults:
 
 ```ts
-import type { VisioReadback } from "../../src/visio-protocol.js";
+import type { VisioReadback } from "../../src/visio-readback.js";
 
 export function completeVisioReadback(overrides: Partial<VisioReadback> = {}): VisioReadback {
   return {
@@ -309,7 +311,7 @@ git commit -m "fix: restore strict Visio readback contract"
 Define these exact contracts:
 
 ```ts
-import type { PublicEvidenceGraphSummary } from "./evidence-graph.js";
+import type { EvidenceGraph, EvidenceLocator, PublicEvidenceGraphSummary } from "./evidence-graph.js";
 import type { ArchitectureIRv3 } from "./network-ir-v3.js";
 import type { StaticPyTorchUnresolved } from "./static-pytorch-source-analyzer.js";
 
@@ -323,7 +325,20 @@ export interface SourcePack {
   bytes: number;
 }
 
-export type FigureAnalysisStatus = "needs_confirmation" | "ready_for_preview" | "failed";
+export type FigureAnalysisStatus = "needs_confirmation" | "candidate_structure" | "ready_for_preview" | "failed";
+
+export interface FigureAnalysisBlockingQuestion {
+  code: string;
+  message: string;
+  locator: EvidenceLocator;
+}
+
+export interface FigureAnalysisSourceRef {
+  sourceRecordId: string;
+  retentionClass: "analysis_source";
+  sourceSha256: string;
+  bytes: number;
+}
 
 export interface FigureAnalysisRecord {
   id: string;
@@ -337,7 +352,10 @@ export interface FigureAnalysisRecord {
   status: FigureAnalysisStatus;
   architectureIR: ArchitectureIRv3 | null;
   unresolved: StaticPyTorchUnresolved[];
+  blockingQuestion: FigureAnalysisBlockingQuestion | null;
+  evidenceGraph: EvidenceGraph;
   evidenceSummary: PublicEvidenceGraphSummary;
+  sourceRef: FigureAnalysisSourceRef;
   warnings: string[];
   capabilityVersion: "pytorch-static-linear-v0";
   createdAt: string;
@@ -359,22 +377,23 @@ Expected: FAIL because `source-pack.ts` and `parsePyTorchSourcePack` do not exis
 
 - [ ] **Step 3: Implement SourcePack validation**
 
-Use `createHash("sha256")` over the decoded UTF-8 bytes. Require a 64-character lowercase/uppercase hexadecimal supplied hash and compare it before analysis. Reuse the existing identifier, base64 and size conventions in `routes.ts`, but keep source parsing in this focused module. Do not log `code` or include it in `FigureAnalysisRecord`; persist only `sourceId`, `sourceName`, `sourceMimeType`, `sourceBytes`, and `sourceSha256` for later GET projection.
+Use `createHash("sha256")` over the decoded UTF-8 bytes. Require a 64-character lowercase/uppercase hexadecimal supplied hash and compare it before analysis. Reuse the existing identifier, base64 and size conventions in `routes.ts`, but keep source parsing in this focused module. Do not log `code` or project it into public DTOs. The decoded code remains transient in `SourcePack` and is persisted only through the owner-scoped retained source record added below, never through public projections or audit events.
 
 - [ ] **Step 4: Add the durable record schema and Store methods**
 
-Add migration `009_figure_analyses.sql` with owner-scoped columns for the record fields, JSONB for IR/unresolved/evidence summary/warnings, a unique `(user_id, idempotency_key)` index, and an index on `(user_id, created_at)`. Store only the hash and safe analysis result, never raw code. Add:
+Add migration `009_figure_analyses.sql` with an owner-scoped `figure_analyses` table plus a companion owner-scoped retained-source table (or equivalently isolated retained-source storage) referenced by `FigureAnalysisSourceRef.sourceRecordId`. `figure_analyses` stores JSONB for full `evidenceGraph`, public `evidenceSummary`, `blockingQuestion`, unresolved entries, warnings and IR, a unique `(user_id, idempotency_key)` index, and an index on `(user_id, created_at)`. The retained-source store keeps the raw source text plus retention metadata for later owner-scoped M2 preview/audit work, but that source material must never appear in public DTOs or audit events. Add:
 
 ```ts
 createFigureAnalysisIdempotent(input: {
   record: FigureAnalysisRecord;
+  sourceCode: string;
   idempotencyKey: string;
   requestHash: string;
 }): Promise<{ record: FigureAnalysisRecord; duplicate: boolean; requestHashMatches: boolean }>;
 getFigureAnalysis(userId: string, id: string): Promise<FigureAnalysisRecord | null>;
 ```
 
-Implement the same owner/idempotency behavior in `InMemoryFoundationStore` and `PostgresFoundationStore`. A duplicate key with a different request hash must return `requestHashMatches: false`; the route will reject it with the existing validation error pattern.
+Implement the same owner/idempotency behavior in `InMemoryFoundationStore` and `PostgresFoundationStore`. Persist the retained source and `FigureAnalysisRecord` transactionally so a record never exists without its source reference. A duplicate key with a different request hash must return `requestHashMatches: false`; the route will reject it with the existing validation error pattern.
 
 - [ ] **Step 5: Run contract tests**
 
@@ -396,7 +415,9 @@ git commit -m "feat: add owned figure analysis storage contract"
 ### Task 5: Implement the Provider-free FigureAnalysisService
 
 **Files:**
+- Modify: `apps/api/src/static-pytorch-ir-compiler.ts`
 - Create: `apps/api/src/figure-analysis-service.ts`
+- Modify: `apps/api/tests/static-pytorch-ir-compiler.test.ts`
 - Create: `apps/api/tests/figure-analysis-service.test.ts`
 - Test: `apps/api/tests/figure-analysis-service.test.ts`
 
@@ -427,8 +448,8 @@ export class FigureAnalysisService {
 Add four tests:
 
 1. A linear `Conv2d -> MaxPool2d` SourcePack creates `ready_for_preview`, stores v3 IR with graph ID `pytorch:<sourceId>`, preserves evidence IDs, and still creates no preview artifact or PlanSnapshot.
-2. A source containing `if` creates `needs_confirmation`, stores one blocking unresolved record, and stores `architectureIR: null`.
-3. A repeated module call or unsupported dynamic call creates `needs_confirmation` and never calls the compiler.
+2. A source containing `if` creates `candidate_structure`, stores one deterministic `blockingQuestion`, persists the full `EvidenceGraph`, and stores a bounded non-render-ready `architectureIR`.
+3. A repeated module call or unsupported dynamic call creates `candidate_structure`, returns a bounded candidate IR, and never enters preview compilation.
 4. The service accepts no Provider dependency; a spy Provider must not be constructed or invoked.
 
 - [ ] **Step 2: Run the service tests and verify red**
@@ -441,7 +462,7 @@ Expected: FAIL because the service module and class do not exist.
 
 - [ ] **Step 3: Implement the minimal orchestration**
 
-Use `analyzeStaticPyTorchSource({ sourceId, sourceSha256, code })`. If `unresolved` contains a blocking item, persist a record with status `needs_confirmation`, `publicEvidenceGraphSummary(analysis.evidence)`, unresolved entries and no IR. Otherwise call `compileStaticPyTorchToArchitectureIR(analysis, { renderReady: true })`, persist `ready_for_preview` with the IR, and never call a Provider. Preserve the analyzer capability version in the record. `ready_for_preview` here means the IR is eligible for the future M2 preview compiler only.
+Use `analyzeStaticPyTorchSource({ sourceId, sourceSha256, code })`. First extend `compileStaticPyTorchToArchitectureIR` so its default mode can emit a bounded candidate `ArchitectureIRv3` carrying unresolved questions, while `renderReady: true` still rejects blocking unresolved items. Build that candidate IR, then: if it contains any blocking item, deterministically select exactly one `blockingQuestion` by stable source order (`locator` start line/column, then `code`) and persist a record with status `candidate_structure`, the bounded candidate IR, full `analysis.evidence`, `publicEvidenceGraphSummary(analysis.evidence)`, unresolved entries and the retained source reference. If there is no blocking item, validate the render-ready path with `compileStaticPyTorchToArchitectureIR(analysis, { renderReady: true })`, persist `ready_for_preview` with the IR, full evidence graph, public evidence summary and retained source reference, and never call a Provider. Preserve the analyzer capability version in the record. `needs_confirmation` remains reserved for a later explicit user-confirmation state and is not emitted by the initial static-source service.
 
 - [ ] **Step 4: Run service and regression tests**
 
@@ -498,11 +519,11 @@ import type { EvidenceLocator } from "./evidence-graph.js";
 {
   id: string;
   kind: "pytorch-source";
-  status: "needs_confirmation" | "ready_for_preview" | "failed";
+  status: "needs_confirmation" | "candidate_structure" | "ready_for_preview" | "failed";
   source: { sourceId: string; name: string; mimeType: string; sourceSha256: string; bytes: number };
   architectureIR: ArchitectureIRv3 | null;
   evidence: PublicEvidenceGraphSummary;
-  unresolved: Array<{ code: string; severity: "blocking" | "warning"; locator: EvidenceLocator; message: string }>;
+  blockingQuestion: { code: string; message: string; locator: EvidenceLocator } | null;
   warnings: string[];
   capabilityVersion: "pytorch-static-linear-v0";
   createdAt: string;
@@ -517,7 +538,7 @@ Using the existing `buildApp` and register/login helpers, add tests for:
 1. missing `Accept-Figure-Version: 3` returns the existing validation error;
 2. unauthenticated POST returns 401;
 3. valid linear source returns 201, response header `Figure-Version: 3`, v3 IR and only safe source metadata;
-4. dynamic source returns 201 with `needs_confirmation`, one unresolved item and `architectureIR: null`;
+4. dynamic source returns 201 with `candidate_structure`, one deterministic `blockingQuestion` and a bounded candidate `architectureIR`;
 5. exact idempotent replay returns 200 and does not create a second record;
 6. same idempotency key with a changed source returns 409;
 7. another user cannot GET the first user’s analysis and receives 404;
@@ -543,11 +564,11 @@ app.post("/api/figure-analyses", async (request, reply) => { /* authenticated cr
 app.get("/api/figure-analyses/:id", async (request) => { /* owner-safe read */ });
 ```
 
-The audit events may contain only analysis ID, source hash, bytes, capability version, status, unresolved count and duplicate flag. Do not reuse the legacy `agent.chat.completed` event for this route.
+The audit events may contain only analysis ID, source hash, bytes, capability version, status, blocking-question code, unresolved count and duplicate flag. Do not reuse the legacy `agent.chat.completed` event for this route.
 
 - [ ] **Step 4: Implement the safe public projection**
 
-Project the stored record into the response shape and set `Figure-Version: 3` on successful POST/GET responses. Do not return `code`, base64 data, internal `EvidenceGraph` source excerpts, raw Provider output, filesystem paths, plan primitives, coordinates, Worker DTO fields or job IDs. Keep `needs_confirmation` a successful HTTP response; use 4xx only for invalid input, authorization, version negotiation and idempotency conflicts.
+Project the stored record into the response shape and set `Figure-Version: 3` on successful POST/GET responses. Return `blockingQuestion` only for `candidate_structure`; return `null` otherwise. Do not return `code`, base64 data, internal retained-source records, `EvidenceGraph` source excerpts, raw Provider output, filesystem paths, plan primitives, coordinates, Worker DTO fields or job IDs. Keep both `candidate_structure` and `needs_confirmation` as successful HTTP responses; use 4xx only for invalid input, authorization, version negotiation and idempotency conflicts.
 
 - [ ] **Step 5: Run route, service and full checks**
 
@@ -589,6 +610,7 @@ Extend onboarding tests to require the exact bounded wording:
 ```ts
 expect(startHere).toContain("authenticated static-linear PyTorch analysis");
 expect(startHere).toContain("does not execute user Python");
+expect(startHere).toContain("2026-08-17-universal-compiler-repair-and-migration-design.md");
 expect(readme).toContain("P0.0");
 expect(readme).toContain("real Windows/Visio acceptance remains separate");
 ```
@@ -603,7 +625,7 @@ Expected: FAIL because the current wording does not yet state the accepted route
 
 - [ ] **Step 3: Update documentation without overclaiming**
 
-State that P0.0 supports authenticated static-linear PyTorch analysis only. State explicitly that v3 publication preview, Figure Components, Universal export, real Visio readback, Keras/ONNX, images and GNN remain unaccepted. Mark the 2026-08-17 implementation-plan checkboxes only for tasks whose command evidence exists.
+State that P0.0 supports authenticated static-linear PyTorch analysis only. Point `docs/START_HERE.md` at the 2026-08-17 repair/migration design as the current authoritative v3 design entrypoint. State explicitly that v3 publication preview, Figure Components, Universal export, real Visio readback, Keras/ONNX, images and GNN remain unaccepted. Mark the 2026-08-17 implementation-plan checkboxes only for tasks whose command evidence exists.
 
 - [ ] **Step 4: Write the evidence record**
 
@@ -641,6 +663,6 @@ git commit -m "docs: record m0 m1 static analysis acceptance"
 
 ## M0/M1 Completion Gate
 
-M0/M1 is complete only when Tasks 1–7 have their checkbox evidence, the strict compiler is green, all 443+ existing tests plus new route tests pass, the authenticated route produces v3 IR for the supported linear fixture, dynamic/unsupported input remains blocked, and the evidence record explicitly leaves M2/M3/M4 unaccepted.
+M0/M1 is complete only when Tasks 1–7 have their checkbox evidence, the strict compiler is green, all 443+ existing tests plus new route tests pass, the authenticated route produces v3 IR for the supported linear fixture, dynamic/unsupported input returns `candidate_structure` with one deterministic blocking question, and the evidence record explicitly leaves M2/M3/M4 unaccepted.
 
 Do not begin Figure Components, UniversalPreview route, sealed production export, Keras/ONNX, image understanding or GNN implementation until this gate is reviewed.

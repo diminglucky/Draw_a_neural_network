@@ -4,6 +4,7 @@ import { NotConnectedVisioExecutor, type VisioExecutor } from "../src/adapters.j
 import { JobService } from "../src/job-service.js";
 import { InMemoryFoundationStore } from "../src/store.js";
 import { VisioJobRunner } from "../src/visio-job-runner.js";
+import { completeVisioReadback } from "./fixtures/visio-readback.js";
 
 const activeRunners: VisioJobRunner[] = [];
 
@@ -42,9 +43,9 @@ function successfulExecutor(delayMs = 0): VisioExecutor {
     healthCheck: async () => ({ connected: true }),
     executeDiagram: async ({ jobId }) => {
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      return { path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } };
+      return { path: `C:\\exports\\${jobId}.vsdx`, readback: completeVisioReadback({ shapeCount: 1 }) };
     },
-    readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+    readback: async () => completeVisioReadback({ shapeCount: 1 }),
   };
 }
 
@@ -54,9 +55,9 @@ function countingSuccessfulExecutor(counter: { value: number }, delayMs = 0): Vi
     executeDiagram: async ({ jobId }) => {
       counter.value += 1;
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      return { path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } };
+      return { path: `C:\\exports\\${jobId}.vsdx`, readback: completeVisioReadback({ shapeCount: 1 }) };
     },
-    readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+    readback: async () => completeVisioReadback({ shapeCount: 1 }),
   };
 }
 
@@ -66,7 +67,7 @@ function abortAwareExecutor(): VisioExecutor {
     executeDiagram: async (_input, options) => new Promise((_resolve, reject) => {
       options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("cancelled"), { code: ApiErrorCode.VISIO_EXECUTION_FAILED })), { once: true });
     }),
-    readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+    readback: async () => completeVisioReadback({ shapeCount: 1 }),
   };
 }
 

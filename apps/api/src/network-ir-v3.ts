@@ -211,6 +211,8 @@ function checkReachability(ir: ArchitectureIRv3, adjacency: Map<string, Set<stri
     if (!nodeId) continue;
     for (const target of adjacency.get(nodeId) ?? []) if (!visited.has(target)) { visited.add(target); pending.push(target); }
   }
+  const hasBlockingCandidate = ir.unresolved.some((unresolved) => unresolved.severity === "blocking");
+  if (hasBlockingCandidate) return;
   for (const [index, output] of ir.outputs.entries()) if (!visited.has(output.nodeId)) add("unreachable-output", `Output node ${output.nodeId} is not reachable from an input`, `outputs[${index}]`);
 }
 

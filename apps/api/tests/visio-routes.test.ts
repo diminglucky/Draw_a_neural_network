@@ -5,6 +5,7 @@ import { hashPassword } from "../src/security.js";
 import type { VisioExecutor } from "../src/adapters.js";
 import { JobService } from "../src/job-service.js";
 import { InMemoryFoundationStore } from "../src/store.js";
+import { completeVisioReadback } from "./fixtures/visio-readback.js";
 
 const diagram = {
   figure: { title: "CNN", stages: ["Input", "Output"] },
@@ -46,8 +47,8 @@ describe("Visio export routes", () => {
   it("exposes browser-supplied diagrams only through the explicit legacy namespace", async () => {
     const executor: VisioExecutor = {
       healthCheck: async () => ({ connected: true }),
-      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } } as any),
-      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 } as any),
+      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: completeVisioReadback({ shapeCount: 1 }) }),
+      readback: async () => completeVisioReadback({ shapeCount: 1 }),
     };
     const { app, authorization } = await createAuthorizedApp(executor);
     try {
@@ -95,8 +96,8 @@ describe("Visio export routes", () => {
   it("creates and completes a user-owned Visio export Job", async () => {
     const executor: VisioExecutor = {
       healthCheck: async () => ({ connected: true }),
-      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } }),
-      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: completeVisioReadback({ shapeCount: 1 }) }),
+      readback: async () => completeVisioReadback({ shapeCount: 1 }),
     };
     const { app, authorization } = await createAuthorizedApp(executor);
     const response = await app.inject({
@@ -117,8 +118,8 @@ describe("Visio export routes", () => {
     const queued = await jobService.create({ userId: "recovery-user", deviceId: "recovery-device", type: "visio-export", input: { diagram } });
     const executor: VisioExecutor = {
       healthCheck: async () => ({ connected: true }),
-      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } }),
-      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: completeVisioReadback({ shapeCount: 1 }) }),
+      readback: async () => completeVisioReadback({ shapeCount: 1 }),
     };
     const app = buildApp({
       store,
@@ -145,9 +146,9 @@ describe("Visio export routes", () => {
       healthCheck: async () => ({ connected: true }),
       executeDiagram: async ({ jobId }) => {
         executions += 1;
-        return { path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } };
+        return { path: `C:\\exports\\${jobId}.vsdx`, readback: completeVisioReadback({ shapeCount: 1 }) };
       },
-      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+      readback: async () => completeVisioReadback({ shapeCount: 1 }),
     };
     const { app, authorization } = await createAuthorizedApp(executor);
     const headers = { authorization, "idempotency-key": "visio-repeat-1" };
@@ -164,8 +165,8 @@ describe("Visio export routes", () => {
   it("rejects reusing a key for a different diagram", async () => {
     const executor: VisioExecutor = {
       healthCheck: async () => ({ connected: true }),
-      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: { valid: true, shapeCount: 1, connectorCount: 0 } }),
-      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+      executeDiagram: async ({ jobId }) => ({ path: `C:\\exports\\${jobId}.vsdx`, readback: completeVisioReadback({ shapeCount: 1 }) }),
+      readback: async () => completeVisioReadback({ shapeCount: 1 }),
     };
     const { app, authorization } = await createAuthorizedApp(executor);
     const headers = { authorization, "idempotency-key": "visio-conflict-1" };
@@ -184,7 +185,7 @@ describe("Visio export routes", () => {
       executeDiagram: async (_input, options) => new Promise((_resolve, reject) => {
         options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("cancelled"), { code: ApiErrorCode.VISIO_EXECUTION_FAILED })), { once: true });
       }),
-      readback: async () => ({ valid: true, shapeCount: 1, connectorCount: 0 }),
+      readback: async () => completeVisioReadback({ shapeCount: 1 }),
     };
     const { app, authorization } = await createAuthorizedApp(executor);
     const request = app.inject({

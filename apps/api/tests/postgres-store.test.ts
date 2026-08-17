@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Session } from "../src/domain.js";
 import type { FigureDraftRevisionPayload } from "../src/figure-draft-payload.js";
+import type { FigureAnalysisRecord } from "../src/figure-analysis.js";
 import { PostgresFoundationStore, type PoolLike, type QueryResult } from "../src/postgres-store.js";
+import { InMemoryFoundationStore } from "../src/store.js";
 
 const userRow = {
   id: "user-1",
@@ -77,6 +79,60 @@ function draftInput() {
     status: "ready_for_preview" as const,
     createdAt: "2026-08-14T00:00:00.000Z",
     updatedAt: "2026-08-14T00:00:00.000Z",
+  };
+}
+
+function analysisRecord(overrides: Partial<FigureAnalysisRecord> = {}): FigureAnalysisRecord {
+  return {
+    id: "analysis-1",
+    userId: "user-1",
+    sourceId: "source-1",
+    sourceName: "model.py",
+    sourceMimeType: "text/x-python",
+    sourceBytes: 12,
+    sourceSha256: "a".repeat(64),
+    kind: "pytorch-source",
+    status: "ready_for_preview",
+    architectureIR: null,
+    unresolved: [],
+    blockingQuestion: null,
+    evidenceGraph: { version: 2, facts: [], relations: [] },
+    evidenceSummary: { version: 2, facts: [], relations: [] },
+    sourceRef: { sourceRecordId: "source-record-1", retentionClass: "analysis_source", sourceSha256: "a".repeat(64), bytes: 12 },
+    warnings: [],
+    capabilityVersion: "pytorch-static-linear-v0",
+    createdAt: "2026-08-17T00:00:00.000Z",
+    updatedAt: "2026-08-17T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function analysisRow(record: FigureAnalysisRecord, idempotencyKey = "analysis-key-1", requestHash = "request-hash-1") {
+  return {
+    id: record.id,
+    user_id: record.userId,
+    source_id: record.sourceId,
+    source_name: record.sourceName,
+    source_mime_type: record.sourceMimeType,
+    source_bytes: record.sourceBytes,
+    source_sha256: record.sourceSha256,
+    kind: record.kind,
+    status: record.status,
+    architecture_ir: record.architectureIR,
+    unresolved: record.unresolved,
+    blocking_question: record.blockingQuestion,
+    evidence_graph: record.evidenceGraph,
+    evidence_summary: record.evidenceSummary,
+    source_record_id: record.sourceRef.sourceRecordId,
+    retention_class: record.sourceRef.retentionClass,
+    source_ref_sha256: record.sourceRef.sourceSha256,
+    source_ref_bytes: record.sourceRef.bytes,
+    warnings: record.warnings,
+    capability_version: record.capabilityVersion,
+    idempotency_key: idempotencyKey,
+    request_hash: requestHash,
+    created_at: record.createdAt,
+    updated_at: record.updatedAt,
   };
 }
 
@@ -573,5 +629,79 @@ describe("PostgresFoundationStore", () => {
     await expect(store.finalizeAgentUsage({ id: "usage-1", state: "failed", outcome: "provider_error", provider: "local-deterministic", errorCode: "AGENT_PROVIDER_FAILED" })).resolves.toMatchObject({ state: "failed", outcome: "provider_error" });
     expect(calls[0].text).toContain("UPDATE agent_usage_ledger");
     expect(calls[0].text).toContain("state = 'accepted'");
+  });
+
+  it("stores figure analysis with owner scope and idempotency in memory", async () => {
+    const store = new InMemoryFoundationStore();
+    const record = analysisRecord();
+
+    await expect(store.createFigureAnalysisIdempotent({
+      record,
+      sourceCode: "class SecretModel: pass",
+      idempotencyKey: "analysis-key-1",
+      requestHash: "request-hash-1",
+    })).resolves.toMatchObject({ record, duplicate: false, requestHashMatches: true });
+
+    await expect(store.createFigureAnalysisIdempotent({
+      record: { ...record, id: "analysis-duplicate" },
+      sourceCode: "class DifferentModel: pass",
+      idempotencyKey: "analysis-key-1",
+      requestHash: "request-hash-1",
+    })).resolves.toMatchObject({ record, duplicate: true, requestHashMatches: true });
+
+    await expect(store.createFigureAnalysisIdempotent({
+      record: { ...record, id: "analysis-conflict" },
+      sourceCode: "class DifferentModel: pass",
+      idempotencyKey: "analysis-key-1",
+      requestHash: "request-hash-2",
+    })).resolves.toMatchObject({ record, duplicate: true, requestHashMatches: false });
+
+    await expect(store.getFigureAnalysis("user-1", "analysis-1")).resolves.toEqual(record);
+    await expect(store.getFigureAnalysis("other-user", "analysis-1")).resolves.toBeNull();
+  });
+
+  it("persists the retained source and analysis record in one PostgreSQL transaction", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const record = analysisRecord();
+    const row = analysisRow(record);
+    let inserted = false;
+    const client = {
+      async query(text: string, values: readonly unknown[] = []) {
+        calls.push({ text, values });
+        if (text.includes("INSERT INTO figure_analyses")) {
+          if (inserted) return { rows: [], rowCount: 0 };
+          inserted = true;
+          return { rows: [row], rowCount: 1 };
+        }
+        if (text.includes("FROM figure_analyses")) return { rows: inserted ? [row] : [], rowCount: inserted ? 1 : 0 };
+        return { rows: [], rowCount: 0 };
+      },
+      release() {},
+    };
+    const pool: PoolLike = {
+      async query(text, values = []) {
+        calls.push({ text, values });
+        return text.includes("FROM figure_analyses") ? { rows: inserted ? [row] : [], rowCount: inserted ? 1 : 0 } : { rows: [], rowCount: 0 };
+      },
+      async connect() { return client; },
+    };
+    const store = new PostgresFoundationStore(pool);
+
+    await expect(store.createFigureAnalysisIdempotent({
+      record,
+      sourceCode: "class SecretModel: pass",
+      idempotencyKey: "analysis-key-1",
+      requestHash: "request-hash-1",
+    })).resolves.toMatchObject({ record, duplicate: false, requestHashMatches: true });
+
+    expect(calls[0]?.text).toBe("BEGIN");
+    expect(calls.some((call) => call.text.includes("INSERT INTO figure_analysis_sources") && call.values.includes("class SecretModel: pass"))).toBe(true);
+    expect(calls.some((call) => call.text.includes("INSERT INTO figure_analyses") && call.values.includes("analysis-1"))).toBe(true);
+    expect(calls.at(-1)?.text).toBe("COMMIT");
+
+    await expect(store.getFigureAnalysis("user-1", "analysis-1")).resolves.toEqual(record);
+    const read = calls.at(-1);
+    expect(read?.text).toMatch(/FROM figure_analyses/);
+    expect(read?.values).toEqual(["user-1", "analysis-1"]);
   });
 });

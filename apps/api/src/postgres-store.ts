@@ -7,6 +7,8 @@ import type {
   AuditRecord,
   Device,
   DeviceChallenge,
+  FigureAnalysisCreationResult,
+  FigureAnalysisRecord,
   FigureDraft,
   FigureDraftRevision,
   FigureDraftStatus,
@@ -204,6 +206,40 @@ function mapAgentUsage(row: Row): AgentUsageReservation {
     errorCode: row.error_code ?? null,
     createdAt: requiredTimestamp(row.created_at),
     finalizedAt: timestamp(row.finalized_at),
+  };
+}
+
+function figureAnalysisStatus(value: unknown): FigureAnalysisRecord["status"] {
+  if (value === "needs_confirmation" || value === "candidate_structure" || value === "ready_for_preview" || value === "failed") return value;
+  throw new Error("Database row contains an invalid figure analysis status");
+}
+
+function mapFigureAnalysis(row: Row): FigureAnalysisRecord {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    sourceId: String(row.source_id),
+    sourceName: String(row.source_name),
+    sourceMimeType: row.source_mime_type,
+    sourceBytes: Number(row.source_bytes),
+    sourceSha256: String(row.source_sha256),
+    kind: "pytorch-source",
+    status: figureAnalysisStatus(row.status),
+    architectureIR: json(row.architecture_ir, null),
+    unresolved: json(row.unresolved, []),
+    blockingQuestion: json(row.blocking_question, null),
+    evidenceGraph: json(row.evidence_graph, { version: 2, facts: [], relations: [] }),
+    evidenceSummary: json(row.evidence_summary, { version: 2, facts: [], relations: [] }),
+    sourceRef: {
+      sourceRecordId: String(row.source_record_id),
+      retentionClass: "analysis_source",
+      sourceSha256: String(row.source_ref_sha256 ?? row.source_sha256),
+      bytes: Number(row.source_ref_bytes ?? row.source_bytes),
+    },
+    warnings: json(row.warnings, []),
+    capabilityVersion: "pytorch-static-linear-v0",
+    createdAt: requiredTimestamp(row.created_at),
+    updatedAt: requiredTimestamp(row.updated_at),
   };
 }
 
@@ -645,6 +681,101 @@ export class PostgresFoundationStore implements FoundationStore {
       [job.id, job.status, job.output === null ? null : JSON.stringify(job.output), job.errorCode, job.errorMessage, job.startedAt, job.completedAt],
     );
     return mapJob(result.rows[0]);
+  }
+
+  async createFigureAnalysisIdempotent(input: { record: FigureAnalysisRecord; sourceCode: string; idempotencyKey: string; requestHash: string }): Promise<FigureAnalysisCreationResult> {
+    const columns = `id, user_id, source_id, source_name, source_mime_type, source_bytes, source_sha256,
+      kind, status, architecture_ir, unresolved, blocking_question, evidence_graph, evidence_summary,
+      source_record_id, source_ref_sha256, source_ref_bytes, warnings, capability_version,
+      idempotency_key, request_hash, created_at, updated_at`;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query(
+        `SELECT ${columns} FROM figure_analyses WHERE user_id = $1 AND idempotency_key = $2 FOR UPDATE`,
+        [input.record.userId, input.idempotencyKey],
+      );
+      if (existing.rows[0]) {
+        const record = mapFigureAnalysis(existing.rows[0]);
+        await client.query("COMMIT");
+        client.release();
+        return { record, duplicate: true, requestHashMatches: String(existing.rows[0].request_hash) === input.requestHash };
+      }
+
+      await client.query(
+        `INSERT INTO figure_analysis_sources
+          (id, user_id, source_id, source_sha256, source_bytes, source_code, retention_class, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO NOTHING`,
+        [input.record.sourceRef.sourceRecordId, input.record.userId, input.record.sourceId, input.record.sourceSha256, input.record.sourceBytes, input.sourceCode, input.record.sourceRef.retentionClass, input.record.createdAt],
+      );
+      const inserted = await client.query(
+        `INSERT INTO figure_analyses
+          (id, user_id, source_id, source_name, source_mime_type, source_bytes, source_sha256,
+           kind, status, architecture_ir, unresolved, blocking_question, evidence_graph, evidence_summary,
+           source_record_id, source_ref_sha256, source_ref_bytes, warnings, capability_version,
+           idempotency_key, request_hash, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb,
+                 $14::jsonb, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23)
+         ON CONFLICT (user_id, idempotency_key) DO NOTHING
+         RETURNING ${columns}`,
+        [
+          input.record.id,
+          input.record.userId,
+          input.record.sourceId,
+          input.record.sourceName,
+          input.record.sourceMimeType,
+          input.record.sourceBytes,
+          input.record.sourceSha256,
+          input.record.kind,
+          input.record.status,
+          JSON.stringify(input.record.architectureIR),
+          JSON.stringify(input.record.unresolved),
+          JSON.stringify(input.record.blockingQuestion),
+          JSON.stringify(input.record.evidenceGraph),
+          JSON.stringify(input.record.evidenceSummary),
+          input.record.sourceRef.sourceRecordId,
+          input.record.sourceRef.sourceSha256,
+          input.record.sourceRef.bytes,
+          JSON.stringify(input.record.warnings),
+          input.record.capabilityVersion,
+          input.idempotencyKey,
+          input.requestHash,
+          input.record.createdAt,
+          input.record.updatedAt,
+        ],
+      );
+      if (inserted.rows[0]) {
+        const record = mapFigureAnalysis(inserted.rows[0]);
+        await client.query("COMMIT");
+        client.release();
+        return { record, duplicate: false, requestHashMatches: true };
+      }
+
+      const duplicate = await client.query(
+        `SELECT ${columns} FROM figure_analyses WHERE user_id = $1 AND idempotency_key = $2 FOR UPDATE`,
+        [input.record.userId, input.idempotencyKey],
+      );
+      if (!duplicate.rows[0]) throw new Error("Figure analysis idempotency conflict did not return the existing record");
+      const record = mapFigureAnalysis(duplicate.rows[0]);
+      await client.query("COMMIT");
+      client.release();
+      return { record, duplicate: true, requestHashMatches: String(duplicate.rows[0].request_hash) === input.requestHash };
+    } catch (error) {
+      return failFigureDraftTransaction(client, error);
+    }
+  }
+
+  async getFigureAnalysis(userId: string, id: string): Promise<FigureAnalysisRecord | null> {
+    const result = await this.pool.query(
+      `SELECT id, user_id, source_id, source_name, source_mime_type, source_bytes, source_sha256,
+              kind, status, architecture_ir, unresolved, blocking_question, evidence_graph, evidence_summary,
+              source_record_id, source_ref_sha256, source_ref_bytes, warnings, capability_version,
+              idempotency_key, request_hash, created_at, updated_at
+       FROM figure_analyses WHERE user_id = $1 AND id = $2`,
+      [userId, id],
+    );
+    return result.rows[0] ? mapFigureAnalysis(result.rows[0]) : null;
   }
 
   async createAuditRecord(record: AuditRecord): Promise<AuditRecord> {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiErrorCode } from "../src/domain.js";
 import { buildVisioWorkerArguments, normalizeVisioDiagram, VisioWorkerClient } from "../src/visio-worker-client.js";
+import { completeVisioReadback } from "./fixtures/visio-readback.js";
 
 const fixtureDiagram = {
   figure: { title: "CNN", stages: ["Input", "Output"] },
@@ -77,18 +78,14 @@ describe("VisioWorkerClient", () => {
     const result = await client.executeDiagram({ jobId: "job-client-1", diagram: fixtureDiagram });
 
     expect(result.path).toMatch(/job-client-1\.vsdx$/);
-    expect(result.readback).toEqual({
-      valid: true,
+    expect(result.readback).toEqual(completeVisioReadback({
       shapeCount: 3,
       connectorCount: 2,
       expectedPrimitiveIds: ["block-1.front", "block-1.side", "block-1.top"],
       actualPrimitiveIds: ["block-1.front", "block-1.side", "block-1.top"],
-      missingPrimitiveIds: [],
       expectedConnectorIds: ["edge-block-1-pool-1"],
       actualConnectorIds: ["edge-block-1-pool-1"],
-      missingConnectorIds: [],
-      shapeDataFailures: [],
-    });
+    }));
   });
 
   it("accepts a Worker long path when Node produced an equivalent Windows short path", async () => {

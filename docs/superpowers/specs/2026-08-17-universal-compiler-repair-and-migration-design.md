@@ -95,6 +95,8 @@ User input
 ### 4.2 Candidate versus full preview
 
 - If Architecture IR v3 contains a blocking unresolved item, the system returns `candidate_structure`, a visible `STRUCTURE_PENDING_CONFIRMATION` watermark and exactly one deterministically selected question. It does not invoke the compiler, create a snapshot or issue export authorization.
+- `candidate_structure` is a first-class public status, not an internal note. It means the system has enough evidence to show a bounded candidate topology and one blocking question, but not enough certainty to enter preview compilation.
+- `needs_confirmation` remains distinct from `candidate_structure`. It is reserved for cases where the structure is evidence-backed and non-blocking, but an explicit user confirmation is still required before advancing to the next product state. Neither status may create a PlanSnapshot or export authorization.
 - If IR is render-ready, the compiler must produce a deterministic FigureSet and passing server-side visual QA before an immutable PlanSnapshot is stored.
 - Export authorization binds the exact viewed `planId`, `planHash`, preview artifact hashes, owner, device and revision. Export never recompiles a possibly changed draft.
 
@@ -116,6 +118,12 @@ The initial v3 API is versioned and separate from legacy Agent chat. It accepts 
 - bounded public evidence summary, Architecture IR v3 projection, one blocking question, warnings and capability version;
 - no Provider key, raw secret, file path, executable payload, Worker protocol field or internal source locator excerpt beyond allowed public evidence policy.
 
+The public analysis record must not be the only persisted representation. Service-internal persistence for the v3 path must retain:
+
+- the full compiler-usable `EvidenceGraph`, not only a public summary;
+- an immutable, retention-governed source reference sufficient to reproduce or audit the analysis path in later M2 preview work;
+- enough metadata to prove owner, analyzer capability version, source hash and retention class without exposing raw source bytes in public DTOs or audit events.
+
 The existing user-owned FigureDraft/revision model may be extended only after an explicit schema migration proves ownership, revision, retention and safe projection behavior. A separate immutable analysis record is preferred if extending Draft would expose v3 Plan or source content to legacy consumers.
 
 ### 5.3 Feature flags and rollback
@@ -135,6 +143,8 @@ The v3 route, preview and export path are independently feature-gated. Disabling
 3. `npx tsc --noEmit`, focused affected tests, full `npm run api:test`, `npm run api:check` and `git diff --check` pass.
 4. No externally visible v2 behavior changes.
 
+Intermediate M0 subtasks may temporarily carry forward already-known M0 failures outside their own edited files, but they must not introduce new type, protocol or route regressions. The M0 milestone itself exits only when the full strict-TypeScript and test gate is green.
+
 **Exit condition:** no strict TypeScript errors and legacy protocol tests prove extended readback fields are required.
 
 ### M1 — P0.0 static PyTorch enters the authenticated product path
@@ -143,9 +153,9 @@ The v3 route, preview and export path are independently feature-gated. Disabling
 
 **Required outcomes:**
 
-1. A supported linear source produces hash-bound facts, typed locators, Architecture IR v3 and a safe public result.
-2. Dynamic control flow, unknown calls, reuse, branch and merge return blocking unresolved without compiler/export invocation.
-3. Audit records contain outcome/count/version metadata only; raw source content and Provider credentials are excluded.
+1. A supported linear source produces hash-bound facts, typed locators, a persisted compiler-usable `EvidenceGraph`, Architecture IR v3 and a safe public result.
+2. Dynamic control flow, unknown calls, reuse, branch and merge return `candidate_structure` with one deterministic blocking question, without compiler/export invocation.
+3. Audit records contain outcome/count/version metadata only; raw source content and Provider credentials are excluded, while service-internal persistence retains only the minimum retention-governed source material required for later preview compilation and audit.
 4. Ownership, session/device authorization, request-size limits and idempotency are covered by route tests.
 5. No code path silently falls back from static source failure to a model-name preset or Provider topology guess.
 

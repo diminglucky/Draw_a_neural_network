@@ -22,6 +22,17 @@ export interface VisioWorkerClientOptions {
   attachToRunning?: boolean;
 }
 
+interface NormalizedFigurePlan {
+  version: 1;
+  coordinateSpace: Record<string, unknown>;
+  primitiveGroups: Array<Record<string, unknown>>;
+  connectors: Array<Record<string, unknown>>;
+}
+
+type NormalizedVisioDiagram = VisioWorkerRequest["diagram"] & {
+  figurePlan?: NormalizedFigurePlan;
+};
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 export class VisioWorkerClient implements VisioExecutor {
@@ -228,7 +239,7 @@ export function buildVisioWorkerArguments(options: {
   ];
 }
 
-export function normalizeVisioDiagram(value: unknown): VisioWorkerRequest["diagram"] {
+export function normalizeVisioDiagram(value: unknown): NormalizedVisioDiagram {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "diagram must be an object", 400, { field: "diagram" });
   }
@@ -282,7 +293,7 @@ export function normalizeVisioDiagram(value: unknown): VisioWorkerRequest["diagr
   };
 }
 
-function normalizeFigurePlan(value: unknown): Record<string, unknown> | undefined {
+function normalizeFigurePlan(value: unknown): NormalizedFigurePlan | undefined {
   if (value == null) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "figurePlan must be an object", 400, { field: "diagram.figurePlan" });
@@ -298,10 +309,14 @@ function normalizeFigurePlan(value: unknown): Record<string, unknown> | undefine
   }
   return {
     version: 1,
-    coordinateSpace,
-    primitiveGroups: groups,
-    connectors: Array.isArray(plan.connectors) ? plan.connectors : [],
+    coordinateSpace: coordinateSpace as Record<string, unknown>,
+    primitiveGroups: groups.map(asRecord),
+    connectors: (Array.isArray(plan.connectors) ? plan.connectors : []).map(asRecord),
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 async function assertRegularFile(filePath: string): Promise<void> {

@@ -15,6 +15,9 @@ import { parseEvidenceBundle, publicEvidenceSummary, type EvidenceBundle, type E
 import { FigureDraftService, type FigureDraftConfirmation } from "./figure-draft-service.js";
 import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
 import { UniversalFigureExportService } from "./figure-export-service.js";
+import { FigureAnalysisService } from "./figure-analysis-service.js";
+import { parsePyTorchSourcePack, type SourcePack } from "./source-pack.js";
+import { publicFigureAnalysis, type FigureAnalysisRecord } from "./figure-analysis.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -92,6 +95,7 @@ interface RouteOptions {
   visioJobRunner: VisioJobRunner;
   universalFigureExportService?: UniversalFigureExportService;
   universalFigureExportRunner?: { submit(jobId: string): void | Promise<void>; cancel?(jobId: string): Promise<unknown> };
+  figureAnalysisService: FigureAnalysisService;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -153,6 +157,59 @@ function universalFigureVersion(request: FastifyRequest): void {
   }
 }
 
+function figureAnalysisVersion(request: FastifyRequest): void {
+  if (request.headers["accept-figure-version"] !== "3") {
+    throw validationError("Accept-Figure-Version: 3 is required for figure analysis", {
+      field: "Accept-Figure-Version",
+      reason: "unsupported_version",
+      supported: [3],
+    });
+  }
+}
+
+function parseFigureAnalysisBody(request: FastifyRequest): Record<string, unknown> {
+  const input = body(request);
+  const allowed = new Set(["source"]);
+  for (const key of Object.keys(input)) {
+    if (!allowed.has(key)) throw validationError("Figure analysis accepts only a source descriptor", { field: key, reason: "forbidden" });
+  }
+  const source = record(input.source);
+  if (!source) throw validationError("source is required", { field: "source", reason: "required" });
+  return source;
+}
+
+function figureAnalysisRequestHash(source: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify({ kind: "pytorch-source", source })).digest("hex");
+}
+
+async function auditFigureAnalysis(
+  store: FoundationStore,
+  userId: string,
+  record: FigureAnalysisRecord,
+  duplicate: boolean,
+): Promise<void> {
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId: userId,
+    action: "figure.analysis.completed",
+    targetType: "figure-analysis",
+    targetId: record.id,
+    reason: null,
+    metadata: {
+      analysisId: record.id,
+      sourceSha256: record.sourceSha256,
+      sourceBytes: record.sourceBytes,
+      capabilityVersion: record.capabilityVersion,
+      status: record.status,
+      blockingQuestionCode: record.blockingQuestion?.code ?? null,
+      unresolvedCount: record.unresolved.length,
+      duplicate,
+    },
+    createdAt: new Date().toISOString(),
+  });
+}
+
 function parseUniversalFigureExportBody(request: FastifyRequest): { confirmationToken: string; idempotencyKey: string } {
   const input = body(request);
   const allowed = new Set(["confirmationToken", "idempotencyKey"]);
@@ -208,18 +265,22 @@ function publicUniversalOutput(value: unknown): { artifacts: Array<{ format: "vs
   const artifacts = output.artifacts.map((artifact) => {
     if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return null;
     const candidate = artifact as Record<string, unknown>;
-    if ((candidate.format !== "vsdx" && candidate.format !== "pdf" && candidate.format !== "png") || typeof candidate.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(candidate.sha256) || !Number.isSafeInteger(candidate.bytes) || candidate.bytes <= 0) return null;
+    if ((candidate.format !== "vsdx" && candidate.format !== "pdf" && candidate.format !== "png") || typeof candidate.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(candidate.sha256) || !isSafeNonNegativeInteger(candidate.bytes) || candidate.bytes <= 0) return null;
     return { format: candidate.format, sha256: candidate.sha256, bytes: candidate.bytes };
   });
   if (artifacts.some((artifact) => artifact === null)) return null;
   const readback = output.readback as Record<string, unknown>;
-  if (readback.valid !== true || !Number.isSafeInteger(readback.shapeCount) || readback.shapeCount < 0 || !Number.isSafeInteger(readback.connectorCount) || readback.connectorCount < 0) return null;
+  if (readback.valid !== true || !isSafeNonNegativeInteger(readback.shapeCount) || !isSafeNonNegativeInteger(readback.connectorCount)) return null;
   const rendererQa: Record<string, { passed: boolean }> = {};
   for (const [name, check] of Object.entries(output.rendererQa as Record<string, unknown>)) {
     if (!check || typeof check !== "object" || Array.isArray(check) || typeof (check as Record<string, unknown>).passed !== "boolean") return null;
     rendererQa[name] = { passed: (check as Record<string, boolean>).passed };
   }
-  return { artifacts: artifacts as Array<{ format: "vsdx" | "pdf" | "png"; sha256: string; bytes: number }>, readback: { valid: true, shapeCount: readback.shapeCount as number, connectorCount: readback.connectorCount as number }, rendererQa };
+  return { artifacts: artifacts as Array<{ format: "vsdx" | "pdf" | "png"; sha256: string; bytes: number }>, readback: { valid: true, shapeCount: readback.shapeCount, connectorCount: readback.connectorCount }, rendererQa };
+}
+
+function isSafeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function providerApiKey(request: FastifyRequest): string | undefined {
@@ -812,6 +873,56 @@ function parseAgentBody(request: FastifyRequest): { conversationId: string; hash
 
 export function registerRoutes(app: FastifyInstance, options: RouteOptions): void {
   app.get("/health", async () => ({ status: "ok" }));
+
+  app.post("/api/figure-analyses", async (request, reply) => {
+    figureAnalysisVersion(request);
+    const access = await requireUser(request, options);
+    const sourceInput = parseFigureAnalysisBody(request);
+    const key = idempotencyKey(request);
+    let source: SourcePack;
+    try {
+      source = parsePyTorchSourcePack(sourceInput);
+    } catch (error) {
+      throw validationError("Invalid figure analysis source", {
+        field: "source",
+        reason: "invalid",
+        message: error instanceof Error ? error.message : "source validation failed",
+      });
+    }
+
+    let result: { record: FigureAnalysisRecord; duplicate: boolean };
+    try {
+      result = await options.figureAnalysisService.analyze({
+        userId: access.user.id,
+        source,
+        idempotencyKey: key,
+        requestHash: figureAnalysisRequestHash(sourceInput),
+      });
+    } catch (error) {
+      if (error instanceof Error && /idempotency key was reused/i.test(error.message)) {
+        throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Idempotency-Key was reused for a different figure analysis source", 409, {
+          field: "Idempotency-Key",
+          reason: "reused",
+          requestHashMatches: false,
+        });
+      }
+      throw error;
+    }
+    await auditFigureAnalysis(options.store, access.user.id, result.record, result.duplicate);
+    reply.header("Figure-Version", "3");
+    return reply.code(result.duplicate ? 200 : 201).send(publicFigureAnalysis(result.record));
+  });
+
+  app.get("/api/figure-analyses/:id", async (request, reply) => {
+    figureAnalysisVersion(request);
+    const access = await requireUser(request, options);
+    const params = request.params as { id?: string };
+    if (!params.id || !safeIdentifier(params.id)) throw validationError("Figure analysis id is invalid", { field: "id", reason: "invalid" });
+    const analysis = await options.store.getFigureAnalysis(access.user.id, params.id);
+    if (!analysis) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure analysis was not found", 404);
+    reply.header("Figure-Version", "3");
+    return reply.send(publicFigureAnalysis(analysis));
+  });
 
   app.post("/api/auth/register", async (request, reply) => {
     const input = body(request);

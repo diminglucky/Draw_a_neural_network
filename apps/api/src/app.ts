@@ -18,6 +18,7 @@ import { VisioJobRunner } from "./visio-job-runner.js";
 import { FigureDraftService } from "./figure-draft-service.js";
 import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
 import { UniversalFigureExportService } from "./figure-export-service.js";
+import { FigureAnalysisService } from "./figure-analysis-service.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -32,6 +33,7 @@ export interface BuildAppOptions {
   visioJobRunner?: VisioJobRunner;
   universalFigureExportService?: UniversalFigureExportService;
   universalFigureExportRunner?: UniversalFigureExportRunnerContract;
+  figureAnalysisService?: FigureAnalysisService;
 }
 
 export interface UniversalFigureExportRunnerContract {
@@ -67,6 +69,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const figureDraftPreviewService = options.figureDraftPreviewService ?? new FigureDraftPreviewService({ figureDraftService });
   const visioExecutor = options.visioExecutor ?? createVisioExecutorForConfig(config);
   const visioJobRunner = options.visioJobRunner ?? new VisioJobRunner({ store, jobService, executor: visioExecutor, maxConcurrentJobs: config.visioMaxConcurrency });
+  const figureAnalysisService = options.figureAnalysisService ?? new FigureAnalysisService({ store });
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
@@ -83,6 +86,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     visioJobRunner,
     universalFigureExportService: options.universalFigureExportService,
     universalFigureExportRunner: options.universalFigureExportRunner,
+    figureAnalysisService,
   });
   app.addHook("onReady", async () => {
     await visioJobRunner.recoverJobs();

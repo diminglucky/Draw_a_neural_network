@@ -1,5 +1,14 @@
 import type { FigureDraftRevisionPayload } from "./figure-draft-payload.js";
 
+export type {
+  FigureAnalysisBlockingQuestion,
+  FigureAnalysisCreationResult,
+  FigureAnalysisRecord,
+  FigureAnalysisSourceRef,
+  FigureAnalysisStatus,
+  PublicFigureAnalysis,
+} from "./figure-analysis.js";
+
 export const ApiErrorCode = {
   ACCOUNT_ALREADY_IN_USE: "ACCOUNT_ALREADY_IN_USE",
   SESSION_REVOKED: "SESSION_REVOKED",

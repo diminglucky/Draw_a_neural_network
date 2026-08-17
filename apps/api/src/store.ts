@@ -7,6 +7,8 @@ import type {
   AuditRecord,
   Device,
   DeviceChallenge,
+  FigureAnalysisCreationResult,
+  FigureAnalysisRecord,
   FigureDraft,
   FigureDraftRevision,
   FigureDraftStatus,
@@ -66,6 +68,8 @@ export interface FoundationStore {
   listAuditRecords(): Promise<AuditRecord[]>;
   reserveAgentUsage(input: AgentUsageReservationInput): Promise<AgentUsageReservation | AgentUsageDuplicate | null>;
   finalizeAgentUsage(input: AgentUsageFinalizationInput): Promise<AgentUsageReservation | null>;
+  createFigureAnalysisIdempotent(input: { record: FigureAnalysisRecord; sourceCode: string; idempotencyKey: string; requestHash: string }): Promise<FigureAnalysisCreationResult>;
+  getFigureAnalysis(userId: string, id: string): Promise<FigureAnalysisRecord | null>;
 }
 
 export class InMemoryFoundationStore implements FoundationStore {
@@ -82,6 +86,9 @@ export class InMemoryFoundationStore implements FoundationStore {
   private readonly agentUsagePeriods = new Map<string, { limit: number; consumed: number }>();
   private readonly agentUsageReservations = new Map<string, AgentUsageReservation>();
   private readonly agentUsageByIdempotency = new Map<string, string>();
+  private readonly figureAnalyses = new Map<string, FigureAnalysisRecord>();
+  private readonly figureAnalysisSources = new Map<string, { userId: string; sourceCode: string }>();
+  private readonly figureAnalysesByIdempotency = new Map<string, { recordId: string; requestHash: string }>();
 
   async createFigureDraft(
     draft: Omit<FigureDraft, "currentRevision">,
@@ -342,5 +349,28 @@ export class InMemoryFoundationStore implements FoundationStore {
     };
     this.agentUsageReservations.set(input.id, finalized);
     return finalized;
+  }
+
+  async createFigureAnalysisIdempotent(input: { record: FigureAnalysisRecord; sourceCode: string; idempotencyKey: string; requestHash: string }): Promise<FigureAnalysisCreationResult> {
+    const index = `${input.record.userId}:${input.idempotencyKey}`;
+    const existing = this.figureAnalysesByIdempotency.get(index);
+    if (existing) {
+      const record = this.figureAnalyses.get(existing.recordId);
+      if (!record) throw new Error("Figure analysis idempotency index points to a missing record");
+      return { record: structuredClone(record), duplicate: true, requestHashMatches: existing.requestHash === input.requestHash };
+    }
+
+    this.figureAnalysisSources.set(input.record.sourceRef.sourceRecordId, {
+      userId: input.record.userId,
+      sourceCode: input.sourceCode,
+    });
+    this.figureAnalyses.set(input.record.id, structuredClone(input.record));
+    this.figureAnalysesByIdempotency.set(index, { recordId: input.record.id, requestHash: input.requestHash });
+    return { record: structuredClone(input.record), duplicate: false, requestHashMatches: true };
+  }
+
+  async getFigureAnalysis(userId: string, id: string): Promise<FigureAnalysisRecord | null> {
+    const record = this.figureAnalyses.get(id);
+    return record?.userId === userId ? structuredClone(record) : null;
   }
 }

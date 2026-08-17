@@ -81,7 +81,7 @@ Optional local services are defined in `infra/docker-compose.yml`:
 docker compose -f infra/docker-compose.yml up -d
 ```
 
-The SQL migrations are mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; set `STORAGE_DRIVER=postgres` and `DATABASE_URL` before starting the API. For an existing database, apply the incremental SQL files in order through `apps/api/sql/007_universal_figure_export_jobs.sql` before enabling Visio export. `005_visio_job_idempotency.sql` gives each user one durable legacy Visio Job per `Idempotency-Key` and prevents repeated COM execution; `007_universal_figure_export_jobs.sql` enables the separately typed Universal export Job. Verify persistence with:
+The SQL migrations are mounted into PostgreSQL on first initialization. Docker services do not by themselves switch the API to PostgreSQL; set `STORAGE_DRIVER=postgres` and `DATABASE_URL` before starting the API. For an existing database, apply the incremental SQL files in order through `apps/api/sql/009_figure_analyses.sql`; the last migration adds owner-scoped retained source and FigureAnalysis storage for P0.0. `005_visio_job_idempotency.sql` gives each user one durable legacy Visio Job per `Idempotency-Key` and prevents repeated COM execution; `007_universal_figure_export_jobs.sql` enables the separately typed Universal export Job. Verify persistence with:
 
 ```powershell
 npm run api:smoke:postgres
@@ -248,6 +248,8 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 - Layer-level import/export interoperability with common model visualization formats.
 
 ## Commercial implementation status
+
+P0.0 currently provides authenticated static-linear PyTorch analysis only. It does not execute user Python and does not claim arbitrary-model understanding, publication preview, or universal Visio generation. The real Windows/Visio acceptance remains separate and requires independent save, close, reopen, native-shape readback, and visual evidence.
 
 This repository now has a runnable foundation, not a finished paid product. Before commercial release, the following gates still need independent acceptance:
 
