@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-17T12:45:00.000Z`
+Updated: `2026-08-17T13:04:20.000Z`
 Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md](./superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md)
 
 ## Current Focus
 
-- M2.2: Composable DAG figure compiler
+- M2.3: Publication visual quality
 - Status: planned
-- Outcome: Supported semantic DAGs compile deterministically with explicit topology limits.
-- Next action: Write the deterministic compiler implementation plan.
+- Outcome: Layout, routing, contrast, grayscale, crop, scale, and source mapping pass QA.
+- Next action: Implement after M2.2 is accepted.
 
 ## Milestones
 
@@ -23,7 +23,7 @@ Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-m
 
 ## Executable Nodes
 
-- M2.2: Composable DAG figure compiler
+- M2.3: Publication visual quality
 
 ## Open Blockers
 

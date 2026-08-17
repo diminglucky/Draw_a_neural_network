@@ -6,8 +6,8 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md"
   },
-  "updatedAt": "2026-08-17T12:45:00.000Z",
-  "currentFocus": "M2.2",
+  "updatedAt": "2026-08-17T13:04:20.000Z",
+  "currentFocus": "M2.3",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
     { "id": "M1", "title": "Static source analysis", "status": "accepted" },
@@ -97,12 +97,16 @@
       "id": "M2.2",
       "milestoneId": "M2",
       "title": "Composable DAG figure compiler",
-      "status": "planned",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M2.1"],
       "outcome": "Supported semantic DAGs compile deterministically with explicit topology limits.",
       "acceptance": [{ "id": "M2.2.compiler", "text": "The compiler consumes v3 IR and emits deterministic figure components.", "requiredEvidenceKinds": ["test", "document"] }],
-      "evidence": [],
-      "nextAction": "Write the deterministic compiler implementation plan.",
+      "evidence": [
+        { "kind": "test", "satisfies": ["M2.2.compiler"], "ref": "apps/api/tests/composable-dag-figure-compiler.test.ts", "summary": "Four semantic gold IR families, deterministic output, typed-port preservation, blocking unresolved input, and cycle rejection passed.", "verifiedAt": "2026-08-17T13:04:20.000Z", "commit": "ea50894318fdf203e7ab61d832d0e7e39daf8eab" },
+        { "kind": "document", "satisfies": ["M2.2.compiler"], "ref": "docs/evidence/2026-08-17-m2-2-composable-dag-compiler.md", "summary": "The compiler boundary, deterministic layout rules, topology limits, and quality evidence are recorded.", "verifiedAt": "2026-08-17T13:04:20.000Z", "commit": "ea50894318fdf203e7ab61d832d0e7e39daf8eab" }
+      ],
+      "nextAction": "Keep the accepted compiler boundary stable while publication visual QA proceeds.",
       "blockerIds": [],
       "successorId": null
     },
