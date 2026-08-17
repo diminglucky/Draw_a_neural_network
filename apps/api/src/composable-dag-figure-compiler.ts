@@ -91,6 +91,7 @@ export function compileComposableDagFigure(input: CompileComposableDagInput): Co
   const topology = orderGraph(contract.graph);
   if (topology.status === "unresolved") return topology;
   const positions = placeComponents(topology.order, topology.rankByComponentId, input.intent);
+  const horizontal = input.intent.orientation !== "portrait";
   const components = topology.order.map((component) => toPlanComponent(component, positions.get(component.id)!));
   const connections: ComposableFigureConnection[] = [];
   const unresolved: ComposableDagUnresolved[] = [];
@@ -106,7 +107,7 @@ export function compileComposableDagFigure(input: CompileComposableDagInput): Co
       source: { ...connection.source },
       target: { ...connection.target },
       transport: connection.transport,
-      route: routeBetween(source, target),
+      route: routeBetween(source, target, horizontal),
       evidenceIds: [...connection.evidenceIds],
     });
   }
@@ -220,12 +221,21 @@ function toPlanComponent(component: FigureComponent, bounds: FigureBounds): Comp
   };
 }
 
-function routeBetween(source: FigureBounds, target: FigureBounds): FigurePoint[] {
+function routeBetween(source: FigureBounds, target: FigureBounds, horizontal: boolean): FigurePoint[] {
+  if (!horizontal) return verticalRouteBetween(source, target);
   const sourcePoint = { x: source.x + source.width, y: source.y + source.height / 2 };
   const targetPoint = { x: target.x, y: target.y + target.height / 2 };
   if (sourcePoint.x <= targetPoint.x) return [sourcePoint, targetPoint];
   const midX = Math.round((sourcePoint.x + targetPoint.x) / 2);
   return [sourcePoint, { x: midX, y: sourcePoint.y }, { x: midX, y: targetPoint.y }, targetPoint];
+}
+
+function verticalRouteBetween(source: FigureBounds, target: FigureBounds): FigurePoint[] {
+  const sourcePoint = { x: source.x + source.width / 2, y: source.y + source.height };
+  const targetPoint = { x: target.x + target.width / 2, y: target.y };
+  if (sourcePoint.y <= targetPoint.y) return [sourcePoint, targetPoint];
+  const midY = Math.round((sourcePoint.y + targetPoint.y) / 2);
+  return [sourcePoint, { x: sourcePoint.x, y: midY }, { x: targetPoint.x, y: midY }, targetPoint];
 }
 
 function pageBoundsFor(positions: Map<string, FigureBounds>): FigureBounds {

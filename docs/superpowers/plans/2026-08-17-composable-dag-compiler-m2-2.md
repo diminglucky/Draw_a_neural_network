@@ -15,6 +15,7 @@ Compile a validated v3 semantic DAG into a deterministic, presentation-ready lay
 
 - Component and connection IDs are the only tie-breakers; no wall clock, random source, object enumeration order, or model-name template is consulted.
 - Density and orientation are controlled by the validated `FigureIntent`; the seed is recorded in the plan for later manifest binding.
+- Horizontal plans route right-to-left between ranks; portrait plans route bottom-to-top between ranks, with deterministic elbows for reverse edges.
 - Layout output contains stable bounds/routes and semantic source mappings, but no SVG/PNG, file path, Canvas geometry, Provider text, shell/COM command, or Visio protocol field.
 
 ## Explicit limits

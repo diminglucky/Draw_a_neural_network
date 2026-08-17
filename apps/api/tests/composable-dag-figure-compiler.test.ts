@@ -28,6 +28,18 @@ describe("ComposableDagFigureCompiler", () => {
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
   });
 
+  it("routes portrait plans from bottom ports to top ports", () => {
+    const intent = { ...defaultFigureIntent(), orientation: "portrait" as const };
+    const result = compileComposableDagFigure({ architectureIr: cnnGoldIr(), intent, layoutSeed: "fixture-seed" });
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+    const firstConnection = result.plan.connections[0]!;
+    const source = result.plan.components.find((component) => component.id === firstConnection.source.nodeId)!;
+    const target = result.plan.components.find((component) => component.id === firstConnection.target.nodeId)!;
+    expect(firstConnection.route[0]).toEqual({ x: source.bounds.x + source.bounds.width / 2, y: source.bounds.y + source.bounds.height });
+    expect(firstConnection.route.at(-1)).toEqual({ x: target.bounds.x + target.bounds.width / 2, y: target.bounds.y });
+  });
+
   it("keeps repeat semantics and evidence in the compiled plan", () => {
     const result = compileComposableDagFigure(input(tokenTransformerGoldIr()));
     expect(result.status).toBe("ready");
@@ -55,6 +67,13 @@ describe("ComposableDagFigureCompiler", () => {
     ];
     const result = compileComposableDagFigure(input(architectureIr));
     expect(result).toMatchObject({ status: "unresolved", unresolved: [{ code: "cycle" }] });
+  });
+
+  it("returns an explicit unresolved result for an unreachable component", () => {
+    const architectureIr = cnnGoldIr();
+    architectureIr.nodes.push({ id: "orphan", kind: "operator", semanticRole: "orphan", inputPorts: [{ id: "in", representation: "vector", semanticType: "data" }], outputPorts: [{ id: "out", representation: "vector", semanticType: "data" }], evidenceIds: ["evidence-main"] });
+    const result = compileComposableDagFigure(input(architectureIr));
+    expect(result).toMatchObject({ status: "unresolved", unresolved: [{ code: "unreachable-component", componentId: "orphan" }] });
   });
 
   it("does not read legacy Canvas geometry or emit renderer commands", () => {

@@ -11,10 +11,11 @@ The plan retains typed ports, repeat semantics, module ownership, evidence IDs, 
 
 ## Focused evidence
 
-- `apps/api/tests/composable-dag-figure-compiler.test.ts`: 9 tests passed.
+- `apps/api/tests/composable-dag-figure-compiler.test.ts`: 11 tests passed.
 - CNN, residual, encoder-decoder, and token-transformer gold IRs compile through the same implementation.
 - Same IR, FigureIntent, and seed produce byte-equivalent plans.
 - Blocking unresolved IR and cyclic topology return explicit unresolved results.
+- Portrait routes use bottom/top endpoints, and unreachable components return an explicit unresolved result.
 
 ## Quality gates
 
