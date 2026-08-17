@@ -1,4 +1,4 @@
-import type { VisioReadback } from "../../src/adapters.js";
+import type { VisioReadback } from "../../src/visio-readback.js";
 
 export function completeVisioReadback(overrides: Partial<VisioReadback> = {}): VisioReadback {
   return {

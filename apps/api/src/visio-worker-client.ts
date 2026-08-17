@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { access, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { ApiErrorCode, FoundationError } from "./domain.js";
-import type { VisioExecutor, VisioHealthResult, VisioReadback } from "./adapters.js";
+import type { VisioExecutor, VisioHealthResult } from "./adapters.js";
+import type { VisioReadback } from "./visio-readback.js";
 import {
   VISIO_PROTOCOL_VERSION,
   parseVisioWorkerResponse,

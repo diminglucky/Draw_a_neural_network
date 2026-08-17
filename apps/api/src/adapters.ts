@@ -3,6 +3,7 @@ import { parseCanvasActionSet, type CanvasActionSet, type CanvasSnapshot } from 
 import { parseAgentTaskIntent, type AgentTaskIntent } from "./agent-intent.js";
 import { parseAnalysisProposal, proposalEvidenceBundle, type AnalysisProposal } from "./analysis-proposal.js";
 import type { EvidenceSource } from "./evidence-bundle.js";
+import type { VisioReadback } from "./visio-readback.js";
 
 export interface ChatInput {
   message: string;
@@ -76,19 +77,6 @@ export interface AgentProvider {
 export interface VisioHealthResult {
   connected: boolean;
   reason?: string;
-}
-
-export interface VisioReadback {
-  valid: boolean;
-  shapeCount: number;
-  connectorCount: number;
-  expectedPrimitiveIds: string[];
-  actualPrimitiveIds: string[];
-  missingPrimitiveIds: string[];
-  expectedConnectorIds: string[];
-  actualConnectorIds: string[];
-  missingConnectorIds: string[];
-  shapeDataFailures: string[];
 }
 
 export interface VisioExecutor {

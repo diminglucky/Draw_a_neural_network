@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { visioReadbackSchema } from "./visio-readback.js";
 
 export const VISIO_PROTOCOL_VERSION = 1 as const;
 
@@ -23,19 +24,6 @@ const visioWorkerRequestSchema = z.object({
   diagram: diagramSchema,
 }).strict();
 
-const readbackSchema = z.object({
-  valid: z.literal(true),
-  shapeCount: z.number().int().nonnegative(),
-  connectorCount: z.number().int().nonnegative(),
-  expectedPrimitiveIds: z.array(identifierSchema),
-  actualPrimitiveIds: z.array(identifierSchema),
-  missingPrimitiveIds: z.array(identifierSchema),
-  expectedConnectorIds: z.array(identifierSchema),
-  actualConnectorIds: z.array(identifierSchema),
-  missingConnectorIds: z.array(identifierSchema),
-  shapeDataFailures: z.array(z.string().trim().min(1).max(2000)),
-}).strict();
-
 const workerErrorSchema = z.object({
   code: identifierSchema,
   message: z.string().trim().min(1).max(2000),
@@ -47,7 +35,7 @@ const visioWorkerResponseSchema = z.object({
   jobId: identifierSchema,
   status: z.enum(["succeeded", "failed"]),
   path: outputPathSchema.nullable().optional(),
-  readback: readbackSchema.nullable().optional(),
+  readback: visioReadbackSchema.nullable().optional(),
   error: workerErrorSchema.nullable().optional(),
 }).strict().superRefine((value, context) => {
   if (value.status === "succeeded") {
