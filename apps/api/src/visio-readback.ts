@@ -3,7 +3,7 @@ import { z } from "zod";
 const identifierSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 
 export interface VisioReadback {
-  valid: boolean;
+  valid: true;
   shapeCount: number;
   connectorCount: number;
   expectedPrimitiveIds: string[];

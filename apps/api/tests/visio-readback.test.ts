@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseVisioReadback } from "../src/visio-readback.js";
+import type { VisioReadback } from "../src/visio-readback.js";
 
 const completeReadback = {
   valid: true,
@@ -23,5 +24,15 @@ describe("Visio readback contract", () => {
     const { missingConnectorIds: _missingConnectorIds, ...incompleteReadback } = completeReadback;
 
     expect(() => parseVisioReadback(incompleteReadback)).toThrow(/missingConnectorIds/);
+  });
+
+  it("rejects readback evidence marked invalid", () => {
+    const invalidReadback: VisioReadback = {
+      ...completeReadback,
+      // @ts-expect-error Canonical readback evidence is valid by definition.
+      valid: false,
+    };
+
+    expect(() => parseVisioReadback(invalidReadback)).toThrow(/valid/);
   });
 });
