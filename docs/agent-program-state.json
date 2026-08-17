@@ -104,7 +104,7 @@
       "acceptance": [{ "id": "M2.2.compiler", "text": "The compiler consumes v3 IR and emits deterministic figure components.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [
         { "kind": "test", "satisfies": ["M2.2.compiler"], "ref": "apps/api/tests/composable-dag-figure-compiler.test.ts", "summary": "Four semantic gold IR families, deterministic output, typed-port preservation, portrait endpoint routing, blocking unresolved input, cycle rejection, and unreachable-topology rejection passed.", "verifiedAt": "2026-08-17T13:17:51.000Z", "commit": "b9320384a3a9210154b2244e8cb3521118fe423a" },
-        { "kind": "document", "satisfies": ["M2.2.compiler"], "ref": "docs/evidence/2026-08-17-m2-2-composable-dag-compiler.md", "summary": "The compiler boundary, deterministic layout rules, topology limits, orientation-aware routing, and quality evidence are recorded.", "verifiedAt": "2026-08-17T13:17:51.000Z", "commit": "b9320384a3a9210154b2244e8cb3521118fe423a" }
+        { "kind": "document", "satisfies": ["M2.2.compiler"], "ref": "docs/evidence/2026-08-17-m2-2-composable-dag-compiler.md", "summary": "The compiler boundary, deterministic layout rules, topology limits, orientation-aware routing, and quality evidence are recorded.", "verifiedAt": "2026-08-17T13:17:51.000Z", "commit": "f9b72d2f1d468d1ea01eff86232cb97e7aed16f6" }
       ],
       "nextAction": "Keep the accepted compiler boundary stable while publication visual QA proceeds.",
       "blockerIds": [],
