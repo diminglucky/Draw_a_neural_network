@@ -74,7 +74,7 @@ export function compileStaticPyTorchToArchitectureIR(
       };
     }),
     processes: [],
-    evidenceIndex: {},
+    evidenceIndex: evidenceIndexFor(analysis),
     unresolved: [],
   };
 
@@ -116,7 +116,7 @@ function compileCandidate(analysis: StaticPyTorchAnalysis, questions: Unresolved
     ],
     edges: [],
     processes: [],
-    evidenceIndex: {},
+    evidenceIndex: evidenceIndexFor(analysis),
     unresolved,
   };
   return parseArchitectureIRv3(ir, analysis.evidence, { renderReady: false });
@@ -130,6 +130,14 @@ interface UnresolvedQuestionInput {
 
 function candidateQuestion(code: string, message: string, locator: UnresolvedQuestionInput["locator"]): UnresolvedQuestionInput {
   return { code, message, locator };
+}
+
+function evidenceIndexFor(analysis: StaticPyTorchAnalysis): ArchitectureIRv3["evidenceIndex"] {
+  return Object.fromEntries(
+    analysis.evidence.facts
+      .filter((fact) => fact.status === "accepted" && fact.evidenceRefs.length > 0)
+      .map((fact) => [fact.id, structuredClone(fact.evidenceRefs)]),
+  );
 }
 
 function firstLocator(analysis: StaticPyTorchAnalysis): UnresolvedQuestionInput["locator"] {

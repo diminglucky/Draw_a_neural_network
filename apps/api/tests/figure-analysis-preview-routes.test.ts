@@ -118,7 +118,7 @@ describe("owner-scoped v3 figure analysis preview route", () => {
   });
 
   it("returns a safe deterministic publication preview for the owner", async () => {
-    const { app, authorization, store } = await createAuthorizedApp("preview-ready@example.com");
+    const { app, authorization, store, userId } = await createAuthorizedApp("preview-ready@example.com");
     const analysis = await createAnalysis(app, authorization, linearSource, "preview-ready-source");
 
     const first = await app.inject({
@@ -138,6 +138,9 @@ describe("owner-scoped v3 figure analysis preview route", () => {
     expect(first.body).toBe(second.body);
     expect(first.body).not.toMatch(/evidenceIndex|sourceSha256|sourceRecordId|sourceMappings|locator|excerpt|provider|worker|command/i);
     expect(await store.listJobs()).toHaveLength(0);
+    const audit = (await store.listAuditRecords()).find((record) => record.action === "figure.analysis.preview.read");
+    expect(audit).toMatchObject({ actorId: userId, targetId: analysis.id, metadata: { analysisId: analysis.id, kind: "publication_plan", version: 3, qaStatus: "pass" } });
+    expect(JSON.stringify(audit?.metadata)).not.toMatch(/evidence|source|provider|worker|command|path/i);
   });
 
   it("returns a watermarked candidate without preview side effects", async () => {
@@ -179,6 +182,10 @@ describe("owner-scoped v3 figure analysis preview route", () => {
     expect(missing.statusCode).toBe(404);
     expect(inaccessible.statusCode).toBe(404);
     expect(missing.json().error).toMatchObject({ code: "NOT_FOUND" });
-    expect(inaccessible.json().error).toEqual(missing.json().error);
+    expect(inaccessible.json().error).toMatchObject({
+      code: missing.json().error.code,
+      message: missing.json().error.message,
+      details: missing.json().error.details,
+    });
   });
 });

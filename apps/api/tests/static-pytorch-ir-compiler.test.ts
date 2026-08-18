@@ -16,6 +16,8 @@ describe("compileStaticPyTorchToArchitectureIR", () => {
     ]);
     expect(ir.nodes.flatMap((node) => node.evidenceIds)).not.toEqual([]);
     expect(ir.edges.flatMap((edge) => edge.evidenceIds)).not.toEqual([]);
+    expect(Object.keys(ir.evidenceIndex)).toEqual(expect.arrayContaining(ir.nodes.flatMap((node) => node.evidenceIds)));
+    expect(Object.keys(ir.evidenceIndex)).toEqual(expect.arrayContaining(ir.edges.flatMap((edge) => edge.evidenceIds)));
   });
 
   it("rejects duplicate accepted input terminal evidence", () => {

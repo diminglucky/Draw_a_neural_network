@@ -18,6 +18,7 @@ import { UniversalFigureExportService } from "./figure-export-service.js";
 import { FigureAnalysisService } from "./figure-analysis-service.js";
 import { parsePyTorchSourcePack, type SourcePack } from "./source-pack.js";
 import { publicFigureAnalysis, type FigureAnalysisRecord } from "./figure-analysis.js";
+import { FigureAnalysisPreviewServiceImpl, type FigureAnalysisPreviewResponse } from "./figure-analysis-preview-service.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -96,6 +97,7 @@ interface RouteOptions {
   universalFigureExportService?: UniversalFigureExportService;
   universalFigureExportRunner?: { submit(jobId: string): void | Promise<void>; cancel?(jobId: string): Promise<unknown> };
   figureAnalysisService: FigureAnalysisService;
+  figureAnalysisPreviewService: FigureAnalysisPreviewServiceImpl;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -213,6 +215,45 @@ async function auditFigureAnalysis(
       unresolvedCount: record.unresolved.length,
       duplicate,
     },
+    createdAt: new Date().toISOString(),
+  });
+}
+
+async function auditFigureAnalysisPreview(
+  store: FoundationStore,
+  userId: string,
+  preview: FigureAnalysisPreviewResponse,
+): Promise<void> {
+  const metadata = preview.kind === "candidate_structure"
+    ? {
+      analysisId: preview.analysis.id,
+      kind: preview.kind,
+      capabilityVersion: preview.analysis.capabilityVersion,
+      version: preview.version,
+      confirmedNodeCount: preview.confirmedNodeIds.length,
+      componentCount: 0,
+      connectionCount: 0,
+      qaStatus: null,
+    }
+    : {
+      analysisId: preview.analysis.id,
+      kind: preview.kind,
+      capabilityVersion: preview.analysis.capabilityVersion,
+      version: preview.version,
+      confirmedNodeCount: 0,
+      componentCount: preview.publicationPlan.components.length,
+      connectionCount: preview.publicationPlan.connections.length,
+      qaStatus: preview.visualQa.status,
+    };
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId: userId,
+    action: "figure.analysis.preview.read",
+    targetType: "figure-analysis",
+    targetId: preview.analysis.id,
+    reason: null,
+    metadata,
     createdAt: new Date().toISOString(),
   });
 }
@@ -929,6 +970,19 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     if (!analysis) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure analysis was not found", 404);
     reply.header("Figure-Version", "3");
     return reply.send(publicFigureAnalysis(analysis));
+  });
+
+  app.get("/api/figure-analyses/:analysisId/preview", async (request, reply) => {
+    figureAnalysisVersion(request);
+    const access = await requireUser(request, options);
+    const params = request.params as { analysisId?: string };
+    if (!params.analysisId || !safeIdentifier(params.analysisId)) {
+      throw validationError("Figure analysis id is invalid", { field: "analysisId", reason: "invalid" });
+    }
+    const preview = await options.figureAnalysisPreviewService.preview(access.user.id, params.analysisId);
+    await auditFigureAnalysisPreview(options.store, access.user.id, preview);
+    reply.header("Figure-Version", "3");
+    return reply.send(preview);
   });
 
   app.post("/api/auth/register", async (request, reply) => {
