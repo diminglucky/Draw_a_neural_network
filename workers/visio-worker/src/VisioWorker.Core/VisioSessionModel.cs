@@ -80,6 +80,37 @@ public sealed record VisioSessionDocument
 
 public sealed record VisioSessionOperationJournalEntry(string OperationId, string PlanHash);
 
+public sealed record VisioSessionCommandReplayEntry
+{
+    public VisioSessionCommandReplayEntry(string requestId, string fingerprint, string status, string outputPath)
+    {
+        RequestId = VisioSessionKey.ValidateIdentifier(requestId, nameof(requestId));
+        if (string.IsNullOrWhiteSpace(fingerprint) || fingerprint.Length != 64 || !fingerprint.All(Uri.IsHexDigit))
+        {
+            throw new ArgumentException("Command replay fingerprint must be a 64-character hexadecimal SHA-256 value.", nameof(fingerprint));
+        }
+
+        if (!string.Equals(status, "succeeded", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Only successful terminal command responses may be persisted for replay.", nameof(status));
+        }
+
+        if (string.IsNullOrWhiteSpace(outputPath) || outputPath.Length > 4096 || outputPath.Any(char.IsControl))
+        {
+            throw new ArgumentException("Command replay output path must be a non-empty bounded path without control characters.", nameof(outputPath));
+        }
+
+        Fingerprint = fingerprint.ToLowerInvariant();
+        Status = status;
+        OutputPath = outputPath;
+    }
+
+    public string RequestId { get; }
+    public string Fingerprint { get; }
+    public string Status { get; }
+    public string OutputPath { get; }
+}
+
 public static class VisioSessionOperationJournal
 {
     // Keeps a persisted recovery record bounded while preserving every accepted operation identity
@@ -101,7 +132,8 @@ public sealed record VisioSessionRecoveryManifest
         string outputPath,
         VisioSessionDocument document,
         string? lastPlanHash,
-        IEnumerable<VisioSessionOperationJournalEntry> operationJournal)
+        IEnumerable<VisioSessionOperationJournalEntry> operationJournal,
+        IEnumerable<VisioSessionCommandReplayEntry>? commandReplayJournal = null)
     {
         Key = key ?? throw new ArgumentNullException(nameof(key));
         if (string.IsNullOrWhiteSpace(outputPath) || outputPath.Length > 4096 || outputPath.Any(char.IsControl))
@@ -113,6 +145,7 @@ public sealed record VisioSessionRecoveryManifest
         Document = document ?? throw new ArgumentNullException(nameof(document));
         LastPlanHash = lastPlanHash is null ? null : new VisioSessionOperation("manifest-plan", lastPlanHash).PlanHash;
         OperationJournal = NormalizeJournal(operationJournal, nameof(operationJournal));
+        CommandReplayJournal = NormalizeCommandReplayJournal(commandReplayJournal ?? [], nameof(commandReplayJournal));
         if (LastPlanHash is not null && !OperationJournal.Any(entry => string.Equals(entry.PlanHash, LastPlanHash, StringComparison.Ordinal)))
         {
             throw new ArgumentException("Recovery manifest last plan hash must be present in its operation journal.", nameof(lastPlanHash));
@@ -124,6 +157,7 @@ public sealed record VisioSessionRecoveryManifest
     public VisioSessionDocument Document { get; }
     public string? LastPlanHash { get; }
     public IReadOnlyList<VisioSessionOperationJournalEntry> OperationJournal { get; }
+    public IReadOnlyList<VisioSessionCommandReplayEntry> CommandReplayJournal { get; }
 
     internal static IReadOnlyList<VisioSessionOperationJournalEntry> NormalizeJournal(
         IEnumerable<VisioSessionOperationJournalEntry> operationJournal,
@@ -150,6 +184,29 @@ public sealed record VisioSessionRecoveryManifest
             .Select(entry => new VisioSessionOperationJournalEntry(entry.Key, entry.Value))
             .ToArray());
     }
+
+    internal static IReadOnlyList<VisioSessionCommandReplayEntry> NormalizeCommandReplayJournal(
+        IEnumerable<VisioSessionCommandReplayEntry> commandReplayJournal,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(commandReplayJournal);
+        var normalized = new Dictionary<string, VisioSessionCommandReplayEntry>(StringComparer.Ordinal);
+        foreach (var entry in commandReplayJournal)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            if (normalized.Count >= VisioSessionOperationJournal.MaximumEntries)
+            {
+                throw new ArgumentException("Recovery manifest command replay journal exceeds the allowed entry limit.", parameterName);
+            }
+
+            if (!normalized.TryAdd(entry.RequestId, entry))
+            {
+                throw new ArgumentException("Recovery manifest command replay journal cannot contain duplicate request identifiers.", parameterName);
+            }
+        }
+
+        return Array.AsReadOnly(normalized.Values.OrderBy(entry => entry.RequestId, StringComparer.Ordinal).ToArray());
+    }
 }
 
 public sealed record VisioSessionSnapshot(
@@ -169,7 +226,7 @@ public interface IVisioSessionBackend
     Task<VisioSessionDocument> OpenOrCreateAsync(VisioSessionKey sessionKey, CancellationToken cancellationToken = default);
     Task ApplyPlanAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default);
     Task ApplyPlanDiffAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default);
-    Task SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default);
+    Task<VisioSessionDocument> SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default);
     Task CloseAsync(VisioSessionDocument document, CancellationToken cancellationToken = default);
-    Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, string outputPath, CancellationToken cancellationToken = default);
+    Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest, CancellationToken cancellationToken = default);
 }

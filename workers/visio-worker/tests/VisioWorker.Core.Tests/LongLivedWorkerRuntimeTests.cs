@@ -97,7 +97,12 @@ public sealed class LongLivedWorkerRuntimeTests
         Assert.NotNull(saved);
         Assert.Equal(1, backend.SaveCalls);
         Assert.Equal(2, backend.CloseCalls);
-        Assert.Equal(saved, await store.LoadAsync(Key()));
+        var afterDiscard = await store.LoadAsync(Key());
+        Assert.NotNull(afterDiscard);
+        Assert.Equal(saved!.Manifest.Document, afterDiscard!.Manifest.Document);
+        Assert.Equal(saved.Manifest.LastPlanHash, afterDiscard.Manifest.LastPlanHash);
+        Assert.Contains(afterDiscard.Manifest.CommandReplayJournal, entry => entry.RequestId == "close-save");
+        Assert.Contains(afterDiscard.Manifest.CommandReplayJournal, entry => entry.RequestId == "close-discard");
     }
 
     [Fact]
@@ -138,7 +143,7 @@ public sealed class LongLivedWorkerRuntimeTests
     public async Task Capacity_checkpoint_failure_rejects_the_new_open_without_creating_a_replacement_document()
     {
         var backend = new RecordingSessionBackend { FailSave = true };
-        await using var runtime = new LongLivedWorkerRuntime(backend, new InMemoryManifestStore(), new FakeWorkerClock(DateTimeOffset.UtcNow), TimeSpan.FromMinutes(15), 1);
+        var runtime = new LongLivedWorkerRuntime(backend, new InMemoryManifestStore(), new FakeWorkerClock(DateTimeOffset.UtcNow), TimeSpan.FromMinutes(15), 1);
         await runtime.ProcessAsync(Open("open-1", "first.vsdx", workflowId: "first"));
         await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a', workflowId: "first"));
 
@@ -147,6 +152,8 @@ public sealed class LongLivedWorkerRuntimeTests
         Assert.Equal(1, backend.OpenOrCreateCalls);
         Assert.Equal(1, backend.SaveCalls);
         Assert.Equal(0, backend.CloseCalls);
+        await runtime.DisposeAsync();
+        Assert.Equal(1, backend.CloseCalls);
     }
 
     [Fact]
@@ -155,13 +162,14 @@ public sealed class LongLivedWorkerRuntimeTests
         var backend = new RecordingSessionBackend { FailRecover = true };
         var store = new InMemoryManifestStore();
         await store.SaveAsync(new VisioSessionRecoveryManifest(Key(), "session.vsdx", new VisioSessionDocument("saved-document", "saved-page"), null, []), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
-        await using var runtime = CreateRuntime(backend, store);
+        var runtime = CreateRuntime(backend, store);
 
         await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Recover("recover-1")));
         await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Open("open-1", "session.vsdx")));
 
         Assert.Equal(1, backend.RecoverCalls);
         Assert.Equal(0, backend.OpenOrCreateCalls);
+        await Assert.ThrowsAsync<WorkerProtocolException>(async () => await runtime.DisposeAsync());
     }
 
     [Fact]
@@ -210,14 +218,169 @@ public sealed class LongLivedWorkerRuntimeTests
         Assert.Equal(0, backend.CloseCalls);
     }
 
+    [Fact]
+    public async Task Same_request_id_with_a_different_diagram_fails_before_a_second_native_apply()
+    {
+        var backend = new RecordingSessionBackend();
+        await using var runtime = CreateRuntime(backend);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        var first = ApplyWithDiagram("apply-1", "operation-1", PlanHash("first diagram"), "first diagram");
+        var changed = ApplyWithDiagram("apply-1", "operation-1", PlanHash("changed diagram"), "changed diagram");
+
+        await runtime.ProcessAsync(first);
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(changed));
+        Assert.Equal(1, backend.ApplyCalls);
+    }
+
+    [Fact]
+    public async Task Apply_rejects_a_supplied_plan_hash_that_does_not_match_the_trusted_mapped_diagram()
+    {
+        var backend = new RecordingSessionBackend();
+        await using var runtime = CreateRuntime(backend);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(ApplyWithDiagram("apply-1", "operation-1", new string('f', 64), "diagram")));
+
+        Assert.Equal(0, backend.ApplyCalls);
+    }
+
+    [Fact]
+    public async Task Recovery_returning_a_different_page_fails_closed_and_releases_the_accidental_native_open()
+    {
+        var backend = new RecordingSessionBackend { RecoveredDocument = new VisioSessionDocument("document-1", "wrong-page") };
+        var store = new InMemoryManifestStore();
+        await store.SaveAsync(new VisioSessionRecoveryManifest(Key(), "session.vsdx", new VisioSessionDocument("document-1", "page-1"), null, []), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        await using var runtime = CreateRuntime(backend, store);
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Recover("recover-1")));
+
+        Assert.Equal(1, backend.RecoverCalls);
+        Assert.Equal(1, backend.CloseCalls);
+        Assert.Empty(backend.OpenDocumentHandles);
+    }
+
+    [Fact]
+    public async Task Uncertain_native_session_remains_a_capacity_occupant_until_released()
+    {
+        var backend = new RecordingSessionBackend { FailApply = true };
+        var runtime = new LongLivedWorkerRuntime(backend, new InMemoryManifestStore(), new FakeWorkerClock(DateTimeOffset.UtcNow), TimeSpan.FromMinutes(15), 1);
+        await runtime.ProcessAsync(Open("open-1", "first.vsdx", workflowId: "first"));
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a', workflowId: "first")));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Open("open-2", "second.vsdx", workflowId: "second")));
+
+        Assert.Equal(1, backend.OpenOrCreateCalls);
+        await runtime.DisposeAsync();
+        Assert.Equal(1, backend.CloseCalls);
+        Assert.Empty(backend.OpenDocumentHandles);
+    }
+
+    [Fact]
+    public async Task Cancellation_after_native_open_marks_the_session_uncertain_and_blocks_snapshot_and_reuse()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var backend = new RecordingSessionBackend { CancelAfterOpen = true, OnOpen = cancellation.Cancel };
+        var runtime = CreateRuntime(backend);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runtime.ProcessAsync(Open("open-1", "session.vsdx"), cancellation.Token));
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Snapshot("snapshot-1")));
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Open("open-2", "session.vsdx")));
+
+        Assert.Equal(1, backend.OpenOrCreateCalls);
+        await Assert.ThrowsAsync<WorkerProtocolException>(async () => await runtime.DisposeAsync());
+    }
+
+    [Fact]
+    public async Task Dispose_surfaces_manifest_save_failure_after_attempting_native_release()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore { FailSave = true };
+        var runtime = CreateRuntime(backend, store);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(async () => await runtime.DisposeAsync());
+
+        Assert.Equal(1, backend.CloseCalls);
+    }
+
+    [Fact]
+    public async Task Dispose_surfaces_native_close_failure_instead_of_silently_succeeding()
+    {
+        var backend = new RecordingSessionBackend { FailClose = true };
+        var runtime = CreateRuntime(backend);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(async () => await runtime.DisposeAsync());
+
+        Assert.Equal(2, backend.CloseCalls);
+    }
+
+    [Fact]
+    public async Task Fresh_runtime_replays_a_durable_save_without_repeating_the_native_save()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using (var first = CreateRuntime(backend, store))
+        {
+            await first.ProcessAsync(Open("open-1", "session.vsdx"));
+            await first.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+            await first.ProcessAsync(Save("save-1", "session.vsdx"));
+            await first.ProcessAsync(Close("close-1", "discard"));
+        }
+
+        await using var second = CreateRuntime(backend, store);
+        var replay = await second.ProcessAsync(Save("save-1", "session.vsdx"));
+
+        Assert.Equal("succeeded", replay.Status);
+        Assert.Equal(1, backend.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Fresh_runtime_replays_a_durable_close_without_repeating_the_native_close()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using (var first = CreateRuntime(backend, store))
+        {
+            await first.ProcessAsync(Open("open-1", "session.vsdx"));
+            await first.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+            await first.ProcessAsync(Save("save-1", "session.vsdx"));
+            await first.ProcessAsync(Close("close-1", "discard"));
+        }
+
+        await using var second = CreateRuntime(backend, store);
+        var replay = await second.ProcessAsync(Close("close-1", "discard"));
+
+        Assert.Equal("succeeded", replay.Status);
+        Assert.Equal(1, backend.CloseCalls);
+    }
+
     private static LongLivedWorkerRuntime CreateRuntime(RecordingSessionBackend backend, InMemoryManifestStore? store = null) =>
         new(backend, store ?? new InMemoryManifestStore(), new FakeWorkerClock(DateTimeOffset.Parse("2026-08-18T00:00:00Z")), TimeSpan.FromMinutes(15), 4);
 
     private static WorkerV2Request Open(string requestId, string outputPath, string userId = "user", string workflowId = "workflow") =>
         new(requestId, WorkerV2Command.Open, Session(userId, workflowId), outputPath, null, null, null, null);
 
-    private static WorkerV2Request Apply(string requestId, string operationId, char hashCharacter, WorkerV2Command command = WorkerV2Command.Apply, string userId = "user", string workflowId = "workflow") =>
-        new(requestId, command, Session(userId, workflowId), null, operationId, new string(hashCharacter, 64), new DiagramEnvelope { Figure = new DiagramFigure { Title = "diagram" } }, null);
+    private static WorkerV2Request Apply(string requestId, string operationId, char hashCharacter, WorkerV2Command command = WorkerV2Command.Apply, string userId = "user", string workflowId = "workflow")
+    {
+        var diagram = new DiagramEnvelope { Figure = new DiagramFigure { Title = "diagram-" + hashCharacter } };
+        return new WorkerV2Request(requestId, command, Session(userId, workflowId), null, operationId, DiagramPlanDigest.Compute(DiagramMapper.Map(diagram)), diagram, null);
+    }
+
+    private static WorkerV2Request ApplyWithDiagram(string requestId, string operationId, string planHash, string title) =>
+        new(requestId, WorkerV2Command.Apply, Session(), null, operationId, planHash, new DiagramEnvelope { Figure = new DiagramFigure { Title = title } }, null);
+
+    private static string PlanHash(string title)
+    {
+        var diagram = new DiagramEnvelope { Figure = new DiagramFigure { Title = title } };
+        return DiagramPlanDigest.Compute(DiagramMapper.Map(diagram));
+    }
+
+    private static WorkerV2Request Save(string requestId, string outputPath) =>
+        new(requestId, WorkerV2Command.Save, Session(), outputPath, null, null, null, null);
 
     private static WorkerV2Request Close(string requestId, string disposition) =>
         new(requestId, WorkerV2Command.Close, Session(), null, null, null, null, disposition);
@@ -241,9 +404,11 @@ public sealed class LongLivedWorkerRuntimeTests
     {
         private readonly Dictionary<VisioSessionKey, StoredSessionRecoveryManifest> _stored = [];
         public bool FailNextLoad { get; set; }
+        public bool FailSave { get; set; }
 
         public Task SaveAsync(VisioSessionRecoveryManifest manifest, DateTimeOffset savedAt, DateTimeOffset lastActivity, CancellationToken cancellationToken = default)
         {
+            if (FailSave) throw new InvalidOperationException("manifest save failed");
             _stored[manifest.Key] = new StoredSessionRecoveryManifest(manifest, savedAt, lastActivity);
             return Task.CompletedTask;
         }
@@ -269,9 +434,15 @@ public sealed class LongLivedWorkerRuntimeTests
         public int CloseCalls { get; private set; }
         public int RecoverCalls { get; private set; }
         public bool FailSave { get; init; }
+        public bool FailApply { get; init; }
         public bool FailRecover { get; init; }
+        public bool FailClose { get; init; }
+        public bool CancelAfterOpen { get; init; }
+        public Action? OnOpen { get; init; }
+        public VisioSessionDocument? RecoveredDocument { get; init; }
         public List<string> CreatedDocuments { get; } = [];
         public List<string> SavedDocuments { get; } = [];
+        public HashSet<string> OpenDocumentHandles { get; } = new(StringComparer.Ordinal);
         public string? RecoveredFromPageHandle { get; private set; }
 
         public string NormalizeOutputPath(string outputPath) => outputPath;
@@ -281,12 +452,19 @@ public sealed class LongLivedWorkerRuntimeTests
             OpenOrCreateCalls++;
             var document = new VisioSessionDocument($"document-{OpenOrCreateCalls}", $"page-{OpenOrCreateCalls}");
             CreatedDocuments.Add(document.DocumentHandle);
+            OpenDocumentHandles.Add(document.DocumentHandle);
+            if (CancelAfterOpen)
+            {
+                OnOpen?.Invoke();
+                throw new OperationCanceledException(cancellationToken);
+            }
             return Task.FromResult(document);
         }
 
         public Task ApplyPlanAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default)
         {
             ApplyCalls++;
+            if (FailApply) throw new InvalidOperationException("apply failed");
             return Task.CompletedTask;
         }
 
@@ -296,26 +474,30 @@ public sealed class LongLivedWorkerRuntimeTests
             return Task.CompletedTask;
         }
 
-        public Task SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
+        public Task<VisioSessionDocument> SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
         {
             SaveCalls++;
             if (FailSave) throw new InvalidOperationException("save failed");
             SavedDocuments.Add(document.DocumentHandle);
-            return Task.CompletedTask;
+            return Task.FromResult(document);
         }
 
         public Task CloseAsync(VisioSessionDocument document, CancellationToken cancellationToken = default)
         {
             CloseCalls++;
+            if (FailClose) throw new InvalidOperationException("close failed");
+            OpenDocumentHandles.Remove(document.DocumentHandle);
             return Task.CompletedTask;
         }
 
-        public Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, string outputPath, CancellationToken cancellationToken = default)
+        public Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest, CancellationToken cancellationToken = default)
         {
             RecoverCalls++;
             if (FailRecover) throw new InvalidOperationException("recover failed");
-            RecoveredFromPageHandle = "page-1";
-            return Task.FromResult(new VisioSessionDocument("recovered-document", RecoveredFromPageHandle));
+            var document = RecoveredDocument ?? manifest.Document;
+            RecoveredFromPageHandle = document.PageHandle;
+            OpenDocumentHandles.Add(document.DocumentHandle);
+            return Task.FromResult(document);
         }
     }
 }

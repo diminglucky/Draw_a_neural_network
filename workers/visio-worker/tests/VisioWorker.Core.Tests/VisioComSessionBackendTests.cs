@@ -166,7 +166,8 @@ public sealed class VisioComSessionBackendTests
             var document = new VisioSessionDocument("document-one", "page-one");
             var safePath = Path.Combine(outputRoot, "session.vsdx");
 
-            var recovered = await backend.RecoverAsync(key, safePath);
+            var recoveryManifest = new VisioSessionRecoveryManifest(key, safePath, new VisioSessionDocument("recovered-document", "recovered-page"), null, []);
+            var recovered = await backend.RecoverAsync(key, recoveryManifest);
             var error = await Assert.ThrowsAsync<WorkerProtocolException>(async () =>
                 await backend.SaveAsAsync(document, Path.Combine(Path.GetTempPath(), "outside.vsdx")));
 
@@ -222,7 +223,7 @@ public sealed class VisioComSessionBackendTests
             TrackThread();
         }
 
-        public void SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
+        public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
         {
             TrackThread();
             SaveCalls++;
@@ -234,6 +235,8 @@ public sealed class VisioComSessionBackendTests
                 SaveStarted.TrySetResult();
                 AllowSave.Task.GetAwaiter().GetResult();
             }
+
+            return document;
         }
 
         public void Close(VisioSessionDocument document)
@@ -242,11 +245,11 @@ public sealed class VisioComSessionBackendTests
             CloseCalls++;
         }
 
-        public VisioSessionDocument Recover(VisioSessionKey sessionKey, string outputPath)
+        public VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest)
         {
             TrackThread();
             RecoverCalls++;
-            return new VisioSessionDocument("recovered-document", "recovered-page");
+            return manifest.Document;
         }
 
         private void TrackThread()

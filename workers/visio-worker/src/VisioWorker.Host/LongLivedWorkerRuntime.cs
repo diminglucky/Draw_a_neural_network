@@ -1,5 +1,7 @@
 using VisioWorker.Core;
 using VisioWorker.Live;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace VisioWorker.Host;
 
@@ -45,7 +47,22 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         {
             ThrowIfDisposed();
             var key = ValidateRequest(request);
-            var fingerprint = RequestFingerprint.For(request);
+            var trusted = PrepareTrustedCommand(request, key);
+            var fingerprint = trusted.Fingerprint;
+
+            if (!_runtimeSessions.ContainsKey(key))
+            {
+                try
+                {
+                    var persistedReplay = await ReplayPersistedCommandAsync(key, request.RequestId, fingerprint, cancellationToken).ConfigureAwait(false);
+                    if (persistedReplay is not null) return persistedReplay;
+                }
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    _runtimeSessions.TryAdd(key, RuntimeSession.CreateUncertain());
+                    throw Fail("Unable to load the worker-owned recovery manifest.", error);
+                }
+            }
 
             if (_runtimeSessions.TryGetValue(key, out var known)
                 && known.Requests.TryGetValue(request.RequestId, out var replay))
@@ -66,13 +83,13 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
 
             var response = request.Command switch
             {
-                WorkerV2Command.Open => await OpenAsync(key, request, cancellationToken).ConfigureAwait(false),
-                WorkerV2Command.Apply => await ApplyAsync(key, request, isDiff: false, cancellationToken).ConfigureAwait(false),
-                WorkerV2Command.ApplyDiff => await ApplyAsync(key, request, isDiff: true, cancellationToken).ConfigureAwait(false),
-                WorkerV2Command.Save => await SaveAsync(key, request, cancellationToken).ConfigureAwait(false),
+                WorkerV2Command.Open => await OpenAsync(key, request, trusted, cancellationToken).ConfigureAwait(false),
+                WorkerV2Command.Apply => await ApplyAsync(key, request, trusted, isDiff: false, cancellationToken).ConfigureAwait(false),
+                WorkerV2Command.ApplyDiff => await ApplyAsync(key, request, trusted, isDiff: true, cancellationToken).ConfigureAwait(false),
+                WorkerV2Command.Save => await SaveAsync(key, request, trusted, cancellationToken).ConfigureAwait(false),
                 WorkerV2Command.Snapshot => Snapshot(key, request),
-                WorkerV2Command.Close => await CloseAsync(key, request, cancellationToken).ConfigureAwait(false),
-                WorkerV2Command.Recover => await RecoverAsync(key, request, cancellationToken).ConfigureAwait(false),
+                WorkerV2Command.Close => await CloseAsync(key, request, trusted, cancellationToken).ConfigureAwait(false),
+                WorkerV2Command.Recover => await RecoverAsync(key, request, trusted, cancellationToken).ConfigureAwait(false),
                 _ => throw new WorkerProtocolException("Unsupported worker command."),
             };
 
@@ -80,6 +97,11 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
             runtimeSession.LastActivity = _clock.UtcNow;
             RecordAcceptedRequest(runtimeSession, request.RequestId, fingerprint, response);
             return response;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (request.Session is not null && _runtimeSessions.TryGetValue(request.Session.ToKey(), out var runtimeSession)) runtimeSession.Uncertain = true;
+            throw;
         }
         finally
         {
@@ -116,11 +138,30 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         {
             if (_disposed) return;
             _disposed = true;
-            foreach (var pair in _runtimeSessions.Where(pair => IsCheckpointSafe(pair.Key, pair.Value)).ToArray())
+            List<Exception>? failures = null;
+            foreach (var pair in _runtimeSessions.Where(pair => IsActive(pair.Key, pair.Value)).ToArray())
             {
-                try { await CheckpointAsync(pair.Key, pair.Value, CancellationToken.None).ConfigureAwait(false); }
-                catch { pair.Value.Uncertain = true; }
+                try
+                {
+                    if (IsCheckpointSafe(pair.Key, pair.Value))
+                    {
+                        await CheckpointAsync(pair.Key, pair.Value, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await ReleaseAsync(pair.Key, CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception error)
+                {
+                    pair.Value.Uncertain = true;
+                    (failures ??= []).Add(error);
+                    try { await ReleaseAsync(pair.Key, CancellationToken.None).ConfigureAwait(false); }
+                    catch (Exception releaseError) { failures.Add(releaseError); }
+                }
             }
+
+            if (failures is not null) throw Fail("Visio worker disposal left one or more native sessions unreleased.", new AggregateException(failures));
         }
         finally
         {
@@ -129,9 +170,22 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         }
     }
 
-    private async Task<WorkerV2Response> OpenAsync(VisioSessionKey key, WorkerV2Request request, CancellationToken cancellationToken)
+    private async Task ReleaseAsync(VisioSessionKey key, CancellationToken cancellationToken)
     {
-        var outputPath = NormalizePath(request.OutputPath!);
+        var snapshot = _sessions.GetSnapshot(key);
+        if (snapshot is null || snapshot.State == VisioSessionState.Closed) return;
+        if (snapshot.State is VisioSessionState.Open or VisioSessionState.Dirty or VisioSessionState.Saving)
+        {
+            await _sessions.CloseAsync(key, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await _sessions.ReleaseUncertainAsync(key, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<WorkerV2Response> OpenAsync(VisioSessionKey key, WorkerV2Request request, TrustedCommand trusted, CancellationToken cancellationToken)
+    {
+        var outputPath = trusted.OutputPath!;
         if (_runtimeSessions.TryGetValue(key, out var existing))
         {
             EnsureCertain(existing);
@@ -162,7 +216,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
             throw new WorkerProtocolException("The requested output path does not match the worker-owned recovery manifest.");
         }
 
-        var runtimeSession = new RuntimeSession(outputPath, _clock.UtcNow);
+        var runtimeSession = new RuntimeSession(outputPath, _clock.UtcNow, stored?.Manifest);
         _runtimeSessions.Add(key, runtimeSession);
         try
         {
@@ -184,13 +238,13 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         }
     }
 
-    private async Task<WorkerV2Response> ApplyAsync(VisioSessionKey key, WorkerV2Request request, bool isDiff, CancellationToken cancellationToken)
+    private async Task<WorkerV2Response> ApplyAsync(VisioSessionKey key, WorkerV2Request request, TrustedCommand trusted, bool isDiff, CancellationToken cancellationToken)
     {
         var runtimeSession = RequireRuntimeSession(key);
         EnsureCertain(runtimeSession);
         try
         {
-            var document = DiagramMapper.Map(request.Diagram!);
+            var document = trusted.Plan!;
             var operation = new VisioSessionOperation(request.OperationId!, request.PlanHash!);
             if (isDiff)
             {
@@ -210,36 +264,39 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         }
     }
 
-    private async Task<WorkerV2Response> SaveAsync(VisioSessionKey key, WorkerV2Request request, CancellationToken cancellationToken)
+    private async Task<WorkerV2Response> SaveAsync(VisioSessionKey key, WorkerV2Request request, TrustedCommand trusted, CancellationToken cancellationToken)
     {
         var runtimeSession = RequireRuntimeSession(key);
         EnsureCertain(runtimeSession);
-        EnsureBoundPath(runtimeSession, NormalizePath(request.OutputPath!));
-        await PersistSavedManifestAsync(key, runtimeSession, cancellationToken).ConfigureAwait(false);
-        return Succeeded(request, runtimeSession.OutputPath);
+        EnsureBoundPath(runtimeSession, trusted.OutputPath!);
+        var response = Succeeded(request, runtimeSession.OutputPath);
+        await PersistSavedManifestAsync(key, runtimeSession, new ReplayEntry(request.RequestId, trusted.Fingerprint, response), cancellationToken).ConfigureAwait(false);
+        return response;
     }
 
     private WorkerV2Response Snapshot(VisioSessionKey key, WorkerV2Request request)
     {
         var runtimeSession = RequireRuntimeSession(key);
         EnsureCertain(runtimeSession);
-        if (_sessions.GetSnapshot(key) is null) throw new WorkerProtocolException("Visio session snapshot is unavailable.");
+        if (_sessions.GetSnapshot(key)?.State is not (VisioSessionState.Open or VisioSessionState.Dirty)) throw new WorkerProtocolException("Visio session snapshot is unavailable.");
         return Succeeded(request, runtimeSession.OutputPath);
     }
 
-    private async Task<WorkerV2Response> CloseAsync(VisioSessionKey key, WorkerV2Request request, CancellationToken cancellationToken)
+    private async Task<WorkerV2Response> CloseAsync(VisioSessionKey key, WorkerV2Request request, TrustedCommand trusted, CancellationToken cancellationToken)
     {
         var runtimeSession = RequireRuntimeSession(key);
         EnsureCertain(runtimeSession);
         if (request.CloseDisposition == "save")
         {
-            await PersistSavedManifestAsync(key, runtimeSession, cancellationToken).ConfigureAwait(false);
+            await PersistSavedManifestAsync(key, runtimeSession, replay: null, cancellationToken).ConfigureAwait(false);
         }
 
         try
         {
             await _sessions.CloseAsync(key, cancellationToken).ConfigureAwait(false);
-            return Succeeded(request, runtimeSession.OutputPath);
+            var response = Succeeded(request, runtimeSession.OutputPath);
+            await PersistTerminalReplayAsync(key, runtimeSession, new ReplayEntry(request.RequestId, trusted.Fingerprint, response), cancellationToken).ConfigureAwait(false);
+            return response;
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -248,7 +305,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         }
     }
 
-    private async Task<WorkerV2Response> RecoverAsync(VisioSessionKey key, WorkerV2Request request, CancellationToken cancellationToken)
+    private async Task<WorkerV2Response> RecoverAsync(VisioSessionKey key, WorkerV2Request request, TrustedCommand trusted, CancellationToken cancellationToken)
     {
         RuntimeSession runtimeSession;
         if (_runtimeSessions.TryGetValue(key, out var existing))
@@ -270,7 +327,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
             }
 
             if (stored is null) throw new WorkerProtocolException("No worker-owned recovery manifest exists for this session.");
-            runtimeSession = new RuntimeSession(stored.Manifest.OutputPath, stored.LastActivity);
+            runtimeSession = new RuntimeSession(stored.Manifest.OutputPath, stored.LastActivity, stored.Manifest);
             _runtimeSessions.Add(key, runtimeSession);
         }
 
@@ -286,6 +343,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
                 ?? throw new WorkerProtocolException("No worker-owned recovery manifest exists for this session.");
             EnsureBoundPath(runtimeSession, stored.Manifest.OutputPath);
             await _sessions.RecoverAsync(key, stored.Manifest, cancellationToken).ConfigureAwait(false);
+            runtimeSession.RestoreManifest(stored.Manifest);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -315,7 +373,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
     {
         try
         {
-            await PersistSavedManifestAsync(key, runtimeSession, cancellationToken).ConfigureAwait(false);
+            await PersistSavedManifestAsync(key, runtimeSession, replay: null, cancellationToken).ConfigureAwait(false);
             await _sessions.CloseAsync(key, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -325,19 +383,50 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         }
     }
 
-    private async Task PersistSavedManifestAsync(VisioSessionKey key, RuntimeSession runtimeSession, CancellationToken cancellationToken)
+    private async Task PersistSavedManifestAsync(VisioSessionKey key, RuntimeSession runtimeSession, ReplayEntry? replay, CancellationToken cancellationToken)
     {
         try
         {
             var saved = await _sessions.SaveAsAsync(key, runtimeSession.OutputPath, cancellationToken).ConfigureAwait(false);
             var manifest = saved.RecoveryManifest ?? throw new WorkerProtocolException("Visio save did not produce a recovery manifest.");
+            manifest = WithCommandReplays(manifest, runtimeSession, replay);
             await _manifestStore.SaveAsync(manifest, _clock.UtcNow, runtimeSession.LastActivity, cancellationToken).ConfigureAwait(false);
+            runtimeSession.RestoreManifest(manifest);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             runtimeSession.Uncertain = true;
             throw Fail("Unable to durably save the Visio session.", error);
         }
+    }
+
+    private async Task PersistTerminalReplayAsync(VisioSessionKey key, RuntimeSession runtimeSession, ReplayEntry replay, CancellationToken cancellationToken)
+    {
+        if (runtimeSession.Manifest is null) return;
+        try
+        {
+            var manifest = WithCommandReplays(runtimeSession.Manifest, runtimeSession, replay);
+            await _manifestStore.SaveAsync(manifest, _clock.UtcNow, runtimeSession.LastActivity, cancellationToken).ConfigureAwait(false);
+            runtimeSession.RestoreManifest(manifest);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            runtimeSession.Uncertain = true;
+            throw Fail("Unable to persist the terminal Visio command replay.", error);
+        }
+    }
+
+    private static VisioSessionRecoveryManifest WithCommandReplays(VisioSessionRecoveryManifest manifest, RuntimeSession runtimeSession, ReplayEntry? additional)
+    {
+        var entries = runtimeSession.Requests.Values
+            .Select(entry => new VisioSessionCommandReplayEntry(entry.RequestId, entry.Fingerprint, entry.Response.Status, entry.Response.OutputPath!))
+            .ToDictionary(entry => entry.RequestId, StringComparer.Ordinal);
+        if (additional is not null)
+        {
+            entries[additional.RequestId] = new VisioSessionCommandReplayEntry(additional.RequestId, additional.Fingerprint, additional.Response.Status, additional.Response.OutputPath!);
+        }
+
+        return new VisioSessionRecoveryManifest(manifest.Key, manifest.OutputPath, manifest.Document, manifest.LastPlanHash, manifest.OperationJournal, entries.Values);
     }
 
     private async Task<StoredSessionRecoveryManifest?> LoadManifestAsync(VisioSessionKey key, CancellationToken cancellationToken)
@@ -355,8 +444,12 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
     private bool IsCheckpointSafe(VisioSessionKey key, RuntimeSession runtimeSession) =>
         !runtimeSession.Uncertain && _sessions.GetSnapshot(key)?.State is VisioSessionState.Open or VisioSessionState.Dirty;
 
-    private bool IsActive(VisioSessionKey key, RuntimeSession runtimeSession) =>
-        !runtimeSession.Uncertain && _sessions.GetSnapshot(key)?.State is VisioSessionState.Open or VisioSessionState.Dirty;
+    private bool IsActive(VisioSessionKey key, RuntimeSession runtimeSession)
+    {
+        var state = _sessions.GetSnapshot(key)?.State;
+        return state != VisioSessionState.Closed
+            && (runtimeSession.Uncertain || state is VisioSessionState.Open or VisioSessionState.Dirty or VisioSessionState.Saving or VisioSessionState.Recovering);
+    }
 
     private static WorkerV2Response Succeeded(WorkerV2Request request, string outputPath) =>
         new(request.RequestId, "succeeded", outputPath);
@@ -365,6 +458,48 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
     {
         try { return _backend.NormalizeOutputPath(outputPath); }
         catch (Exception error) when (error is not OperationCanceledException) { throw Fail("Output path is invalid.", error); }
+    }
+
+    private TrustedCommand PrepareTrustedCommand(WorkerV2Request request, VisioSessionKey key)
+    {
+        try
+        {
+            var outputPath = request.OutputPath is null ? null : NormalizePath(request.OutputPath);
+            DiagramDocument? plan = null;
+            string? digest = null;
+            if (request.Command is WorkerV2Command.Apply or WorkerV2Command.ApplyDiff)
+            {
+                plan = DiagramMapper.Map(request.Diagram!);
+                digest = DiagramPlanDigest.Compute(plan);
+                if (!string.Equals(request.PlanHash, digest, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new WorkerProtocolException("planHash does not match the trusted canonical diagram plan.");
+                }
+            }
+
+            return new TrustedCommand(plan, outputPath, RequestFingerprint.For(request, key, outputPath, digest));
+        }
+        catch (WorkerProtocolException)
+        {
+            throw;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            throw Fail("Worker diagram request is invalid.", error);
+        }
+    }
+
+    private async Task<WorkerV2Response?> ReplayPersistedCommandAsync(VisioSessionKey key, string requestId, string fingerprint, CancellationToken cancellationToken)
+    {
+        var stored = await _manifestStore.LoadAsync(key, cancellationToken).ConfigureAwait(false);
+        var replay = stored?.Manifest.CommandReplayJournal.SingleOrDefault(entry => string.Equals(entry.RequestId, requestId, StringComparison.Ordinal));
+        if (replay is null) return null;
+        if (!string.Equals(replay.Fingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            throw new WorkerProtocolException("requestId is already bound to a different durable command.");
+        }
+
+        return new WorkerV2Response(replay.RequestId, replay.Status, replay.OutputPath);
     }
 
     private static VisioSessionKey ValidateRequest(WorkerV2Request request)
@@ -425,12 +560,18 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
 
     private static void RecordAcceptedRequest(RuntimeSession session, string requestId, string fingerprint, WorkerV2Response response)
     {
+        if (session.Requests.TryGetValue(requestId, out var existing))
+        {
+            if (string.Equals(existing.Fingerprint, fingerprint, StringComparison.Ordinal) && existing.Response == response) return;
+            throw new WorkerProtocolException("requestId is already bound to a different command.");
+        }
+
         if (session.Requests.Count >= VisioSessionOperationJournal.MaximumEntries)
         {
             throw new WorkerProtocolException("Visio session request replay ledger has reached its bounded limit.");
         }
 
-        session.Requests.Add(requestId, new ReplayEntry(fingerprint, response));
+        session.Requests.Add(requestId, new ReplayEntry(requestId, fingerprint, response));
     }
 
     private void ThrowIfDisposed()
@@ -440,25 +581,60 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
 
     private static WorkerProtocolException Fail(string message, Exception error) => new(message, error);
 
-    private sealed class RuntimeSession(string outputPath, DateTimeOffset lastActivity)
+    private sealed class RuntimeSession
     {
+        public RuntimeSession(string outputPath, DateTimeOffset lastActivity, VisioSessionRecoveryManifest? manifest = null)
+        {
+            OutputPath = outputPath;
+            LastActivity = lastActivity;
+            RestoreManifest(manifest);
+        }
+
         public static RuntimeSession CreateUncertain() => new("<unavailable>", DateTimeOffset.MinValue) { Uncertain = true };
 
-        public string OutputPath { get; } = outputPath;
-        public DateTimeOffset LastActivity { get; set; } = lastActivity;
+        public string OutputPath { get; }
+        public DateTimeOffset LastActivity { get; set; }
         public bool Uncertain { get; set; }
         public Dictionary<string, ReplayEntry> Requests { get; } = new(StringComparer.Ordinal);
+        public VisioSessionRecoveryManifest? Manifest { get; private set; }
+
+        public void RestoreManifest(VisioSessionRecoveryManifest? manifest)
+        {
+            Manifest = manifest;
+            if (manifest is null) return;
+            foreach (var replay in manifest.CommandReplayJournal)
+            {
+                Requests[replay.RequestId] = new ReplayEntry(replay.RequestId, replay.Fingerprint, new WorkerV2Response(replay.RequestId, replay.Status, replay.OutputPath));
+            }
+        }
     }
 
-    private sealed record ReplayEntry(string Fingerprint, WorkerV2Response Response);
+    private sealed record ReplayEntry(string RequestId, string Fingerprint, WorkerV2Response Response);
+
+    private sealed record TrustedCommand(DiagramDocument? Plan, string? OutputPath, string Fingerprint);
 
     private static class RequestFingerprint
     {
-        public static string For(WorkerV2Request request) => string.Join("|", [
-            ((int)request.Command).ToString(System.Globalization.CultureInfo.InvariantCulture),
-            request.OutputPath ?? string.Empty,
-            request.OperationId ?? string.Empty,
-            request.PlanHash ?? string.Empty,
-            request.CloseDisposition ?? string.Empty]);
+        public static string For(WorkerV2Request request, VisioSessionKey key, string? outputPath, string? planDigest)
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach (var field in new[]
+            {
+                ((int)request.Command).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                key.TenantId, key.UserId, key.DeviceId, key.WorkflowId,
+                outputPath ?? string.Empty,
+                request.OperationId ?? string.Empty,
+                request.PlanHash ?? string.Empty,
+                planDigest ?? string.Empty,
+                request.CloseDisposition ?? string.Empty,
+            })
+            {
+                var bytes = Encoding.UTF8.GetBytes(field);
+                hash.AppendData(BitConverter.GetBytes(bytes.Length));
+                hash.AppendData(bytes);
+            }
+
+            return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        }
     }
 }

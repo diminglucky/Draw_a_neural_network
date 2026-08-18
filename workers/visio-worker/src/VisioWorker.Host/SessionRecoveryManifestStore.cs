@@ -22,7 +22,7 @@ public interface ISessionRecoveryManifestStore
 /// <summary>Worker-private, fail-closed persistence for recovery manifests.</summary>
 public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
 {
-    private const int CurrentFormatVersion = 1;
+    private const int CurrentFormatVersion = 2;
     private const string FileNameDomain = "visio-worker/session-recovery-manifest";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _outputRoot;
@@ -62,7 +62,8 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
                 normalizedOutputPath,
                 manifest.Document,
                 manifest.LastPlanHash,
-                manifest.OperationJournal);
+                manifest.OperationJournal,
+                manifest.CommandReplayJournal);
             var finalPath = GetPath(manifest.Key, createDirectory: true);
             EnsureRegularOrMissingFile(finalPath);
             temporaryPath = Path.Combine(_manifestRoot, $"{Guid.NewGuid():N}.partial");
@@ -222,8 +223,11 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
         try
         {
             var envelope = ExactProperties(root, "formatVersion", "manifest", "savedAt", "lastActivity");
-            if (RequiredInt(envelope, "formatVersion") != CurrentFormatVersion) throw new WorkerProtocolException("Recovery manifest format is unsupported.");
-            var manifestFields = ExactProperties(envelope["manifest"], "key", "outputPath", "document", "lastPlanHash", "operationJournal");
+            var formatVersion = RequiredInt(envelope, "formatVersion");
+            if (formatVersion is not (1 or CurrentFormatVersion)) throw new WorkerProtocolException("Recovery manifest format is unsupported.");
+            var manifestFields = formatVersion == 1
+                ? ExactProperties(envelope["manifest"], "key", "outputPath", "document", "lastPlanHash", "operationJournal")
+                : ExactProperties(envelope["manifest"], "key", "outputPath", "document", "lastPlanHash", "operationJournal", "commandReplayJournal");
             var keyFields = ExactProperties(manifestFields["key"], "tenantId", "userId", "deviceId", "workflowId");
             var embeddedKey = new VisioSessionKey(
                 RequiredString(keyFields, "tenantId"),
@@ -237,7 +241,8 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
                 PathPolicy.ValidateOutputPath(RequiredString(manifestFields, "outputPath"), _outputRoot),
                 new VisioSessionDocument(RequiredString(documentFields, "documentHandle"), RequiredString(documentFields, "pageHandle")),
                 NullableString(manifestFields["lastPlanHash"]),
-                ParseJournal(manifestFields["operationJournal"]));
+                ParseJournal(manifestFields["operationJournal"]),
+                formatVersion == 1 ? [] : ParseCommandReplayJournal(manifestFields["commandReplayJournal"]));
             return new StoredSessionRecoveryManifest(manifest, RequiredDate(envelope, "savedAt"), RequiredDate(envelope, "lastActivity"));
         }
         catch (WorkerProtocolException error) when (error.InnerException is null)
@@ -257,6 +262,20 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
         {
             var fields = ExactProperties(entry, "operationId", "planHash");
             return new VisioSessionOperationJournalEntry(RequiredString(fields, "operationId"), RequiredString(fields, "planHash"));
+        }).ToArray();
+    }
+
+    private static IReadOnlyList<VisioSessionCommandReplayEntry> ParseCommandReplayJournal(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Array) throw new WorkerProtocolException("Recovery manifest is invalid.");
+        return element.EnumerateArray().Select(entry =>
+        {
+            var fields = ExactProperties(entry, "requestId", "fingerprint", "status", "outputPath");
+            return new VisioSessionCommandReplayEntry(
+                RequiredString(fields, "requestId"),
+                RequiredString(fields, "fingerprint"),
+                RequiredString(fields, "status"),
+                RequiredString(fields, "outputPath"));
         }).ToArray();
     }
 
@@ -334,13 +353,15 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
                 manifest.OutputPath,
                 new PersistedDocument(manifest.Document.DocumentHandle, manifest.Document.PageHandle),
                 manifest.LastPlanHash,
-                manifest.OperationJournal.Select(entry => new PersistedJournalEntry(entry.OperationId, entry.PlanHash)).ToArray()),
+                manifest.OperationJournal.Select(entry => new PersistedJournalEntry(entry.OperationId, entry.PlanHash)).ToArray(),
+                manifest.CommandReplayJournal.Select(entry => new PersistedCommandReplayEntry(entry.RequestId, entry.Fingerprint, entry.Status, entry.OutputPath)).ToArray()),
             savedAt,
             lastActivity);
     }
 
-    private sealed record PersistedManifest(PersistedKey Key, string OutputPath, PersistedDocument Document, string? LastPlanHash, IReadOnlyList<PersistedJournalEntry> OperationJournal);
+    private sealed record PersistedManifest(PersistedKey Key, string OutputPath, PersistedDocument Document, string? LastPlanHash, IReadOnlyList<PersistedJournalEntry> OperationJournal, IReadOnlyList<PersistedCommandReplayEntry> CommandReplayJournal);
     private sealed record PersistedKey(string TenantId, string UserId, string DeviceId, string WorkflowId);
     private sealed record PersistedDocument(string DocumentHandle, string PageHandle);
     private sealed record PersistedJournalEntry(string OperationId, string PlanHash);
+    private sealed record PersistedCommandReplayEntry(string RequestId, string Fingerprint, string Status, string OutputPath);
 }

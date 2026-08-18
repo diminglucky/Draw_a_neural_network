@@ -536,12 +536,13 @@ public sealed class VisioSessionManagerTests
             return Task.CompletedTask;
         }
 
-        public async Task SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
+        public async Task<VisioSessionDocument> SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
         {
             SaveCalls++;
             if (FailSave) throw new InvalidOperationException("simulated partial save failure");
             SaveStarted?.TrySetResult();
             if (AllowSave is not null) await AllowSave.Task.WaitAsync(cancellationToken);
+            return document;
         }
 
         public Task CloseAsync(VisioSessionDocument document, CancellationToken cancellationToken = default)
@@ -551,11 +552,11 @@ public sealed class VisioSessionManagerTests
             return Task.CompletedTask;
         }
 
-        public Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, string outputPath, CancellationToken cancellationToken = default)
+        public Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest, CancellationToken cancellationToken = default)
         {
             RecoverCalls++;
             if (FailRecover) throw new InvalidOperationException("simulated partial recovery failure");
-            return Task.FromResult(new VisioSessionDocument("recovered-document", "recovered-page"));
+            return Task.FromResult(manifest.Document);
         }
     }
 }

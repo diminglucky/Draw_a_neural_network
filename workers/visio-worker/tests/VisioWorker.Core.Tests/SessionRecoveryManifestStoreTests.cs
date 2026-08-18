@@ -20,7 +20,7 @@ public sealed class SessionRecoveryManifestStoreTests
         try
         {
             var store = new SessionRecoveryManifestStore(root);
-            var manifest = CreateManifest(root);
+            var manifest = CreateManifest(root, commandReplayJournal: [new VisioSessionCommandReplayEntry("save-1", new string('a', 64), "succeeded", Path.Combine(root, "workflow.vsdx"))]);
             var savedAt = DateTimeOffset.Parse("2026-08-18T06:00:00Z");
             var lastActivity = DateTimeOffset.Parse("2026-08-18T06:05:00Z");
 
@@ -28,10 +28,33 @@ public sealed class SessionRecoveryManifestStoreTests
             var stored = await store.LoadAsync(manifest.Key);
 
             Assert.NotNull(stored);
-            Assert.Equal(manifest, stored.Manifest);
+            Assert.Equal(manifest.Key, stored!.Manifest.Key);
+            Assert.Equal(manifest.OutputPath, stored.Manifest.OutputPath);
+            Assert.Equal(manifest.Document, stored.Manifest.Document);
+            Assert.Equal(manifest.LastPlanHash, stored.Manifest.LastPlanHash);
+            Assert.Equal(manifest.OperationJournal, stored.Manifest.OperationJournal);
+            Assert.Equal(manifest.CommandReplayJournal, stored.Manifest.CommandReplayJournal);
             Assert.Equal(savedAt, stored.SavedAt);
             Assert.Equal(lastActivity, stored.LastActivity);
             Assert.True(File.Exists(ManifestPath(root, manifest.Key)));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
+    public async Task Load_accepts_a_legacy_v1_manifest_with_an_empty_command_replay_journal()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var store = new SessionRecoveryManifestStore(root);
+            var key = CreateManifest(root).Key;
+            await WriteManifestAsync(root, key, ValidEnvelope("tenant", "user", "device", "workflow", Path.Combine(root, "workflow.vsdx")));
+
+            var stored = await store.LoadAsync(key);
+
+            Assert.NotNull(stored);
+            Assert.Empty(stored!.Manifest.CommandReplayJournal);
         }
         finally { DeleteRoot(root); }
     }
@@ -120,7 +143,7 @@ public sealed class SessionRecoveryManifestStoreTests
         {
             var store = new SessionRecoveryManifestStore(root);
             var key = CreateManifest(root).Key;
-            var json = "{\"formatVersion\":2,\"manifest\":" + ManifestJson(key, Path.Combine(root, "workflow.vsdx")) + ",\"savedAt\":\"2026-08-18T06:00:00+00:00\",\"lastActivity\":\"2026-08-18T06:00:00+00:00\"}";
+            var json = "{\"formatVersion\":3,\"manifest\":" + ManifestJson(key, Path.Combine(root, "workflow.vsdx")) + ",\"savedAt\":\"2026-08-18T06:00:00+00:00\",\"lastActivity\":\"2026-08-18T06:00:00+00:00\"}";
             await WriteManifestAsync(root, key, json);
 
             await Assert.ThrowsAsync<WorkerProtocolException>(() => store.LoadAsync(key));
@@ -286,12 +309,17 @@ public sealed class SessionRecoveryManifestStoreTests
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() + ".json";
     }
 
-    private static VisioSessionRecoveryManifest CreateManifest(string root, string? outputPath = null, string documentHandle = "document") => new(
+    private static VisioSessionRecoveryManifest CreateManifest(
+        string root,
+        string? outputPath = null,
+        string documentHandle = "document",
+        IEnumerable<VisioSessionCommandReplayEntry>? commandReplayJournal = null) => new(
         new VisioSessionKey("tenant", "user", "device", "workflow"),
         outputPath ?? Path.Combine(root, "workflow.vsdx"),
         new VisioSessionDocument(documentHandle, "page"),
         null,
-        []);
+        [],
+        commandReplayJournal);
 
     private static string CreateRoot()
     {

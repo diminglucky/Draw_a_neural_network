@@ -60,9 +60,9 @@ public sealed class VisioComSessionOperationsTests
         var key = new VisioSessionKey("tenant-one", "user-one", "device-one", "workflow-one");
         var document = operations.OpenOrCreate(key);
 
-        operations.SaveAs(document, "C:\\exports\\session.partial.vsdx", "C:\\exports\\session.vsdx");
-        operations.Close(document);
-        var recovered = operations.Recover(key, "C:\\exports\\session.vsdx");
+        var saved = operations.SaveAs(document, "C:\\exports\\session.partial.vsdx", "C:\\exports\\session.vsdx");
+        operations.Close(saved);
+        var recovered = operations.Recover(key, new VisioSessionRecoveryManifest(key, "C:\\exports\\session.vsdx", saved, null, []));
         operations.ApplyPlanDiff(recovered, LegacyPlan("recovered"));
 
         Assert.Equal(1, native.SaveCalls);
@@ -71,7 +71,7 @@ public sealed class VisioComSessionOperationsTests
         Assert.Equal(1, native.RecoverCalls);
         Assert.Single(native.OwnershipMarkers);
         Assert.Matches("^[A-F0-9]{64}$", native.OwnershipMarkers.Single());
-        Assert.Equal("recovered-document", recovered.DocumentHandle);
+        Assert.Equal(saved, recovered);
     }
 
     private static DiagramDocument LegacyPlan(string nodeId) => new(
@@ -104,18 +104,19 @@ public sealed class VisioComSessionOperationsTests
             OwnershipMarkers.Add(ownershipMarker);
         }
 
-        public void SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
+        public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
         {
             SaveCalls++;
             SaveArguments.Add((temporaryPath, finalPath));
+            return document;
         }
 
         public void Close(VisioSessionDocument document) => CloseCalls++;
 
-        public VisioSessionDocument Recover(VisioSessionKey sessionKey, string outputPath)
+        public VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest)
         {
             RecoverCalls++;
-            return new VisioSessionDocument("recovered-document", "recovered-page");
+            return manifest.Document;
         }
     }
 }

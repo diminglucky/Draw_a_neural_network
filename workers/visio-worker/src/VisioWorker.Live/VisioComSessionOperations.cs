@@ -12,9 +12,9 @@ public interface IVisioComSessionNative
 {
     VisioSessionDocument OpenOrCreate(VisioSessionKey sessionKey);
     void ReplaceOwnedShapes(VisioSessionDocument document, string ownershipMarker, DiagramDocument plan);
-    void SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath);
+    VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath);
     void Close(VisioSessionDocument document);
-    VisioSessionDocument Recover(VisioSessionKey sessionKey, string outputPath);
+    VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest);
 }
 
 /// <summary>
@@ -50,11 +50,13 @@ public sealed class VisioComSessionOperations : IVisioComSessionOperations, IDis
 
     public void ApplyPlanDiff(VisioSessionDocument document, DiagramDocument plan) => ReplacePlan(document, plan);
 
-    public void SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
+    public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
     {
         ThrowIfDisposed();
         var session = RequireSession(document);
-        _native.SaveAs(session.Document, temporaryPath, finalPath);
+        var saved = _native.SaveAs(session.Document, temporaryPath, finalPath);
+        ReplaceRegistration(session.Key, session.Document, saved);
+        return saved;
     }
 
     public void Close(VisioSessionDocument document)
@@ -66,7 +68,7 @@ public sealed class VisioComSessionOperations : IVisioComSessionOperations, IDis
         _keysByDocumentHandle.Remove(session.Document.DocumentHandle);
     }
 
-    public VisioSessionDocument Recover(VisioSessionKey sessionKey, string outputPath)
+    public VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(sessionKey);
@@ -75,7 +77,7 @@ public sealed class VisioComSessionOperations : IVisioComSessionOperations, IDis
             throw new InvalidOperationException("An open Visio session cannot be replaced through recovery.");
         }
 
-        var document = _native.Recover(sessionKey, outputPath);
+        var document = _native.Recover(sessionKey, manifest);
         Register(sessionKey, document);
         return document;
     }
@@ -111,6 +113,18 @@ public sealed class VisioComSessionOperations : IVisioComSessionOperations, IDis
 
         _sessions.Add(key, new ActiveSession(key, document));
         _keysByDocumentHandle.Add(document.DocumentHandle, key);
+    }
+
+    private void ReplaceRegistration(VisioSessionKey key, VisioSessionDocument prior, VisioSessionDocument saved)
+    {
+        if (_keysByDocumentHandle.TryGetValue(saved.DocumentHandle, out var existingKey) && existingKey != key)
+        {
+            throw new InvalidOperationException("The native backend returned one document handle for different Visio sessions.");
+        }
+
+        _sessions[key] = new ActiveSession(key, saved);
+        _keysByDocumentHandle.Remove(prior.DocumentHandle);
+        _keysByDocumentHandle[saved.DocumentHandle] = key;
     }
 
     private ActiveSession RequireSession(VisioSessionDocument document)
@@ -191,7 +205,7 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         TagNewShapes(native.Page, existingShapeIds, ownershipMarker);
     }
 
-    public void SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
+    public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
     {
         ThrowIfDisposed();
         var native = RequireDocument(document);
@@ -202,8 +216,10 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         File.Move(temporaryPath, finalPath, overwrite: true);
         dynamic reopened = _documentsCollection!.Open(finalPath);
         dynamic page = reopened.Pages.Item(1);
-        native.Document = reopened;
-        native.Page = page;
+        var saved = StableDocumentIdentity(finalPath, page);
+        _documents.Remove(document.DocumentHandle);
+        _documents.Add(saved.DocumentHandle, new NativeDocument(saved, reopened, page));
+        return saved;
     }
 
     public void Close(VisioSessionDocument document)
@@ -218,15 +234,32 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         ReleaseApplicationIfIdle();
     }
 
-    public VisioSessionDocument Recover(VisioSessionKey sessionKey, string outputPath)
+    public VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest)
     {
         ThrowIfDisposed();
         EnsureApplication();
-        dynamic document = _documentsCollection!.Open(outputPath);
-        dynamic page = document.Pages.Item(1);
-        var result = new VisioSessionDocument("visio-document-" + Guid.NewGuid().ToString("N"), "visio-page-" + Guid.NewGuid().ToString("N"));
-        _documents.Add(result.DocumentHandle, new NativeDocument(result, document, page));
-        return result;
+        dynamic? document = null;
+        dynamic? page = null;
+        try
+        {
+            document = _documentsCollection!.Open(manifest.OutputPath);
+            page = FindExpectedPage(document, manifest.Document, manifest.OutputPath);
+            var result = StableDocumentIdentity(manifest.OutputPath, page);
+            if (result != manifest.Document) throw new WorkerProtocolException("Recovered Visio document/page identity does not match the recovery manifest.");
+            _documents.Add(result.DocumentHandle, new NativeDocument(result, document, page));
+            document = null;
+            page = null;
+            return result;
+        }
+        finally
+        {
+            if (document is not null)
+            {
+                VisioComEngine.TryClose(document);
+                VisioComEngine.ReleaseCom(page);
+                VisioComEngine.ReleaseCom(document);
+            }
+        }
     }
 
     public void Dispose()
@@ -264,6 +297,49 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
             throw new InvalidOperationException("The supplied Visio document handle is not open in the COM session.");
         }
         return native;
+    }
+
+    private static VisioSessionDocument StableDocumentIdentity(string outputPath, dynamic page)
+    {
+        var normalizedPath = Path.GetFullPath(outputPath);
+        var pageId = Convert.ToInt32(page.ID, System.Globalization.CultureInfo.InvariantCulture);
+        var documentHandle = "visio-vsdx-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalizedPath))).ToLowerInvariant();
+        return new VisioSessionDocument(documentHandle, documentHandle + "-page-" + pageId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static dynamic FindExpectedPage(dynamic document, VisioSessionDocument expected, string outputPath)
+    {
+        dynamic? matched = null;
+        dynamic? pages = null;
+        try
+        {
+            pages = document.Pages;
+            var count = Convert.ToInt32(pages.Count, System.Globalization.CultureInfo.InvariantCulture);
+            for (var index = 1; index <= count; index++)
+            {
+                dynamic? candidate = null;
+                try
+                {
+                    candidate = pages.Item(index);
+                    if (StableDocumentIdentity(outputPath, candidate) == expected)
+                    {
+                        matched = candidate;
+                        candidate = null;
+                        break;
+                    }
+                }
+                finally
+                {
+                    VisioComEngine.ReleaseCom(candidate);
+                }
+            }
+        }
+        finally
+        {
+            VisioComEngine.ReleaseCom(pages);
+        }
+
+        return matched ?? throw new WorkerProtocolException("Recovered Visio VSDX does not contain the manifest page identity.");
     }
 
     private static void DeleteOwnedShapes(dynamic page, string ownershipMarker)

@@ -12,9 +12,9 @@ public interface IVisioComSessionOperations
     VisioSessionDocument OpenOrCreate(VisioSessionKey sessionKey);
     void ApplyPlan(VisioSessionDocument document, DiagramDocument plan);
     void ApplyPlanDiff(VisioSessionDocument document, DiagramDocument plan);
-    void SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath);
+    VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath);
     void Close(VisioSessionDocument document);
-    VisioSessionDocument Recover(VisioSessionKey sessionKey, string outputPath);
+    VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest);
 }
 
 /// <summary>
@@ -77,7 +77,7 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
         return InvokeAsync(() => _operations.ApplyPlanDiff(document, plan), cancellationToken);
     }
 
-    public async Task SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
+    public async Task<VisioSessionDocument> SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(document);
@@ -86,7 +86,7 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
         var temporaryPath = finalPath + $".{Guid.NewGuid():N}.partial.vsdx";
         try
         {
-            await InvokeAsync(() => _operations.SaveAs(document, temporaryPath, finalPath), cancellationToken).ConfigureAwait(false);
+            return await InvokeAsync(() => _operations.SaveAs(document, temporaryPath, finalPath), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -101,12 +101,14 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
         return InvokeAsync(() => _operations.Close(document), cancellationToken);
     }
 
-    public Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, string outputPath, CancellationToken cancellationToken = default)
+    public Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(sessionKey);
-        var finalPath = NormalizeOutputPath(outputPath);
-        return InvokeAsync(() => _operations.Recover(sessionKey, finalPath), cancellationToken);
+        ArgumentNullException.ThrowIfNull(manifest);
+        if (manifest.Key != sessionKey) throw new WorkerProtocolException("Recovery manifest session does not match the requested session.");
+        _ = NormalizeOutputPath(manifest.OutputPath);
+        return InvokeAsync(() => _operations.Recover(sessionKey, manifest), cancellationToken);
     }
 
     public async ValueTask DisposeAsync()

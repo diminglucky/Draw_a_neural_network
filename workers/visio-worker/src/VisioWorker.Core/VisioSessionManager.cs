@@ -90,11 +90,13 @@ public sealed class VisioSessionManager
             entry.Publish(saving);
             try
             {
-                await _backend.SaveAsAsync(saving.Document!, normalizedOutputPath, cancellationToken).ConfigureAwait(false);
-                var manifest = CreateRecoveryManifest(key, normalizedOutputPath, saving);
+                var persistedDocument = await _backend.SaveAsAsync(saving.Document!, normalizedOutputPath, cancellationToken).ConfigureAwait(false);
+                var persisted = saving with { Document = persistedDocument };
+                var manifest = CreateRecoveryManifest(key, normalizedOutputPath, persisted);
                 entry.Publish(saving with
                 {
                     State = VisioSessionState.Open,
+                    Document = persistedDocument,
                     LastSavedPath = normalizedOutputPath,
                     RecoveryManifest = manifest,
                 });
@@ -147,6 +149,37 @@ public sealed class VisioSessionManager
         }
     }
 
+    /// <summary>Attempts to release a known native handle after a fail-closed transition.</summary>
+    public async Task<VisioSessionSnapshot> ReleaseUncertainAsync(VisioSessionKey key, CancellationToken cancellationToken = default)
+    {
+        var entry = GetOrCreate(key);
+        await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var current = entry.Current;
+            if (current.State != VisioSessionState.Recovering || current.Document is null)
+            {
+                throw new InvalidOperationException("The uncertain Visio session has no provable native handle to release.");
+            }
+
+            try
+            {
+                await _backend.CloseAsync(current.Document, cancellationToken).ConfigureAwait(false);
+                entry.Publish(current with { State = VisioSessionState.Closed, Document = null, NativeHandleUncertain = false });
+                return entry.Snapshot(key);
+            }
+            catch
+            {
+                entry.Publish(current with { NativeHandleUncertain = true });
+                throw;
+            }
+        }
+        finally
+        {
+            entry.Gate.Release();
+        }
+    }
+
     public async Task<VisioSessionSnapshot> RecoverAsync(
         VisioSessionKey key,
         VisioSessionRecoveryManifest manifest,
@@ -174,7 +207,22 @@ public sealed class VisioSessionManager
             entry.Publish(recovering);
             try
             {
-                var document = await _backend.RecoverAsync(key, normalizedOutputPath, cancellationToken).ConfigureAwait(false);
+                var document = await _backend.RecoverAsync(key, manifest, cancellationToken).ConfigureAwait(false);
+                if (document != manifest.Document)
+                {
+                    try
+                    {
+                        await _backend.CloseAsync(document, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        entry.Publish(recovering with { NativeHandleUncertain = true });
+                        throw new InvalidOperationException("Recovery returned a different Visio document or page and the accidental native open could not be released.");
+                    }
+
+                    entry.Publish(recovering with { State = VisioSessionState.Closed, RecoveryManifest = manifest });
+                    throw new InvalidOperationException("Recovery returned a different Visio document or page.");
+                }
                 var restoredJournal = ToJournal(manifest.OperationJournal);
                 var recovered = recovering with
                 {
@@ -194,7 +242,10 @@ public sealed class VisioSessionManager
             {
                 // Do not silently close after recovery fails: callers must resolve this state rather
                 // than retrying into a second document/page for the same workflow.
-                entry.Publish(recovering with { NativeHandleUncertain = true });
+                if (entry.Current.State != VisioSessionState.Closed)
+                {
+                    entry.Publish(recovering with { NativeHandleUncertain = true });
+                }
                 throw;
             }
         }
