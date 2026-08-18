@@ -54,7 +54,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
             {
                 try
                 {
-                    var persistedReplay = await ReplayPersistedCommandAsync(key, request.RequestId, fingerprint, cancellationToken).ConfigureAwait(false);
+                    var persistedReplay = await ReplayPersistedCommandAsync(key, request.RequestId, request.Command, fingerprint, cancellationToken).ConfigureAwait(false);
                     if (persistedReplay is not null) return persistedReplay;
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
@@ -533,7 +533,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         }
     }
 
-    private async Task<WorkerV2Response?> ReplayPersistedCommandAsync(VisioSessionKey key, string requestId, string fingerprint, CancellationToken cancellationToken)
+    private async Task<WorkerV2Response?> ReplayPersistedCommandAsync(VisioSessionKey key, string requestId, WorkerV2Command command, string fingerprint, CancellationToken cancellationToken)
     {
         var stored = await _manifestStore.LoadAsync(key, cancellationToken).ConfigureAwait(false);
         if (stored is null) return null;
@@ -541,6 +541,10 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         var replay = stored.Manifest.CommandReplayJournal.SingleOrDefault(entry => string.Equals(entry.RequestId, requestId, StringComparison.Ordinal));
         if (replay is null) return null;
         if (!string.Equals(replay.Fingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            throw new WorkerProtocolException("requestId is already bound to a different durable command.");
+        }
+        if (replay.Command != ToReplayCommand(command))
         {
             throw new WorkerProtocolException("requestId is already bound to a different durable command.");
         }

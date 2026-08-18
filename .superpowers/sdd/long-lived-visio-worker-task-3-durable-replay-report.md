@@ -56,3 +56,58 @@ Result: 0 warnings, 0 errors.
 ## Remaining acceptance boundary
 
 This Task 3 delivery supplies Core/Host source and automated-worker evidence. The brief explicitly excludes Live COM and native document/page metadata, so real Visio COM/VSDX acceptance is not claimed here.
+
+## Follow-up fix: bind the persisted replay command to the retried request
+
+Follow-up baseline: `8b4999f` in the same `commercial-foundation` worktree. The fix is limited to `LongLivedWorkerRuntime.cs`, `LongLivedWorkerRuntimeTests.cs`, and this report. The two existing user-untracked plan files, `Program.cs`, Live COM, API/UI, and other protocol surface were not changed.
+
+### RED evidence
+
+Added two in-memory format-3 replay regressions before the Runtime change:
+
+- A persisted `close` entry altered to `open` must reject the retried original `close` request before recovery/native work.
+- A persisted stateful `apply` entry altered to `close` must reject the retried original `apply` request before recovery/native work.
+
+Focused execution before the production edit:
+
+```powershell
+dotnet test .\workers\visio-worker\tests\VisioWorker.Core.Tests\VisioWorker.Core.Tests.csproj --no-restore --filter 'FullyQualifiedName~LongLivedWorkerRuntimeTests' --logger 'console;verbosity=minimal'
+```
+
+Result: 35 tests executed, 33 passed, 2 failed. Both new regressions failed with `Assert.Throws() Failure: No exception was thrown`, confirming that the persisted command was being used without binding it to the retried request command.
+
+### GREEN and full verification evidence
+
+The Runtime now receives the parsed `WorkerV2Command` and compares its existing internal enum mapping with the persisted `VisioSessionReplayCommand` immediately after fingerprint validation and before response-only close handling, capacity checks, or recovery.
+
+Focused Runtime suite:
+
+```powershell
+dotnet test .\workers\visio-worker\tests\VisioWorker.Core.Tests\VisioWorker.Core.Tests.csproj --no-restore --filter 'FullyQualifiedName~LongLivedWorkerRuntimeTests' --logger 'console;verbosity=minimal'
+```
+
+Result: 35 passed, 0 failed, 0 skipped.
+
+Full Worker suite:
+
+```powershell
+dotnet test .\workers\visio-worker\VisioWorker.sln --no-restore --logger 'console;verbosity=minimal'
+```
+
+Result: 121 passed, 0 failed, 1 skipped. The skipped test is the existing `VisioComSessionLiveAcceptanceTests.Same_live_session_draws_updates_saves_closes_and_recovers_one_editable_vsdx` live COM acceptance test.
+
+Release build:
+
+```powershell
+dotnet build .\workers\visio-worker\VisioWorker.sln --configuration Release --no-restore -clp:ErrorsOnly
+```
+
+Result: 0 warnings, 0 errors.
+
+Diff check:
+
+```powershell
+git diff --check 08d06d8..HEAD
+```
+
+Result: passed with no whitespace errors.

@@ -342,6 +342,60 @@ public sealed class LongLivedWorkerRuntimeTests
         Assert.Equal(2, backend.SaveCalls);
     }
 
+    [Fact]
+    public async Task Fresh_runtime_rejects_replayed_close_when_persisted_command_is_open_before_recovery_or_native_work()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using (var first = CreateRuntime(backend, store))
+        {
+            await first.ProcessAsync(Open("open-1", "session.vsdx"));
+            await first.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+            await first.ProcessAsync(Close("close-1", "discard"));
+        }
+
+        store.ReplaceReplayCommand(Key(), "close-1", VisioSessionReplayCommand.Open);
+        var openCallsBeforeReplay = backend.OpenOrCreateCalls;
+        var applyCallsBeforeReplay = backend.ApplyCalls;
+        var closeCallsBeforeReplay = backend.CloseCalls;
+        var recoverCallsBeforeReplay = backend.RecoverCalls;
+        await using var second = CreateRuntime(backend, store);
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => second.ProcessAsync(Close("close-1", "discard")));
+
+        Assert.Equal(openCallsBeforeReplay, backend.OpenOrCreateCalls);
+        Assert.Equal(applyCallsBeforeReplay, backend.ApplyCalls);
+        Assert.Equal(closeCallsBeforeReplay, backend.CloseCalls);
+        Assert.Equal(recoverCallsBeforeReplay, backend.RecoverCalls);
+    }
+
+    [Fact]
+    public async Task Fresh_runtime_rejects_replayed_stateful_command_when_persisted_command_is_close_before_recovery_or_native_work()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using (var first = CreateRuntime(backend, store))
+        {
+            await first.ProcessAsync(Open("open-1", "session.vsdx"));
+            await first.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+            await first.ProcessAsync(Close("close-1", "discard"));
+        }
+
+        store.ReplaceReplayCommand(Key(), "apply-1", VisioSessionReplayCommand.Close);
+        var openCallsBeforeReplay = backend.OpenOrCreateCalls;
+        var applyCallsBeforeReplay = backend.ApplyCalls;
+        var closeCallsBeforeReplay = backend.CloseCalls;
+        var recoverCallsBeforeReplay = backend.RecoverCalls;
+        await using var second = CreateRuntime(backend, store);
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => second.ProcessAsync(Apply("apply-1", "operation-1", 'a')));
+
+        Assert.Equal(openCallsBeforeReplay, backend.OpenOrCreateCalls);
+        Assert.Equal(applyCallsBeforeReplay, backend.ApplyCalls);
+        Assert.Equal(closeCallsBeforeReplay, backend.CloseCalls);
+        Assert.Equal(recoverCallsBeforeReplay, backend.RecoverCalls);
+    }
+
     [Theory]
     [InlineData("open")]
     [InlineData("apply")]
@@ -619,6 +673,37 @@ public sealed class LongLivedWorkerRuntimeTests
             }
 
             return Task.FromResult(_stored.TryGetValue(key, out var stored) ? stored : null);
+        }
+
+        public void ReplaceReplayCommand(VisioSessionKey key, string requestId, VisioSessionReplayCommand command)
+        {
+            var stored = _stored[key];
+            if (stored.FormatVersion != SessionRecoveryManifestStore.CurrentFormatVersion)
+            {
+                throw new InvalidOperationException("Test replay mutation requires a format-3 manifest.");
+            }
+
+            var entries = stored.Manifest.CommandReplayJournal
+                .Select(entry => string.Equals(entry.RequestId, requestId, StringComparison.Ordinal)
+                    ? new VisioSessionCommandReplayEntry(entry.RequestId, command, entry.Fingerprint, entry.Status, entry.OutputPath)
+                    : entry)
+                .ToArray();
+            if (entries.All(entry => !string.Equals(entry.RequestId, requestId, StringComparison.Ordinal)))
+            {
+                throw new KeyNotFoundException(requestId);
+            }
+
+            _stored[key] = new StoredSessionRecoveryManifest(
+                new VisioSessionRecoveryManifest(
+                    stored.Manifest.Key,
+                    stored.Manifest.OutputPath,
+                    stored.Manifest.Document,
+                    stored.Manifest.LastPlanHash,
+                    stored.Manifest.OperationJournal,
+                    entries),
+                stored.SavedAt,
+                stored.LastActivity,
+                stored.FormatVersion);
         }
     }
 
