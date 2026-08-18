@@ -6,8 +6,8 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md"
   },
-  "updatedAt": "2026-08-18T09:59:11.823Z",
-  "currentFocus": "M2.4",
+  "updatedAt": "2026-08-18T02:39:47.192Z",
+  "currentFocus": "M2.5",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
     { "id": "M1", "title": "Static source analysis", "status": "accepted" },
@@ -133,12 +133,18 @@
       "id": "M2.4",
       "milestoneId": "M2",
       "title": "Owner-scoped v3 preview route",
-      "status": "planned",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M2.2", "M2.3"],
       "outcome": "Owners can inspect safe previews and candidate structures never compile.",
       "acceptance": [{ "id": "M2.4.route", "text": "The preview route is authenticated and ownership scoped.", "requiredEvidenceKinds": ["test", "document"] }],
-      "evidence": [],
-      "nextAction": "Implement after compiler and visual QA acceptance.",
+      "evidence": [
+        { "kind": "test", "satisfies": ["M2.4.route"], "ref": "apps/api/tests/figure-analysis-preview-routes.test.ts", "summary": "The focused M2.4 route/service/compiler suite passed with 8 files and 64 tests, including authentication, owner scope, candidate short-circuit, ready M2.3 QA, deterministic safe projection, and unchanged v2 compatibility.", "verifiedAt": "2026-08-18T02:36:56.567Z", "commit": "75f92c43f6a496a532481781ed5d6e2a69cfd5fd" },
+        { "kind": "typecheck", "satisfies": ["M2.4.route"], "ref": "docs/evidence/2026-08-18-m2-4-owner-scoped-v3-preview-route.md", "summary": "Strict TypeScript compilation passed with exit code 0.", "verifiedAt": "2026-08-18T02:36:56.567Z", "commit": "75f92c43f6a496a532481781ed5d6e2a69cfd5fd" },
+        { "kind": "commit", "satisfies": ["M2.4.route"], "ref": "apps/api/src/routes.ts", "summary": "The owner-scoped v3 preview route and service wiring are recorded in the implementation revision.", "verifiedAt": "2026-08-18T02:36:56.567Z", "commit": "75f92c43f6a496a532481781ed5d6e2a69cfd5fd" },
+        { "kind": "document", "satisfies": ["M2.4.route"], "ref": "docs/evidence/2026-08-18-m2-4-owner-scoped-v3-preview-route.md", "summary": "The accepted structured-preview boundary and explicit non-acceptance of artifact, Worker, and real Visio gates are recorded.", "verifiedAt": "2026-08-18T02:36:56.567Z", "commit": "75f92c43f6a496a532481781ed5d6e2a69cfd5fd" }
+      ],
+      "nextAction": "Begin M2.5 immutable PlanSnapshot binding.",
       "blockerIds": [],
       "successorId": null
     },

@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-18T09:59:11.823Z`
+Updated: `2026-08-18T02:39:47.192Z`
 Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md](./superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md)
 
 ## Current Focus
 
-- M2.4: Owner-scoped v3 preview route
+- M2.5: Immutable PlanSnapshot binding
 - Status: planned
-- Outcome: Owners can inspect safe previews and candidate structures never compile.
-- Next action: Implement after compiler and visual QA acceptance.
+- Outcome: Passing previews bind to immutable hashes and invalidate on visual changes.
+- Next action: Implement after the preview route is accepted.
 
 ## Milestones
 
@@ -23,7 +23,7 @@ Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-m
 
 ## Executable Nodes
 
-- M2.4: Owner-scoped v3 preview route
+- M2.5: Immutable PlanSnapshot binding
 
 ## Open Blockers
 
