@@ -12,7 +12,7 @@ public interface IVisioComSessionNative
 {
     VisioSessionDocument OpenOrCreate(VisioSessionKey sessionKey);
     void ReplaceOwnedShapes(VisioSessionDocument document, string ownershipMarker, DiagramDocument plan);
-    VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath);
+    VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath, Action originalClosed);
     void Close(VisioSessionDocument document);
     VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest);
 }
@@ -54,8 +54,8 @@ public sealed class VisioComSessionOperations : IVisioComSessionOperations, IDis
     {
         ThrowIfDisposed();
         var session = RequireSession(document);
-        var saved = _native.SaveAs(session.Document, temporaryPath, finalPath);
-        ReplaceRegistration(session.Key, session.Document, saved);
+        var saved = _native.SaveAs(session.Document, temporaryPath, finalPath, () => RemoveRegistration(session));
+        Register(session.Key, saved);
         return saved;
     }
 
@@ -127,18 +127,6 @@ public sealed class VisioComSessionOperations : IVisioComSessionOperations, IDis
 
         _sessions.Add(key, new ActiveSession(key, document));
         _keysByDocumentHandle.Add(document.DocumentHandle, key);
-    }
-
-    private void ReplaceRegistration(VisioSessionKey key, VisioSessionDocument prior, VisioSessionDocument saved)
-    {
-        if (_keysByDocumentHandle.TryGetValue(saved.DocumentHandle, out var existingKey) && existingKey != key)
-        {
-            throw new InvalidOperationException("The native backend returned one document handle for different Visio sessions.");
-        }
-
-        _sessions[key] = new ActiveSession(key, saved);
-        _keysByDocumentHandle.Remove(prior.DocumentHandle);
-        _keysByDocumentHandle[saved.DocumentHandle] = key;
     }
 
     private void RemoveRegistration(ActiveSession session)
@@ -250,13 +238,16 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         TagNewShapes(native.Page, existingShapeIds, ownershipMarker);
     }
 
-    public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
+    public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath, Action originalClosed)
     {
         ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(originalClosed);
         var native = RequireDocument(document);
         RequireNativeIdentity(document);
         native.Document.SaveAs(temporaryPath);
         native.Document.Close();
+        _documents.Remove(document.DocumentHandle);
+        originalClosed();
         VisioComEngine.ReleaseCom(native.Page);
         VisioComEngine.ReleaseCom(native.Document);
         File.Move(temporaryPath, finalPath, overwrite: true);
@@ -437,11 +428,18 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
                 try
                 {
                     candidate = pages.Item(index);
-                    if (string.Equals(ReadPageIdentity(candidate), expected.NativePageIdentity, StringComparison.Ordinal))
+                    var candidateIdentity = ReadPageIdentityOrNull(candidate);
+                    if (candidateIdentity is not null
+                        && string.Equals(candidateIdentity, expected.NativePageIdentity, StringComparison.Ordinal))
                     {
+                        if (matched is not null)
+                        {
+                            VisioComEngine.ReleaseCom(matched);
+                            matched = null;
+                            throw new WorkerProtocolException("Recovered Visio VSDX contains more than one page with the manifest page identity.");
+                        }
                         matched = candidate;
                         candidate = null;
-                        break;
                     }
                 }
                 finally
@@ -516,13 +514,13 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         }
     }
 
-    private static string ReadPageIdentity(dynamic page)
+    private static string? ReadPageIdentityOrNull(dynamic page)
     {
         dynamic? pageSheet = null;
         try
         {
             pageSheet = page.PageSheet;
-            return ReadRequiredIdentity(pageSheet, NativeIdentity.PageShapeDataKey);
+            return ReadIdentityOrNull(pageSheet, NativeIdentity.PageShapeDataKey);
         }
         finally
         {
@@ -542,6 +540,19 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
     private static string ReadRequiredIdentity(dynamic shapeSheet, string key)
     {
         string? identity = VisioComEngine.ReadShapeDataOrNullStrict((object)shapeSheet, key);
+        return identity is null
+            ? throw new WorkerProtocolException("Native Visio session identity is missing or invalid.")
+            : ValidateIdentity(identity);
+    }
+
+    private static string? ReadIdentityOrNull(dynamic shapeSheet, string key)
+    {
+        var identity = VisioComEngine.ReadShapeDataOrNullStrict((object)shapeSheet, key);
+        return identity is null ? null : ValidateIdentity(identity);
+    }
+
+    private static string ValidateIdentity(string identity)
+    {
         if (identity is null || identity.Length != 32 || !identity.All(Uri.IsHexDigit))
         {
             throw new WorkerProtocolException("Native Visio session identity is missing or invalid.");
