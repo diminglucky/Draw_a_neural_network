@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -14,70 +15,59 @@ public sealed record StoredSessionRecoveryManifest(
 
 public interface ISessionRecoveryManifestStore
 {
-    Task SaveAsync(
-        VisioSessionRecoveryManifest manifest,
-        DateTimeOffset savedAt,
-        DateTimeOffset lastActivity,
-        CancellationToken cancellationToken = default);
-
-    Task<StoredSessionRecoveryManifest?> LoadAsync(
-        VisioSessionKey key,
-        CancellationToken cancellationToken = default);
+    Task SaveAsync(VisioSessionRecoveryManifest manifest, DateTimeOffset savedAt, DateTimeOffset lastActivity, CancellationToken cancellationToken = default);
+    Task<StoredSessionRecoveryManifest?> LoadAsync(VisioSessionKey key, CancellationToken cancellationToken = default);
 }
 
-/// <summary>
-/// Worker-private persistence for recovery manifests. Manifest filenames are opaque hashes of their
-/// session tuple and are never part of the protocol surface.
-/// </summary>
+/// <summary>Worker-private, fail-closed persistence for recovery manifests.</summary>
 public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
 {
     private const int CurrentFormatVersion = 1;
+    private const string FileNameDomain = "visio-worker/session-recovery-manifest";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _outputRoot;
     private readonly string _manifestRoot;
+    private readonly Func<string, Exception?>? _failureFactory;
 
-    public SessionRecoveryManifestStore(string outputRoot)
+    public SessionRecoveryManifestStore(string outputRoot) : this(outputRoot, failureFactory: null) { }
+
+    // A private test seam keeps deterministic I/O failure proof out of the worker protocol surface.
+    private SessionRecoveryManifestStore(string outputRoot, Func<string, Exception?>? failureFactory)
     {
-        if (string.IsNullOrWhiteSpace(outputRoot)) throw new WorkerProtocolException("Recovery manifest storage is unavailable.");
-
         try
         {
+            if (string.IsNullOrWhiteSpace(outputRoot)) throw new ArgumentException();
             _outputRoot = Path.GetFullPath(outputRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (string.IsNullOrWhiteSpace(_outputRoot)) throw new WorkerProtocolException("Recovery manifest storage is unavailable.");
+            if (string.IsNullOrWhiteSpace(_outputRoot)) throw new ArgumentException();
             _manifestRoot = Path.Combine(_outputRoot, ".synapse-sessions");
+            _failureFactory = failureFactory;
         }
-        catch (WorkerProtocolException)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
-            throw;
-        }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            throw new WorkerProtocolException("Recovery manifest storage is unavailable.", error);
+            throw Failure("Recovery manifest storage is unavailable.");
         }
     }
 
-    public async Task SaveAsync(
-        VisioSessionRecoveryManifest manifest,
-        DateTimeOffset savedAt,
-        DateTimeOffset lastActivity,
-        CancellationToken cancellationToken = default)
+    public async Task SaveAsync(VisioSessionRecoveryManifest manifest, DateTimeOffset savedAt, DateTimeOffset lastActivity, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         cancellationToken.ThrowIfCancellationRequested();
+        string? temporaryPath = null;
 
-        string temporaryPath = string.Empty;
         try
         {
             var normalizedOutputPath = PathPolicy.ValidateOutputPath(manifest.OutputPath, _outputRoot);
-            var storedManifest = new VisioSessionRecoveryManifest(
+            var persistedManifest = new VisioSessionRecoveryManifest(
                 manifest.Key,
                 normalizedOutputPath,
                 manifest.Document,
                 manifest.LastPlanHash,
                 manifest.OperationJournal);
             var finalPath = GetPath(manifest.Key, createDirectory: true);
+            EnsureRegularOrMissingFile(finalPath);
             temporaryPath = Path.Combine(_manifestRoot, $"{Guid.NewGuid():N}.partial");
 
+            ThrowInjected("open-write");
             await using (var stream = new FileStream(
                 temporaryPath,
                 FileMode.CreateNew,
@@ -86,29 +76,34 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
-                await JsonSerializer.SerializeAsync(stream, PersistedEnvelope.From(storedManifest, savedAt, lastActivity), JsonOptions, cancellationToken);
+                await JsonSerializer.SerializeAsync(stream, PersistedEnvelope.From(persistedManifest, savedAt, lastActivity), JsonOptions, cancellationToken);
                 await stream.FlushAsync(cancellationToken);
+                ThrowInjected("flush");
                 stream.Flush(flushToDisk: true);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureManifestDirectory(createDirectory: true);
+            EnsureRegularOrMissingFile(finalPath);
+            ThrowInjected("replace");
             File.Move(temporaryPath, finalPath, overwrite: true);
+            temporaryPath = null;
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (WorkerProtocolException)
+        catch (WorkerProtocolException error) when (error.InnerException is null)
         {
             throw;
         }
-        catch (Exception error) when (IsStorageException(error))
+        catch (Exception error) when (error is not OperationCanceledException)
         {
-            throw new WorkerProtocolException("Unable to persist recovery manifest.", error);
+            throw Failure("Unable to persist recovery manifest.");
         }
         finally
         {
-            if (!string.IsNullOrEmpty(temporaryPath)) TryDeletePartial(temporaryPath);
+            if (temporaryPath is not null) TryDeletePartial(temporaryPath);
         }
     }
 
@@ -120,165 +115,214 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
         try
         {
             var path = GetPath(key, createDirectory: false);
-            if (!File.Exists(path)) return null;
-
-            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous);
+            EnsureRegularOrMissingFile(path);
+            ThrowInjected("open-read");
+            await using var stream = OpenRead(path);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var stored = ParseEnvelope(document.RootElement, key);
-            return stored;
+            return ParseEnvelope(document.RootElement, key);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (WorkerProtocolException)
+        catch (WorkerProtocolException error) when (error.InnerException is null)
         {
             throw;
         }
-        catch (Exception error) when (IsStorageException(error))
+        catch (Exception error) when (error is not OperationCanceledException)
         {
-            throw new WorkerProtocolException("Unable to load recovery manifest.", error);
+            throw Failure("Unable to load recovery manifest.");
         }
     }
 
-    // Intended solely for focused storage tests; no worker protocol exposes this implementation detail.
-    public string GetPathForTesting(VisioSessionKey key) => GetPath(key, createDirectory: true);
+    private FileStream OpenRead(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous);
 
     private string GetPath(VisioSessionKey key, bool createDirectory)
     {
-        ArgumentNullException.ThrowIfNull(key);
         try
         {
-            if (createDirectory) Directory.CreateDirectory(_manifestRoot);
-            var path = Path.Combine(_manifestRoot, SessionFileName(key));
-            var fullPath = Path.GetFullPath(path);
-            var rootWithSeparator = Path.GetFullPath(_manifestRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            if (!fullPath.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase))
-                throw new WorkerProtocolException("Recovery manifest storage is unavailable.");
-            return fullPath;
+            EnsureManifestDirectory(createDirectory);
+            var path = Path.GetFullPath(Path.Combine(_manifestRoot, SessionFileName(key)));
+            var expectedPrefix = _manifestRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!path.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase)) throw new IOException();
+            return path;
         }
-        catch (WorkerProtocolException)
+        catch (WorkerProtocolException error) when (error.InnerException is null)
         {
             throw;
         }
-        catch (Exception error) when (IsStorageException(error))
+        catch (Exception error) when (error is not OperationCanceledException)
         {
-            throw new WorkerProtocolException("Recovery manifest storage is unavailable.", error);
+            throw Failure("Recovery manifest storage is unavailable.");
         }
+    }
+
+    private void EnsureManifestDirectory(bool createDirectory)
+    {
+        EnsureExistingDirectoryPathHasNoReparsePoints(_outputRoot);
+        try
+        {
+            EnsureExistingDirectoryPathHasNoReparsePoints(_manifestRoot);
+        }
+        catch (FileNotFoundException) when (createDirectory)
+        {
+            Directory.CreateDirectory(_manifestRoot);
+            EnsureExistingDirectoryPathHasNoReparsePoints(_manifestRoot);
+        }
+        catch (DirectoryNotFoundException) when (createDirectory)
+        {
+            Directory.CreateDirectory(_manifestRoot);
+            EnsureExistingDirectoryPathHasNoReparsePoints(_manifestRoot);
+        }
+    }
+
+    private static void EnsureExistingDirectoryPathHasNoReparsePoints(string directoryPath)
+    {
+        var fullPath = Path.GetFullPath(directoryPath);
+        var root = Path.GetPathRoot(fullPath) ?? throw new IOException();
+        var current = root;
+        ValidateDirectorySegment(current);
+        var remainder = fullPath[root.Length..].Trim(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (remainder.Length == 0) return;
+
+        foreach (var segment in remainder.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            ValidateDirectorySegment(current);
+        }
+    }
+
+    private static void ValidateDirectorySegment(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.Directory) == 0 || (attributes & FileAttributes.ReparsePoint) != 0) throw new IOException();
+    }
+
+    private static void EnsureRegularOrMissingFile(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) throw new IOException();
+        }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
     }
 
     private StoredSessionRecoveryManifest ParseEnvelope(JsonElement root, VisioSessionKey requestedKey)
     {
         try
         {
-            var envelope = ExactProperties(root, "recovery manifest", "formatVersion", "manifest", "savedAt", "lastActivity");
-            if (RequiredInt(envelope, "formatVersion") != CurrentFormatVersion)
-                throw new WorkerProtocolException("Recovery manifest format is unsupported.");
-
-            var manifestFields = ExactProperties(envelope["manifest"], "recovery manifest payload", "key", "outputPath", "document", "lastPlanHash", "operationJournal");
-            var keyFields = ExactProperties(manifestFields["key"], "recovery manifest key", "tenantId", "userId", "deviceId", "workflowId");
+            var envelope = ExactProperties(root, "formatVersion", "manifest", "savedAt", "lastActivity");
+            if (RequiredInt(envelope, "formatVersion") != CurrentFormatVersion) throw new WorkerProtocolException("Recovery manifest format is unsupported.");
+            var manifestFields = ExactProperties(envelope["manifest"], "key", "outputPath", "document", "lastPlanHash", "operationJournal");
+            var keyFields = ExactProperties(manifestFields["key"], "tenantId", "userId", "deviceId", "workflowId");
             var embeddedKey = new VisioSessionKey(
                 RequiredString(keyFields, "tenantId"),
                 RequiredString(keyFields, "userId"),
                 RequiredString(keyFields, "deviceId"),
                 RequiredString(keyFields, "workflowId"));
             if (embeddedKey != requestedKey) throw new WorkerProtocolException("Recovery manifest session does not match the request.");
-
-            var documentFields = ExactProperties(manifestFields["document"], "recovery manifest document", "documentHandle", "pageHandle");
-            var journal = ParseJournal(manifestFields["operationJournal"]);
-            var lastPlanHash = NullableString(manifestFields["lastPlanHash"], "lastPlanHash");
-            var outputPath = PathPolicy.ValidateOutputPath(RequiredString(manifestFields, "outputPath"), _outputRoot);
+            var documentFields = ExactProperties(manifestFields["document"], "documentHandle", "pageHandle");
             var manifest = new VisioSessionRecoveryManifest(
                 embeddedKey,
-                outputPath,
+                PathPolicy.ValidateOutputPath(RequiredString(manifestFields, "outputPath"), _outputRoot),
                 new VisioSessionDocument(RequiredString(documentFields, "documentHandle"), RequiredString(documentFields, "pageHandle")),
-                lastPlanHash,
-                journal);
-            return new StoredSessionRecoveryManifest(
-                manifest,
-                RequiredDate(envelope, "savedAt"),
-                RequiredDate(envelope, "lastActivity"));
+                NullableString(manifestFields["lastPlanHash"]),
+                ParseJournal(manifestFields["operationJournal"]));
+            return new StoredSessionRecoveryManifest(manifest, RequiredDate(envelope, "savedAt"), RequiredDate(envelope, "lastActivity"));
         }
-        catch (WorkerProtocolException)
+        catch (WorkerProtocolException error) when (error.InnerException is null)
         {
             throw;
         }
-        catch (Exception error) when (error is ArgumentException or FormatException or InvalidOperationException)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
-            throw new WorkerProtocolException("Recovery manifest is invalid.", error);
+            throw Failure("Recovery manifest is invalid.");
         }
     }
 
     private static IReadOnlyList<VisioSessionOperationJournalEntry> ParseJournal(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Array) throw new WorkerProtocolException("Recovery manifest is invalid.");
-        var entries = new List<VisioSessionOperationJournalEntry>();
-        foreach (var entry in element.EnumerateArray())
+        return element.EnumerateArray().Select(entry =>
         {
-            var fields = ExactProperties(entry, "recovery manifest operation", "operationId", "planHash");
-            entries.Add(new VisioSessionOperationJournalEntry(RequiredString(fields, "operationId"), RequiredString(fields, "planHash")));
-        }
-
-        return entries;
+            var fields = ExactProperties(entry, "operationId", "planHash");
+            return new VisioSessionOperationJournalEntry(RequiredString(fields, "operationId"), RequiredString(fields, "planHash"));
+        }).ToArray();
     }
 
-    private static Dictionary<string, JsonElement> ExactProperties(JsonElement element, string context, params string[] names)
+    private static Dictionary<string, JsonElement> ExactProperties(JsonElement element, params string[] names)
     {
         if (element.ValueKind != JsonValueKind.Object) throw new WorkerProtocolException("Recovery manifest is invalid.");
-        var properties = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         foreach (var property in element.EnumerateObject())
-        {
-            if (!properties.TryAdd(property.Name, property.Value)) throw new WorkerProtocolException("Recovery manifest is invalid.");
-        }
-
-        var expected = new HashSet<string>(names, StringComparer.Ordinal);
-        if (!expected.SetEquals(properties.Keys)) throw new WorkerProtocolException("Recovery manifest is invalid.");
-        return properties;
+            if (!fields.TryAdd(property.Name, property.Value)) throw new WorkerProtocolException("Recovery manifest is invalid.");
+        if (!new HashSet<string>(names, StringComparer.Ordinal).SetEquals(fields.Keys)) throw new WorkerProtocolException("Recovery manifest is invalid.");
+        return fields;
     }
 
-    private static string RequiredString(IReadOnlyDictionary<string, JsonElement> properties, string name) => RequiredString(properties[name], name);
+    private static string RequiredString(IReadOnlyDictionary<string, JsonElement> fields, string name) => RequiredString(fields[name]);
 
-    private static string RequiredString(JsonElement element, string name)
+    private static string RequiredString(JsonElement element)
     {
-        if (element.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(element.GetString()))
-            throw new WorkerProtocolException("Recovery manifest is invalid.");
+        if (element.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(element.GetString())) throw new WorkerProtocolException("Recovery manifest is invalid.");
         return element.GetString()!;
     }
 
-    private static string? NullableString(JsonElement element, string name)
-    {
-        if (element.ValueKind == JsonValueKind.Null) return null;
-        return RequiredString(element, name);
-    }
+    private static string? NullableString(JsonElement element) => element.ValueKind == JsonValueKind.Null ? null : RequiredString(element);
 
-    private static int RequiredInt(IReadOnlyDictionary<string, JsonElement> properties, string name)
+    private static int RequiredInt(IReadOnlyDictionary<string, JsonElement> fields, string name)
     {
-        if (properties[name].ValueKind != JsonValueKind.Number || !properties[name].TryGetInt32(out var value))
-            throw new WorkerProtocolException("Recovery manifest is invalid.");
+        if (fields[name].ValueKind != JsonValueKind.Number || !fields[name].TryGetInt32(out var value)) throw new WorkerProtocolException("Recovery manifest is invalid.");
         return value;
     }
 
-    private static DateTimeOffset RequiredDate(IReadOnlyDictionary<string, JsonElement> properties, string name)
+    private static DateTimeOffset RequiredDate(IReadOnlyDictionary<string, JsonElement> fields, string name)
     {
-        var value = RequiredString(properties, name);
-        if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var date))
-            throw new WorkerProtocolException("Recovery manifest is invalid.");
+        if (!DateTimeOffset.TryParse(RequiredString(fields, name), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var date)) throw new WorkerProtocolException("Recovery manifest is invalid.");
         return date;
     }
 
-    private static string SessionFileName(VisioSessionKey key)
+    private static string SessionFileName(VisioSessionKey key) => SessionFileNameForTuple(key.TenantId, key.UserId, key.DeviceId, key.WorkflowId);
+
+    private static string SessionFileNameForTuple(string tenantId, string userId, string deviceId, string workflowId)
     {
-        var tuple = string.Join("\n", key.TenantId, key.UserId, key.DeviceId, key.WorkflowId);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(tuple))).ToLowerInvariant() + ".json";
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(Encoding.UTF8.GetBytes(FileNameDomain));
+        hash.AppendData([0, 1]);
+        Span<byte> length = stackalloc byte[sizeof(int)];
+        foreach (var field in new[] { tenantId, userId, deviceId, workflowId })
+        {
+            var bytes = Encoding.UTF8.GetBytes(field);
+            BinaryPrimitives.WriteInt32BigEndian(length, bytes.Length);
+            hash.AppendData(length);
+            hash.AppendData(bytes);
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() + ".json";
     }
 
-    private static bool IsStorageException(Exception error) =>
-        error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException or JsonException;
+    private void ThrowInjected(string operation)
+    {
+        var failure = _failureFactory?.Invoke(operation);
+        if (failure is not null) throw failure;
+    }
+
+    private static WorkerProtocolException Failure(string message) => new(message);
 
     private static void TryDeletePartial(string path)
     {
         try { File.Delete(path); }
-        catch (Exception error) when (IsStorageException(error)) { }
+        catch (Exception) { }
     }
 
     private sealed record PersistedEnvelope(int FormatVersion, PersistedManifest Manifest, DateTimeOffset SavedAt, DateTimeOffset LastActivity)
