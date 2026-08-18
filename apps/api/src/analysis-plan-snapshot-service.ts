@@ -7,7 +7,10 @@ import {
   type AnalysisPlanSnapshotOwner,
   projectSafePublicationPlan,
 } from "./analysis-plan-snapshot.js";
-import type { AnalysisPlanSnapshotStore } from "./analysis-plan-snapshot-store.js";
+import {
+  AnalysisPlanSnapshotStoreConflictError,
+  type AnalysisPlanSnapshotStore,
+} from "./analysis-plan-snapshot-store.js";
 import type { FigureAnalysisRecord } from "./figure-analysis.js";
 import { projectPublicComposableDagPublicationPlan, type PublicComposableDagPublicationPlan } from "./figure-analysis-preview-service.js";
 import type { FigureIntent } from "./figure-intent.js";
@@ -22,6 +25,8 @@ export const AnalysisPlanSnapshotErrorCode = {
   OWNER_MISMATCH: "ANALYSIS_PLAN_SNAPSHOT_OWNER_MISMATCH",
   NOT_READY: "ANALYSIS_PLAN_SNAPSHOT_NOT_READY",
   INVALID: "ANALYSIS_PLAN_SNAPSHOT_INVALID",
+  CONFLICT: "ANALYSIS_PLAN_SNAPSHOT_CONFLICT",
+  STORE_FAILURE: "ANALYSIS_PLAN_SNAPSHOT_STORE_FAILURE",
 } as const;
 
 export class AnalysisPlanSnapshotError extends FoundationError {
@@ -56,10 +61,14 @@ export class AnalysisPlanSnapshotService {
   async create(input: CreateAnalysisPlanSnapshotRequest): Promise<AnalysisPlanSnapshot> {
     if (input.analysis.userId !== input.owner.userId) throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.OWNER_MISMATCH, "AnalysisPlanSnapshot owner does not match the analysis owner", 403);
     if (input.analysis.status !== "ready_for_preview") throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.NOT_READY, "AnalysisPlanSnapshot requires a ready analysis", 409);
+    if (input.analysis.blockingQuestion || input.analysis.unresolved.some((item) => item.severity === "blocking")) {
+      throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.NOT_READY, "AnalysisPlanSnapshot requires an analysis without blocking unresolved items", 409);
+    }
     if (!input.analysis.architectureIR) throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.INVALID, "AnalysisPlanSnapshot requires a validated architecture IR", 409);
     const validated = validateArchitectureIRv3(input.analysis.architectureIR, undefined, { renderReady: true });
     if (!validated.valid || !validated.ir) throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.INVALID, "AnalysisPlanSnapshot requires a render-ready architecture IR", 409);
 
+    let snapshot: AnalysisPlanSnapshot;
     try {
       const compiled = buildComposableDagPublicationPlan({
         architectureIr: validated.ir,
@@ -83,7 +92,7 @@ export class AnalysisPlanSnapshotService {
       if (canonicalJson(input.visualQa) !== canonicalJson(expectedVisualQa)) {
         throw new Error("AnalysisPlanSnapshot visual QA is not bound to the compiled publication plan");
       }
-      const snapshot = createAnalysisPlanSnapshot({
+      snapshot = createAnalysisPlanSnapshot({
         tenantId: input.owner.tenantId,
         userId: input.owner.userId,
         analysisId: input.analysis.id,
@@ -96,10 +105,18 @@ export class AnalysisPlanSnapshotService {
         previewArtifactHashes: input.previewArtifactHashes,
         createdAt: input.createdAt,
       });
-      return await this.options.store.insert(input.owner, snapshot);
     } catch (error) {
       if (error instanceof FoundationError) throw error;
       throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.INVALID, "AnalysisPlanSnapshot input is invalid", 400);
+    }
+
+    try {
+      return await this.options.store.insert(input.owner, snapshot);
+    } catch (error) {
+      if (error instanceof AnalysisPlanSnapshotStoreConflictError) {
+        throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.CONFLICT, "AnalysisPlanSnapshot already exists", 409);
+      }
+      throw new AnalysisPlanSnapshotError(AnalysisPlanSnapshotErrorCode.STORE_FAILURE, "AnalysisPlanSnapshot could not be persisted", 500);
     }
   }
 

@@ -82,8 +82,10 @@ export function canonicalJson(value: unknown): string {
 }
 
 const stableIdentifierSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
-const boundedVersionSchema = z.string().trim().min(1).max(128);
-const boundedTextSchema = z.string().min(1).max(256);
+const stableVersionSchema = stableIdentifierSchema;
+const semanticCaptionSchema = safeDisplayText(256);
+const safeVisualQaMessageSchema = safeDisplayText(512);
+const colorTokenSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 const finiteNumberSchema = z.number().finite();
 const boundsSchema = z.object({
   x: finiteNumberSchema,
@@ -125,7 +127,7 @@ const repeatSchema = z.object({
 const componentSchema = z.object({
   id: stableIdentifierSchema,
   kind: z.enum(["terminal", "operator", "merge", "attention", "repeat"]),
-  semanticRole: boundedTextSchema,
+  semanticRole: semanticCaptionSchema,
   parentModuleId: stableIdentifierSchema.nullable(),
   bounds: boundsSchema,
   inputPorts: z.array(figurePortSchema).max(64),
@@ -151,18 +153,18 @@ const figureIntentSchema = z.object({
   stylePreset: z.enum(["publication_neutral", "publication_monochrome"]),
 }).strict();
 const componentStyleSchema = z.object({
-  fill: z.string().min(1).max(32),
-  stroke: z.string().min(1).max(32),
+  fill: colorTokenSchema,
+  stroke: colorTokenSchema,
   grayscalePattern: z.enum(["solid", "stripe", "dot", "hatch", "none"]),
 }).strict();
 const connectionStyleSchema = z.object({
-  stroke: z.string().min(1).max(32),
+  stroke: colorTokenSchema,
   grayscalePattern: z.enum(["solid", "dash", "dot", "double"]),
   thickness: finiteNumberSchema.positive().max(32),
 }).strict();
 const visualSpecSchema = z.object({
   page: z.object({
-    background: z.string().min(1).max(32),
+    background: colorTokenSchema,
     minMargin: finiteNumberSchema.nonnegative(),
     minFontSizePt: finiteNumberSchema.positive().max(128),
     minContrastRatio: finiteNumberSchema.nonnegative().max(21),
@@ -178,7 +180,7 @@ const visualSpecSchema = z.object({
   labels: z.array(z.object({
     id: stableIdentifierSchema,
     semanticId: stableIdentifierSchema,
-    text: boundedTextSchema,
+    text: semanticCaptionSchema,
     bounds: boundsSchema,
     fontSizePt: finiteNumberSchema.positive().max(128),
   }).strict()).max(512),
@@ -186,30 +188,30 @@ const visualSpecSchema = z.object({
 const publicPublicationPlanSchema = z.object({
   version: z.literal(1),
   graphId: stableIdentifierSchema,
-  compilerVersion: boundedVersionSchema,
-  layoutVersion: boundedVersionSchema,
+  compilerVersion: stableVersionSchema,
+  layoutVersion: stableVersionSchema,
   intent: figureIntentSchema,
   pageBounds: boundsSchema,
   components: z.array(componentSchema).min(1).max(512),
   connections: z.array(connectionSchema).max(1024),
   visualSpec: visualSpecSchema,
-  qaVersion: boundedVersionSchema,
+  qaVersion: stableVersionSchema,
 }).strict();
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/i);
 const compilerManifestSchema = z.object({
   canonicalization: z.literal("RFC-8785-JCS"),
   architectureIrHash: digestSchema,
   figureIntentHash: digestSchema,
-  componentCompilerVersion: boundedVersionSchema,
-  layoutCompilerVersion: boundedVersionSchema,
-  styleTokenVersion: boundedVersionSchema,
-  layoutSeed: boundedVersionSchema,
+  componentCompilerVersion: stableVersionSchema,
+  layoutCompilerVersion: stableVersionSchema,
+  styleTokenVersion: stableVersionSchema,
+  layoutSeed: stableIdentifierSchema,
 }).strict();
 const visualQaCheckSchema = z.object({
   id: stableIdentifierSchema,
   severity: z.enum(["blocking", "warning"]),
   passed: z.boolean(),
-  message: z.string().min(1).max(512),
+  message: safeVisualQaMessageSchema,
 }).strict();
 const visualQaSchema = z.object({
   status: z.enum(["pass", "fail"]),
@@ -243,12 +245,6 @@ function validateInput(input: CreateAnalysisPlanSnapshotInput): {
   const previewArtifactHashes = z.array(previewArtifactHashSchema).min(1).max(1024).parse(input.previewArtifactHashes) as PreviewArtifactHash[];
   if (compilerManifest.architectureIrHash !== input.architectureIrHash) throw new Error("compiler manifest architecture IR hash must match the snapshot");
   if (compilerManifest.figureIntentHash !== input.figureIntentHash) throw new Error("compiler manifest figure intent hash must match the snapshot");
-  for (const field of [
-    compilerManifest.componentCompilerVersion,
-    compilerManifest.layoutCompilerVersion,
-    compilerManifest.styleTokenVersion,
-    compilerManifest.layoutSeed,
-  ]) if (!isBoundedText(field, 128)) throw new Error("compiler manifest contains an invalid value");
   if (visualQa.status !== "pass" || visualQa.checks.some((check) => check.severity === "blocking" && !check.passed)) {
     throw new Error("AnalysisPlanSnapshot requires passing blocking visual QA");
   }
@@ -262,30 +258,25 @@ function validateInput(input: CreateAnalysisPlanSnapshotInput): {
   return { compilerManifest, visualQa, previewArtifactHashes };
 }
 
+function safeDisplayText(maximum: number) {
+  return z.string().min(1).max(maximum).superRefine((value, context) => {
+    if (!/^[A-Za-z0-9][A-Za-z0-9 .,:;_()+-]*$/.test(value)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "must use bounded safe display text" });
+      return;
+    }
+    if (/\b(?:powershell|cmd(?:\.exe)?|bash|zsh|curl|wget|invoke-webrequest|start-process|createobject|visio\.application|shell(?:execute)?)\b/i.test(value)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "must not contain command-like text" });
+      return;
+    }
+    if (/^(?:class|def|function|import|from)\s+[A-Za-z_]|\b(?:provider|openai|anthropic|api[_ -]?key|authorization|bearer)\b/i.test(value)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "must not contain source or provider text" });
+    }
+  });
+}
+
 function assertOwner(owner: AnalysisPlanSnapshotOwner): void {
   requireIdentifier(owner.tenantId, "tenantId");
   requireIdentifier(owner.userId, "userId");
-}
-
-function assertSafeJson(value: unknown, path: string): asserts value is JsonValue {
-  assertJsonValue(value, path, true);
-}
-
-function assertJsonValue(value: unknown, path: string, rejectForbiddenFields: boolean): asserts value is JsonValue {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error(`${path} contains a non-finite number`);
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertJsonValue(item, `${path}[${index}]`, rejectForbiddenFields));
-    return;
-  }
-  if (!value || typeof value !== "object" || !isPlainObject(value)) throw new Error(`${path} must contain JSON values only`);
-  for (const [key, item] of Object.entries(value)) {
-    if (rejectForbiddenFields && isForbiddenFieldName(key)) throw new Error(`${path}.${key} is a forbidden snapshot field`);
-    assertJsonValue(item, `${path}.${key}`, rejectForbiddenFields);
-  }
 }
 
 function serializeCanonicalJson(value: unknown, path: string): string {
@@ -322,11 +313,6 @@ function assertNoLoneSurrogate(value: string, path: string): void {
   }
 }
 
-function isForbiddenFieldName(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return ["source", "provider", "evidence", "locator", "worker", "path", "command"].some((fragment) => normalized.includes(fragment));
-}
-
 function isPlainObject(value: object): value is Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
@@ -342,10 +328,6 @@ function requireIdentifier(value: string, field: string): void {
 
 function requireDigest(value: string, field: string): void {
   if (!/^[a-f0-9]{64}$/i.test(value)) throw new Error(`${field} must be a SHA-256 digest`);
-}
-
-function isBoundedText(value: string, maximum: number): boolean {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= maximum;
 }
 
 function deepFreeze<T>(value: T): T {

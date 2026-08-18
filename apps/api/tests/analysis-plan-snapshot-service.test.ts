@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import type { FigureAnalysisRecord } from "../src/figure-analysis.js";
 import { canonicalJson } from "../src/analysis-plan-snapshot.js";
 import {
+  AnalysisPlanSnapshotErrorCode,
   AnalysisPlanSnapshotError,
   AnalysisPlanSnapshotService,
   type AnalysisPlanSnapshotStore,
 } from "../src/analysis-plan-snapshot-service.js";
+import { InMemoryAnalysisPlanSnapshotStore } from "../src/analysis-plan-snapshot-store.js";
 import { buildComposableDagPublicationPlan } from "../src/composable-dag-publication-plan.js";
 import {
   FigureAnalysisPreviewServiceImpl,
@@ -81,6 +83,16 @@ class RecordingStore implements AnalysisPlanSnapshotStore {
   }
 }
 
+class FailingStore implements AnalysisPlanSnapshotStore {
+  async insert(): Promise<never> {
+    throw new Error("database connection string postgres://internal:secret@host");
+  }
+
+  async get() {
+    return null;
+  }
+}
+
 function request(overrides: Record<string, unknown> = {}) {
   const record = analysis();
   const figureIntent = defaultFigureIntent();
@@ -128,6 +140,28 @@ describe("AnalysisPlanSnapshotService", () => {
       unresolved: [{ id: "question-1", severity: "blocking", conflictKey: "dynamic branch", candidateValues: ["left", "right"], evidenceFactIds: [], dependencyQuestionIds: [] }],
     } }) }))).rejects.toThrow(/render-ready|IR/i);
     await expect(service.create(request({ visualQa: { status: "pass", checks: [{ id: "bounds", severity: "blocking", passed: false, message: "overflow" }] } }))).rejects.toMatchObject({ code: "ANALYSIS_PLAN_SNAPSHOT_INVALID", statusCode: 400 });
+    expect(store.inserted).toHaveLength(0);
+  });
+
+  it("never inserts a ready record with a blocking top-level unresolved item", async () => {
+    const store = new RecordingStore();
+    const service = new AnalysisPlanSnapshotService({ store });
+
+    await expect(service.create(request({ analysis: analysis({
+      unresolved: [{ code: "dynamic-control-flow", severity: "blocking", locator: { kind: "code", startLine: 1 }, message: "Resolve the dynamic branch before preview.", evidenceRefs: [] }] as never,
+    }) }))).rejects.toMatchObject({ code: AnalysisPlanSnapshotErrorCode.NOT_READY, statusCode: 409 });
+
+    expect(store.inserted).toHaveLength(0);
+  });
+
+  it("never inserts a ready record with a non-null blocking question", async () => {
+    const store = new RecordingStore();
+    const service = new AnalysisPlanSnapshotService({ store });
+
+    await expect(service.create(request({ analysis: analysis({
+      blockingQuestion: { code: "dynamic-control-flow", message: "Resolve the dynamic branch before preview.", locator: { kind: "code", startLine: 1, startColumn: 1, endLine: 1, endColumn: 1 } },
+    }) }))).rejects.toMatchObject({ code: AnalysisPlanSnapshotErrorCode.NOT_READY, statusCode: 409 });
+
     expect(store.inserted).toHaveLength(0);
   });
 
@@ -183,5 +217,26 @@ describe("AnalysisPlanSnapshotService", () => {
 
     await expect(service.create(request({ owner: { tenantId: "tenant-1", userId: "other-user" } }))).rejects.toThrow(/owner/i);
     expect(store.inserted).toHaveLength(0);
+  });
+
+  it("maps an immutable duplicate store insert to a typed snapshot conflict", async () => {
+    const service = new AnalysisPlanSnapshotService({ store: new InMemoryAnalysisPlanSnapshotStore() });
+
+    await expect(service.create(request())).resolves.toMatchObject({ immutable: true });
+    await expect(service.create(request())).rejects.toMatchObject({
+      code: "ANALYSIS_PLAN_SNAPSHOT_CONFLICT",
+      statusCode: 409,
+      message: "AnalysisPlanSnapshot already exists",
+    });
+  });
+
+  it("maps an unexpected store failure to a generic internal snapshot error", async () => {
+    const service = new AnalysisPlanSnapshotService({ store: new FailingStore() });
+
+    await expect(service.create(request())).rejects.toMatchObject({
+      code: "ANALYSIS_PLAN_SNAPSHOT_STORE_FAILURE",
+      statusCode: 500,
+      message: "AnalysisPlanSnapshot could not be persisted",
+    });
   });
 });

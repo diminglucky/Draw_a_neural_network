@@ -121,6 +121,22 @@ describe("AnalysisPlanSnapshot", () => {
     expect(() => createAnalysisPlanSnapshot(input({ visualQa: { status: "pass", checks: [{ id: "bounds", severity: "blocking", passed: false, message: "overflow" }] } }))).toThrow(/QA|blocking/i);
   });
 
+  it("requires the compiler layout seed to be a stable identifier rather than a path or shell fragment", () => {
+    expect(() => createAnalysisPlanSnapshot(input({
+      compilerManifest: { ...input().compilerManifest, layoutSeed: "C:\\private\\layout-seed" },
+    }))).toThrow(/layoutSeed|identifier/i);
+    expect(() => createAnalysisPlanSnapshot(input({
+      compilerManifest: { ...input().compilerManifest, layoutSeed: "powershell -Command Get-ChildItem" },
+    }))).toThrow(/layoutSeed|identifier/i);
+  });
+
+  it("rejects command-like visual QA text while preserving deterministic visual QA diagnostics", () => {
+    expect(() => createAnalysisPlanSnapshot(input({
+      visualQa: { status: "pass", checks: [{ id: "bounds", severity: "blocking", passed: true, message: "powershell -Command Invoke-WebRequest https://private.example" }] },
+    }))).toThrow(/visual QA|unsafe|message/i);
+    expect(() => createAnalysisPlanSnapshot(input())).not.toThrow();
+  });
+
   it("rejects unknown runtime fields from every persisted manifest, QA, and artifact payload", () => {
     expect(() => createAnalysisPlanSnapshot(input({
       compilerManifest: { ...input().compilerManifest, apiKey: "secret" } as never,

@@ -9,6 +9,13 @@ export interface AnalysisPlanSnapshotStore {
   get(owner: AnalysisPlanSnapshotOwner, analysisId: string, snapshotId: string): Promise<AnalysisPlanSnapshot | null>;
 }
 
+export class AnalysisPlanSnapshotStoreConflictError extends Error {
+  constructor() {
+    super("immutable AnalysisPlanSnapshot already exists");
+    this.name = "AnalysisPlanSnapshotStoreConflictError";
+  }
+}
+
 export class InMemoryAnalysisPlanSnapshotStore implements AnalysisPlanSnapshotStore {
   private readonly snapshots = new Map<string, AnalysisPlanSnapshot>();
 
@@ -17,7 +24,7 @@ export class InMemoryAnalysisPlanSnapshotStore implements AnalysisPlanSnapshotSt
     if (!snapshot.immutable) throw new Error("AnalysisPlanSnapshot must be immutable");
     if (snapshot.tenantId !== owner.tenantId || snapshot.userId !== owner.userId) throw new Error("AnalysisPlanSnapshot owner does not match the store owner");
     const key = snapshotKey(owner, snapshot.analysisId, snapshot.snapshotId);
-    if (this.snapshots.has(key)) throw new Error("immutable AnalysisPlanSnapshot already exists");
+    if (this.snapshots.has(key)) throw new AnalysisPlanSnapshotStoreConflictError();
     const stored = cloneAnalysisPlanSnapshot(snapshot);
     this.snapshots.set(key, stored);
     return cloneAnalysisPlanSnapshot(stored);

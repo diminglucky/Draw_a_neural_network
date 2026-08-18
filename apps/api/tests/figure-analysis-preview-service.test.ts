@@ -4,7 +4,10 @@ import { buildComposableDagPublicationPlan } from "../src/composable-dag-publica
 import { runComposableDagVisualQa } from "../src/composable-dag-visual-qa.js";
 import { defaultFigureIntent } from "../src/figure-intent.js";
 import { cnnGoldIr } from "./fixtures/figure-component-gold-ir.js";
-import { FigureAnalysisPreviewServiceImpl } from "../src/figure-analysis-preview-service.js";
+import {
+  FigureAnalysisPreviewServiceImpl,
+  projectPublicComposableDagPublicationPlan,
+} from "../src/figure-analysis-preview-service.js";
 
 const blockingQuestion = {
   code: "dynamic-control-flow",
@@ -119,5 +122,38 @@ describe("FigureAnalysisPreviewService", () => {
     const third = await service.preview("user-1", "analysis-ready");
     expect(JSON.stringify(third)).toBe(JSON.stringify(second));
     expect(defaultFigureIntent().version).toBe(1);
+  });
+
+  it("projects only allowlisted component and connection fields from an injected compiler seam", () => {
+    const built = buildComposableDagPublicationPlan({
+      architectureIr: cnnGoldIr(),
+      intent: defaultFigureIntent(),
+      layoutSeed: "projection-test",
+    });
+    if (built.status !== "ready") throw new Error("test fixture must produce a publication plan");
+    const unsafePlan = structuredClone(built.publicationPlan);
+    Object.assign(unsafePlan.dagPlan.components[0] as unknown as Record<string, unknown>, {
+      workerPath: "C:\\private\\worker.exe",
+      source: "raw source bytes",
+      evidenceLocator: "private:1",
+      shellCommand: "powershell -Command Invoke-WebRequest",
+    });
+    Object.assign(unsafePlan.dagPlan.connections[0] as unknown as Record<string, unknown>, {
+      workerPath: "C:\\private\\worker.exe",
+      sourcePayload: "raw source bytes",
+      evidenceLocator: "private:2",
+      shellCommand: "cmd /c whoami",
+    });
+
+    const projected = projectPublicComposableDagPublicationPlan(unsafePlan);
+
+    expect(projected.components[0]).not.toHaveProperty("workerPath");
+    expect(projected.components[0]).not.toHaveProperty("source");
+    expect(projected.components[0]).not.toHaveProperty("evidenceLocator");
+    expect(projected.components[0]).not.toHaveProperty("shellCommand");
+    expect(projected.connections[0]).not.toHaveProperty("workerPath");
+    expect(projected.connections[0]).not.toHaveProperty("sourcePayload");
+    expect(projected.connections[0]).not.toHaveProperty("evidenceLocator");
+    expect(projected.connections[0]).not.toHaveProperty("shellCommand");
   });
 });
