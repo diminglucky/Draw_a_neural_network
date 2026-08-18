@@ -87,7 +87,7 @@ export class FigureAnalysisPreviewServiceImpl {
         status: "ready_for_preview",
         capabilityVersion: record.capabilityVersion,
       },
-      publicationPlan: publicPublicationPlan(compiled.publicationPlan),
+      publicationPlan: projectPublicComposableDagPublicationPlan(compiled.publicationPlan),
       visualQa: structuredClone(visualQa),
     };
   }
@@ -109,7 +109,7 @@ function candidatePreview(record: FigureAnalysisRecord): FigureAnalysisPreviewRe
   };
 }
 
-function publicPublicationPlan(plan: ComposableDagPublicationPlan): PublicComposableDagPublicationPlan {
+export function projectPublicComposableDagPublicationPlan(plan: ComposableDagPublicationPlan): PublicComposableDagPublicationPlan {
   return {
     version: 1,
     graphId: plan.dagPlan.graphId,
