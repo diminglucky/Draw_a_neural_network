@@ -20,7 +20,7 @@ public sealed class SessionRecoveryManifestStoreTests
         try
         {
             var store = new SessionRecoveryManifestStore(root);
-            var manifest = CreateManifest(root, commandReplayJournal: [new VisioSessionCommandReplayEntry("save-1", new string('a', 64), "succeeded", Path.Combine(root, "workflow.vsdx"))]);
+            var manifest = CreateManifest(root, commandReplayJournal: [CreateTypedCommandReplay("save-1", "Apply", new string('a', 64), Path.Combine(root, "workflow.vsdx"))]);
             var savedAt = DateTimeOffset.Parse("2026-08-18T06:00:00Z");
             var lastActivity = DateTimeOffset.Parse("2026-08-18T06:05:00Z");
 
@@ -34,9 +34,14 @@ public sealed class SessionRecoveryManifestStoreTests
             Assert.Equal(manifest.LastPlanHash, stored.Manifest.LastPlanHash);
             Assert.Equal(manifest.OperationJournal, stored.Manifest.OperationJournal);
             Assert.Equal(manifest.CommandReplayJournal, stored.Manifest.CommandReplayJournal);
+            Assert.Equal(3, FormatVersionOf(stored));
             Assert.Equal(savedAt, stored.SavedAt);
             Assert.Equal(lastActivity, stored.LastActivity);
             Assert.True(File.Exists(ManifestPath(root, manifest.Key)));
+
+            using var persisted = JsonDocument.Parse(await File.ReadAllTextAsync(ManifestPath(root, manifest.Key)));
+            var replay = persisted.RootElement.GetProperty("manifest").GetProperty("commandReplayJournal")[0];
+            Assert.Equal("apply", replay.GetProperty("command").GetString());
         }
         finally { DeleteRoot(root); }
     }
@@ -54,6 +59,7 @@ public sealed class SessionRecoveryManifestStoreTests
             var stored = await store.LoadAsync(key);
 
             Assert.NotNull(stored);
+            Assert.Equal(1, FormatVersionOf(stored!));
             Assert.Empty(stored!.Manifest.CommandReplayJournal);
         }
         finally { DeleteRoot(root); }
@@ -143,7 +149,7 @@ public sealed class SessionRecoveryManifestStoreTests
         {
             var store = new SessionRecoveryManifestStore(root);
             var key = CreateManifest(root).Key;
-            var json = "{\"formatVersion\":3,\"manifest\":" + ManifestJson(key, Path.Combine(root, "workflow.vsdx")) + ",\"savedAt\":\"2026-08-18T06:00:00+00:00\",\"lastActivity\":\"2026-08-18T06:00:00+00:00\"}";
+            var json = "{\"formatVersion\":4,\"manifest\":" + ManifestJson(key, Path.Combine(root, "workflow.vsdx")) + ",\"savedAt\":\"2026-08-18T06:00:00+00:00\",\"lastActivity\":\"2026-08-18T06:00:00+00:00\"}";
             await WriteManifestAsync(root, key, json);
 
             await Assert.ThrowsAsync<WorkerProtocolException>(() => store.LoadAsync(key));
@@ -320,6 +326,34 @@ public sealed class SessionRecoveryManifestStoreTests
         null,
         [],
         commandReplayJournal);
+
+    private static VisioSessionCommandReplayEntry CreateTypedCommandReplay(string requestId, string commandName, string fingerprint, string outputPath)
+    {
+        var entryType = typeof(VisioSessionCommandReplayEntry);
+        var commandProperty = entryType.GetProperty("Command", BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotNull(commandProperty);
+        Assert.True(commandProperty!.PropertyType.IsEnum);
+        var command = Enum.Parse(commandProperty.PropertyType, commandName, ignoreCase: false);
+        var constructor = entryType.GetConstructors().SingleOrDefault(candidate =>
+        {
+            var parameters = candidate.GetParameters();
+            return parameters.Length == 5
+                && parameters[0].ParameterType == typeof(string)
+                && parameters[1].ParameterType == commandProperty.PropertyType
+                && parameters[2].ParameterType == typeof(string)
+                && parameters[3].ParameterType == typeof(string)
+                && parameters[4].ParameterType == typeof(string);
+        });
+        Assert.NotNull(constructor);
+        return (VisioSessionCommandReplayEntry)constructor!.Invoke([requestId, command, fingerprint, "succeeded", outputPath]);
+    }
+
+    private static int FormatVersionOf(StoredSessionRecoveryManifest stored)
+    {
+        var property = typeof(StoredSessionRecoveryManifest).GetProperty("FormatVersion", BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotNull(property);
+        return Assert.IsType<int>(property!.GetValue(stored));
+    }
 
     private static string CreateRoot()
     {

@@ -80,11 +80,27 @@ public sealed record VisioSessionDocument
 
 public sealed record VisioSessionOperationJournalEntry(string OperationId, string PlanHash);
 
+public enum VisioSessionReplayCommand
+{
+    Unknown,
+    Open,
+    Apply,
+    ApplyDiff,
+    Save,
+    Snapshot,
+    Close,
+    Recover,
+}
+
 public sealed record VisioSessionCommandReplayEntry
 {
-    public VisioSessionCommandReplayEntry(string requestId, string fingerprint, string status, string outputPath)
+    public VisioSessionCommandReplayEntry(string requestId, VisioSessionReplayCommand command, string fingerprint, string status, string outputPath)
     {
         RequestId = VisioSessionKey.ValidateIdentifier(requestId, nameof(requestId));
+        if (!Enum.IsDefined(command))
+        {
+            throw new ArgumentOutOfRangeException(nameof(command));
+        }
         if (string.IsNullOrWhiteSpace(fingerprint) || fingerprint.Length != 64 || !fingerprint.All(Uri.IsHexDigit))
         {
             throw new ArgumentException("Command replay fingerprint must be a 64-character hexadecimal SHA-256 value.", nameof(fingerprint));
@@ -100,12 +116,14 @@ public sealed record VisioSessionCommandReplayEntry
             throw new ArgumentException("Command replay output path must be a non-empty bounded path without control characters.", nameof(outputPath));
         }
 
+        Command = command;
         Fingerprint = fingerprint.ToLowerInvariant();
         Status = status;
         OutputPath = outputPath;
     }
 
     public string RequestId { get; }
+    public VisioSessionReplayCommand Command { get; }
     public string Fingerprint { get; }
     public string Status { get; }
     public string OutputPath { get; }

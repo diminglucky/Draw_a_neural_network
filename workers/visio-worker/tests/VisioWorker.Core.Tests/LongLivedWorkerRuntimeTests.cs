@@ -1,6 +1,7 @@
 using VisioWorker.Core;
 using VisioWorker.Host;
 using VisioWorker.Live;
+using System.Reflection;
 
 namespace VisioWorker.Core.Tests;
 
@@ -20,7 +21,7 @@ public sealed class LongLivedWorkerRuntimeTests
 
         await first.CheckpointIdleSessionsAsync();
 
-        Assert.Equal(1, backend.SaveCalls);
+        Assert.Equal(2, backend.SaveCalls);
         Assert.Equal(1, backend.CloseCalls);
         Assert.NotNull(await store.LoadAsync(Key()));
 
@@ -40,11 +41,12 @@ public sealed class LongLivedWorkerRuntimeTests
         await using var runtime = new LongLivedWorkerRuntime(backend, new InMemoryManifestStore(), clock, TimeSpan.FromMinutes(15), 4);
         await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
         await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+        var saveCallsBeforeCheckpoint = backend.SaveCalls;
         clock.Advance(TimeSpan.FromMinutes(14) + TimeSpan.FromSeconds(59));
 
         await runtime.CheckpointIdleSessionsAsync();
 
-        Assert.Equal(0, backend.SaveCalls);
+        Assert.Equal(saveCallsBeforeCheckpoint, backend.SaveCalls);
         Assert.Equal(0, backend.CloseCalls);
     }
 
@@ -95,7 +97,7 @@ public sealed class LongLivedWorkerRuntimeTests
         await runtime.ProcessAsync(Close("close-discard", "discard"));
 
         Assert.NotNull(saved);
-        Assert.Equal(1, backend.SaveCalls);
+        Assert.Equal(2, backend.SaveCalls);
         Assert.Equal(2, backend.CloseCalls);
         var afterDiscard = await store.LoadAsync(Key());
         Assert.NotNull(afterDiscard);
@@ -134,23 +136,24 @@ public sealed class LongLivedWorkerRuntimeTests
         await runtime.ProcessAsync(Open("open-2", "second.vsdx", workflowId: "second"));
 
         Assert.Equal(2, backend.OpenOrCreateCalls);
-        Assert.Equal(1, backend.SaveCalls);
+        Assert.Equal(2, backend.SaveCalls);
         Assert.Equal(1, backend.CloseCalls);
-        Assert.Equal("document-1", backend.SavedDocuments.Single());
+        Assert.Equal(["document-1", "document-1"], backend.SavedDocuments);
     }
 
     [Fact]
     public async Task Capacity_checkpoint_failure_rejects_the_new_open_without_creating_a_replacement_document()
     {
-        var backend = new RecordingSessionBackend { FailSave = true };
+        var backend = new RecordingSessionBackend();
         var runtime = new LongLivedWorkerRuntime(backend, new InMemoryManifestStore(), new FakeWorkerClock(DateTimeOffset.UtcNow), TimeSpan.FromMinutes(15), 1);
         await runtime.ProcessAsync(Open("open-1", "first.vsdx", workflowId: "first"));
         await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a', workflowId: "first"));
+        backend.FailSave = true;
 
         await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Open("open-2", "second.vsdx", workflowId: "second")));
 
         Assert.Equal(1, backend.OpenOrCreateCalls);
-        Assert.Equal(1, backend.SaveCalls);
+        Assert.Equal(2, backend.SaveCalls);
         Assert.Equal(0, backend.CloseCalls);
         await runtime.DisposeAsync();
         Assert.Equal(1, backend.CloseCalls);
@@ -295,10 +298,11 @@ public sealed class LongLivedWorkerRuntimeTests
     public async Task Dispose_surfaces_manifest_save_failure_after_attempting_native_release()
     {
         var backend = new RecordingSessionBackend();
-        var store = new InMemoryManifestStore { FailSave = true };
+        var store = new InMemoryManifestStore();
         var runtime = CreateRuntime(backend, store);
         await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
         await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+        store.FailSave = true;
 
         await Assert.ThrowsAsync<WorkerProtocolException>(async () => await runtime.DisposeAsync());
 
@@ -335,7 +339,176 @@ public sealed class LongLivedWorkerRuntimeTests
         var replay = await second.ProcessAsync(Save("save-1", "session.vsdx"));
 
         Assert.Equal("succeeded", replay.Status);
+        Assert.Equal(2, backend.SaveCalls);
+    }
+
+    [Theory]
+    [InlineData("open")]
+    [InlineData("apply")]
+    [InlineData("applyDiff")]
+    [InlineData("save")]
+    [InlineData("snapshot")]
+    [InlineData("recover")]
+    public async Task Fresh_runtime_replay_of_each_persisted_stateful_command_recovers_before_returning_its_original_response(string command)
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using (var first = CreateRuntime(backend, store))
+        {
+            await first.ProcessAsync(Open("open-1", "session.vsdx"));
+            await first.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+            await first.ProcessAsync(Apply("apply-diff-1", "operation-2", 'b', WorkerV2Command.ApplyDiff));
+            await first.ProcessAsync(Snapshot("snapshot-1"));
+            await first.ProcessAsync(Save("save-1", "session.vsdx"));
+            await first.ProcessAsync(Close("close-1", "discard"));
+            await first.ProcessAsync(Recover("recover-1"));
+            await first.ProcessAsync(Save("save-2", "session.vsdx"));
+            await first.ProcessAsync(Close("close-2", "discard"));
+        }
+
+        var recoverCallsBeforeReplay = backend.RecoverCalls;
+        var applyCallsBeforeReplay = backend.ApplyCalls;
+        var applyDiffCallsBeforeReplay = backend.ApplyDiffCalls;
+        await using var second = CreateRuntime(backend, store);
+
+        var response = await second.ProcessAsync(StatefulReplayRequest(command));
+
+        Assert.Equal("succeeded", response.Status);
+        Assert.Equal(recoverCallsBeforeReplay + 1, backend.RecoverCalls);
+        Assert.Equal(applyCallsBeforeReplay, backend.ApplyCalls);
+        Assert.Equal(applyDiffCallsBeforeReplay, backend.ApplyDiffCalls);
+        await second.ProcessAsync(Close($"close-stateful-replay-{command}", "discard"));
+    }
+
+    [Fact]
+    public async Task Fresh_runtime_rejects_a_legacy_manifest_without_typed_replay_identity_before_native_work()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "visio-runtime-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var key = Key();
+            var outputPath = Path.Combine(root, "session.vsdx");
+            var store = new SessionRecoveryManifestStore(root);
+            await store.SaveAsync(new VisioSessionRecoveryManifest(key, outputPath, new VisioSessionDocument("document-1", "page-1"), null, []), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+            var manifestPath = Directory.EnumerateFiles(Path.Combine(root, ".synapse-sessions"), "*.json").Single();
+            var legacy = (await File.ReadAllTextAsync(manifestPath)).Replace("\"formatVersion\":3", "\"formatVersion\":2", StringComparison.Ordinal);
+            await File.WriteAllTextAsync(manifestPath, legacy);
+            var backend = new RecordingSessionBackend();
+            await using var runtime = CreateRuntime(backend, store);
+
+            await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Open("open-1", outputPath)));
+
+            Assert.Equal(0, backend.OpenOrCreateCalls);
+            Assert.Equal(0, backend.RecoverCalls);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Apply_saves_and_persists_its_replay_before_reporting_success()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using var runtime = CreateRuntime(backend, store);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+
+        var response = await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a'));
+        var stored = await store.LoadAsync(Key());
+
+        Assert.Equal("succeeded", response.Status);
+        Assert.Equal(1, backend.ApplyCalls);
         Assert.Equal(1, backend.SaveCalls);
+        Assert.NotNull(stored);
+        Assert.Contains(stored!.Manifest.CommandReplayJournal, entry => entry.RequestId == "apply-1");
+    }
+
+    [Fact]
+    public async Task Apply_does_not_report_success_and_marks_the_session_uncertain_when_manifest_persistence_fails_after_native_apply()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore { FailSave = true };
+        await using var runtime = CreateRuntime(backend, store);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+
+        try
+        {
+            await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a')));
+        }
+        finally
+        {
+            store.FailSave = false;
+        }
+
+        Assert.Equal(1, backend.ApplyCalls);
+        Assert.Equal(1, backend.SaveCalls);
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Snapshot("snapshot-1")));
+    }
+
+    [Fact]
+    public async Task Apply_cancellation_after_native_save_begins_marks_the_session_uncertain_and_does_not_report_success()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var backend = new RecordingSessionBackend();
+        await using var runtime = CreateRuntime(backend);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        backend.CancelAfterSave = true;
+        backend.OnSave = cancellation.Cancel;
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a'), cancellation.Token));
+        }
+        finally
+        {
+            backend.CancelAfterSave = false;
+            backend.OnSave = null;
+        }
+
+        Assert.Equal(1, backend.ApplyCalls);
+        Assert.Equal(1, backend.SaveCalls);
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Snapshot("snapshot-1")));
+    }
+
+    [Fact]
+    public async Task Idle_checkpoint_cancellation_after_native_save_begins_marks_the_actual_candidate_uncertain_and_keeps_it_at_capacity()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var clock = new FakeWorkerClock(DateTimeOffset.Parse("2026-08-18T00:00:00Z"));
+        var backend = new RecordingSessionBackend();
+        await using var runtime = new LongLivedWorkerRuntime(backend, new InMemoryManifestStore(), clock, TimeSpan.FromMinutes(15), 1);
+        await runtime.ProcessAsync(Open("open-1", "first.vsdx", workflowId: "first"));
+        await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a', workflowId: "first"));
+        backend.CancelAfterSave = true;
+        backend.OnSave = cancellation.Cancel;
+        clock.Advance(TimeSpan.FromMinutes(15));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runtime.CheckpointIdleSessionsAsync(cancellation.Token));
+
+        AssertRuntimeSessionIsUncertain(runtime, Key("first"));
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Open("open-2", "second.vsdx", workflowId: "second")));
+        Assert.Equal(1, backend.OpenOrCreateCalls);
+    }
+
+    [Fact]
+    public async Task Capacity_checkpoint_cancellation_after_native_save_begins_marks_the_actual_candidate_uncertain_and_keeps_it_at_capacity()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var backend = new RecordingSessionBackend();
+        await using var runtime = new LongLivedWorkerRuntime(backend, new InMemoryManifestStore(), new FakeWorkerClock(DateTimeOffset.UtcNow), TimeSpan.FromMinutes(15), 1);
+        await runtime.ProcessAsync(Open("open-1", "first.vsdx", workflowId: "first"));
+        await runtime.ProcessAsync(Apply("apply-1", "operation-1", 'a', workflowId: "first"));
+        backend.CancelAfterSave = true;
+        backend.OnSave = cancellation.Cancel;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runtime.ProcessAsync(Open("open-2", "second.vsdx", workflowId: "second"), cancellation.Token));
+
+        AssertRuntimeSessionIsUncertain(runtime, Key("first"));
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(Open("open-3", "second.vsdx", workflowId: "second")));
+        Assert.Equal(1, backend.OpenOrCreateCalls);
     }
 
     [Fact]
@@ -356,9 +529,10 @@ public sealed class LongLivedWorkerRuntimeTests
 
         Assert.Equal("succeeded", replay.Status);
         Assert.Equal(1, backend.CloseCalls);
+        Assert.Equal(0, backend.RecoverCalls);
     }
 
-    private static LongLivedWorkerRuntime CreateRuntime(RecordingSessionBackend backend, InMemoryManifestStore? store = null) =>
+    private static LongLivedWorkerRuntime CreateRuntime(RecordingSessionBackend backend, ISessionRecoveryManifestStore? store = null) =>
         new(backend, store ?? new InMemoryManifestStore(), new FakeWorkerClock(DateTimeOffset.Parse("2026-08-18T00:00:00Z")), TimeSpan.FromMinutes(15), 4);
 
     private static WorkerV2Request Open(string requestId, string outputPath, string userId = "user", string workflowId = "workflow") =>
@@ -391,8 +565,31 @@ public sealed class LongLivedWorkerRuntimeTests
     private static WorkerV2Request Snapshot(string requestId) =>
         new(requestId, WorkerV2Command.Snapshot, Session(), null, null, null, null, null);
 
+    private static WorkerV2Request StatefulReplayRequest(string command) => command switch
+    {
+        "open" => Open("open-1", "session.vsdx"),
+        "apply" => Apply("apply-1", "operation-1", 'a'),
+        "applyDiff" => Apply("apply-diff-1", "operation-2", 'b', WorkerV2Command.ApplyDiff),
+        "save" => Save("save-1", "session.vsdx"),
+        "snapshot" => Snapshot("snapshot-1"),
+        "recover" => Recover("recover-1"),
+        _ => throw new ArgumentOutOfRangeException(nameof(command)),
+    };
+
     private static WorkerV2Session Session(string userId = "user", string workflowId = "workflow") => new("tenant", userId, "device", workflowId);
-    private static VisioSessionKey Key() => Session().ToKey();
+    private static VisioSessionKey Key(string workflowId = "workflow") => Session(workflowId: workflowId).ToKey();
+
+    private static void AssertRuntimeSessionIsUncertain(LongLivedWorkerRuntime runtime, VisioSessionKey key)
+    {
+        var field = typeof(LongLivedWorkerRuntime).GetField("_runtimeSessions", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        var sessions = Assert.IsAssignableFrom<System.Collections.IDictionary>(field!.GetValue(runtime));
+        var runtimeSession = sessions[key];
+        Assert.NotNull(runtimeSession);
+        var uncertain = runtimeSession!.GetType().GetProperty("Uncertain", BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(uncertain);
+        Assert.True(Assert.IsType<bool>(uncertain!.GetValue(runtimeSession)));
+    }
 
     private sealed class FakeWorkerClock(DateTimeOffset utcNow) : IWorkerClock
     {
@@ -433,12 +630,14 @@ public sealed class LongLivedWorkerRuntimeTests
         public int SaveCalls { get; private set; }
         public int CloseCalls { get; private set; }
         public int RecoverCalls { get; private set; }
-        public bool FailSave { get; init; }
+        public bool FailSave { get; set; }
         public bool FailApply { get; init; }
         public bool FailRecover { get; init; }
         public bool FailClose { get; init; }
         public bool CancelAfterOpen { get; init; }
         public Action? OnOpen { get; init; }
+        public bool CancelAfterSave { get; set; }
+        public Action? OnSave { get; set; }
         public VisioSessionDocument? RecoveredDocument { get; init; }
         public List<string> CreatedDocuments { get; } = [];
         public List<string> SavedDocuments { get; } = [];
@@ -477,8 +676,13 @@ public sealed class LongLivedWorkerRuntimeTests
         public Task<VisioSessionDocument> SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
         {
             SaveCalls++;
-            if (FailSave) throw new InvalidOperationException("save failed");
             SavedDocuments.Add(document.DocumentHandle);
+            if (CancelAfterSave)
+            {
+                OnSave?.Invoke();
+                throw new OperationCanceledException(cancellationToken);
+            }
+            if (FailSave) throw new InvalidOperationException("save failed");
             return Task.FromResult(document);
         }
 
