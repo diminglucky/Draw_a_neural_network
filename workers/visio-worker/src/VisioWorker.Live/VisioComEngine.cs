@@ -47,6 +47,8 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
     private const double PageHeightInches = 9.5;
     private readonly VisioComEngineOptions _options;
     private readonly ComStaRunner _runner;
+    private readonly object _sessionBackendGate = new();
+    private VisioComSessionBackend? _sessionBackend;
 
     public VisioComEngine(VisioComEngineOptions options)
     {
@@ -82,7 +84,27 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    public ValueTask DisposeAsync() => _runner.DisposeAsync();
+    /// <summary>
+    /// Creates the reusable session adapter on this engine's existing STA runner. The caller owns
+    /// this engine's lifetime; disposing the returned adapter does not dispose the shared runner.
+    /// </summary>
+    public VisioComSessionBackend CreateSessionBackend()
+    {
+        lock (_sessionBackendGate)
+        {
+            return _sessionBackend ??= new VisioComSessionBackend(
+                _options,
+                new VisioComSessionOperations(new VisioComSessionNative(_options)),
+                _runner,
+                ownsRunner: false);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sessionBackend is not null) await _sessionBackend.DisposeAsync().ConfigureAwait(false);
+        await _runner.DisposeAsync().ConfigureAwait(false);
+    }
 
     private ReadbackResult RenderOnComThread(DiagramDocument document, string temporaryPath, string finalPath)
     {
@@ -93,38 +115,14 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         bool keepVisibleDocumentOpen = false;
         try
         {
-            app = ConnectVisio(out launched);
+            app = ConnectVisio(_options, out launched);
             TrySet(() => app.Visible = _options.Visible);
             TrySet(() => app.AlertResponse = 1);
             docs = app.Documents;
             doc = docs.Add("");
             dynamic page = doc.Pages.Item(1);
             var figurePlan = document.FigurePlan;
-            var pageHeight = figurePlan?.PageHeightInches ?? PageHeightInches;
-            TrySetPageSize(page, figurePlan?.PageWidthInches ?? 26, pageHeight);
-
-            if (figurePlan is null)
-            {
-                foreach (var node in document.Nodes) DrawNode(page, node);
-                foreach (var connector in document.Connectors) DrawConnector(page, connector, pageHeight);
-                DrawTitle(page, document.Title, pageHeight, 26);
-                DrawStageLabels(page, document);
-                DrawLegend(page);
-            }
-            else
-            {
-                foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveGroup(page, group, pageHeight);
-                foreach (var connector in figurePlan.Connectors) DrawConnector(page, connector, pageHeight);
-                if (figurePlan.Labels is { Count: > 0 })
-                {
-                    foreach (var label in figurePlan.Labels) DrawFigurePlanLabel(page, label, pageHeight);
-                }
-                else
-                {
-                    foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveLabel(page, group, group.Bounds.XInches, pageHeight - group.Bounds.YInches + 0.05, group.Bounds.XInches + group.Bounds.WidthInches, pageHeight - group.Bounds.YInches + 0.34);
-                }
-                DrawTitle(page, document.Title, pageHeight, figurePlan.PageWidthInches);
-            }
+            ConfigureAndDrawDocument(page, document);
 
             doc.SaveAs(temporaryPath);
             doc.Close();
@@ -174,12 +172,12 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private dynamic ConnectVisio(out bool launched)
+    internal static dynamic ConnectVisio(VisioComEngineOptions options, out bool launched)
     {
         var visioType = Type.GetTypeFromProgID("Visio.Application", throwOnError: false)
             ?? throw new WorkerProtocolException("Visio.Application is not registered");
 
-        if (_options.AttachToRunning && TryGetActiveObject(visioType.GUID, out var active))
+        if (options.AttachToRunning && TryGetActiveObject(visioType.GUID, out var active))
         {
             launched = false;
             return active!;
@@ -189,6 +187,36 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             ?? throw new WorkerProtocolException("Visio.Application could not be created");
         launched = true;
         return created;
+    }
+
+    internal static void ConfigureAndDrawDocument(dynamic page, DiagramDocument document)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        var figurePlan = document.FigurePlan;
+        var pageHeight = figurePlan?.PageHeightInches ?? PageHeightInches;
+        TrySetPageSize(page, figurePlan?.PageWidthInches ?? 26, pageHeight);
+
+        if (figurePlan is null)
+        {
+            foreach (var node in document.Nodes) DrawNode(page, node);
+            foreach (var connector in document.Connectors) DrawConnector(page, connector, pageHeight);
+            DrawTitle(page, document.Title, pageHeight, 26);
+            DrawStageLabels(page, document);
+            DrawLegend(page);
+            return;
+        }
+
+        foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveGroup(page, group, pageHeight);
+        foreach (var connector in figurePlan.Connectors) DrawConnector(page, connector, pageHeight);
+        if (figurePlan.Labels is { Count: > 0 })
+        {
+            foreach (var label in figurePlan.Labels) DrawFigurePlanLabel(page, label, pageHeight);
+        }
+        else
+        {
+            foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveLabel(page, group, group.Bounds.XInches, pageHeight - group.Bounds.YInches + 0.05, group.Bounds.XInches + group.Bounds.WidthInches, pageHeight - group.Bounds.YInches + 0.34);
+        }
+        DrawTitle(page, document.Title, pageHeight, figurePlan.PageWidthInches);
     }
 
     private static void DrawNode(dynamic page, VisioNode node)
@@ -720,7 +748,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return ReadbackValidator.Validate(plan, primitives, connectors, shapeCount);
     }
 
-    private static string? TryReadShapeData(dynamic shape, string key)
+    internal static string? TryReadShapeData(dynamic shape, string key)
     {
         try
         {
@@ -745,11 +773,48 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
+    internal static string? ReadShapeDataOrNullStrict(dynamic shape, string key)
+    {
+        dynamic? cell = null;
+        try
+        {
+            var rowName = new string(key.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
+            var exists = Convert.ToInt32(shape.CellExistsU($"Prop.{rowName}", 0), System.Globalization.CultureInfo.InvariantCulture) != 0;
+            if (!exists) return null;
+
+            cell = shape.CellsU($"Prop.{rowName}");
+            try
+            {
+                return Convert.ToString(cell.ResultStr[0], System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                var formula = Convert.ToString(cell.FormulaU, System.Globalization.CultureInfo.InvariantCulture);
+                if (string.IsNullOrWhiteSpace(formula)) return string.Empty;
+                return formula.Length >= 2 && formula[0] == '"' && formula[^1] == '"'
+                    ? formula[1..^1].Replace("\"\"", "\"")
+                    : formula;
+            }
+        }
+        catch (WorkerProtocolException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            throw new WorkerProtocolException($"Visio session ownership data could not be read: {error.Message}", error);
+        }
+        finally
+        {
+            ReleaseCom(cell);
+        }
+    }
+
     private static string PrimitiveShapeName(string primitiveId) => $"synapse.primitive.{SanitizeName(primitiveId)}";
 
     private static string ConnectorShapeName(string connectorId) => $"synapse.edge.{SanitizeName(connectorId)}";
 
-    private static void TrySetPageSize(dynamic page, double pageWidth, double pageHeight)
+    internal static void TrySetPageSize(dynamic page, double pageWidth, double pageHeight)
     {
         TrySet(() => page.PageSheet.CellsU("PageWidth").FormulaU = $"{pageWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)} in");
         TrySet(() => page.PageSheet.CellsU("PageHeight").FormulaU = $"{pageHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)} in");
@@ -757,7 +822,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySet(() => page.PageSheet.CellsU("DrawingScale").FormulaU = "1 in");
     }
 
-    private static void TrySetShapeData(dynamic shape, string key, string value)
+    internal static void TrySetShapeData(dynamic shape, string key, string value)
     {
         try
         {
@@ -769,13 +834,22 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         catch { }
     }
 
-    private static void TrySet(Action action)
+    internal static void SetRequiredShapeData(dynamic shape, string key, string value)
+    {
+        var rowName = new string(key.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
+        var escapedValue = value.Replace("\"", "\"\"");
+        shape.AddNamedRow(243, rowName, 0);
+        shape.CellsU($"Prop.{rowName}.Label").FormulaU = $"\"{key}\"";
+        shape.CellsU($"Prop.{rowName}").FormulaU = "\"" + escapedValue + "\"";
+    }
+
+    internal static void TrySet(Action action)
     {
         try { action(); }
         catch { }
     }
 
-    private static void TryClose(dynamic? doc)
+    internal static void TryClose(dynamic? doc)
     {
         if (doc is null) return;
         TrySet(() => doc.Close());
@@ -797,13 +871,13 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void TryQuit(dynamic? app)
+    internal static void TryQuit(dynamic? app)
     {
         if (app is null) return;
         TrySet(() => app.Quit());
     }
 
-    private static void ReleaseCom(object? value)
+    internal static void ReleaseCom(object? value)
     {
         if (value is not null && Marshal.IsComObject(value))
         {
@@ -826,7 +900,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static string SanitizeName(string value) => new(value.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
+    internal static string SanitizeName(string value) => new(value.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
 
     private static void TryDelete(string path)
     {

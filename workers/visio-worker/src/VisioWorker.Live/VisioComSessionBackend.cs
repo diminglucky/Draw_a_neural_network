@@ -28,24 +28,42 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
     private readonly VisioComEngineOptions _options;
     private readonly IVisioComSessionOperations _operations;
     private readonly ComStaRunner _runner;
+    private readonly bool _ownsRunner;
+    private int _disposed;
 
     public VisioComSessionBackend(VisioComEngineOptions options, IVisioComSessionOperations operations)
+        : this(options, operations, new ComStaRunner(), ownsRunner: true)
+    {
+    }
+
+    internal VisioComSessionBackend(
+        VisioComEngineOptions options,
+        IVisioComSessionOperations operations,
+        ComStaRunner runner,
+        bool ownsRunner)
     {
         _options = options;
         _operations = operations ?? throw new ArgumentNullException(nameof(operations));
-        _runner = new ComStaRunner();
+        _runner = runner ?? throw new ArgumentNullException(nameof(runner));
+        _ownsRunner = ownsRunner;
     }
 
-    public string NormalizeOutputPath(string outputPath) => PathPolicy.ValidateOutputPath(outputPath, _options.OutputRoot);
+    public string NormalizeOutputPath(string outputPath)
+    {
+        ThrowIfDisposed();
+        return PathPolicy.ValidateOutputPath(outputPath, _options.OutputRoot);
+    }
 
     public Task<VisioSessionDocument> OpenOrCreateAsync(VisioSessionKey sessionKey, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(sessionKey);
         return InvokeAsync(() => _operations.OpenOrCreate(sessionKey), cancellationToken);
     }
 
     public Task ApplyPlanAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(plan);
         return InvokeAsync(() => _operations.ApplyPlan(document, plan), cancellationToken);
@@ -53,6 +71,7 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
 
     public Task ApplyPlanDiffAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(plan);
         return InvokeAsync(() => _operations.ApplyPlanDiff(document, plan), cancellationToken);
@@ -60,6 +79,7 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
 
     public async Task SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(document);
         var finalPath = NormalizeOutputPath(outputPath);
         Directory.CreateDirectory(Path.GetDirectoryName(finalPath)!);
@@ -76,18 +96,35 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
 
     public Task CloseAsync(VisioSessionDocument document, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(document);
         return InvokeAsync(() => _operations.Close(document), cancellationToken);
     }
 
     public Task<VisioSessionDocument> RecoverAsync(VisioSessionKey sessionKey, string outputPath, CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(sessionKey);
         var finalPath = NormalizeOutputPath(outputPath);
         return InvokeAsync(() => _operations.Recover(sessionKey, finalPath), cancellationToken);
     }
 
-    public ValueTask DisposeAsync() => _runner.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try
+        {
+            await _runner.InvokeAsync(() =>
+            {
+                if (_operations is IDisposable disposable) disposable.Dispose();
+                return true;
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (_ownsRunner) await _runner.DisposeAsync().ConfigureAwait(false);
+        }
+    }
 
     private async Task InvokeAsync(Action action, CancellationToken cancellationToken)
     {
@@ -103,6 +140,11 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
     {
         cancellationToken.ThrowIfCancellationRequested();
         return _runner.InvokeAsync(action);
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
     }
 
     private static void TryDelete(string path)
