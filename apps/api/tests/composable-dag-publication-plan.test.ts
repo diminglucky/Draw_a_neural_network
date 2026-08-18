@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultFigureIntent } from "../src/figure-intent.js";
 import { buildComposableDagPublicationPlan } from "../src/composable-dag-publication-plan.js";
+import { runComposableDagVisualQa } from "../src/composable-dag-visual-qa.js";
 import {
   cnnGoldIr,
   encoderDecoderGoldIr,
@@ -40,6 +41,20 @@ describe("Composable DAG publication plan", () => {
     });
 
     expect(result.status).toBe("ready");
+  });
+
+  it("hands every ready gold plan to the same v3 Visual QA boundary", () => {
+    for (const createIr of [cnnGoldIr, residualGoldIr, encoderDecoderGoldIr, tokenTransformerGoldIr]) {
+      const result = buildComposableDagPublicationPlan({
+        architectureIr: createIr(),
+        intent: defaultFigureIntent(),
+        layoutSeed: "m2-3-integration",
+      });
+      expect(result.status).toBe("ready");
+      if (result.status !== "ready") continue;
+      expect(runComposableDagVisualQa(result.publicationPlan).status).toBe("pass");
+      expect(JSON.stringify(result.publicationPlan)).not.toMatch(/planId|snapshot|worker|provider/i);
+    }
   });
 
   it("preserves unresolved compiler results instead of creating a publication plan", () => {
