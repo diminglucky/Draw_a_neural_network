@@ -61,7 +61,7 @@ describe("Composable DAG publication plan", () => {
 
     expect(result.status).toBe("unresolved");
     if (result.status === "unresolved") {
-      expect(result.publicationPlan).toBeUndefined();
+      expect("publicationPlan" in result).toBe(false);
       expect(result.unresolved).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: "component-contract" }),
       ]));
