@@ -42,7 +42,7 @@ public static class DiagramPlanDigest
         writer.WriteNumber("x", node.XInches); writer.WriteNumber("y", node.YInches); writer.WriteNumber("width", node.WidthInches); writer.WriteNumber("height", node.HeightInches);
         writer.WriteString("tensorShape", node.TensorShape); writer.WriteString("visualRole", node.VisualRole); writer.WriteString("layerRole", node.LayerRole);
         writer.WriteNumber("repeatCount", node.RepeatCount); writer.WriteNumber("depth", node.Depth); writer.WriteBoolean("perspective", node.Perspective); writer.WriteString("color", node.Color);
-        WriteStrings(writer, "shapeData", node.ShapeData.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => pair.Key + "\u001f" + pair.Value));
+        WriteStringMap(writer, "shapeData", node.ShapeData);
         writer.WriteEndObject();
     }
 
@@ -57,7 +57,7 @@ public static class DiagramPlanDigest
             writer.WriteNumber("x", group.Bounds.XInches); writer.WriteNumber("y", group.Bounds.YInches); writer.WriteNumber("width", group.Bounds.WidthInches); writer.WriteNumber("height", group.Bounds.HeightInches);
             writer.WriteNumber("extrusion", group.ExtrusionDepthInches); writer.WriteNumber("skewX", group.SkewXInches); writer.WriteNumber("skewY", group.SkewYInches);
             WriteStrings(writer, "primitiveIds", group.PrimitiveIds);
-            WriteStrings(writer, "shapeData", group.ShapeData.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => pair.Key + "\u001f" + pair.Value));
+            WriteStringMap(writer, "shapeData", group.ShapeData);
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
@@ -89,5 +89,15 @@ public static class DiagramPlanDigest
         writer.WritePropertyName(name); writer.WriteStartArray();
         foreach (var value in values) writer.WriteStringValue(value);
         writer.WriteEndArray();
+    }
+
+    private static void WriteStringMap(Utf8JsonWriter writer, string name, IReadOnlyDictionary<string, string> values)
+    {
+        writer.WritePropertyName(name); writer.WriteStartObject();
+        foreach (var pair in values.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            writer.WriteString(pair.Key, pair.Value);
+        }
+        writer.WriteEndObject();
     }
 }
