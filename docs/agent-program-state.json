@@ -6,8 +6,8 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md"
   },
-  "updatedAt": "2026-08-17T13:17:51.000Z",
-  "currentFocus": "M2.3",
+  "updatedAt": "2026-08-18T09:59:11.823Z",
+  "currentFocus": "M2.4",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
     { "id": "M1", "title": "Static source analysis", "status": "accepted" },
@@ -114,12 +114,18 @@
       "id": "M2.3",
       "milestoneId": "M2",
       "title": "Publication visual quality",
-      "status": "planned",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M2.1", "M2.2"],
       "outcome": "Layout, routing, contrast, grayscale, crop, scale, and source mapping pass QA.",
       "acceptance": [{ "id": "M2.3.qa", "text": "Server-side visual QA rejects unsafe figure plans.", "requiredEvidenceKinds": ["test", "document"] }],
-      "evidence": [],
-      "nextAction": "Implement after M2.2 is accepted.",
+      "evidence": [
+        { "kind": "test", "satisfies": ["M2.3.qa"], "ref": "apps/api/tests/composable-dag-visual-qa.test.ts", "summary": "Four semantic gold plan families and fail-closed geometry, route, evidence, style, contrast, grayscale, threshold, and label regressions passed in the focused M2.3 suite.", "verifiedAt": "2026-08-18T09:58:06.000Z", "commit": "7262ce859ca439ce8f58fda00fbffa0c343bc68e" },
+        { "kind": "document", "satisfies": ["M2.3.qa"], "ref": "docs/evidence/2026-08-18-m2-3-publication-visual-quality.md", "summary": "The v3 publication wrapper, pure server-side Visual QA boundary, verification results, and unaccepted real-host gates are recorded.", "verifiedAt": "2026-08-18T09:59:11.823Z", "commit": "7262ce859ca439ce8f58fda00fbffa0c343bc68e" },
+        { "kind": "typecheck", "satisfies": ["M2.3.qa"], "ref": "docs/evidence/2026-08-18-m2-3-publication-visual-quality.md", "summary": "Strict TypeScript compilation passed for the complete repository.", "verifiedAt": "2026-08-18T09:58:06.000Z", "commit": "7262ce859ca439ce8f58fda00fbffa0c343bc68e" },
+        { "kind": "commit", "satisfies": ["M2.3.qa"], "ref": "apps/api/src/composable-dag-visual-qa.ts", "summary": "The implementation revision containing the v3 Visual QA boundary is resolvable.", "verifiedAt": "2026-08-18T09:58:06.000Z", "commit": "7262ce859ca439ce8f58fda00fbffa0c343bc68e" }
+      ],
+      "nextAction": "Keep the accepted visual QA boundary stable while the owner-scoped preview route proceeds.",
       "blockerIds": [],
       "successorId": null
     },

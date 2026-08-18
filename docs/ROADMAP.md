@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-17T13:17:51.000Z`
+Updated: `2026-08-18T09:59:11.823Z`
 Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md](./superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md)
 
 ## Current Focus
 
-- M2.3: Publication visual quality
+- M2.4: Owner-scoped v3 preview route
 - Status: planned
-- Outcome: Layout, routing, contrast, grayscale, crop, scale, and source mapping pass QA.
-- Next action: Implement after M2.2 is accepted.
+- Outcome: Owners can inspect safe previews and candidate structures never compile.
+- Next action: Implement after compiler and visual QA acceptance.
 
 ## Milestones
 
@@ -23,7 +23,7 @@ Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-m
 
 ## Executable Nodes
 
-- M2.3: Publication visual quality
+- M2.4: Owner-scoped v3 preview route
 
 ## Open Blockers
 
