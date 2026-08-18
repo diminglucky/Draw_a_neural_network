@@ -38,6 +38,11 @@ public sealed record WorkerV2Response(
 
 public static class WorkerV2RequestParser
 {
+    private static readonly JsonSerializerOptions DiagramJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = false,
+    };
+
     private static readonly IReadOnlyDictionary<WorkerV2Command, IReadOnlySet<string>> AllowedProperties =
         new Dictionary<WorkerV2Command, IReadOnlySet<string>>
         {
@@ -50,7 +55,15 @@ public static class WorkerV2RequestParser
             [WorkerV2Command.Recover] = Set("protocolVersion", "requestId", "command", "session"),
         };
 
-    public static WorkerV2Request Parse(string json)
+    public static WorkerV2Request Parse(string json) => ParseCore(json, outputRoot: null);
+
+    public static WorkerV2Request Parse(string json, string outputRoot)
+    {
+        if (string.IsNullOrWhiteSpace(outputRoot)) throw new WorkerProtocolException("output root is required");
+        return ParseCore(json, outputRoot);
+    }
+
+    private static WorkerV2Request ParseCore(string json, string? outputRoot)
     {
         if (string.IsNullOrWhiteSpace(json)) throw new WorkerProtocolException("JSON request is required");
 
@@ -79,7 +92,9 @@ public static class WorkerV2RequestParser
             var session = ParseSession(properties["session"]);
             _ = session.ToKey();
 
-            var outputPath = properties.TryGetValue("outputPath", out var output) ? RequiredPath(output, "outputPath") : null;
+            var outputPath = properties.TryGetValue("outputPath", out var output)
+                ? NormalizeOutputPath(output, outputRoot)
+                : null;
             var operationId = properties.TryGetValue("operationId", out var operation) ? RequiredString(operation, "operationId") : null;
             var planHash = properties.TryGetValue("planHash", out var hash) ? RequiredString(hash, "planHash") : null;
             if (operationId is not null && planHash is not null)
@@ -93,8 +108,20 @@ public static class WorkerV2RequestParser
             if (properties.TryGetValue("diagram", out var diagramElement))
             {
                 if (diagramElement.ValueKind != JsonValueKind.Object) throw new WorkerProtocolException("diagram must be an object");
-                diagram = JsonSerializer.Deserialize<DiagramEnvelope>(diagramElement.GetRawText())
+                ValidateDiagram(diagramElement);
+                diagram = JsonSerializer.Deserialize<DiagramEnvelope>(diagramElement.GetRawText(), DiagramJsonOptions)
                     ?? throw new WorkerProtocolException("diagram is required");
+                if (command is WorkerV2Command.Apply or WorkerV2Command.ApplyDiff)
+                {
+                    try
+                    {
+                        _ = DiagramMapper.Map(diagram);
+                    }
+                    catch (InvalidOperationException error)
+                    {
+                        throw new WorkerProtocolException(error.Message, error);
+                    }
+                }
             }
 
             var closeDisposition = properties.TryGetValue("closeDisposition", out var disposition)
@@ -172,12 +199,12 @@ public static class WorkerV2RequestParser
         return value;
     }
 
-    private static string RequiredPath(JsonElement element, string name)
+    private static string NormalizeOutputPath(JsonElement element, string? outputRoot)
     {
-        var path = RequiredString(element, name);
-        if (path.Length > 4096 || path.Any(char.IsControl)) throw new WorkerProtocolException($"{name} is invalid");
-        if (!path.EndsWith(".vsdx", StringComparison.OrdinalIgnoreCase)) throw new WorkerProtocolException($"{name} must end with .vsdx");
-        return path;
+        if (string.IsNullOrWhiteSpace(outputRoot)) throw new WorkerProtocolException("A trusted output root is required for outputPath");
+        var path = RequiredString(element, "outputPath");
+        if (path.Length > 4096 || path.Any(char.IsControl)) throw new WorkerProtocolException("outputPath is invalid");
+        return PathPolicy.ValidateOutputPath(path, outputRoot);
     }
 
     private static void ValidateIdentifier(string value, string name)
@@ -201,6 +228,181 @@ public static class WorkerV2RequestParser
             if (unexpected is not null) throw new WorkerProtocolException($"Unknown session property '{unexpected}'");
             throw new WorkerProtocolException("Session is missing a required property");
         }
+    }
+
+    private static void ValidateDiagram(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram", "figure", "nodes", "edges", "figurePlan");
+        ValidateIfPresent(properties, "figure", ValidateFigure);
+        ValidateArrayIfPresent(properties, "nodes", ValidateNode);
+        ValidateArrayIfPresent(properties, "edges", ValidateEdge);
+        if (properties.TryGetValue("figurePlan", out var figurePlan) && figurePlan.ValueKind != JsonValueKind.Null)
+            ValidateFigurePlan(figurePlan);
+    }
+
+    private static void ValidateFigure(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figure", "title", "stageLabels");
+        ValidateStringIfPresent(properties, "title");
+        ValidateStringArrayIfPresent(properties, "stageLabels");
+    }
+
+    private static void ValidateNode(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.nodes[]", "id", "kind", "label", "subtitle", "stage", "x", "y", "width", "height", "tensorShape", "visualRole", "layerRole", "repeatCount", "depth", "perspective", "color");
+        ValidateStringIfPresent(properties, "id", "kind", "label", "tensorShape", "visualRole", "layerRole");
+        ValidateNullableStringIfPresent(properties, "subtitle", "color");
+        ValidateIntegerIfPresent(properties, "stage", "repeatCount", "depth");
+        ValidateNumberIfPresent(properties, "x", "y", "width", "height");
+        ValidateBooleanIfPresent(properties, "perspective");
+    }
+
+    private static void ValidateEdge(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.edges[]", "id", "source", "target", "kind", "points");
+        ValidateStringIfPresent(properties, "id", "source", "target", "kind");
+        ValidateArrayIfPresent(properties, "points", ValidatePoint);
+    }
+
+    private static void ValidatePoint(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.points[]", "x", "y");
+        ValidateNumberIfPresent(properties, "x", "y");
+    }
+
+    private static void ValidateFigurePlan(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figurePlan", "coordinateSpace", "primitiveGroups", "connectors", "labels");
+        ValidateIfPresent(properties, "coordinateSpace", ValidateCoordinateSpace);
+        ValidateArrayIfPresent(properties, "primitiveGroups", ValidatePrimitiveGroup);
+        ValidateArrayIfPresent(properties, "connectors", ValidateFigureConnector);
+        ValidateArrayIfPresent(properties, "labels", ValidateFigureLabel);
+    }
+
+    private static void ValidateCoordinateSpace(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figurePlan.coordinateSpace", "unit", "figureUnitInches", "origin", "width", "height");
+        ValidateStringIfPresent(properties, "unit", "origin");
+        ValidateNumberIfPresent(properties, "figureUnitInches", "width", "height");
+    }
+
+    private static void ValidatePrimitiveGroup(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figurePlan.primitiveGroups[]", "id", "kind", "primitiveIds", "bounds", "extrusionDepthFu", "skewXFu", "skewYFu", "semantic");
+        ValidateStringIfPresent(properties, "id", "kind");
+        ValidateStringArrayIfPresent(properties, "primitiveIds");
+        ValidateIfPresent(properties, "bounds", ValidateBounds);
+        ValidateNumberIfPresent(properties, "extrusionDepthFu", "skewXFu", "skewYFu");
+        ValidateIfPresent(properties, "semantic", ValidatePrimitiveSemantic);
+    }
+
+    private static void ValidateBounds(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figurePlan.primitiveGroups[].bounds", "x", "y", "width", "height");
+        ValidateNumberIfPresent(properties, "x", "y", "width", "height");
+    }
+
+    private static void ValidatePrimitiveSemantic(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figurePlan.primitiveGroups[].semantic", "sourceNodeId", "stage", "visualRole", "layerRole", "repeatCount", "channelCount", "tensorShape", "inputSpatialSize", "outputSpatialSize");
+        ValidateStringIfPresent(properties, "sourceNodeId", "visualRole", "layerRole");
+        ValidateIntegerIfPresent(properties, "stage", "repeatCount");
+        ValidateNullableIntegerIfPresent(properties, "channelCount", "inputSpatialSize", "outputSpatialSize");
+        if (properties.TryGetValue("tensorShape", out var tensorShape)) ValidateScalarArray(tensorShape, "diagram.figurePlan.primitiveGroups[].semantic.tensorShape");
+    }
+
+    private static void ValidateFigureConnector(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figurePlan.connectors[]", "id", "kind", "sourceGroupId", "targetGroupId", "sourcePrimitiveId", "targetPrimitiveId", "points");
+        ValidateStringIfPresent(properties, "id", "kind", "sourceGroupId", "targetGroupId", "sourcePrimitiveId", "targetPrimitiveId");
+        ValidateArrayIfPresent(properties, "points", ValidatePoint);
+    }
+
+    private static void ValidateFigureLabel(JsonElement element)
+    {
+        var properties = ValidateObject(element, "diagram.figurePlan.labels[]", "id", "groupId", "text", "x", "y", "width", "height", "fontSizePt");
+        ValidateStringIfPresent(properties, "id", "groupId", "text");
+        ValidateNumberIfPresent(properties, "x", "y", "width", "height", "fontSizePt");
+    }
+
+    private static Dictionary<string, JsonElement> ValidateObject(JsonElement element, string context, params string[] allowedProperties)
+    {
+        if (element.ValueKind != JsonValueKind.Object) throw new WorkerProtocolException($"{context} must be an object");
+        var properties = ReadProperties(element, context);
+        var allowed = Set(allowedProperties);
+        var unknown = properties.Keys.Except(allowed, StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).FirstOrDefault();
+        if (unknown is not null) throw new WorkerProtocolException($"Unknown property '{unknown}' in {context}");
+        return properties;
+    }
+
+    private static void ValidateIfPresent(IReadOnlyDictionary<string, JsonElement> properties, string name, Action<JsonElement> validator)
+    {
+        if (properties.TryGetValue(name, out var element)) validator(element);
+    }
+
+    private static void ValidateArrayIfPresent(IReadOnlyDictionary<string, JsonElement> properties, string name, Action<JsonElement> itemValidator)
+    {
+        if (!properties.TryGetValue(name, out var element)) return;
+        if (element.ValueKind != JsonValueKind.Array) throw new WorkerProtocolException($"{name} must be an array");
+        foreach (var item in element.EnumerateArray()) itemValidator(item);
+    }
+
+    private static void ValidateStringArrayIfPresent(IReadOnlyDictionary<string, JsonElement> properties, string name)
+    {
+        if (!properties.TryGetValue(name, out var element)) return;
+        if (element.ValueKind != JsonValueKind.Array || element.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
+            throw new WorkerProtocolException($"{name} must be an array of strings");
+    }
+
+    private static void ValidateScalarArray(JsonElement element, string context)
+    {
+        if (element.ValueKind != JsonValueKind.Array || element.EnumerateArray().Any(item => item.ValueKind is not (JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null)))
+            throw new WorkerProtocolException($"{context} must be an array of scalar values");
+    }
+
+    private static void ValidateStringIfPresent(IReadOnlyDictionary<string, JsonElement> properties, params string[] names)
+    {
+        foreach (var name in names)
+            if (properties.TryGetValue(name, out var element) && element.ValueKind != JsonValueKind.String)
+                throw new WorkerProtocolException($"{name} must be a string");
+    }
+
+    private static void ValidateNullableStringIfPresent(IReadOnlyDictionary<string, JsonElement> properties, params string[] names)
+    {
+        foreach (var name in names)
+            if (properties.TryGetValue(name, out var element) && element.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                throw new WorkerProtocolException($"{name} must be a string or null");
+    }
+
+    private static void ValidateIntegerIfPresent(IReadOnlyDictionary<string, JsonElement> properties, params string[] names)
+    {
+        foreach (var name in names)
+            if (properties.TryGetValue(name, out var element) && (element.ValueKind != JsonValueKind.Number || !element.TryGetInt32(out _)))
+                throw new WorkerProtocolException($"{name} must be an integer");
+    }
+
+    private static void ValidateNullableIntegerIfPresent(IReadOnlyDictionary<string, JsonElement> properties, params string[] names)
+    {
+        foreach (var name in names)
+            if (properties.TryGetValue(name, out var element) && element.ValueKind != JsonValueKind.Null && (element.ValueKind != JsonValueKind.Number || !element.TryGetInt32(out _)))
+                throw new WorkerProtocolException($"{name} must be an integer or null");
+    }
+
+    private static void ValidateNumberIfPresent(IReadOnlyDictionary<string, JsonElement> properties, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (!properties.TryGetValue(name, out var element)) continue;
+            if (element.ValueKind != JsonValueKind.Number || !element.TryGetDouble(out var value) || !double.IsFinite(value))
+                throw new WorkerProtocolException($"{name} must be a finite number");
+        }
+    }
+
+    private static void ValidateBooleanIfPresent(IReadOnlyDictionary<string, JsonElement> properties, params string[] names)
+    {
+        foreach (var name in names)
+            if (properties.TryGetValue(name, out var element) && element.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new WorkerProtocolException($"{name} must be a boolean");
     }
 
     private static IReadOnlySet<string> Set(params string[] values) => new HashSet<string>(values, StringComparer.Ordinal);
