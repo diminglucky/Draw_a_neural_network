@@ -64,8 +64,23 @@ public sealed record VisioSessionDocument
         PageHandle = RequireOpaqueHandle(pageHandle, nameof(pageHandle));
     }
 
+    public VisioSessionDocument(
+        string documentHandle,
+        string pageHandle,
+        string nativeDocumentIdentity,
+        string nativePageIdentity)
+    {
+        DocumentHandle = RequireOpaqueHandle(documentHandle, nameof(documentHandle));
+        PageHandle = RequireOpaqueHandle(pageHandle, nameof(pageHandle));
+        NativeDocumentIdentity = RequireNativeIdentity(nativeDocumentIdentity, nameof(nativeDocumentIdentity));
+        NativePageIdentity = RequireNativeIdentity(nativePageIdentity, nameof(nativePageIdentity));
+    }
+
     public string DocumentHandle { get; }
     public string PageHandle { get; }
+    public string? NativeDocumentIdentity { get; }
+    public string? NativePageIdentity { get; }
+    public bool HasNativeIdentity => NativeDocumentIdentity is not null && NativePageIdentity is not null;
 
     private static string RequireOpaqueHandle(string value, string parameterName)
     {
@@ -75,6 +90,16 @@ public sealed record VisioSessionDocument
         }
 
         return value;
+    }
+
+    private static string RequireNativeIdentity(string value, string parameterName)
+    {
+        if (value.Length != 32 || !value.All(Uri.IsHexDigit))
+        {
+            throw new ArgumentException("Native Visio identities must be 128-bit hexadecimal values.", parameterName);
+        }
+
+        return value.ToLowerInvariant();
     }
 }
 

@@ -373,6 +373,84 @@ public sealed class VisioSessionManagerTests
     }
 
     [Fact]
+    public async Task Recovery_rejects_a_replacement_vsdx_with_the_same_path_and_page_handle()
+    {
+        var original = NativeDocument("stable-document", "stable-document-page-1", 'a', 'b');
+        var backend = new RecordingBackend { OpenDocument = original };
+        var manager = new VisioSessionManager(backend);
+        var key = Key("workflow-a");
+
+        await manager.OpenOrReuseAsync(key);
+        var saved = await manager.SaveAsAsync(key, "C:\\exports\\session.vsdx");
+        var manifest = Assert.IsType<VisioSessionRecoveryManifest>(saved.RecoveryManifest);
+        await manager.CloseAsync(key);
+        backend.RecoveredDocument = NativeDocument(
+            original.DocumentHandle,
+            original.PageHandle,
+            'c',
+            'b');
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => manager.RecoverAsync(key, manifest));
+
+        Assert.Contains("different Visio document or page", error.Message, StringComparison.Ordinal);
+        Assert.Equal(2, backend.CloseCalls);
+        Assert.Equal(backend.RecoveredDocument, backend.ClosedDocuments[^1]);
+        Assert.Equal(VisioSessionState.Closed, manager.GetSnapshot(key)!.State);
+    }
+
+    [Fact]
+    public async Task Recovery_with_the_wrong_native_page_identity_closes_the_unexpected_document()
+    {
+        var original = NativeDocument("stable-document", "stable-document-page-1", 'a', 'b');
+        var backend = new RecordingBackend { OpenDocument = original };
+        var manager = new VisioSessionManager(backend);
+        var key = Key("workflow-a");
+
+        await manager.OpenOrReuseAsync(key);
+        var saved = await manager.SaveAsAsync(key, "C:\\exports\\session.vsdx");
+        var manifest = Assert.IsType<VisioSessionRecoveryManifest>(saved.RecoveryManifest);
+        await manager.CloseAsync(key);
+        backend.RecoveredDocument = NativeDocument(
+            original.DocumentHandle,
+            original.PageHandle,
+            'a',
+            'c');
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.RecoverAsync(key, manifest));
+
+        Assert.Equal(backend.RecoveredDocument, backend.ClosedDocuments[^1]);
+        Assert.Equal(VisioSessionState.Closed, manager.GetSnapshot(key)!.State);
+    }
+
+    [Fact]
+    public async Task Recovery_cleanup_close_failure_preserves_the_identity_mismatch_and_cleanup_failure()
+    {
+        var original = NativeDocument("stable-document", "stable-document-page-1", 'a', 'b');
+        var backend = new RecordingBackend { OpenDocument = original };
+        var manager = new VisioSessionManager(backend);
+        var key = Key("workflow-a");
+
+        await manager.OpenOrReuseAsync(key);
+        var saved = await manager.SaveAsAsync(key, "C:\\exports\\session.vsdx");
+        var manifest = Assert.IsType<VisioSessionRecoveryManifest>(saved.RecoveryManifest);
+        await manager.CloseAsync(key);
+        backend.RecoveredDocument = NativeDocument(
+            original.DocumentHandle,
+            original.PageHandle,
+            'a',
+            'c');
+        backend.FailClose = true;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => manager.RecoverAsync(key, manifest));
+
+        Assert.IsType<AggregateException>(error.InnerException);
+        Assert.Contains("different Visio document or page", error.ToString(), StringComparison.Ordinal);
+        Assert.Contains("simulated partial close failure", error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(VisioSessionState.Recovering, manager.GetSnapshot(key)!.State);
+        Assert.True(manager.GetSnapshot(key)!.Document is null);
+    }
+
+    [Fact]
     public async Task Recovery_manifest_restores_the_saved_plan_journal_after_a_manager_restart()
     {
         var sourceBackend = new RecordingBackend();
@@ -498,6 +576,14 @@ public sealed class VisioSessionManagerTests
 
     private static VisioSessionOperation Operation(string operationId, char hashCharacter) => new(operationId, new string(hashCharacter, 64));
 
+    private static VisioSessionDocument NativeDocument(string documentHandle, string pageHandle, char documentIdentity, char pageIdentity)
+    {
+        var constructor = typeof(VisioSessionDocument).GetConstructor([typeof(string), typeof(string), typeof(string), typeof(string)]);
+        Assert.NotNull(constructor);
+        return (VisioSessionDocument)constructor!.Invoke(
+            [documentHandle, pageHandle, new string(documentIdentity, 32), new string(pageIdentity, 32)]);
+    }
+
     private sealed class RecordingBackend : IVisioSessionBackend
     {
         public int OpenOrCreateCalls { get; private set; }
@@ -513,6 +599,9 @@ public sealed class VisioSessionManagerTests
         public bool FailOpen { get; set; }
         public bool FailClose { get; set; }
         public bool FailRecover { get; set; }
+        public VisioSessionDocument? OpenDocument { get; set; }
+        public VisioSessionDocument? RecoveredDocument { get; set; }
+        public List<VisioSessionDocument> ClosedDocuments { get; } = [];
 
         public string NormalizeOutputPath(string outputPath) => outputPath;
 
@@ -520,7 +609,7 @@ public sealed class VisioSessionManagerTests
         {
             OpenOrCreateCalls++;
             if (FailOpen) throw new InvalidOperationException("simulated partial open failure");
-            return Task.FromResult(new VisioSessionDocument($"document-{OpenOrCreateCalls}", $"page-{OpenOrCreateCalls}"));
+            return Task.FromResult(OpenDocument ?? new VisioSessionDocument($"document-{OpenOrCreateCalls}", $"page-{OpenOrCreateCalls}"));
         }
 
         public Task ApplyPlanAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default)
@@ -549,6 +638,7 @@ public sealed class VisioSessionManagerTests
         {
             CloseCalls++;
             if (FailClose) throw new InvalidOperationException("simulated partial close failure");
+            ClosedDocuments.Add(document);
             return Task.CompletedTask;
         }
 
@@ -556,7 +646,7 @@ public sealed class VisioSessionManagerTests
         {
             RecoverCalls++;
             if (FailRecover) throw new InvalidOperationException("simulated partial recovery failure");
-            return Task.FromResult(manifest.Document);
+            return Task.FromResult(RecoveredDocument ?? manifest.Document);
         }
     }
 }

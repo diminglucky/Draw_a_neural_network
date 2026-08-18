@@ -74,6 +74,25 @@ public sealed class VisioComSessionOperationsTests
         Assert.Equal(saved, recovered);
     }
 
+    [Fact]
+    public void Disposal_reports_native_close_failure_and_retains_the_failed_session_registration()
+    {
+        var native = new RecordingNativeSessionOperations();
+        var operations = new VisioComSessionOperations(native);
+        var key = new VisioSessionKey("tenant-one", "user-one", "device-one", "workflow-one");
+        var document = operations.OpenOrCreate(key);
+        native.FailClose = true;
+
+        var error = Assert.Throws<AggregateException>(() => operations.Dispose());
+
+        Assert.Contains("native Visio session", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, native.CloseCalls);
+        native.FailClose = false;
+        operations.Close(document);
+        Assert.Equal(2, native.CloseCalls);
+        operations.Dispose();
+    }
+
     private static DiagramDocument LegacyPlan(string nodeId) => new(
         "Publication diagram",
         ["Encoder"],
@@ -90,6 +109,7 @@ public sealed class VisioComSessionOperationsTests
         public List<string> OwnershipMarkers { get; } = [];
         public List<VisioSessionDocument> Documents { get; } = [];
         public List<(string TemporaryPath, string FinalPath)> SaveArguments { get; } = [];
+        public bool FailClose { get; set; }
 
         public VisioSessionDocument OpenOrCreate(VisioSessionKey sessionKey)
         {
@@ -111,7 +131,11 @@ public sealed class VisioComSessionOperationsTests
             return document;
         }
 
-        public void Close(VisioSessionDocument document) => CloseCalls++;
+        public void Close(VisioSessionDocument document)
+        {
+            CloseCalls++;
+            if (FailClose) throw new InvalidOperationException("simulated native close failure");
+        }
 
         public VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest)
         {

@@ -2,6 +2,7 @@ using VisioWorker.Core;
 using VisioWorker.Host;
 using VisioWorker.Live;
 using System.Reflection;
+using System.Text.Json.Nodes;
 
 namespace VisioWorker.Core.Tests;
 
@@ -435,7 +436,7 @@ public sealed class LongLivedWorkerRuntimeTests
     }
 
     [Fact]
-    public async Task Fresh_runtime_rejects_a_legacy_manifest_without_typed_replay_identity_before_native_work()
+    public async Task Fresh_runtime_rejects_a_legacy_manifest_without_native_document_identity_before_native_work()
     {
         var root = Path.Combine(Path.GetTempPath(), "visio-runtime-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -444,10 +445,22 @@ public sealed class LongLivedWorkerRuntimeTests
             var key = Key();
             var outputPath = Path.Combine(root, "session.vsdx");
             var store = new SessionRecoveryManifestStore(root);
-            await store.SaveAsync(new VisioSessionRecoveryManifest(key, outputPath, new VisioSessionDocument("document-1", "page-1"), null, []), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+            await store.SaveAsync(
+                new VisioSessionRecoveryManifest(
+                    key,
+                    outputPath,
+                    new VisioSessionDocument("document-1", "page-1", new string('a', 32), new string('b', 32)),
+                    null,
+                    []),
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow);
             var manifestPath = Directory.EnumerateFiles(Path.Combine(root, ".synapse-sessions"), "*.json").Single();
-            var legacy = (await File.ReadAllTextAsync(manifestPath)).Replace("\"formatVersion\":3", "\"formatVersion\":2", StringComparison.Ordinal);
-            await File.WriteAllTextAsync(manifestPath, legacy);
+            var legacy = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+            legacy["formatVersion"] = 3;
+            var legacyDocument = legacy["manifest"]!["document"]!.AsObject();
+            legacyDocument.Remove("nativeDocumentIdentity");
+            legacyDocument.Remove("nativePageIdentity");
+            await File.WriteAllTextAsync(manifestPath, legacy.ToJsonString());
             var backend = new RecordingSessionBackend();
             await using var runtime = CreateRuntime(backend, store);
 
@@ -680,7 +693,7 @@ public sealed class LongLivedWorkerRuntimeTests
             var stored = _stored[key];
             if (stored.FormatVersion != SessionRecoveryManifestStore.CurrentFormatVersion)
             {
-                throw new InvalidOperationException("Test replay mutation requires a format-3 manifest.");
+                throw new InvalidOperationException("Test replay mutation requires the current manifest format.");
             }
 
             var entries = stored.Manifest.CommandReplayJournal

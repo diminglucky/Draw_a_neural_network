@@ -34,7 +34,7 @@ public sealed class SessionRecoveryManifestStoreTests
             Assert.Equal(manifest.LastPlanHash, stored.Manifest.LastPlanHash);
             Assert.Equal(manifest.OperationJournal, stored.Manifest.OperationJournal);
             Assert.Equal(manifest.CommandReplayJournal, stored.Manifest.CommandReplayJournal);
-            Assert.Equal(3, FormatVersionOf(stored));
+            Assert.Equal(4, FormatVersionOf(stored));
             Assert.Equal(savedAt, stored.SavedAt);
             Assert.Equal(lastActivity, stored.LastActivity);
             Assert.True(File.Exists(ManifestPath(root, manifest.Key)));
@@ -42,6 +42,9 @@ public sealed class SessionRecoveryManifestStoreTests
             using var persisted = JsonDocument.Parse(await File.ReadAllTextAsync(ManifestPath(root, manifest.Key)));
             var replay = persisted.RootElement.GetProperty("manifest").GetProperty("commandReplayJournal")[0];
             Assert.Equal("apply", replay.GetProperty("command").GetString());
+            var persistedDocument = persisted.RootElement.GetProperty("manifest").GetProperty("document");
+            Assert.Equal(new string('a', 32), persistedDocument.GetProperty("nativeDocumentIdentity").GetString());
+            Assert.Equal(new string('b', 32), persistedDocument.GetProperty("nativePageIdentity").GetString());
         }
         finally { DeleteRoot(root); }
     }
@@ -149,7 +152,7 @@ public sealed class SessionRecoveryManifestStoreTests
         {
             var store = new SessionRecoveryManifestStore(root);
             var key = CreateManifest(root).Key;
-            var json = "{\"formatVersion\":4,\"manifest\":" + ManifestJson(key, Path.Combine(root, "workflow.vsdx")) + ",\"savedAt\":\"2026-08-18T06:00:00+00:00\",\"lastActivity\":\"2026-08-18T06:00:00+00:00\"}";
+            var json = "{\"formatVersion\":5,\"manifest\":" + ManifestJson(key, Path.Combine(root, "workflow.vsdx")) + ",\"savedAt\":\"2026-08-18T06:00:00+00:00\",\"lastActivity\":\"2026-08-18T06:00:00+00:00\"}";
             await WriteManifestAsync(root, key, json);
 
             await Assert.ThrowsAsync<WorkerProtocolException>(() => store.LoadAsync(key));
@@ -322,10 +325,18 @@ public sealed class SessionRecoveryManifestStoreTests
         IEnumerable<VisioSessionCommandReplayEntry>? commandReplayJournal = null) => new(
         new VisioSessionKey("tenant", "user", "device", "workflow"),
         outputPath ?? Path.Combine(root, "workflow.vsdx"),
-        new VisioSessionDocument(documentHandle, "page"),
+        NativeDocument(documentHandle, "page"),
         null,
         [],
         commandReplayJournal);
+
+    private static VisioSessionDocument NativeDocument(string documentHandle, string pageHandle)
+    {
+        var constructor = typeof(VisioSessionDocument).GetConstructor([typeof(string), typeof(string), typeof(string), typeof(string)]);
+        Assert.NotNull(constructor);
+        return (VisioSessionDocument)constructor!.Invoke(
+            [documentHandle, pageHandle, new string('a', 32), new string('b', 32)]);
+    }
 
     private static VisioSessionCommandReplayEntry CreateTypedCommandReplay(string requestId, string commandName, string fingerprint, string outputPath)
     {

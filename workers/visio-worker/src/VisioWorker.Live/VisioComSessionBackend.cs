@@ -29,7 +29,7 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
     private readonly IVisioComSessionOperations _operations;
     private readonly ComStaRunner _runner;
     private readonly bool _ownsRunner;
-    private int _disposed;
+    private int _disposeState;
 
     public VisioComSessionBackend(VisioComEngineOptions options, IVisioComSessionOperations operations)
         : this(options, operations, new ComStaRunner(), ownsRunner: true)
@@ -113,7 +113,7 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0) return;
         try
         {
             await _runner.InvokeAsync(() =>
@@ -122,9 +122,19 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
                 return true;
             }).ConfigureAwait(false);
         }
-        finally
+        catch
+        {
+            Volatile.Write(ref _disposeState, 0);
+            throw;
+        }
+
+        try
         {
             if (_ownsRunner) await _runner.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _disposeState, 2);
         }
     }
 
@@ -146,7 +156,7 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
     }
 
     private static void TryDelete(string path)

@@ -210,18 +210,21 @@ public sealed class VisioSessionManager
                 var document = await _backend.RecoverAsync(key, manifest, cancellationToken).ConfigureAwait(false);
                 if (document != manifest.Document)
                 {
+                    var identityMismatch = new InvalidOperationException("Recovery returned a different Visio document or page.");
                     try
                     {
                         await _backend.CloseAsync(document, cancellationToken).ConfigureAwait(false);
                     }
-                    catch
+                    catch (Exception cleanupFailure)
                     {
                         entry.Publish(recovering with { NativeHandleUncertain = true });
-                        throw new InvalidOperationException("Recovery returned a different Visio document or page and the accidental native open could not be released.");
+                        throw new InvalidOperationException(
+                            "Recovery returned a different Visio document or page and the accidental native open could not be released.",
+                            new AggregateException(identityMismatch, cleanupFailure));
                     }
 
                     entry.Publish(recovering with { State = VisioSessionState.Closed, RecoveryManifest = manifest });
-                    throw new InvalidOperationException("Recovery returned a different Visio document or page.");
+                    throw identityMismatch;
                 }
                 var restoredJournal = ToJournal(manifest.OperationJournal);
                 var recovered = recovering with
