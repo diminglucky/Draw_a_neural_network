@@ -416,6 +416,11 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
 
     private static dynamic FindExpectedPage(dynamic document, VisioSessionDocument expected)
     {
+        return FindExpectedPage((object)document, expected, VisioComEngine.ReleaseCom);
+    }
+
+    private static dynamic FindExpectedPage(dynamic document, VisioSessionDocument expected, Action<object?> release)
+    {
         dynamic? matched = null;
         dynamic? pages = null;
         try
@@ -434,7 +439,7 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
                     {
                         if (matched is not null)
                         {
-                            VisioComEngine.ReleaseCom(matched);
+                            release(matched);
                             matched = null;
                             throw new WorkerProtocolException("Recovered Visio VSDX contains more than one page with the manifest page identity.");
                         }
@@ -444,13 +449,19 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
                 }
                 finally
                 {
-                    VisioComEngine.ReleaseCom(candidate);
+                    release(candidate);
                 }
             }
         }
+        catch
+        {
+            release(matched);
+            matched = null;
+            throw;
+        }
         finally
         {
-            VisioComEngine.ReleaseCom(pages);
+            release(pages);
         }
 
         return matched ?? throw new WorkerProtocolException("Recovered Visio VSDX does not contain the manifest page identity.");

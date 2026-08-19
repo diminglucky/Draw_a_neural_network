@@ -123,6 +123,22 @@ public sealed class VisioComSessionOperationsTests
     }
 
     [Fact]
+    public void FindExpectedPage_releases_a_retained_match_when_a_later_page_identity_read_fails()
+    {
+        var expectedPageIdentity = new string('a', 32);
+        var matching = new FakeNativePage(1, expectedPageIdentity);
+        var malformed = new FakeNativePage(2, "not-a-native-page-identity");
+        var document = new FakeNativeDocument(matching, malformed);
+        var expected = new VisioSessionDocument("document-one", "page-one", new string('b', 32), expectedPageIdentity);
+        var released = new List<object?>();
+
+        var error = Assert.Throws<WorkerProtocolException>(() => InvokeFindExpectedPage(document, expected, released.Add));
+
+        Assert.Contains("missing or invalid", error.Message, StringComparison.Ordinal);
+        Assert.Contains(matching, released);
+    }
+
+    [Fact]
     public void SaveAs_reopen_identity_failure_removes_released_native_and_adapter_registrations_before_reconciliation()
     {
         var native = new RecordingNativeSessionOperations { FailSaveAsAfterOriginalClose = true };
@@ -147,10 +163,36 @@ public sealed class VisioComSessionOperationsTests
     private static object InvokeFindExpectedPage(object document, VisioSessionDocument expected)
     {
         var nativeType = typeof(VisioComSessionOperations).Assembly.GetType("VisioWorker.Live.VisioComSessionNative", throwOnError: true)!;
-        var method = nativeType.GetMethod("FindExpectedPage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var method = nativeType.GetMethod(
+            "FindExpectedPage",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: [typeof(object), typeof(VisioSessionDocument)],
+            modifiers: null)!;
         try
         {
             return method.Invoke(null, [document, expected])!;
+        }
+        catch (TargetInvocationException error) when (error.InnerException is not null)
+        {
+            throw error.InnerException;
+        }
+    }
+
+    private static object InvokeFindExpectedPage(object document, VisioSessionDocument expected, Action<object?> release)
+    {
+        var nativeType = typeof(VisioComSessionOperations).Assembly.GetType("VisioWorker.Live.VisioComSessionNative", throwOnError: true)!;
+        var method = nativeType.GetMethod(
+            "FindExpectedPage",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: [typeof(object), typeof(VisioSessionDocument), typeof(Action<object?>)],
+            modifiers: null);
+
+        Assert.NotNull(method);
+        try
+        {
+            return method.Invoke(null, [document, expected, release])!;
         }
         catch (TargetInvocationException error) when (error.InnerException is not null)
         {

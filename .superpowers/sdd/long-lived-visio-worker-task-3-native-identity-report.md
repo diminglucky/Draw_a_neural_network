@@ -144,3 +144,56 @@ git diff --check 482076a..HEAD
 ```
 
 Result: `RANGE_DIFF_CHECK=PASS`.
+
+## 2026-08-19 retained-page exceptional cleanup supplement
+
+### Scope
+
+- Fixed only the reviewed `FindExpectedPage` retained-page COM cleanup path, its focused fake-native unit contract, and this existing native-identity report.
+- No API, protocol, or UI files were changed. The user-owned API edits and both user-untracked plan files remain outside the allowlist and unstaged.
+
+### TDD RED evidence
+
+Before editing `VisioComSessionOperations.cs`, the focused matching-page-first/later-read-failure test was added. It uses a valid first page identity and a malformed marker on a later page. The existing static production releaser finalizes only real COM wrappers, so the fake-native test requires the production method's private release callback boundary to observe the retained-page ownership transfer without adding a public surface.
+
+```powershell
+dotnet test .\workers\visio-worker\tests\VisioWorker.Core.Tests\VisioWorker.Core.Tests.csproj --no-restore --filter "FullyQualifiedName~FindExpectedPage_releases_a_retained_match_when_a_later_page_identity_read_fails" --logger "console;verbosity=minimal"
+```
+
+Result: 1 failed, 0 passed, 0 skipped. The failure was the expected `Assert.NotNull` failure for the missing private three-parameter release boundary; no production source had been edited. This records that the fake-native retained-page release contract was absent from the baseline.
+
+### Implementation and GREEN evidence
+
+- The normal private `FindExpectedPage(document, expected)` entry point continues to use `VisioComEngine.ReleaseCom`.
+- Its private cleanup core accepts that release action, releases the first retained matching page on every exceptional unwind, clears the local reference, and returns the match only after a successful scan.
+- The existing malformed-marker/COM-failure propagation and duplicate-identity rejection behavior remain fail-closed. The original two-parameter test reflection helper now selects its signature explicitly, avoiding overload ambiguity.
+
+Focused regression command:
+
+```powershell
+dotnet test .\workers\visio-worker\tests\VisioWorker.Core.Tests\VisioWorker.Core.Tests.csproj --no-restore --filter "FullyQualifiedName~FindExpectedPage_releases_a_retained_match_when_a_later_page_identity_read_fails|FullyQualifiedName~FindExpectedPage_skips_an_untagged_candidate_before_the_matching_native_identity_page|FullyQualifiedName~FindExpectedPage_rejects_ambiguous_matching_native_identity_pages" --logger "console;verbosity=minimal"
+```
+
+Result: 3 passed, 0 failed, 0 skipped.
+
+Full Worker suite:
+
+```powershell
+dotnet test .\workers\visio-worker\VisioWorker.sln --no-restore --logger "console;verbosity=minimal"
+```
+
+Result: 129 passed, 0 failed, 1 skipped. The unchanged skipped test is `VisioComSessionLiveAcceptanceTests.Same_live_session_draws_updates_saves_closes_and_recovers_one_editable_vsdx`.
+
+Release build:
+
+```powershell
+dotnet build .\workers\visio-worker\VisioWorker.sln --configuration Release --no-restore -clp:ErrorsOnly
+```
+
+Result: 0 warnings, 0 errors.
+
+The final committed-range command is `git diff --check HEAD^..HEAD`; it passed with no whitespace errors. Git may print the existing LF-to-CRLF working-copy warnings, which do not indicate a diff-check failure.
+
+### Remaining real Visio gate
+
+This supplement verifies fake-native ownership cleanup, the full Worker suite, and the Release build. It does not independently prove the corresponding release timing against a live Microsoft Visio COM page; the existing live-Visio acceptance test remains skipped.
