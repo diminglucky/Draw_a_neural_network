@@ -114,9 +114,10 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
 
     private async Task<WorkerV2Response> ProcessV2Async(string line, CancellationToken cancellationToken)
     {
+        WorkerV2Request? request = null;
         try
         {
-            var request = WorkerV2RequestParser.Parse(line, _options.OutputRoot);
+            request = WorkerV2RequestParser.Parse(line, _options.OutputRoot);
             return await GetOrCreateV2Runtime().ProcessAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -125,7 +126,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         }
         catch (Exception)
         {
-            return new WorkerV2Response("unknown", "failed", Error: "Invalid or failed Worker v2 request.");
+            return new WorkerV2Response(request?.RequestId ?? "unknown", "failed", Error: "Invalid or failed Worker v2 request.");
         }
     }
 
@@ -170,7 +171,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         JsonElement? version = null;
         foreach (var property in root.EnumerateObject())
         {
-            if (!property.NameEquals("protocolVersion")) continue;
+            if (!string.Equals(property.Name, "protocolVersion", StringComparison.OrdinalIgnoreCase)) continue;
             if (version is not null) throw new WorkerProtocolException("Duplicate protocolVersion property.");
             version = property.Value;
         }

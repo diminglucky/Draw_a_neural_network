@@ -1,16 +1,7 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
-
 namespace VisioWorker.Host;
 
 internal static class Program
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
     public static async Task<int> Main(string[] args)
     {
         var mode = ReadOption(args, "--mode") ?? "mock";
@@ -21,21 +12,13 @@ internal static class Program
             return 2;
         }
 
-        await using var processor = new WorkerHostLineProcessor(new WorkerHostLineProcessorOptions
+        return await WorkerHostLoop.RunAsync(Console.In, Console.Out, new WorkerHostLineProcessorOptions
         {
             OutputRoot = outputRoot,
             Mode = mode,
             Visible = HasFlag(args, "--visible"),
             AttachToRunning = HasFlag(args, "--attach-to-running"),
-        });
-        while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
-        {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            var response = await processor.ProcessLineAsync(line.TrimStart('\uFEFF')).ConfigureAwait(false);
-            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(response, JsonOptions)).ConfigureAwait(false);
-            await Console.Out.FlushAsync().ConfigureAwait(false);
-        }
-        return 0;
+        }).ConfigureAwait(false);
     }
 
     private static bool HasFlag(string[] args, string name) => args.Any(argument => string.Equals(argument, name, StringComparison.OrdinalIgnoreCase));
