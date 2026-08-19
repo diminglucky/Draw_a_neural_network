@@ -45,21 +45,45 @@ public static class PublicationTensorGeometry
 public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 {
     private const double PageHeightInches = 9.5;
+    private static readonly TimeSpan OwnedApplicationExitTimeout = TimeSpan.FromSeconds(5);
     private readonly VisioComEngineOptions _options;
     private readonly ComStaRunner _runner;
     private readonly IVisioProcessWindowAdapter _processWindowAdapter;
+    private readonly IVisioProcessExitAdapter _processExitAdapter;
+    private readonly IVisioApplicationExitAdapter _applicationExitAdapter;
     private readonly object _sessionBackendGate = new();
     private VisioComSessionBackend? _sessionBackend;
 
     public VisioComEngine(VisioComEngineOptions options)
-        : this(options, new WindowsVisioProcessWindowAdapter())
     {
+        var processAdapter = new WindowsVisioProcessWindowAdapter();
+        _options = options;
+        _processWindowAdapter = processAdapter;
+        _processExitAdapter = processAdapter;
+        _applicationExitAdapter = new ComVisioApplicationExitAdapter();
+        _runner = new ComStaRunner();
     }
 
     internal VisioComEngine(VisioComEngineOptions options, IVisioProcessWindowAdapter processWindowAdapter)
+        : this(
+            options,
+            processWindowAdapter,
+            processWindowAdapter as IVisioProcessExitAdapter
+                ?? throw new ArgumentException("The process identity adapter must also support bounded exit checks.", nameof(processWindowAdapter)),
+            new ComVisioApplicationExitAdapter())
+    {
+    }
+
+    internal VisioComEngine(
+        VisioComEngineOptions options,
+        IVisioProcessWindowAdapter processWindowAdapter,
+        IVisioProcessExitAdapter processExitAdapter,
+        IVisioApplicationExitAdapter applicationExitAdapter)
     {
         _options = options;
         _processWindowAdapter = processWindowAdapter ?? throw new ArgumentNullException(nameof(processWindowAdapter));
+        _processExitAdapter = processExitAdapter ?? throw new ArgumentNullException(nameof(processExitAdapter));
+        _applicationExitAdapter = applicationExitAdapter ?? throw new ArgumentNullException(nameof(applicationExitAdapter));
         _runner = new ComStaRunner();
     }
 
@@ -101,7 +125,11 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         {
             return _sessionBackend ??= new VisioComSessionBackend(
                 _options,
-                new VisioComSessionOperations(new VisioComSessionNative(_options)),
+                new VisioComSessionOperations(new VisioComSessionNative(
+                    _options,
+                    _processWindowAdapter,
+                    _processExitAdapter,
+                    _applicationExitAdapter)),
                 _runner,
                 ownsRunner: false);
         }
@@ -118,12 +146,18 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         dynamic? app = null;
         dynamic? docs = null;
         dynamic? doc = null;
-        bool launched = false;
+        bool workerCreatedApplication = false;
         bool keepVisibleDocumentOpen = false;
-        OwnedVisioApplicationLease? ownedApplicationLease = null;
+        OwnedVisioApplicationExit? ownedApplicationExit = null;
         try
         {
-            app = ConnectVisio(_options, _processWindowAdapter, out launched, out ownedApplicationLease);
+            app = ConnectVisio(
+                _options,
+                _processWindowAdapter,
+                _processExitAdapter,
+                _applicationExitAdapter,
+                out workerCreatedApplication,
+                out ownedApplicationExit);
             TrySet(() => app.Visible = _options.Visible);
             TrySet(() => app.AlertResponse = 1);
             docs = app.Documents;
@@ -172,41 +206,58 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
         finally
         {
-            if (!keepVisibleDocumentOpen) TryClose(doc);
-            if (launched && !keepVisibleDocumentOpen) TryQuit(app);
-            GC.KeepAlive(ownedApplicationLease);
-            ReleaseCom(doc);
-            ReleaseCom(docs);
-            ReleaseCom(app);
+            try
+            {
+                if (!keepVisibleDocumentOpen) TryClose(doc);
+                if (!keepVisibleDocumentOpen) ExitApplication(app, workerCreatedApplication, ownedApplicationExit);
+            }
+            finally
+            {
+                ReleaseCom(doc);
+                ReleaseCom(docs);
+                ReleaseCom(app);
+            }
         }
     }
 
-    internal static dynamic ConnectVisio(VisioComEngineOptions options, out bool launched)
+    internal static dynamic ConnectVisio(VisioComEngineOptions options, out bool workerCreatedApplication)
     {
         var visioType = Type.GetTypeFromProgID("Visio.Application", throwOnError: false)
             ?? throw new WorkerProtocolException("Visio.Application is not registered");
 
         if (options.AttachToRunning && TryGetActiveObject(visioType.GUID, out var active))
         {
-            launched = false;
+            workerCreatedApplication = false;
             return active!;
         }
 
         var created = Activator.CreateInstance(visioType)
             ?? throw new WorkerProtocolException("Visio.Application could not be created");
-        launched = true;
+        workerCreatedApplication = true;
         return created;
     }
 
     internal static dynamic ConnectVisio(
         VisioComEngineOptions options,
         IVisioProcessWindowAdapter processWindowAdapter,
-        out bool launched,
-        out OwnedVisioApplicationLease? ownedApplicationLease)
+        IVisioProcessExitAdapter processExitAdapter,
+        IVisioApplicationExitAdapter applicationExitAdapter,
+        out bool workerCreatedApplication,
+        out OwnedVisioApplicationExit? ownedApplicationExit)
     {
         ArgumentNullException.ThrowIfNull(processWindowAdapter);
-        var application = ConnectVisio(options, out launched);
-        ownedApplicationLease = OwnedVisioApplicationLease.TryCreate(application, launched, processWindowAdapter);
+        ArgumentNullException.ThrowIfNull(processExitAdapter);
+        ArgumentNullException.ThrowIfNull(applicationExitAdapter);
+        var application = ConnectVisio(options, out workerCreatedApplication);
+        var ownedApplicationLease = OwnedVisioApplicationLease.TryCreate(application, workerCreatedApplication, processWindowAdapter);
+        ownedApplicationExit = ownedApplicationLease is null
+            ? null
+            : new OwnedVisioApplicationExit(
+                ownedApplicationLease,
+                processWindowAdapter,
+                processExitAdapter,
+                applicationExitAdapter,
+                OwnedApplicationExitTimeout);
         return application;
     }
 
@@ -892,10 +943,16 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    internal static void TryQuit(dynamic? app)
+    internal static void ExitApplication(
+        object? application,
+        bool workerCreatedApplication,
+        OwnedVisioApplicationExit? ownedApplicationExit)
     {
-        if (app is null) return;
-        TrySet(() => app.Quit());
+        if (application is null) return;
+        var exit = OwnedVisioApplicationExit.RequireForShutdown(workerCreatedApplication, ownedApplicationExit);
+        if (exit is null) return;
+        exit.RequestQuit(application);
+        exit.WaitForExitOrTerminate();
     }
 
     internal static void ReleaseCom(object? value)

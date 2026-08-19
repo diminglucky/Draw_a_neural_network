@@ -6,6 +6,51 @@ namespace VisioWorker.Core.Tests;
 public sealed class VisioComSessionBackendTests
 {
     [Fact]
+    public async Task Visible_session_keeps_one_document_open_through_apply_and_diff_until_explicit_close()
+    {
+        var operations = new RecordingComOperations();
+        await using var backend = new VisioComSessionBackend(
+            new VisioComEngineOptions(Visible: true, OutputRoot: Path.GetTempPath()),
+            operations);
+        var key = new VisioSessionKey("tenant-one", "user-one", "device-one", "workflow-one");
+        var plan = new DiagramDocument("diagram", [], [], []);
+
+        var document = await backend.OpenOrCreateAsync(key);
+        await backend.ApplyPlanAsync(document, plan);
+        await backend.ApplyPlanDiffAsync(document, plan);
+
+        Assert.Equal(1, operations.OpenOrCreateCalls);
+        Assert.Equal(1, operations.ApplyPlanCalls);
+        Assert.Equal(1, operations.ApplyPlanDiffCalls);
+        Assert.Equal(0, operations.CloseCalls);
+        Assert.All(operations.OperatedDocuments, operated => Assert.Same(document, operated));
+
+        await backend.CloseAsync(document);
+
+        Assert.Equal(1, operations.CloseCalls);
+    }
+
+    [Fact]
+    public async Task Disposal_failure_on_the_STA_is_retryable_without_marking_the_backend_disposed()
+    {
+        var operations = new RecordingComOperations { FailFirstDispose = true };
+        var backend = new VisioComSessionBackend(
+            new VisioComEngineOptions(OutputRoot: Path.GetTempPath()),
+            operations);
+
+        var error = await Assert.ThrowsAsync<WorkerProtocolException>(async () => await backend.DisposeAsync());
+
+        Assert.Contains("simulated lifecycle exit failure", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, operations.DisposeCalls);
+        Assert.Single(operations.ThreadIds);
+        Assert.Collection(operations.ApartmentStates, state => Assert.Equal(ApartmentState.STA, state));
+
+        await backend.DisposeAsync();
+
+        Assert.Equal(2, operations.DisposeCalls);
+    }
+
+    [Fact]
     public async Task Pre_canceled_operation_is_rejected_before_STA_queue_admission()
     {
         var outputRoot = Path.Combine(Path.GetTempPath(), "synapse-session-backend-" + Guid.NewGuid().ToString("N"));
@@ -182,10 +227,11 @@ public sealed class VisioComSessionBackendTests
         }
     }
 
-    private sealed class RecordingComOperations : IVisioComSessionOperations
+    private sealed class RecordingComOperations : IVisioComSessionOperations, IDisposable
     {
         public int OpenOrCreateCalls { get; private set; }
         public int ApplyPlanCalls { get; private set; }
+        public int ApplyPlanDiffCalls { get; private set; }
         public int CloseCalls { get; private set; }
         public int SaveCalls { get; private set; }
         public int RecoverCalls { get; private set; }
@@ -193,6 +239,9 @@ public sealed class VisioComSessionBackendTests
         public HashSet<ApartmentState> ApartmentStates { get; } = [];
         public List<string> TemporaryPaths { get; } = [];
         public List<string> FinalPaths { get; } = [];
+        public List<VisioSessionDocument> OperatedDocuments { get; } = [];
+        public bool FailFirstDispose { get; init; }
+        public int DisposeCalls { get; private set; }
         public bool BlockFirstApply { get; init; }
         public TaskCompletionSource FirstApplyStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource AllowFirstApply { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -211,6 +260,7 @@ public sealed class VisioComSessionBackendTests
         {
             TrackThread();
             ApplyPlanCalls++;
+            OperatedDocuments.Add(document);
             if (BlockFirstApply && ApplyPlanCalls == 1)
             {
                 FirstApplyStarted.TrySetResult();
@@ -221,6 +271,8 @@ public sealed class VisioComSessionBackendTests
         public void ApplyPlanDiff(VisioSessionDocument document, DiagramDocument plan)
         {
             TrackThread();
+            ApplyPlanDiffCalls++;
+            OperatedDocuments.Add(document);
         }
 
         public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
@@ -243,6 +295,7 @@ public sealed class VisioComSessionBackendTests
         {
             TrackThread();
             CloseCalls++;
+            OperatedDocuments.Add(document);
         }
 
         public VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest)
@@ -250,6 +303,16 @@ public sealed class VisioComSessionBackendTests
             TrackThread();
             RecoverCalls++;
             return manifest.Document;
+        }
+
+        public void Dispose()
+        {
+            TrackThread();
+            DisposeCalls++;
+            if (FailFirstDispose && DisposeCalls == 1)
+            {
+                throw new WorkerProtocolException("simulated lifecycle exit failure");
+            }
         }
 
         private void TrackThread()

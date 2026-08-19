@@ -185,15 +185,35 @@ internal static class NativeIdentity
 internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposable
 {
     private readonly VisioComEngineOptions _options;
+    private readonly IVisioProcessWindowAdapter _processWindowAdapter;
+    private readonly IVisioProcessExitAdapter _processExitAdapter;
+    private readonly IVisioApplicationExitAdapter _applicationExitAdapter;
     private readonly Dictionary<string, NativeDocument> _documents = new(StringComparer.Ordinal);
     private dynamic? _app;
     private dynamic? _documentsCollection;
-    private bool _launched;
+    private bool _workerCreatedApplication;
+    private OwnedVisioApplicationExit? _ownedApplicationExit;
     private bool _disposed;
 
     public VisioComSessionNative(VisioComEngineOptions options)
     {
+        var processAdapter = new WindowsVisioProcessWindowAdapter();
         _options = options;
+        _processWindowAdapter = processAdapter;
+        _processExitAdapter = processAdapter;
+        _applicationExitAdapter = new ComVisioApplicationExitAdapter();
+    }
+
+    internal VisioComSessionNative(
+        VisioComEngineOptions options,
+        IVisioProcessWindowAdapter processWindowAdapter,
+        IVisioProcessExitAdapter processExitAdapter,
+        IVisioApplicationExitAdapter applicationExitAdapter)
+    {
+        _options = options;
+        _processWindowAdapter = processWindowAdapter ?? throw new ArgumentNullException(nameof(processWindowAdapter));
+        _processExitAdapter = processExitAdapter ?? throw new ArgumentNullException(nameof(processExitAdapter));
+        _applicationExitAdapter = applicationExitAdapter ?? throw new ArgumentNullException(nameof(applicationExitAdapter));
     }
 
     public VisioSessionDocument OpenOrCreate(VisioSessionKey sessionKey)
@@ -358,18 +378,26 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         {
             throw new AggregateException("One or more native Visio documents could not be closed during disposal.", failures);
         }
-        QuitLaunchedApplication();
+        ExitOwnedApplication();
         VisioComEngine.ReleaseCom(_documentsCollection);
         VisioComEngine.ReleaseCom(_app);
         _documentsCollection = null;
         _app = null;
+        _workerCreatedApplication = false;
+        _ownedApplicationExit = null;
         _disposed = true;
     }
 
     private void EnsureApplication()
     {
         if (_app is not null) return;
-        _app = VisioComEngine.ConnectVisio(_options, out _launched);
+        _app = VisioComEngine.ConnectVisio(
+            _options,
+            _processWindowAdapter,
+            _processExitAdapter,
+            _applicationExitAdapter,
+            out _workerCreatedApplication,
+            out _ownedApplicationExit);
         VisioComEngine.TrySet(() => _app.Visible = _options.Visible);
         VisioComEngine.TrySet(() => _app.AlertResponse = 1);
         _documentsCollection = _app.Documents;
@@ -709,12 +737,13 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
     private void ReleaseApplicationIfIdle()
     {
         if (_documents.Count != 0) return;
-        if (_launched && _app is not null) VisioComEngine.TrySet(() => _app.Quit());
+        ExitOwnedApplication();
         VisioComEngine.ReleaseCom(_documentsCollection);
         VisioComEngine.ReleaseCom(_app);
         _documentsCollection = null;
         _app = null;
-        _launched = false;
+        _workerCreatedApplication = false;
+        _ownedApplicationExit = null;
     }
 
     private void ThrowIfDisposed()
@@ -722,17 +751,9 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
-    private void QuitLaunchedApplication()
+    private void ExitOwnedApplication()
     {
-        if (!_launched || _app is null) return;
-        try
-        {
-            _app.Quit();
-        }
-        catch (Exception error)
-        {
-            throw new WorkerProtocolException($"Visio application quit failed: {error.Message}", error);
-        }
+        VisioComEngine.ExitApplication(_app, _workerCreatedApplication, _ownedApplicationExit);
     }
 
     private sealed class NativeDocument(VisioSessionDocument sessionDocument, dynamic document, dynamic page)

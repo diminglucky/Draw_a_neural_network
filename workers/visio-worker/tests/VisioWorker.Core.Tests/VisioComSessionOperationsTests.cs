@@ -117,6 +117,11 @@ public sealed class VisioComSessionOperationsTests
         Assert.All(native.OwnershipMarkers, marker => Assert.Matches("^[A-F0-9]{64}$", marker));
         Assert.Single(native.OwnershipMarkers.Distinct(StringComparer.Ordinal));
         Assert.All(native.Documents, recorded => Assert.Equal(document, recorded));
+        Assert.Equal(0, native.CloseCalls);
+
+        operations.Close(document);
+
+        Assert.Equal(1, native.CloseCalls);
     }
 
     [Fact]

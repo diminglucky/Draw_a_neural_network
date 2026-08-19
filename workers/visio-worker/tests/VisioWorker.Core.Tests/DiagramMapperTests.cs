@@ -1,4 +1,6 @@
 using VisioWorker.Core;
+using VisioWorker.Live;
+using System.Reflection;
 
 namespace VisioWorker.Core.Tests;
 
@@ -202,6 +204,94 @@ public sealed class DiagramMapperTests
     }
 
     [Fact]
+    public void Attached_or_unresolved_application_identity_cannot_acquire_shutdown_authority()
+    {
+        var fixture = OwnedExitFixture.Create();
+
+        var attached = InvokeStatic(
+            fixture.ExitType,
+            "RequireForShutdown",
+            [false, null]);
+        var error = Assert.Throws<WorkerProtocolException>(() => InvokeStatic(
+            fixture.ExitType,
+            "RequireForShutdown",
+            [true, null]));
+
+        Assert.Null(attached);
+        Assert.Contains("verified owned Visio process lease", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, fixture.Adapter.QuitCalls);
+        Assert.Empty(fixture.Adapter.WaitRequests);
+        Assert.Empty(fixture.Adapter.TerminatedProcessIds);
+    }
+
+    [Fact]
+    public void Production_shutdown_refuses_an_unresolved_worker_owned_application_without_calling_injected_COM_quit()
+    {
+        var application = new QuitRecordingVisioApplication();
+
+        var error = Assert.Throws<WorkerProtocolException>(() => InvokeStatic(
+            typeof(VisioComEngine),
+            "ExitApplication",
+            [application, true, null]));
+
+        Assert.Contains("verified owned Visio process lease", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, application.QuitCalls);
+    }
+
+    [Fact]
+    public void Owned_application_exit_revalidates_identity_immediately_before_COM_quit()
+    {
+        var fixture = OwnedExitFixture.Create();
+        fixture.Adapter.ProcessExecutableName = "NOTEPAD.EXE";
+
+        var error = Assert.Throws<WorkerProtocolException>(() => InvokeInstance(
+            fixture.Exit,
+            "RequestQuit",
+            [fixture.Application]));
+
+        Assert.Contains("no longer matches", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, fixture.Adapter.QuitCalls);
+        Assert.Empty(fixture.Adapter.WaitRequests);
+        Assert.Empty(fixture.Adapter.TerminatedProcessIds);
+    }
+
+    [Fact]
+    public void Owned_application_exit_waits_then_terminates_only_the_still_matching_exact_process()
+    {
+        var fixture = OwnedExitFixture.Create();
+        fixture.Adapter.WaitResults.Enqueue(false);
+        fixture.Adapter.WaitResults.Enqueue(true);
+
+        InvokeInstance(fixture.Exit, "RequestQuit", [fixture.Application]);
+        InvokeInstance(fixture.Exit, "WaitForExitOrTerminate", []);
+
+        Assert.Equal(1, fixture.Adapter.QuitCalls);
+        Assert.Equal([4512, 4512], fixture.Adapter.WaitRequests.Select(request => request.ProcessId));
+        Assert.All(fixture.Adapter.WaitRequests, request => Assert.Equal(TimeSpan.FromSeconds(5), request.Timeout));
+        Assert.Equal([4512], fixture.Adapter.TerminatedProcessIds);
+        Assert.Equal([4512, 4512, 4512], fixture.Adapter.ProcessIdentityLookups);
+    }
+
+    [Fact]
+    public void Failed_exact_process_fallback_surfaces_protocol_error_and_retains_lease_evidence()
+    {
+        var fixture = OwnedExitFixture.Create();
+        fixture.Adapter.WaitResults.Enqueue(false);
+        fixture.Adapter.TerminationFailure = new InvalidOperationException("simulated exact PID termination failure");
+
+        InvokeInstance(fixture.Exit, "RequestQuit", [fixture.Application]);
+        var error = Assert.Throws<WorkerProtocolException>(() => InvokeInstance(
+            fixture.Exit,
+            "WaitForExitOrTerminate",
+            []));
+
+        Assert.Contains("exact owned Visio process", error.Message, StringComparison.Ordinal);
+        Assert.Same(fixture.Lease, ReadProperty(fixture.Exit, "Lease"));
+        Assert.Equal(1, fixture.Adapter.QuitCalls);
+        Assert.Equal([4512], fixture.Adapter.TerminatedProcessIds);
+    }
+
+    [Fact]
     public void Maps_multi_plane_feature_stack_without_requiring_legacy_root_faces()
     {
         var diagram = new DiagramEnvelope
@@ -234,6 +324,175 @@ public sealed class DiagramMapperTests
 
         Assert.Equal(9, block.PrimitiveIds.Count);
         Assert.Contains("block-1.plane-3.side", block.PrimitiveIds);
+    }
+
+    private static object? InvokeStatic(Type type, string methodName, object?[] arguments)
+    {
+        var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        return Invoke(method, null, arguments);
+    }
+
+    private static object? InvokeInstance(object target, string methodName, object?[] arguments)
+    {
+        var method = target.GetType().GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        return Invoke(method, target, arguments);
+    }
+
+    private static object? Invoke(MethodInfo method, object? target, object?[] arguments)
+    {
+        try
+        {
+            return method.Invoke(target, arguments);
+        }
+        catch (TargetInvocationException error) when (error.InnerException is not null)
+        {
+            throw error.InnerException;
+        }
+    }
+
+    private static object? ReadProperty(object target, string propertyName)
+    {
+        var property = target.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(property);
+        return property.GetValue(target);
+    }
+
+    private sealed class OwnedExitFixture
+    {
+        private OwnedExitFixture(
+            Type exitType,
+            object exit,
+            object lease,
+            FakeVisioApplication application,
+            RecordingLifecycleAdapter adapter)
+        {
+            ExitType = exitType;
+            Exit = exit;
+            Lease = lease;
+            Application = application;
+            Adapter = adapter;
+        }
+
+        public Type ExitType { get; }
+        public object Exit { get; }
+        public object Lease { get; }
+        public FakeVisioApplication Application { get; }
+        public RecordingLifecycleAdapter Adapter { get; }
+
+        public static OwnedExitFixture Create()
+        {
+            var assembly = typeof(VisioComEngine).Assembly;
+            var exitType = assembly.GetType("VisioWorker.Live.OwnedVisioApplicationExit", throwOnError: false);
+            Assert.NotNull(exitType);
+            var leaseType = assembly.GetType("VisioWorker.Live.OwnedVisioApplicationLease", throwOnError: true)!;
+            var identityAdapterType = assembly.GetType("VisioWorker.Live.IVisioProcessWindowAdapter", throwOnError: true)!;
+            var processExitAdapterType = assembly.GetType("VisioWorker.Live.IVisioProcessExitAdapter", throwOnError: true)!;
+            var applicationExitAdapterType = assembly.GetType("VisioWorker.Live.IVisioApplicationExitAdapter", throwOnError: true)!;
+            var adapter = new RecordingLifecycleAdapter();
+            var identityProxy = CreateProxy(identityAdapterType, adapter);
+            var processExitProxy = CreateProxy(processExitAdapterType, adapter);
+            var applicationExitProxy = CreateProxy(applicationExitAdapterType, adapter);
+            var application = new FakeVisioApplication(0x1234);
+            var leaseFactory = leaseType.GetMethod("TryCreate", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(leaseFactory);
+            var lease = leaseFactory.Invoke(null, [application, true, identityProxy]);
+            Assert.NotNull(lease);
+            var exit = Activator.CreateInstance(
+                exitType,
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                binder: null,
+                args: [lease, identityProxy, processExitProxy, applicationExitProxy, TimeSpan.FromSeconds(5)],
+                culture: null);
+            Assert.NotNull(exit);
+            return new OwnedExitFixture(exitType, exit, lease, application, adapter);
+        }
+
+        private static object CreateProxy(Type interfaceType, RecordingLifecycleAdapter source)
+        {
+            var proxy = DispatchProxy.Create(interfaceType, typeof(RecordingLifecycleAdapter));
+            ((RecordingLifecycleAdapter)proxy).Source = source;
+            return proxy;
+        }
+    }
+
+    public sealed class FakeVisioApplication(int windowHandle32)
+    {
+        public int WindowHandle32 { get; } = windowHandle32;
+    }
+
+    public sealed class QuitRecordingVisioApplication
+    {
+        public int QuitCalls { get; private set; }
+
+        public void Quit() => QuitCalls++;
+    }
+
+    public class RecordingLifecycleAdapter : DispatchProxy
+    {
+        public RecordingLifecycleAdapter? Source { get; set; }
+        public int WindowProcessId { get; set; } = 4512;
+        public string ProcessExecutableName { get; set; } = "VISIO.EXE";
+        public DateTime ProcessStartTimeUtc { get; set; } = new(2026, 8, 19, 1, 2, 3, DateTimeKind.Utc);
+        public List<int> ProcessIdentityLookups { get; } = [];
+        public Queue<bool> WaitResults { get; } = [];
+        public List<(int ProcessId, TimeSpan Timeout)> WaitRequests { get; } = [];
+        public List<int> TerminatedProcessIds { get; } = [];
+        public Exception? TerminationFailure { get; set; }
+        public int QuitCalls { get; private set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? arguments)
+        {
+            Assert.NotNull(targetMethod);
+            Assert.NotNull(arguments);
+            var source = Source ?? this;
+            return targetMethod.Name switch
+            {
+                "TryGetWindowProcessId" => source.ResolveWindowProcess(arguments),
+                "TryGetProcessIdentity" => source.ResolveProcessIdentity(targetMethod, arguments),
+                "WaitForExit" => source.WaitForExit(arguments),
+                "TerminateProcess" => source.TerminateProcess(arguments),
+                "RequestQuit" => source.RequestQuit(arguments),
+                _ => throw new InvalidOperationException($"Unexpected lifecycle adapter member '{targetMethod.Name}'."),
+            };
+        }
+
+        private bool ResolveWindowProcess(object?[] arguments)
+        {
+            arguments[1] = WindowProcessId;
+            return true;
+        }
+
+        private bool ResolveProcessIdentity(MethodInfo targetMethod, object?[] arguments)
+        {
+            var processId = Assert.IsType<int>(arguments[0]);
+            ProcessIdentityLookups.Add(processId);
+            var identityType = targetMethod.GetParameters()[1].ParameterType.GetElementType();
+            Assert.NotNull(identityType);
+            arguments[1] = Activator.CreateInstance(identityType, ProcessExecutableName, ProcessStartTimeUtc);
+            return true;
+        }
+
+        private bool WaitForExit(object?[] arguments)
+        {
+            WaitRequests.Add((Assert.IsType<int>(arguments[0]), Assert.IsType<TimeSpan>(arguments[1])));
+            return WaitResults.Count != 0 && WaitResults.Dequeue();
+        }
+
+        private object? TerminateProcess(object?[] arguments)
+        {
+            TerminatedProcessIds.Add(Assert.IsType<int>(arguments[0]));
+            if (TerminationFailure is not null) throw TerminationFailure;
+            return null;
+        }
+
+        private object? RequestQuit(object?[] arguments)
+        {
+            Assert.IsType<FakeVisioApplication>(arguments[0]);
+            QuitCalls++;
+            return null;
+        }
     }
 
     [Fact]
