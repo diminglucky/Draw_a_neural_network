@@ -156,4 +156,39 @@ describe("FigureAnalysisPreviewService", () => {
     expect(projected.connections[0]).not.toHaveProperty("evidenceLocator");
     expect(projected.connections[0]).not.toHaveProperty("shellCommand");
   });
+
+  it("recursively reconstructs nested public plan values", () => {
+    const built = buildComposableDagPublicationPlan({
+      architectureIr: cnnGoldIr(),
+      intent: defaultFigureIntent(),
+      layoutSeed: "projection-test",
+    });
+    if (built.status !== "ready") throw new Error("test fixture must produce a publication plan");
+    const unsafePlan = structuredClone(built.publicationPlan);
+    const component = unsafePlan.dagPlan.components.find((item) => item.inputPorts.length > 0)!;
+    const connection = unsafePlan.dagPlan.connections[0]!;
+    Object.assign(component.bounds as unknown as Record<string, unknown>, { workerPath: "C:\\private\\worker.exe" });
+    Object.assign(component.inputPorts[0] as unknown as Record<string, unknown>, { rawSource: "return model output" });
+    Object.assign(connection.source as unknown as Record<string, unknown>, { evidenceLocator: "private:1" });
+    Object.assign(connection.route[0] as unknown as Record<string, unknown>, { shellCommand: "whoami" });
+
+    const projected = projectPublicComposableDagPublicationPlan(unsafePlan);
+
+    expect(projected.components.find((item) => item.id === component.id)!.bounds).not.toHaveProperty("workerPath");
+    expect(projected.components.find((item) => item.id === component.id)!.inputPorts[0]).not.toHaveProperty("rawSource");
+    expect(projected.connections[0]!.source).not.toHaveProperty("evidenceLocator");
+    expect(projected.connections[0]!.route[0]).not.toHaveProperty("shellCommand");
+  });
+
+  it("rejects a compiler result with a missing required style branch through the preview boundary", () => {
+    const built = buildComposableDagPublicationPlan({
+      architectureIr: cnnGoldIr(),
+      intent: defaultFigureIntent(),
+      layoutSeed: "projection-test",
+    });
+    if (built.status !== "ready") throw new Error("test fixture must produce a publication plan");
+    delete built.publicationPlan.visualSpec.componentStyles.terminal;
+
+    expect(() => projectPublicComposableDagPublicationPlan(built.publicationPlan)).toThrow(/safe preview/i);
+  });
 });

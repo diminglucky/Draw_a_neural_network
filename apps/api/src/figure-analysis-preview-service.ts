@@ -8,6 +8,7 @@ import {
 } from "./composable-dag-publication-plan.js";
 import type { ComposableFigureComponent, ComposableFigureConnection, FigureBounds } from "./composable-dag-figure-compiler.js";
 import { runComposableDagVisualQa } from "./composable-dag-visual-qa.js";
+import type { FigureComponentPort } from "./figure-components.js";
 import type { VisualQaResult } from "./plan-snapshot.js";
 import { defaultFigureIntent, type FigureIntent } from "./figure-intent.js";
 import { validateArchitectureIRv3 } from "./network-ir-v3.js";
@@ -115,28 +116,118 @@ export function projectPublicComposableDagPublicationPlan(plan: ComposableDagPub
     graphId: plan.dagPlan.graphId,
     compilerVersion: plan.dagPlan.compilerVersion,
     layoutVersion: plan.dagPlan.layoutVersion,
-    intent: structuredClone(plan.dagPlan.intent),
-    pageBounds: structuredClone(plan.dagPlan.pageBounds),
+    intent: projectFigureIntent(plan.dagPlan.intent),
+    pageBounds: projectBounds(plan.dagPlan.pageBounds),
     components: plan.dagPlan.components.map((component) => ({
       id: component.id,
       kind: component.kind,
       semanticRole: component.semanticRole,
       parentModuleId: component.parentModuleId,
-      bounds: structuredClone(component.bounds),
-      inputPorts: structuredClone(component.inputPorts),
-      outputPorts: structuredClone(component.outputPorts),
-      repeat: structuredClone(component.repeat),
+      bounds: projectBounds(component.bounds),
+      inputPorts: component.inputPorts.map(projectFigurePort),
+      outputPorts: component.outputPorts.map(projectFigurePort),
+      repeat: component.repeat ? projectRepeat(component.repeat) : undefined,
     })),
     connections: plan.dagPlan.connections.map((connection) => ({
       id: connection.id,
-      source: structuredClone(connection.source),
-      target: structuredClone(connection.target),
+      source: { nodeId: connection.source.nodeId, portId: connection.source.portId },
+      target: { nodeId: connection.target.nodeId, portId: connection.target.portId },
       transport: connection.transport,
-      route: structuredClone(connection.route),
+      route: connection.route.map((point) => ({ x: point.x, y: point.y })),
     })),
-    visualSpec: structuredClone(plan.visualSpec),
+    visualSpec: {
+      page: {
+        background: plan.visualSpec.page.background,
+        minMargin: plan.visualSpec.page.minMargin,
+        minFontSizePt: plan.visualSpec.page.minFontSizePt,
+        minContrastRatio: plan.visualSpec.page.minContrastRatio,
+      },
+      componentStyles: {
+        terminal: projectComponentStyle(plan.visualSpec.componentStyles.terminal),
+        operator: projectComponentStyle(plan.visualSpec.componentStyles.operator),
+        merge: projectComponentStyle(plan.visualSpec.componentStyles.merge),
+        attention: projectComponentStyle(plan.visualSpec.componentStyles.attention),
+        repeat: projectComponentStyle(plan.visualSpec.componentStyles.repeat),
+      },
+      connectionStyles: {
+        data: projectConnectionStyle(plan.visualSpec.connectionStyles.data),
+        condition: projectConnectionStyle(plan.visualSpec.connectionStyles.condition),
+      },
+      labels: plan.visualSpec.labels.map((label) => ({
+        id: label.id,
+        semanticId: label.semanticId,
+        text: label.text,
+        bounds: projectBounds(label.bounds),
+        fontSizePt: label.fontSizePt,
+      })),
+    },
     qaVersion: plan.qaVersion,
   };
+}
+
+type FigureShape = NonNullable<FigureComponentPort["shape"]>;
+type FigureShapeExpression = FigureShape["dimensions"][number];
+
+function projectFigureIntent(intent: FigureIntent): FigureIntent {
+  return {
+    version: 1,
+    purpose: intent.purpose,
+    density: intent.density,
+    orientation: intent.orientation,
+    printMode: intent.printMode,
+    emphasis: intent.emphasis.map((value) => value),
+    target: intent.target,
+    stylePreset: intent.stylePreset,
+  };
+}
+
+function projectBounds(bounds: FigureBounds): FigureBounds {
+  return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+}
+
+function projectFigurePort(port: FigureComponentPort): FigureComponentPort {
+  return {
+    id: port.id,
+    direction: port.direction,
+    representation: port.representation,
+    semanticType: port.semanticType,
+    ...(port.shape ? { shape: projectFigureShape(port.shape) } : {}),
+  };
+}
+
+function projectFigureShape(shape: FigureShape): FigureShape {
+  return {
+    axes: shape.axes.map((axis) => axis),
+    dimensions: shape.dimensions.map(projectShapeExpression),
+    batchSemantics: shape.batchSemantics,
+  };
+}
+
+function projectShapeExpression(expression: FigureShapeExpression): FigureShapeExpression {
+  switch (expression.kind) {
+    case "known": return { kind: "known", value: expression.value };
+    case "symbol": return { kind: "symbol", name: expression.name };
+    case "derived": return { kind: "derived", operator: expression.operator, operands: expression.operands.map(projectShapeExpression) };
+    case "unknown": return { kind: "unknown" };
+  }
+}
+
+function projectRepeat(repeat: NonNullable<ComposableFigureComponent["repeat"]>): NonNullable<ComposableFigureComponent["repeat"]> {
+  return {
+    count: repeat.count,
+    unitNodeIds: repeat.unitNodeIds.map((id) => id),
+    expansionPolicy: repeat.expansionPolicy,
+  };
+}
+
+function projectComponentStyle(style: ComposableDagVisualSpec["componentStyles"][string] | undefined): ComposableDagVisualSpec["componentStyles"][string] {
+  if (!style) throw invalidPreviewError();
+  return { fill: style.fill, stroke: style.stroke, grayscalePattern: style.grayscalePattern };
+}
+
+function projectConnectionStyle(style: ComposableDagVisualSpec["connectionStyles"][string] | undefined): ComposableDagVisualSpec["connectionStyles"][string] {
+  if (!style) throw invalidPreviewError();
+  return { stroke: style.stroke, grayscalePattern: style.grayscalePattern, thickness: style.thickness };
 }
 
 function notFoundPreviewError(): FoundationError {

@@ -82,9 +82,8 @@ export function canonicalJson(value: unknown): string {
 }
 
 const stableIdentifierSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
-const stableVersionSchema = stableIdentifierSchema;
-const semanticCaptionSchema = safeDisplayText(256);
-const safeVisualQaMessageSchema = safeDisplayText(512);
+const compilerSemanticTokenSchema = z.string().min(1).max(128).regex(/^[A-Za-z][A-Za-z0-9_]*$/);
+const layoutSeedSchema = z.string().min(3).max(128).regex(/^(?:m2-4|seed)-[A-Za-z0-9][A-Za-z0-9._-]*$/);
 const colorTokenSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 const finiteNumberSchema = z.number().finite();
 const boundsSchema = z.object({
@@ -127,7 +126,7 @@ const repeatSchema = z.object({
 const componentSchema = z.object({
   id: stableIdentifierSchema,
   kind: z.enum(["terminal", "operator", "merge", "attention", "repeat"]),
-  semanticRole: semanticCaptionSchema,
+  semanticRole: compilerSemanticTokenSchema,
   parentModuleId: stableIdentifierSchema.nullable(),
   bounds: boundsSchema,
   inputPorts: z.array(figurePortSchema).max(64),
@@ -180,7 +179,7 @@ const visualSpecSchema = z.object({
   labels: z.array(z.object({
     id: stableIdentifierSchema,
     semanticId: stableIdentifierSchema,
-    text: semanticCaptionSchema,
+    text: compilerSemanticTokenSchema,
     bounds: boundsSchema,
     fontSizePt: finiteNumberSchema.positive().max(128),
   }).strict()).max(512),
@@ -188,35 +187,72 @@ const visualSpecSchema = z.object({
 const publicPublicationPlanSchema = z.object({
   version: z.literal(1),
   graphId: stableIdentifierSchema,
-  compilerVersion: stableVersionSchema,
-  layoutVersion: stableVersionSchema,
+  compilerVersion: z.literal("composable-dag-v1"),
+  layoutVersion: z.literal("composable-dag-layout-v1"),
   intent: figureIntentSchema,
   pageBounds: boundsSchema,
   components: z.array(componentSchema).min(1).max(512),
   connections: z.array(connectionSchema).max(1024),
   visualSpec: visualSpecSchema,
-  qaVersion: stableVersionSchema,
+  qaVersion: z.literal("composable-dag-visual-qa-v1"),
 }).strict();
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/i);
 const compilerManifestSchema = z.object({
   canonicalization: z.literal("RFC-8785-JCS"),
   architectureIrHash: digestSchema,
   figureIntentHash: digestSchema,
-  componentCompilerVersion: stableVersionSchema,
-  layoutCompilerVersion: stableVersionSchema,
-  styleTokenVersion: stableVersionSchema,
-  layoutSeed: stableIdentifierSchema,
+  componentCompilerVersion: z.literal("composable-dag-v1"),
+  layoutCompilerVersion: z.literal("composable-dag-layout-v1"),
+  styleTokenVersion: z.literal("composable-dag-visual-qa-v1"),
+  layoutSeed: layoutSeedSchema,
 }).strict();
+const canonicalPassingVisualQaChecks = [
+  ["publication-plan-version", "Publication plan and QA versions are supported."],
+  ["page-bounds", "Page bounds are finite and positive."],
+  ["page-constraints", "Page margin, minimum font size, and minimum contrast thresholds are valid."],
+  ["component-bounds", "All component bounds are finite, positive, and inside the page."],
+  ["component-margin", "All components respect the page margin."],
+  ["component-overlap", "Components do not overlap."],
+  ["label-bounds", "All label bounds are finite, positive, and inside the page."],
+  ["label-margin", "All labels respect the page margin."],
+  ["label-overlap", "Labels do not overlap."],
+  ["label-font-size", "Labels meet the configured minimum font size."],
+  ["style-tokens", "Visual style tokens use the supported v3 vocabulary."],
+  ["component-styles", "Every component has a complete style token."],
+  ["connection-styles", "Every connection has a complete style token."],
+  ["style-colors", "All visual colors use six-digit hexadecimal tokens."],
+  ["style-grayscale", "All grayscale patterns use the supported vocabulary."],
+  ["connection-style-thickness", "Connection thickness values are finite and bounded."],
+  ["style-contrast", "All configured fills, strokes, and connections meet the minimum contrast ratio."],
+  ["grayscale-collision", "Grayscale styles remain distinguishable by semantic kind or relation."],
+  ["label-identity", "Label IDs are unique, bounded, and map to every semantic component."],
+  ["label-text", "Labels are non-empty, single-line, and bounded."],
+  ["connection-components", "All connections reference existing components."],
+  ["connection-ports", "All connections reference declared ports."],
+  ["connection-route-shape", "All routes have finite endpoints and at least two points."],
+  ["connection-route-bounds", "All route points are inside the page."],
+  ["connection-route-endpoints", "All routes touch their declared endpoint components."],
+  ["component-evidence", "All component evidence mappings resolve."],
+  ["connection-evidence", "All connection evidence mappings resolve."],
+  ["source-mappings", "All semantic source mappings resolve to known evidence."],
+] as const;
 const visualQaCheckSchema = z.object({
   id: stableIdentifierSchema,
-  severity: z.enum(["blocking", "warning"]),
-  passed: z.boolean(),
-  message: safeVisualQaMessageSchema,
+  severity: z.literal("blocking"),
+  passed: z.literal(true),
+  message: z.string().min(1).max(512),
 }).strict();
 const visualQaSchema = z.object({
-  status: z.enum(["pass", "fail"]),
-  checks: z.array(visualQaCheckSchema).min(1).max(256),
-}).strict();
+  status: z.literal("pass"),
+  checks: z.array(visualQaCheckSchema).length(canonicalPassingVisualQaChecks.length),
+}).strict().superRefine((qa, context) => {
+  canonicalPassingVisualQaChecks.forEach(([id, message], index) => {
+    const actual = qa.checks[index];
+    if (!actual || actual.id !== id || actual.message !== message) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "must match deterministic compiler visual QA", path: ["checks", index] });
+    }
+  });
+});
 const previewArtifactHashSchema = z.object({
   panelId: stableIdentifierSchema,
   kind: z.enum(["svg", "png"]),
@@ -227,7 +263,7 @@ const isoTimestampSchema = z.string().datetime({ offset: true, precision: 3 });
 export function projectSafePublicationPlan(value: unknown): PublicComposableDagPublicationPlan {
   const parsed = publicPublicationPlanSchema.safeParse(value);
   if (!parsed.success) throw new Error(`publication plan failed safe projection: ${parsed.error.issues.map((issue) => issue.path.join(".") || "root").join(", ")}`);
-  return structuredClone(parsed.data) as PublicComposableDagPublicationPlan;
+  return parsed.data as PublicComposableDagPublicationPlan;
 }
 
 function validateInput(input: CreateAnalysisPlanSnapshotInput): {
@@ -241,7 +277,9 @@ function validateInput(input: CreateAnalysisPlanSnapshotInput): {
   requireDigest(input.architectureIrHash, "architectureIrHash");
   requireDigest(input.figureIntentHash, "figureIntentHash");
   const compilerManifest = compilerManifestSchema.parse(input.compilerManifest) as CompilerManifest;
-  const visualQa = visualQaSchema.parse(input.visualQa) as VisualQaResult;
+  const parsedVisualQa = visualQaSchema.safeParse(input.visualQa);
+  if (!parsedVisualQa.success) throw new Error("visual QA is invalid or does not match the deterministic compiler result");
+  const visualQa = parsedVisualQa.data as VisualQaResult;
   const previewArtifactHashes = z.array(previewArtifactHashSchema).min(1).max(1024).parse(input.previewArtifactHashes) as PreviewArtifactHash[];
   if (compilerManifest.architectureIrHash !== input.architectureIrHash) throw new Error("compiler manifest architecture IR hash must match the snapshot");
   if (compilerManifest.figureIntentHash !== input.figureIntentHash) throw new Error("compiler manifest figure intent hash must match the snapshot");
@@ -256,22 +294,6 @@ function validateInput(input: CreateAnalysisPlanSnapshotInput): {
   }
   isoTimestampSchema.parse(input.createdAt);
   return { compilerManifest, visualQa, previewArtifactHashes };
-}
-
-function safeDisplayText(maximum: number) {
-  return z.string().min(1).max(maximum).superRefine((value, context) => {
-    if (!/^[A-Za-z0-9][A-Za-z0-9 .,:;_()+-]*$/.test(value)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "must use bounded safe display text" });
-      return;
-    }
-    if (/\b(?:powershell|cmd(?:\.exe)?|bash|zsh|curl|wget|invoke-webrequest|start-process|createobject|visio\.application|shell(?:execute)?)\b/i.test(value)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "must not contain command-like text" });
-      return;
-    }
-    if (/^(?:class|def|function|import|from)\s+[A-Za-z_]|\b(?:provider|openai|anthropic|api[_ -]?key|authorization|bearer)\b/i.test(value)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "must not contain source or provider text" });
-    }
-  });
 }
 
 function assertOwner(owner: AnalysisPlanSnapshotOwner): void {

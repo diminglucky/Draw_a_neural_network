@@ -5,7 +5,11 @@ import {
   type CreateAnalysisPlanSnapshotInput,
 } from "../src/analysis-plan-snapshot.js";
 import { buildComposableDagPublicationPlan } from "../src/composable-dag-publication-plan.js";
-import type { PublicComposableDagPublicationPlan } from "../src/figure-analysis-preview-service.js";
+import { runComposableDagVisualQa } from "../src/composable-dag-visual-qa.js";
+import {
+  projectPublicComposableDagPublicationPlan,
+  type PublicComposableDagPublicationPlan,
+} from "../src/figure-analysis-preview-service.js";
 import { defaultFigureIntent } from "../src/figure-intent.js";
 import { cnnGoldIr } from "./fixtures/figure-component-gold-ir.js";
 
@@ -16,21 +20,21 @@ function publicationPlan(): PublicComposableDagPublicationPlan {
     layoutSeed: "seed-1",
   });
   if (built.status !== "ready") throw new Error("test fixture must produce a publication plan");
-  return {
-    version: 1,
-    graphId: built.publicationPlan.dagPlan.graphId,
-    compilerVersion: built.publicationPlan.dagPlan.compilerVersion,
-    layoutVersion: built.publicationPlan.dagPlan.layoutVersion,
-    intent: structuredClone(built.publicationPlan.dagPlan.intent),
-    pageBounds: structuredClone(built.publicationPlan.dagPlan.pageBounds),
-    components: built.publicationPlan.dagPlan.components.map(({ evidenceIds: _evidenceIds, ...component }) => structuredClone(component)),
-    connections: built.publicationPlan.dagPlan.connections.map(({ evidenceIds: _evidenceIds, ...connection }) => structuredClone(connection)),
-    visualSpec: structuredClone(built.publicationPlan.visualSpec),
-    qaVersion: built.publicationPlan.qaVersion,
-  };
+  return projectPublicComposableDagPublicationPlan(built.publicationPlan);
+}
+
+function visualQa() {
+  const built = buildComposableDagPublicationPlan({
+    architectureIr: cnnGoldIr(),
+    intent: defaultFigureIntent(),
+    layoutSeed: "seed-1",
+  });
+  if (built.status !== "ready") throw new Error("test fixture must produce visual QA input");
+  return runComposableDagVisualQa(built.publicationPlan);
 }
 
 function input(overrides: Partial<CreateAnalysisPlanSnapshotInput> = {}): CreateAnalysisPlanSnapshotInput {
+  const plan = publicationPlan();
   return {
     tenantId: "tenant-1",
     userId: "user-1",
@@ -38,20 +42,17 @@ function input(overrides: Partial<CreateAnalysisPlanSnapshotInput> = {}): Create
     analysisStatus: "ready_for_preview",
     architectureIrHash: "a".repeat(64),
     figureIntentHash: "b".repeat(64),
-    publicationPlan: publicationPlan(),
+    publicationPlan: plan,
     compilerManifest: {
       canonicalization: "RFC-8785-JCS",
       architectureIrHash: "a".repeat(64),
       figureIntentHash: "b".repeat(64),
-      componentCompilerVersion: "component-v1",
-      layoutCompilerVersion: "layout-v1",
-      styleTokenVersion: "style-v1",
+      componentCompilerVersion: plan.compilerVersion,
+      layoutCompilerVersion: plan.layoutVersion,
+      styleTokenVersion: plan.qaVersion,
       layoutSeed: "seed-1",
     },
-    visualQa: {
-      status: "pass",
-      checks: [{ id: "bounds", severity: "blocking", passed: true, message: "all content fits" }],
-    },
+    visualQa: visualQa(),
     previewArtifactHashes: [{ panelId: "overview", kind: "svg", sha256: "c".repeat(64) }],
     createdAt: "2026-08-18T00:00:00.000Z",
     ...overrides,
@@ -103,11 +104,7 @@ describe("AnalysisPlanSnapshot", () => {
       { architectureIrHash: "d".repeat(64), compilerManifest: { ...input().compilerManifest, architectureIrHash: "d".repeat(64) } },
       { figureIntentHash: "e".repeat(64), compilerManifest: { ...input().compilerManifest, figureIntentHash: "e".repeat(64) } },
       { publicationPlan: { ...publicationPlan(), graphId: "graph-2" } },
-      { compilerManifest: { ...input().compilerManifest, componentCompilerVersion: "component-v2" } },
-      { compilerManifest: { ...input().compilerManifest, layoutCompilerVersion: "layout-v2" } },
-      { compilerManifest: { ...input().compilerManifest, styleTokenVersion: "style-v2" } },
       { compilerManifest: { ...input().compilerManifest, layoutSeed: "seed-2" } },
-      { visualQa: { status: "pass", checks: [{ id: "bounds", severity: "blocking", passed: true, message: "different proof" }] } },
       { previewArtifactHashes: [{ panelId: "overview", kind: "svg", sha256: "f".repeat(64) }] },
     ];
 
@@ -128,9 +125,43 @@ describe("AnalysisPlanSnapshot", () => {
     expect(() => createAnalysisPlanSnapshot(input({
       compilerManifest: { ...input().compilerManifest, layoutSeed: "powershell -Command Get-ChildItem" },
     }))).toThrow(/layoutSeed|identifier/i);
+    expect(() => createAnalysisPlanSnapshot(input({
+      compilerManifest: { ...input().compilerManifest, layoutSeed: "m2-999-analysis-1" },
+    }))).toThrow(/layoutSeed|identifier/i);
   });
 
-  it("rejects command-like visual QA text while preserving deterministic visual QA diagnostics", () => {
+  it.each<[string, () => CreateAnalysisPlanSnapshotInput]>([
+      ["C:private:layout-seed", () => input({
+        compilerManifest: { ...input().compilerManifest, layoutSeed: "C:private:layout-seed" },
+      })],
+      ["whoami", () => input({
+        compilerManifest: { ...input().compilerManifest, layoutSeed: "whoami" },
+      })],
+      ["evidence:private:1", () => {
+        const plan = publicationPlan();
+        plan.components[0]!.semanticRole = "evidence:private:1";
+        return input({ publicationPlan: plan });
+      }],
+      ["return model output", () => {
+        const plan = publicationPlan();
+        plan.visualSpec.labels[0]!.text = "return model output";
+        return input({ publicationPlan: plan });
+      }],
+      ["Visio.Documents.Add", () => input({
+        visualQa: { ...visualQa(), checks: [{ ...visualQa().checks[0]!, message: "Visio.Documents.Add" }, ...visualQa().checks.slice(1)] },
+      })],
+      ["secret endpoint response", () => input({
+        visualQa: { ...visualQa(), checks: [{ ...visualQa().checks[0]!, message: "secret endpoint response" }, ...visualQa().checks.slice(1)] },
+      })],
+    ])("rejects the non-canonical retained value %s without vocabulary filtering", (value, createInput) => {
+    expect(() => createAnalysisPlanSnapshot(createInput()), value).toThrow();
+  });
+
+  it("accepts a valid deterministic compiler plan", () => {
+    expect(() => createAnalysisPlanSnapshot(input())).not.toThrow();
+  });
+
+  it("rejects non-canonical visual QA while preserving deterministic compiler diagnostics", () => {
     expect(() => createAnalysisPlanSnapshot(input({
       visualQa: { status: "pass", checks: [{ id: "bounds", severity: "blocking", passed: true, message: "powershell -Command Invoke-WebRequest https://private.example" }] },
     }))).toThrow(/visual QA|unsafe|message/i);
@@ -174,7 +205,7 @@ describe("AnalysisPlanSnapshot", () => {
     expect(snapshot.publicationPlan.components[0]!.semanticRole).toBe(originalRole);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.publicationPlan)).toBe(true);
-    expect(JSON.stringify(snapshot)).not.toMatch(/sourceBytes|sourceSha256|sourceRecordId|provider|evidence|locator|worker|path|command/i);
+    expect(JSON.stringify(snapshot)).not.toMatch(/"(?:sourceBytes|sourceSha256|sourceRecordId|provider|evidenceLocator|workerPath|shellCommand)"\s*:/i);
     expect(() => createAnalysisPlanSnapshot(input({ publicationPlan: { ...publicationPlan(), evidenceLocator: "private" } as never }))).toThrow(/publication plan|evidence/i);
   });
 });

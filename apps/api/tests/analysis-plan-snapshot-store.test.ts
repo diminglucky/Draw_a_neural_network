@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createAnalysisPlanSnapshot } from "../src/analysis-plan-snapshot.js";
 import { InMemoryAnalysisPlanSnapshotStore } from "../src/analysis-plan-snapshot-store.js";
 import { buildComposableDagPublicationPlan } from "../src/composable-dag-publication-plan.js";
+import { runComposableDagVisualQa } from "../src/composable-dag-visual-qa.js";
 import type { PublicComposableDagPublicationPlan } from "../src/figure-analysis-preview-service.js";
 import { defaultFigureIntent } from "../src/figure-intent.js";
 import { cnnGoldIr } from "./fixtures/figure-component-gold-ir.js";
@@ -23,7 +24,14 @@ function publicationPlan(): PublicComposableDagPublicationPlan {
   };
 }
 
+function visualQa() {
+  const built = buildComposableDagPublicationPlan({ architectureIr: cnnGoldIr(), intent: defaultFigureIntent(), layoutSeed: "seed-1" });
+  if (built.status !== "ready") throw new Error("test fixture must produce visual QA input");
+  return runComposableDagVisualQa(built.publicationPlan);
+}
+
 function snapshot() {
+  const plan = publicationPlan();
   return createAnalysisPlanSnapshot({
     tenantId: "tenant-1",
     userId: "user-1",
@@ -31,9 +39,9 @@ function snapshot() {
     analysisStatus: "ready_for_preview",
     architectureIrHash: "a".repeat(64),
     figureIntentHash: "b".repeat(64),
-    publicationPlan: publicationPlan(),
-    compilerManifest: { canonicalization: "RFC-8785-JCS", architectureIrHash: "a".repeat(64), figureIntentHash: "b".repeat(64), componentCompilerVersion: "component-v1", layoutCompilerVersion: "layout-v1", styleTokenVersion: "style-v1", layoutSeed: "seed-1" },
-    visualQa: { status: "pass", checks: [{ id: "bounds", severity: "blocking", passed: true, message: "fits" }] },
+    publicationPlan: plan,
+    compilerManifest: { canonicalization: "RFC-8785-JCS", architectureIrHash: "a".repeat(64), figureIntentHash: "b".repeat(64), componentCompilerVersion: plan.compilerVersion, layoutCompilerVersion: plan.layoutVersion, styleTokenVersion: plan.qaVersion, layoutSeed: "seed-1" },
+    visualQa: visualQa(),
     previewArtifactHashes: [{ panelId: "overview", kind: "svg", sha256: "c".repeat(64) }],
     createdAt: "2026-08-18T00:00:00.000Z",
   });
