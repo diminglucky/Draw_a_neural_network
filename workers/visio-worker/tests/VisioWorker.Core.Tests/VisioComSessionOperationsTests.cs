@@ -339,6 +339,9 @@ public sealed class VisioComSessionOperationsTests
             OwnershipMarkers.Add(ownershipMarker);
         }
 
+        public ReadbackResult Readback(VisioSessionDocument document, DiagramDocument plan) =>
+            ReadbackValidator.Legacy(shapeCount: 1, connectorCount: 0);
+
         public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath, Action originalClosed)
         {
             SaveCalls++;

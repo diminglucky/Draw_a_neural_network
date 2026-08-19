@@ -114,6 +114,36 @@ public sealed class VisioSessionManager
         }
     }
 
+    public async Task<ReadbackResult> ReadbackAsync(VisioSessionKey key, DiagramDocument plan, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (_backend is not IVisioSessionReadbackBackend readbackBackend)
+        {
+            throw new InvalidOperationException("The reusable Visio session backend does not support native readback.");
+        }
+
+        var entry = GetOrCreate(key);
+        await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var current = entry.Current;
+            EnsureOpen(current, key);
+            try
+            {
+                return await readbackBackend.ReadbackAsync(current.Document!, plan, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                entry.Publish(current with { State = VisioSessionState.Recovering, NativeHandleUncertain = true });
+                throw;
+            }
+        }
+        finally
+        {
+            entry.Gate.Release();
+        }
+    }
+
     public async Task<VisioSessionSnapshot> CloseAsync(VisioSessionKey key, CancellationToken cancellationToken = default)
     {
         var entry = GetOrCreate(key);
@@ -459,4 +489,9 @@ public sealed class VisioSessionManager
             null,
             false);
     }
+}
+
+public interface IVisioSessionReadbackBackend
+{
+    Task<ReadbackResult> ReadbackAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default);
 }

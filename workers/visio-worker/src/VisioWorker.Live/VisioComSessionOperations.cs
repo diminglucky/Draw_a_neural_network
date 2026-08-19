@@ -12,6 +12,7 @@ public interface IVisioComSessionNative
 {
     VisioSessionDocument OpenOrCreate(VisioSessionKey sessionKey);
     void ReplaceOwnedShapes(VisioSessionDocument document, string ownershipMarker, DiagramDocument plan);
+    ReadbackResult Readback(VisioSessionDocument document, DiagramDocument plan);
     VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath, Action originalClosed);
     void Close(VisioSessionDocument document);
     VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest);
@@ -49,6 +50,14 @@ public sealed class VisioComSessionOperations : IVisioComSessionOperations, IDis
     public void ApplyPlan(VisioSessionDocument document, DiagramDocument plan) => ReplacePlan(document, plan);
 
     public void ApplyPlanDiff(VisioSessionDocument document, DiagramDocument plan) => ReplacePlan(document, plan);
+
+    public ReadbackResult Readback(VisioSessionDocument document, DiagramDocument plan)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(plan);
+        var session = RequireSession(document);
+        return _native.Readback(session.Document, plan);
+    }
 
     public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)
     {
@@ -256,6 +265,17 @@ internal sealed class VisioComSessionNative : IVisioComSessionNative, IDisposabl
         var existingShapeIds = ReadShapeIds(native.Page);
         VisioComEngine.ConfigureAndDrawDocument(native.Page, plan);
         TagNewShapes(native.Page, existingShapeIds, ownershipMarker);
+    }
+
+    public ReadbackResult Readback(VisioSessionDocument document, DiagramDocument plan)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(plan);
+        var native = RequireDocument(document);
+        var shapeCount = Convert.ToInt32(native.Page.Shapes.Count, System.Globalization.CultureInfo.InvariantCulture);
+        return plan.FigurePlan is null
+            ? ReadbackValidator.Legacy(shapeCount, VisioComEngine.CountNamedShapes(native.Page, "synapse.edge."))
+            : VisioComEngine.ReadFigurePlanReadback(native.Page, plan.FigurePlan, shapeCount);
     }
 
     public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath, Action originalClosed)

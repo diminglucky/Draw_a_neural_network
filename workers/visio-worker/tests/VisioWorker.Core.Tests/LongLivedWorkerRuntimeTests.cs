@@ -720,7 +720,7 @@ public sealed class LongLivedWorkerRuntimeTests
         }
     }
 
-    private sealed class RecordingSessionBackend : IVisioSessionBackend
+    private sealed class RecordingSessionBackend : IVisioSessionBackend, IVisioSessionReadbackBackend
     {
         public int OpenOrCreateCalls { get; private set; }
         public int ApplyCalls { get; private set; }
@@ -770,6 +770,9 @@ public sealed class LongLivedWorkerRuntimeTests
             ApplyDiffCalls++;
             return Task.CompletedTask;
         }
+
+        public Task<ReadbackResult> ReadbackAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default) =>
+            Task.FromResult(ReadbackValidator.Legacy(shapeCount: 1, connectorCount: 0));
 
         public Task<VisioSessionDocument> SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)
         {

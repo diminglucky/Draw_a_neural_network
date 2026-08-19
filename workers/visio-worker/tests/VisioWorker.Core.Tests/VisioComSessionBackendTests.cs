@@ -31,6 +31,26 @@ public sealed class VisioComSessionBackendTests
     }
 
     [Fact]
+    public async Task Session_backend_reads_the_held_document_on_its_existing_STA()
+    {
+        var operations = new RecordingComOperations();
+        await using var backend = new VisioComSessionBackend(
+            new VisioComEngineOptions(Visible: true, OutputRoot: Path.GetTempPath()),
+            operations);
+        var key = new VisioSessionKey("tenant-one", "user-one", "device-one", "workflow-one");
+        var plan = new DiagramDocument("diagram", [], [], []);
+        var document = await backend.OpenOrCreateAsync(key);
+
+        var readback = await backend.ReadbackAsync(document, plan);
+
+        Assert.True(readback.Valid);
+        Assert.Equal(1, operations.ReadbackCalls);
+        Assert.Same(document, Assert.Single(operations.OperatedDocuments));
+        Assert.Single(operations.ThreadIds);
+        Assert.Collection(operations.ApartmentStates, state => Assert.Equal(ApartmentState.STA, state));
+    }
+
+    [Fact]
     public async Task Disposal_failure_on_the_STA_is_retryable_without_marking_the_backend_disposed()
     {
         var operations = new RecordingComOperations { FailFirstDispose = true };
@@ -235,6 +255,7 @@ public sealed class VisioComSessionBackendTests
         public int CloseCalls { get; private set; }
         public int SaveCalls { get; private set; }
         public int RecoverCalls { get; private set; }
+        public int ReadbackCalls { get; private set; }
         public HashSet<int> ThreadIds { get; } = [];
         public HashSet<ApartmentState> ApartmentStates { get; } = [];
         public List<string> TemporaryPaths { get; } = [];
@@ -273,6 +294,14 @@ public sealed class VisioComSessionBackendTests
             TrackThread();
             ApplyPlanDiffCalls++;
             OperatedDocuments.Add(document);
+        }
+
+        public ReadbackResult Readback(VisioSessionDocument document, DiagramDocument plan)
+        {
+            TrackThread();
+            ReadbackCalls++;
+            OperatedDocuments.Add(document);
+            return ReadbackValidator.Legacy(shapeCount: 1, connectorCount: 0);
         }
 
         public VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath)

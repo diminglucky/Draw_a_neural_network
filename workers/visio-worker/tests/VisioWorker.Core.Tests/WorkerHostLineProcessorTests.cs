@@ -347,9 +347,37 @@ public sealed class WorkerHostLineProcessorTests
 
         Assert.Equal("succeeded", open.Status);
         Assert.Equal("succeeded", first.Status);
+        Assert.True(first.Readback!.Valid);
         Assert.Equal(first, replay);
         Assert.Equal(1, fixture.Backend.OpenOrCreateCalls);
         Assert.Equal(1, fixture.Backend.ApplyPlanCalls);
+        Assert.Equal(1, fixture.Backend.SaveCalls);
+        Assert.Equal(1, fixture.Backend.ReadbackCalls);
+    }
+
+    [Fact]
+    public async Task V2_apply_returns_failed_response_when_native_readback_is_invalid()
+    {
+        using var fixture = new HostFixture();
+        fixture.Backend.NextReadback = new ReadbackResult(
+            Valid: false,
+            ShapeCount: 0,
+            ConnectorCount: 0,
+            ExpectedPrimitiveIds: [],
+            ActualPrimitiveIds: [],
+            MissingPrimitiveIds: ["primitive-one"],
+            ExpectedConnectorIds: [],
+            ActualConnectorIds: [],
+            MissingConnectorIds: [],
+            ShapeDataFailures: []);
+        await using var processor = fixture.CreateLineProcessor();
+
+        _ = await processor.ProcessLineAsync(fixture.OpenJson());
+        var response = Assert.IsType<WorkerV2Response>(await processor.ProcessLineAsync(fixture.ApplyJson("invalid-readback")));
+
+        Assert.Equal("failed", response.Status);
+        Assert.Equal(1, fixture.Backend.SaveCalls);
+        Assert.Equal(1, fixture.Backend.ReadbackCalls);
     }
 
     [Fact]
@@ -482,12 +510,14 @@ public sealed class WorkerHostLineProcessorTests
             CancellationToken cancellationToken = default) => Task.FromResult<StoredSessionRecoveryManifest?>(null);
     }
 
-    private sealed class RecordingSessionBackend : IVisioSessionBackend
+    private sealed class RecordingSessionBackend : IVisioSessionBackend, IVisioSessionReadbackBackend
     {
         public int OpenOrCreateCalls { get; private set; }
         public int ApplyPlanCalls { get; private set; }
         public int SaveCalls { get; private set; }
         public int CloseCalls { get; private set; }
+        public int ReadbackCalls { get; private set; }
+        public ReadbackResult NextReadback { get; set; } = ReadbackValidator.Legacy(shapeCount: 1, connectorCount: 0);
 
         public string NormalizeOutputPath(string outputPath) => Path.GetFullPath(outputPath);
 
@@ -512,6 +542,15 @@ public sealed class WorkerHostLineProcessorTests
             VisioSessionDocument document,
             DiagramDocument plan,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<ReadbackResult> ReadbackAsync(
+            VisioSessionDocument document,
+            DiagramDocument plan,
+            CancellationToken cancellationToken = default)
+        {
+            ReadbackCalls++;
+            return Task.FromResult(NextReadback);
+        }
 
         public Task<VisioSessionDocument> SaveAsAsync(
             VisioSessionDocument document,

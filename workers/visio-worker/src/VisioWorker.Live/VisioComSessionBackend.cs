@@ -12,6 +12,7 @@ public interface IVisioComSessionOperations
     VisioSessionDocument OpenOrCreate(VisioSessionKey sessionKey);
     void ApplyPlan(VisioSessionDocument document, DiagramDocument plan);
     void ApplyPlanDiff(VisioSessionDocument document, DiagramDocument plan);
+    ReadbackResult Readback(VisioSessionDocument document, DiagramDocument plan);
     VisioSessionDocument SaveAs(VisioSessionDocument document, string temporaryPath, string finalPath);
     void Close(VisioSessionDocument document);
     VisioSessionDocument Recover(VisioSessionKey sessionKey, VisioSessionRecoveryManifest manifest);
@@ -23,7 +24,7 @@ public interface IVisioComSessionOperations
 /// STA serialization, and path policy only. They do not prove Microsoft Visio is installed, that COM
 /// drawing succeeds, or that a VSDX can be saved and read back on a real Windows host.
 /// </summary>
-public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposable
+public sealed class VisioComSessionBackend : IVisioSessionBackend, IVisioSessionReadbackBackend, IAsyncDisposable
 {
     private readonly VisioComEngineOptions _options;
     private readonly IVisioComSessionOperations _operations;
@@ -75,6 +76,14 @@ public sealed class VisioComSessionBackend : IVisioSessionBackend, IAsyncDisposa
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(plan);
         return InvokeAsync(() => _operations.ApplyPlanDiff(document, plan), cancellationToken);
+    }
+
+    public Task<ReadbackResult> ReadbackAsync(VisioSessionDocument document, DiagramDocument plan, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(plan);
+        return InvokeAsync(() => _operations.Readback(document, plan), cancellationToken);
     }
 
     public async Task<VisioSessionDocument> SaveAsAsync(VisioSessionDocument document, string outputPath, CancellationToken cancellationToken = default)

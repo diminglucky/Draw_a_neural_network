@@ -259,8 +259,15 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
                 await _sessions.ApplyPlanAsync(key, operation, document, cancellationToken).ConfigureAwait(false);
             }
 
-            var response = Succeeded(request, runtimeSession.OutputPath);
-            await PersistSavedManifestAsync(key, runtimeSession, new ReplayEntry(request.RequestId, request.Command, trusted.Fingerprint, response), cancellationToken).ConfigureAwait(false);
+            await PersistSavedManifestAsync(key, runtimeSession, replay: null, cancellationToken).ConfigureAwait(false);
+            var readback = await _sessions.ReadbackAsync(key, document, cancellationToken).ConfigureAwait(false);
+            if (!readback.Valid)
+            {
+                throw new WorkerProtocolException("Native Visio readback is invalid.");
+            }
+
+            var response = Succeeded(request, runtimeSession.OutputPath, ToWorkerReadback(readback));
+            await PersistReplayManifestAsync(key, runtimeSession, new ReplayEntry(request.RequestId, request.Command, trusted.Fingerprint, response), cancellationToken).ConfigureAwait(false);
             return response;
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -413,6 +420,14 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         }
     }
 
+    private async Task PersistReplayManifestAsync(VisioSessionKey key, RuntimeSession runtimeSession, ReplayEntry replay, CancellationToken cancellationToken)
+    {
+        var manifest = runtimeSession.Manifest ?? throw new WorkerProtocolException("Visio save did not produce a recovery manifest.");
+        manifest = WithCommandReplays(manifest, runtimeSession, replay);
+        await _manifestStore.SaveAsync(manifest, _clock.UtcNow, runtimeSession.LastActivity, cancellationToken).ConfigureAwait(false);
+        runtimeSession.SetManifest(manifest);
+    }
+
     private async Task PersistTerminalReplayAsync(VisioSessionKey key, RuntimeSession runtimeSession, ReplayEntry replay, CancellationToken cancellationToken)
     {
         if (runtimeSession.Manifest is null) return;
@@ -495,8 +510,22 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
             && (runtimeSession.Uncertain || state is VisioSessionState.Open or VisioSessionState.Dirty or VisioSessionState.Saving or VisioSessionState.Recovering);
     }
 
-    private static WorkerV2Response Succeeded(WorkerV2Request request, string outputPath) =>
-        new(request.RequestId, "succeeded", outputPath);
+    private static WorkerV2Response Succeeded(WorkerV2Request request, string outputPath, WorkerReadback? readback = null) =>
+        new(request.RequestId, "succeeded", outputPath, Readback: readback);
+
+    private static WorkerReadback ToWorkerReadback(ReadbackResult readback) => new()
+    {
+        Valid = readback.Valid,
+        ShapeCount = readback.ShapeCount,
+        ConnectorCount = readback.ConnectorCount,
+        ExpectedPrimitiveIds = readback.ExpectedPrimitiveIds,
+        ActualPrimitiveIds = readback.ActualPrimitiveIds,
+        MissingPrimitiveIds = readback.MissingPrimitiveIds,
+        ExpectedConnectorIds = readback.ExpectedConnectorIds,
+        ActualConnectorIds = readback.ActualConnectorIds,
+        MissingConnectorIds = readback.MissingConnectorIds,
+        ShapeDataFailures = readback.ShapeDataFailures,
+    };
 
     private string NormalizePath(string outputPath)
     {
@@ -673,6 +702,8 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
                 Requests[replay.RequestId] = new ReplayEntry(replay.RequestId, ToWorkerCommand(replay.Command), replay.Fingerprint, new WorkerV2Response(replay.RequestId, replay.Status, replay.OutputPath));
             }
         }
+
+        public void SetManifest(VisioSessionRecoveryManifest manifest) => Manifest = manifest;
     }
 
     private sealed record ReplayEntry(string RequestId, WorkerV2Command Command, string Fingerprint, WorkerV2Response Response);

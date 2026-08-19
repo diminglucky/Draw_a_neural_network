@@ -780,7 +780,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySet(() => shape.CellsU("LineWeight").FormulaU = "1.2 pt");
     }
 
-    private static int CountNamedShapes(dynamic page, string prefix)
+    internal static int CountNamedShapes(dynamic page, string prefix)
     {
         var count = 0;
         foreach (dynamic shape in page.Shapes)
@@ -791,7 +791,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return count;
     }
 
-    private static ReadbackResult ReadFigurePlanReadback(dynamic page, VisioFigurePlan plan, int shapeCount)
+    internal static ReadbackResult ReadFigurePlanReadback(dynamic page, VisioFigurePlan plan, int shapeCount)
     {
         var primitiveByShapeName = plan.PrimitiveGroups
             .SelectMany(group => group.PrimitiveIds.Select(primitiveId => new { ShapeName = PrimitiveShapeName(primitiveId), PrimitiveId = primitiveId, Group = group }))

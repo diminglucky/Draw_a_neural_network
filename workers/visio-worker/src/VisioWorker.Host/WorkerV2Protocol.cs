@@ -34,7 +34,8 @@ public sealed record WorkerV2Response(
     string RequestId,
     string Status,
     string? OutputPath = null,
-    string? Error = null);
+    string? Error = null,
+    WorkerReadback? Readback = null);
 
 public static class WorkerV2RequestParser
 {
