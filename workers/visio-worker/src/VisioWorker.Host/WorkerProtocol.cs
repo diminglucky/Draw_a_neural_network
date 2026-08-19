@@ -12,6 +12,16 @@ public sealed class WorkerRequest
     public string Mode { get; init; } = "mock";
     public string OutputPath { get; init; } = "";
     public DiagramEnvelope Diagram { get; init; } = new();
+
+    public WorkerRequest WithMode(string mode) => new()
+    {
+        ProtocolVersion = ProtocolVersion,
+        RequestId = RequestId,
+        JobId = JobId,
+        Mode = mode,
+        OutputPath = OutputPath,
+        Diagram = Diagram,
+    };
 }
 
 public sealed class WorkerResponse

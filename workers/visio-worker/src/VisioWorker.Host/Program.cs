@@ -21,45 +21,21 @@ internal static class Program
             return 2;
         }
 
-        var line = await Console.In.ReadLineAsync().ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(line))
+        await using var processor = new WorkerHostLineProcessor(new WorkerHostLineProcessorOptions
         {
-            await Console.Error.WriteLineAsync("one JSON request line is required");
-            return 2;
-        }
-        line = line.TrimStart('\uFEFF');
-
-        WorkerResponse response;
-        try
+            OutputRoot = outputRoot,
+            Mode = mode,
+            Visible = HasFlag(args, "--visible"),
+            AttachToRunning = HasFlag(args, "--attach-to-running"),
+        });
+        while (await Console.In.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
-            var request = JsonSerializer.Deserialize<WorkerRequest>(line, JsonOptions)
-                ?? throw new InvalidOperationException("request JSON was empty");
-            if (!request.Mode.Equals(mode, StringComparison.OrdinalIgnoreCase))
-            {
-                request = new WorkerRequest
-                {
-                    ProtocolVersion = request.ProtocolVersion,
-                    RequestId = request.RequestId,
-                    JobId = request.JobId,
-                    Mode = mode,
-                    OutputPath = request.OutputPath,
-                    Diagram = request.Diagram,
-                };
-            }
-            response = await new WorkerRequestProcessor(
-                outputRoot,
-                visible: HasFlag(args, "--visible"),
-                attachToRunning: HasFlag(args, "--attach-to-running")
-            ).ProcessAsync(request).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            var response = await processor.ProcessLineAsync(line.TrimStart('\uFEFF')).ConfigureAwait(false);
+            await Console.Out.WriteLineAsync(JsonSerializer.Serialize(response, JsonOptions)).ConfigureAwait(false);
+            await Console.Out.FlushAsync().ConfigureAwait(false);
         }
-        catch (Exception error)
-        {
-            response = new WorkerResponse { Error = new WorkerError { Code = "VISIO_WORKER_PROTOCOL_ERROR", Message = error.Message } };
-        }
-
-        await Console.Out.WriteLineAsync(JsonSerializer.Serialize(response, JsonOptions)).ConfigureAwait(false);
-        await Console.Out.FlushAsync().ConfigureAwait(false);
-        return response.Status == "succeeded" ? 0 : 1;
+        return 0;
     }
 
     private static bool HasFlag(string[] args, string name) => args.Any(argument => string.Equals(argument, name, StringComparison.OrdinalIgnoreCase));
