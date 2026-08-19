@@ -82,11 +82,18 @@ public static class WorkerV2RequestParser
             var requestId = RequiredString(properties, "requestId");
             ValidateIdentifier(requestId, "requestId");
             var command = ParseCommand(RequiredString(properties, "command"));
-            if (!AllowedProperties[command].SetEquals(properties.Keys))
+            var allowed = AllowedProperties[command];
+            var required = command is WorkerV2Command.Apply or WorkerV2Command.ApplyDiff
+                ? allowed.Where(name => name != "planHash")
+                : allowed;
+            if (!allowed.IsSupersetOf(properties.Keys))
             {
-                var unknown = properties.Keys.Except(AllowedProperties[command], StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).FirstOrDefault();
-                if (unknown is not null) throw new WorkerProtocolException($"Unknown property '{unknown}' for command '{command}'.");
-                var missing = AllowedProperties[command].Except(properties.Keys, StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).First();
+                var unknown = properties.Keys.Except(allowed, StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).First();
+                throw new WorkerProtocolException($"Unknown property '{unknown}' for command '{command}'.");
+            }
+            var missing = required.Except(properties.Keys, StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).FirstOrDefault();
+            if (missing is not null)
+            {
                 throw new WorkerProtocolException($"Required property '{missing}' is missing for command '{command}'.");
             }
 
@@ -98,11 +105,15 @@ public static class WorkerV2RequestParser
                 : null;
             var operationId = properties.TryGetValue("operationId", out var operation) ? RequiredString(operation, "operationId") : null;
             var planHash = properties.TryGetValue("planHash", out var hash) ? RequiredString(hash, "planHash") : null;
-            if (operationId is not null && planHash is not null)
+            if (operationId is not null)
             {
-                var validatedOperation = new VisioSessionOperation(operationId, planHash);
-                operationId = validatedOperation.OperationId;
-                planHash = validatedOperation.PlanHash;
+                ValidateIdentifier(operationId, "operationId");
+                if (planHash is not null)
+                {
+                    var validatedOperation = new VisioSessionOperation(operationId, planHash);
+                    operationId = validatedOperation.OperationId;
+                    planHash = validatedOperation.PlanHash;
+                }
             }
 
             DiagramEnvelope? diagram = null;

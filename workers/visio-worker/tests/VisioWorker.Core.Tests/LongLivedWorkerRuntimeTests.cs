@@ -70,6 +70,64 @@ public sealed class LongLivedWorkerRuntimeTests
     }
 
     [Fact]
+    public async Task Apply_without_a_caller_plan_hash_uses_the_worker_canonical_digest_for_the_operation()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using var runtime = CreateRuntime(backend, store);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        var diagram = new DiagramEnvelope { Figure = new DiagramFigure { Title = "worker-derived-digest" } };
+        var request = new WorkerV2Request("apply-1", WorkerV2Command.Apply, Session(), null, "operation-1", null, diagram, null);
+
+        var response = await runtime.ProcessAsync(request);
+        var manifest = await store.LoadAsync(Key());
+
+        Assert.Equal("succeeded", response.Status);
+        Assert.Equal(1, backend.ApplyCalls);
+        Assert.Equal(DiagramPlanDigest.Compute(DiagramMapper.Map(diagram)), manifest!.Manifest.LastPlanHash);
+        Assert.Contains(manifest.Manifest.OperationJournal, entry => entry.OperationId == "operation-1" && entry.PlanHash == manifest.Manifest.LastPlanHash);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task Apply_replays_when_a_matching_caller_plan_hash_is_added_or_omitted(bool initialHasPlanHash, bool retryHasPlanHash)
+    {
+        var backend = new RecordingSessionBackend();
+        await using var runtime = CreateRuntime(backend);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        var diagram = new DiagramEnvelope { Figure = new DiagramFigure { Title = "worker-fingerprint" } };
+        var digest = DiagramPlanDigest.Compute(DiagramMapper.Map(diagram));
+        var initial = new WorkerV2Request("apply-1", WorkerV2Command.Apply, Session(), null, "operation-1", initialHasPlanHash ? digest : null, diagram, null);
+        var retry = initial with { PlanHash = retryHasPlanHash ? digest.ToUpperInvariant() : null };
+
+        await runtime.ProcessAsync(initial);
+        var replay = await runtime.ProcessAsync(retry);
+
+        Assert.Equal("succeeded", replay.Status);
+        Assert.Equal(1, backend.ApplyCalls);
+    }
+
+    [Fact]
+    public async Task Apply_diff_without_a_caller_plan_hash_uses_the_worker_canonical_digest_for_the_operation()
+    {
+        var backend = new RecordingSessionBackend();
+        var store = new InMemoryManifestStore();
+        await using var runtime = CreateRuntime(backend, store);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        var diagram = new DiagramEnvelope { Figure = new DiagramFigure { Title = "worker-derived-diff-digest" } };
+        var request = new WorkerV2Request("apply-diff-1", WorkerV2Command.ApplyDiff, Session(), null, "operation-diff-1", null, diagram, null);
+
+        var response = await runtime.ProcessAsync(request);
+        var manifest = await store.LoadAsync(Key());
+
+        Assert.Equal("succeeded", response.Status);
+        Assert.Equal(1, backend.ApplyDiffCalls);
+        Assert.Equal(DiagramPlanDigest.Compute(DiagramMapper.Map(diagram)), manifest!.Manifest.LastPlanHash);
+        Assert.Contains(manifest.Manifest.OperationJournal, entry => entry.OperationId == "operation-diff-1" && entry.PlanHash == manifest.Manifest.LastPlanHash);
+    }
+
+    [Fact]
     public async Task Apply_diff_uses_the_diff_backend_and_conflicting_request_id_fails_closed()
     {
         var backend = new RecordingSessionBackend();
@@ -247,6 +305,19 @@ public sealed class LongLivedWorkerRuntimeTests
         await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(ApplyWithDiagram("apply-1", "operation-1", new string('f', 64), "diagram")));
 
         Assert.Equal(0, backend.ApplyCalls);
+    }
+
+    [Fact]
+    public async Task Apply_diff_rejects_a_supplied_plan_hash_that_does_not_match_the_trusted_mapped_diagram()
+    {
+        var backend = new RecordingSessionBackend();
+        await using var runtime = CreateRuntime(backend);
+        await runtime.ProcessAsync(Open("open-1", "session.vsdx"));
+        var request = ApplyWithDiagram("apply-diff-1", "operation-diff-1", new string('f', 64), "diagram") with { Command = WorkerV2Command.ApplyDiff };
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => runtime.ProcessAsync(request));
+
+        Assert.Equal(0, backend.ApplyDiffCalls);
     }
 
     [Fact]

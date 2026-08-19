@@ -28,6 +28,24 @@ public sealed class WorkerV2ProtocolTests
     }
 
     [Fact]
+    public void Parser_accepts_apply_without_a_caller_supplied_plan_hash()
+    {
+        var request = WorkerV2RequestParser.Parse("""{"protocolVersion":2,"requestId":"request-1","command":"apply","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"operationId":"operation-1","diagram":{"figure":{"title":"x"},"nodes":[],"edges":[]}}""");
+
+        Assert.Equal(WorkerV2Command.Apply, request.Command);
+        Assert.Null(request.PlanHash);
+    }
+
+    [Fact]
+    public void Parser_accepts_apply_diff_without_a_caller_supplied_plan_hash()
+    {
+        var request = WorkerV2RequestParser.Parse("""{"protocolVersion":2,"requestId":"request-1","command":"applyDiff","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"operationId":"operation-1","diagram":{"figure":{"title":"x"},"nodes":[],"edges":[]}}""");
+
+        Assert.Equal(WorkerV2Command.ApplyDiff, request.Command);
+        Assert.Null(request.PlanHash);
+    }
+
+    [Fact]
     public void Parser_rejects_invalid_command()
     {
         var error = Assert.Throws<WorkerProtocolException>(() => WorkerV2RequestParser.Parse("""{"protocolVersion":2,"requestId":"request-1","command":"quit","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"}}"""));

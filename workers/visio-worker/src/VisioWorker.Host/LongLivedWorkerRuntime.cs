@@ -249,7 +249,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
         try
         {
             var document = trusted.Plan!;
-            var operation = new VisioSessionOperation(request.OperationId!, request.PlanHash!);
+            var operation = new VisioSessionOperation(request.OperationId!, trusted.PlanHash!);
             if (isDiff)
             {
                 await _sessions.ApplyPlanDiffAsync(key, operation, document, cancellationToken).ConfigureAwait(false);
@@ -544,13 +544,14 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
             {
                 plan = DiagramMapper.Map(request.Diagram!);
                 digest = DiagramPlanDigest.Compute(plan);
-                if (!string.Equals(request.PlanHash, digest, StringComparison.OrdinalIgnoreCase))
+                if (request.PlanHash is not null
+                    && !string.Equals(request.PlanHash, digest, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new WorkerProtocolException("planHash does not match the trusted canonical diagram plan.");
                 }
             }
 
-            return new TrustedCommand(plan, outputPath, RequestFingerprint.For(request, key, outputPath, digest));
+            return new TrustedCommand(plan, outputPath, RequestFingerprint.For(request, key, outputPath, digest), digest);
         }
         catch (WorkerProtocolException)
         {
@@ -608,8 +609,8 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
                 case WorkerV2Command.Open when string.IsNullOrWhiteSpace(request.OutputPath):
                 case WorkerV2Command.Save when string.IsNullOrWhiteSpace(request.OutputPath):
                     throw new WorkerProtocolException("outputPath is required.");
-                case WorkerV2Command.Apply or WorkerV2Command.ApplyDiff when request.Diagram is null || request.OperationId is null || request.PlanHash is null:
-                    throw new WorkerProtocolException("operationId, planHash, and diagram are required.");
+                case WorkerV2Command.Apply or WorkerV2Command.ApplyDiff when request.Diagram is null || request.OperationId is null:
+                    throw new WorkerProtocolException("operationId and diagram are required.");
                 case WorkerV2Command.Close when request.CloseDisposition is not ("save" or "discard"):
                     throw new WorkerProtocolException("closeDisposition must be 'save' or 'discard'.");
                 case WorkerV2Command.Open or WorkerV2Command.Apply or WorkerV2Command.ApplyDiff or WorkerV2Command.Save or WorkerV2Command.Snapshot or WorkerV2Command.Close or WorkerV2Command.Recover:
@@ -708,7 +709,7 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
 
     private sealed record ReplayEntry(string RequestId, WorkerV2Command Command, string Fingerprint, WorkerV2Response Response);
 
-    private sealed record TrustedCommand(DiagramDocument? Plan, string? OutputPath, string Fingerprint);
+    private sealed record TrustedCommand(DiagramDocument? Plan, string? OutputPath, string Fingerprint, string? PlanHash);
 
     private static class RequestFingerprint
     {
@@ -721,7 +722,6 @@ public sealed class LongLivedWorkerRuntime : IAsyncDisposable
                 key.TenantId, key.UserId, key.DeviceId, key.WorkflowId,
                 outputPath ?? string.Empty,
                 request.OperationId ?? string.Empty,
-                request.PlanHash ?? string.Empty,
                 planDigest ?? string.Empty,
                 request.CloseDisposition ?? string.Empty,
             })
