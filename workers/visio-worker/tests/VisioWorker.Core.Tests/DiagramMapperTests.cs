@@ -546,6 +546,22 @@ public sealed class DiagramMapperTests
     }
 
     [Fact]
+    public void Builds_a_closed_oblique_tensor_slab_with_shared_face_edges()
+    {
+        var slab = PublicationTensorGeometry.CreateTensorSlab(1.0, 2.0, 3.0, 5.0, 0.06);
+
+        Assert.Equal(5, slab.Front.Count);
+        Assert.Equal(slab.Front[0], slab.Front[^1]);
+        Assert.Equal(slab.Top[0], slab.Top[^1]);
+        Assert.Equal(slab.Side[0], slab.Side[^1]);
+        Assert.NotEqual(slab.Front[0].Y, slab.Front[1].Y);
+        Assert.Equal(slab.Front[3], slab.Top[0]);
+        Assert.Equal(slab.Front[2], slab.Top[1]);
+        Assert.Equal(slab.Front[1], slab.Side[0]);
+        Assert.Equal(slab.Front[2], slab.Side[1]);
+    }
+
+    [Fact]
     public void Keeps_downsample_transitions_visually_subordinate_to_feature_map_stacks()
     {
         var fill = VisioWorker.Live.PublicationRenderPalette.TransitionFill;

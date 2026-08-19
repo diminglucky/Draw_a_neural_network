@@ -69,6 +69,39 @@ public sealed class SessionRecoveryManifestStoreTests
     }
 
     [Fact]
+    public async Task Load_returns_null_without_creating_the_private_manifest_directory_when_no_manifest_exists()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var store = new SessionRecoveryManifestStore(root);
+
+            var stored = await store.LoadAsync(CreateManifest(root).Key);
+
+            Assert.Null(stored);
+            Assert.False(Directory.Exists(Path.Combine(root, ".synapse-sessions")));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
+    public async Task Load_returns_null_when_a_fresh_output_root_has_not_been_created_yet()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "visio-manifest-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert.False(Directory.Exists(root));
+            var store = new SessionRecoveryManifestStore(root);
+
+            var stored = await store.LoadAsync(new VisioSessionKey("tenant", "user", "device", "workflow"));
+
+            Assert.Null(stored);
+            Assert.False(Directory.Exists(root));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
     public void Versioned_binary_framing_distinguishes_newline_boundary_collision_candidates()
     {
         var method = typeof(SessionRecoveryManifestStore).GetMethod("SessionFileNameForTuple", BindingFlags.NonPublic | BindingFlags.Static);
@@ -183,6 +216,7 @@ public sealed class SessionRecoveryManifestStoreTests
         {
             var key = CreateManifest(root).Key;
             var manifestPath = ManifestPath(root, key);
+            Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
             var store = CreateStoreWithFailure(root, operation => operation == "open-read"
                 ? new UnauthorizedAccessException($"denied {manifestPath}")
                 : null);
@@ -192,6 +226,47 @@ public sealed class SessionRecoveryManifestStoreTests
             Assert.DoesNotContain(root, error.Message, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(manifestPath, error.ToString(), StringComparison.OrdinalIgnoreCase);
             Assert.Null(error.InnerException);
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [Fact]
+    public async Task Load_rejects_a_reparse_point_for_the_private_manifest_directory()
+    {
+        var root = CreateRoot();
+        var outside = CreateRoot();
+        var link = Path.Combine(root, ".synapse-sessions");
+        try
+        {
+            CreateJunctionOrSkip(link, outside);
+            var store = new SessionRecoveryManifestStore(root);
+
+            var error = await Assert.ThrowsAsync<WorkerProtocolException>(() => store.LoadAsync(CreateManifest(root).Key));
+
+            Assert.DoesNotContain(root, error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+        }
+        finally
+        {
+            DeleteLink(link);
+            DeleteRoot(root);
+            DeleteRoot(outside);
+        }
+    }
+
+    [Fact]
+    public async Task Load_rejects_a_non_regular_manifest_target()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var manifest = CreateManifest(root);
+            Directory.CreateDirectory(ManifestPath(root, manifest.Key));
+            var store = new SessionRecoveryManifestStore(root);
+
+            var error = await Assert.ThrowsAsync<WorkerProtocolException>(() => store.LoadAsync(manifest.Key));
+
+            Assert.DoesNotContain(root, error.ToString(), StringComparison.OrdinalIgnoreCase);
         }
         finally { DeleteRoot(root); }
     }

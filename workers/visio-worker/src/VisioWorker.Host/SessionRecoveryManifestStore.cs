@@ -177,10 +177,44 @@ public sealed class SessionRecoveryManifestStore : ISessionRecoveryManifestStore
 
     private void EnsureManifestDirectory(bool createDirectory)
     {
-        EnsureExistingDirectoryPathHasNoReparsePoints(_outputRoot);
+        try
+        {
+            EnsureExistingDirectoryPathHasNoReparsePoints(_outputRoot);
+        }
+        catch (FileNotFoundException) when (!createDirectory)
+        {
+            // A first-run output root is not a recovery error. Every existing ancestor was
+            // already checked while walking the path, and a later save will create this root.
+            return;
+        }
+        catch (DirectoryNotFoundException) when (!createDirectory)
+        {
+            return;
+        }
+        catch (FileNotFoundException) when (createDirectory)
+        {
+            Directory.CreateDirectory(_outputRoot);
+            EnsureExistingDirectoryPathHasNoReparsePoints(_outputRoot);
+        }
+        catch (DirectoryNotFoundException) when (createDirectory)
+        {
+            Directory.CreateDirectory(_outputRoot);
+            EnsureExistingDirectoryPathHasNoReparsePoints(_outputRoot);
+        }
         try
         {
             EnsureExistingDirectoryPathHasNoReparsePoints(_manifestRoot);
+        }
+        catch (FileNotFoundException) when (!createDirectory)
+        {
+            // A new output root has no durable session until the first successful save creates
+            // this Worker-private directory. LoadAsync must distinguish that normal absence from
+            // a security or I/O failure so first open can create the initial VSDX.
+            return;
+        }
+        catch (DirectoryNotFoundException) when (!createDirectory)
+        {
+            return;
         }
         catch (FileNotFoundException) when (createDirectory)
         {

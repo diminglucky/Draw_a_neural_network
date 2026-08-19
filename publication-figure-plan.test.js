@@ -52,8 +52,8 @@ test("builds a canonical top-left VGG16 Figure Plan with native multi-plane grou
     unit: "figure-unit",
     figureUnitInches: 0.01,
     origin: "top-left",
-    width: 1600,
-    height: 540,
+    width: 1800,
+    height: 720,
   });
   const block3 = plan.primitiveGroups.find((group) => group.id === "block-3");
   assert.equal(block3.kind, "feature-map-stack");
@@ -92,8 +92,8 @@ test("builds VGG blocks as multi-plane feature-map stacks with local stage headi
     unit: "figure-unit",
     figureUnitInches: 0.01,
     origin: "top-left",
-    width: 1600,
-    height: 540,
+    width: 1800,
+    height: 720,
   });
   assert.equal(block1.kind, "feature-map-stack");
   assert.equal(block1.primitiveIds.length, 6);
@@ -101,7 +101,7 @@ test("builds VGG blocks as multi-plane feature-map stacks with local stage headi
   assert.equal(groups.find((group) => group.id === "input").kind, "input-rgb-tile");
   assert.equal(groups.find((group) => group.id === "pool-1").kind, "downsample-transition");
   assert.ok(occupiedRight >= 1510, "the VGG main stem should use the publication page width");
-  assert.equal(labels.get("block-1.heading").text, "CONV 1");
+  assert.equal(labels.get("block-1.heading").text, "Block 1");
   assert.match(labels.get("block-1.detail").text, /^3×3 · 64 ×2\n224×224×64$/);
   assert.equal(labels.get("pool-1.detail").text, "MaxPool 2×2");
   assert.equal(labels.get("fc-1.detail").text, "4096 units");
@@ -116,7 +116,7 @@ test("uses concise local annotations with publication-scale heading and detail t
   const poolDetail = labels.get("pool-1.detail");
   const softmaxDetail = labels.get("softmax.detail");
 
-  assert.equal(blockHeading.text, "CONV 1");
+  assert.equal(blockHeading.text, "Block 1");
   assert.ok(blockHeading.fontSizePt >= 10, "stage labels must remain readable at page-fit zoom");
   assert.ok(blockDetail.fontSizePt >= 8.5, "tensor labels must remain readable at page-fit zoom");
   assert.equal(poolDetail.text, "MaxPool 2×2");
@@ -128,7 +128,7 @@ test("encodes VGG16 repetitions and classifier grammar as a compact tensor plate
   const groups = new Map(plan.primitiveGroups.map((group) => [group.id, group]));
 
   assert.equal(plan.styleId, "vgg-tensor-plate-v3");
-  assert.equal(plan.coordinateSpace.height, 540);
+  assert.equal(plan.coordinateSpace.height, 720);
   assert.equal(groups.get("block-1").primitiveIds.length, 6);
   assert.equal(groups.get("block-2").primitiveIds.length, 6);
   assert.equal(groups.get("block-3").primitiveIds.length, 9);
@@ -144,4 +144,32 @@ test("encodes VGG16 repetitions and classifier grammar as a compact tensor plate
   assert.equal(groups.get("softmax").primitiveIds.length, 7);
   assert.ok(plan.primitiveGroups.every((group) => Number.isInteger(group.semantic.stage)));
   assert.equal(plan.validation.valid, true);
+});
+
+test("anchors VGG stages through pool contractions and keeps publication annotations collision-free", () => {
+  const plan = buildPublicationFigurePlan(vgg16Ir());
+  const groups = new Map(plan.primitiveGroups.map((group) => [group.id, group]));
+  const labels = plan.labels;
+  const block1 = groups.get("block-1");
+  const block2 = groups.get("block-2");
+  const pool1 = groups.get("pool-1");
+
+  assert.deepEqual(plan.coordinateSpace, {
+    unit: "figure-unit",
+    figureUnitInches: 0.01,
+    origin: "top-left",
+    width: 1800,
+    height: 720,
+  });
+  assert.equal(labels.find((label) => label.id === "block-1.heading")?.text, "Block 1");
+  assert.equal(pool1.semantic.sourceStageId, "block-1");
+  assert.equal(pool1.semantic.targetStageId, "block-2");
+  assert.equal(pool1.semantic.leftAnchor.x, block1.semantic.rightAnchor.x);
+  assert.equal(pool1.semantic.rightAnchor.x, block2.semantic.leftAnchor.x);
+  assert.ok(labels.every((label, index) => labels.slice(index + 1).every((other) =>
+    label.x + label.width <= other.x
+    || other.x + other.width <= label.x
+    || label.y + label.height <= other.y
+    || other.y + other.height <= label.y,
+  )), "publication annotation tracks must not overlap");
 });

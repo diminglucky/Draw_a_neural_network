@@ -40,7 +40,32 @@ public static class PublicationTensorGeometry
     public static double FeatureMapFaceDepthInches(double extrusionDepthInches) => Math.Clamp(extrusionDepthInches * 0.14, 0.04, 0.07);
     public static double StackPlaneOffsetInches(double extrusionDepthInches) => Math.Clamp(extrusionDepthInches * 0.35, 0.11, 0.17);
     public static double TransitionFaceDepthInches => 0.045;
+
+    public static PublicationTensorSlab CreateTensorSlab(double x1, double y1, double x2, double y2, double faceDepth)
+    {
+        if (x2 <= x1 || y2 <= y1 || faceDepth <= 0) throw new ArgumentOutOfRangeException(nameof(faceDepth));
+        var frontShearY = faceDepth * 0.36;
+        var depthY = faceDepth * 0.72;
+        var frontBottomLeft = new PublicationPoint(x1, y1);
+        var frontBottomRight = new PublicationPoint(x2, y1 + frontShearY);
+        var frontTopRight = new PublicationPoint(x2, y2 + frontShearY);
+        var frontTopLeft = new PublicationPoint(x1, y2);
+        var depth = new PublicationPoint(faceDepth, depthY);
+        return new PublicationTensorSlab(
+            [frontBottomLeft, frontBottomRight, frontTopRight, frontTopLeft, frontBottomLeft],
+            [frontTopLeft, frontTopRight, Translate(frontTopRight, depth), Translate(frontTopLeft, depth), frontTopLeft],
+            [frontBottomRight, frontTopRight, Translate(frontTopRight, depth), Translate(frontBottomRight, depth), frontBottomRight]);
+    }
+
+    private static PublicationPoint Translate(PublicationPoint point, PublicationPoint vector) => new(point.X + vector.X, point.Y + vector.Y);
 }
+
+public readonly record struct PublicationPoint(double X, double Y);
+
+public sealed record PublicationTensorSlab(
+    IReadOnlyList<PublicationPoint> Front,
+    IReadOnlyList<PublicationPoint> Top,
+    IReadOnlyList<PublicationPoint> Side);
 
 public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 {
@@ -436,6 +461,11 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return page.DrawPolyline(points, 0);
     }
 
+    private static dynamic DrawClosedPolygon(dynamic page, IReadOnlyList<PublicationPoint> points)
+    {
+        return DrawClosedPolygon(page, points.SelectMany(point => new[] { point.X, point.Y }).ToArray());
+    }
+
     private static void DrawFeatureMapPlaneStack(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
     {
         var planeCount = group.PrimitiveIds.Count(id => id.EndsWith(".front", StringComparison.Ordinal));
@@ -463,16 +493,16 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
     private static void DrawFeatureMapFaces(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, string primitivePrefix, double faceDepth)
     {
-        var depthY = faceDepth * 0.72;
-        dynamic front = page.DrawRectangle(x1, y1, x2, y2);
+        var slab = PublicationTensorGeometry.CreateTensorSlab(x1, y1, x2, y2, faceDepth);
+        dynamic front = DrawClosedPolygon(page, slab.Front);
         ApplyFill(front, fill, lineWeight);
         TrySet(() => front.CellsU("LineColor").FormulaU = $"RGB({PublicationRenderPalette.FeatureMapOutline.R},{PublicationRenderPalette.FeatureMapOutline.G},{PublicationRenderPalette.FeatureMapOutline.B})");
         NameAndAnnotatePrimitive(front, group, RequiredFaceId(group, primitivePrefix, "front"));
-        dynamic top = DrawClosedPolygon(page, new double[] { x1, y2, x2, y2, x2 + faceDepth, y2 + depthY, x1 + faceDepth, y2 + depthY, x1, y2 });
+        dynamic top = DrawClosedPolygon(page, slab.Top);
         ApplyFill(top, Shade(fill, 0.96), lineWeight);
         TrySet(() => top.CellsU("LineColor").FormulaU = $"RGB({PublicationRenderPalette.FeatureMapOutline.R},{PublicationRenderPalette.FeatureMapOutline.G},{PublicationRenderPalette.FeatureMapOutline.B})");
         NameAndAnnotatePrimitive(top, group, RequiredFaceId(group, primitivePrefix, "top"));
-        dynamic side = DrawClosedPolygon(page, new double[] { x2, y1, x2, y2, x2 + faceDepth, y2 + depthY, x2 + faceDepth, y1 + depthY, x2, y1 });
+        dynamic side = DrawClosedPolygon(page, slab.Side);
         ApplyFill(side, Shade(fill, 0.88), lineWeight);
         TrySet(() => side.CellsU("LineColor").FormulaU = $"RGB({PublicationRenderPalette.FeatureMapOutline.R},{PublicationRenderPalette.FeatureMapOutline.G},{PublicationRenderPalette.FeatureMapOutline.B})");
         NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, primitivePrefix, "side"));

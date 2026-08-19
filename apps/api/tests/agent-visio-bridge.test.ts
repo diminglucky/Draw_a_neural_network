@@ -43,4 +43,12 @@ describe("compileAgentCnnVisioDiagram", () => {
       canonicalNetworkIR: { ...input.canonicalNetworkIR, unresolved: [{ id: "pool-kind", question: "Which pooling operator?", severity: "blocking", candidateValues: ["max", "average"] }] },
     })).toThrow(/unresolved|render ready/i);
   });
+
+  it("accepts a server-generated UUID draft identity that begins with a digit", () => {
+    expect(() => compileAgentCnnVisioDiagram({
+      draftId: "4a4774cc-56e4-46db-9cae-2e29e529ee35",
+      revision: 1,
+      canonicalNetworkIR: vgg16CanonicalIr(),
+    })).not.toThrow();
+  });
 });

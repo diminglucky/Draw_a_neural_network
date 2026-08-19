@@ -1,9 +1,36 @@
+using System.Text;
+
 namespace VisioWorker.Host;
+
+public static class WorkerStandardStreams
+{
+    private static readonly Encoding JsonLinesEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    public static void Configure(
+        Action<Encoding> setInputEncoding,
+        Action<Encoding> setOutputEncoding,
+        Action<TextWriter> setErrorWriter,
+        Func<Stream> openStandardError)
+    {
+        ArgumentNullException.ThrowIfNull(setInputEncoding);
+        ArgumentNullException.ThrowIfNull(setOutputEncoding);
+        ArgumentNullException.ThrowIfNull(setErrorWriter);
+        ArgumentNullException.ThrowIfNull(openStandardError);
+        setInputEncoding(JsonLinesEncoding);
+        setOutputEncoding(JsonLinesEncoding);
+        setErrorWriter(new StreamWriter(openStandardError(), JsonLinesEncoding) { AutoFlush = true });
+    }
+}
 
 internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        WorkerStandardStreams.Configure(
+            encoding => Console.InputEncoding = encoding,
+            encoding => Console.OutputEncoding = encoding,
+            writer => Console.SetError(writer),
+            Console.OpenStandardError);
         var mode = ReadOption(args, "--mode") ?? "mock";
         var outputRoot = ReadOption(args, "--output-root");
         if (string.IsNullOrWhiteSpace(outputRoot))

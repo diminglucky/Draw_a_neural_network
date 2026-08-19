@@ -9,6 +9,22 @@ namespace VisioWorker.Core.Tests;
 
 public sealed class WorkerHostLineProcessorTests
 {
+    [Fact]
+    public void Configures_every_json_lines_standard_stream_as_utf8()
+    {
+        Encoding? input = null;
+        Encoding? output = null;
+        TextWriter? error = null;
+        using var errorStream = new MemoryStream();
+
+        WorkerStandardStreams.Configure(encoding => input = encoding, encoding => output = encoding, writer => error = writer, () => errorStream);
+
+        Assert.Equal(Encoding.UTF8.CodePage, input!.CodePage);
+        Assert.Equal(Encoding.UTF8.CodePage, output!.CodePage);
+        Assert.Equal(Encoding.UTF8.CodePage, error!.Encoding.CodePage);
+        Assert.Empty(input.GetPreamble());
+    }
+
     public static IEnumerable<object[]> MalformedProtocolDiscriminatorCases()
     {
         yield return ProtocolCase("exact-v1-duplicate", "\"protocolVersion\":1,\"protocolVersion\":1", false);
@@ -395,6 +411,57 @@ public sealed class WorkerHostLineProcessorTests
         Assert.NotNull(failure.Error);
         Assert.Equal("succeeded", Assert.IsType<WorkerV2Response>(valid).Status);
         Assert.Equal(1, fixture.Backend.OpenOrCreateCalls);
+    }
+
+    [Fact]
+    public async Task Invalid_v2_request_after_its_id_is_read_preserves_that_request_id_in_the_failure_response()
+    {
+        using var fixture = new HostFixture();
+        await using var processor = fixture.CreateLineProcessor();
+
+        var response = Assert.IsType<WorkerV2Response>(await processor.ProcessLineAsync(
+            """{"protocolVersion":2,"requestId":"agent-apply-1","command":"apply","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"operationId":"operation-1","diagram":{"nodes":[],"edges":[],"unexpected":true}}"""));
+
+        Assert.Equal("failed", response.Status);
+        Assert.Equal("agent-apply-1", response.RequestId);
+        Assert.NotNull(response.Error);
+    }
+
+    [Theory]
+    [InlineData("""{"protocolVersion":2,"requestId":"pending-open-1","command":"open","session":null,"outputPath":"C:\\exports\\workflow.vsdx"}""")]
+    [InlineData("""{"protocolVersion":2,"requestId":"pending-open-1","command":"open","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"outputPath":"C:\\exports\\workflow.vsdx","unexpected":true}""")]
+    public async Task Malformed_v2_envelopes_never_correlate_a_pending_request_id(string line)
+    {
+        using var fixture = new HostFixture();
+        await using var processor = fixture.CreateLineProcessor();
+
+        var response = Assert.IsType<WorkerV2Response>(await processor.ProcessLineAsync(line));
+
+        Assert.Equal("failed", response.Status);
+        Assert.Equal("unknown", response.RequestId);
+    }
+
+    [Fact]
+    public async Task Debug_acceptance_mode_returns_a_safe_protocol_rejection_reason_for_a_correlated_v2_request()
+    {
+        const string environmentName = "SYNAPSE_DEBUG_AGENT_VISIO";
+        var previous = Environment.GetEnvironmentVariable(environmentName);
+        Environment.SetEnvironmentVariable(environmentName, "1");
+        try
+        {
+            using var fixture = new HostFixture();
+            await using var processor = fixture.CreateLineProcessor();
+
+            var response = Assert.IsType<WorkerV2Response>(await processor.ProcessLineAsync(
+                """{"protocolVersion":2,"requestId":"agent-debug-1","command":"apply","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"operationId":"operation-1","diagram":{"nodes":[],"edges":[],"unexpected":true}}"""));
+
+            Assert.Equal("agent-debug-1", response.RequestId);
+            Assert.Equal("Invalid Worker v2 request: Unknown property 'unexpected' in diagram", response.Error);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(environmentName, previous);
+        }
     }
 
     [Fact]

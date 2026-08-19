@@ -20,6 +20,11 @@ import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
 import { UniversalFigureExportService } from "./figure-export-service.js";
 import { FigureAnalysisService } from "./figure-analysis-service.js";
 import { FigureAnalysisPreviewServiceImpl } from "./figure-analysis-preview-service.js";
+import {
+  AgentVisioExecutionSnapshotService,
+  InMemoryAgentVisioExecutionSnapshotStore,
+  type AgentVisioExecutionSnapshotStore,
+} from "./agent-visio-execution-snapshot.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -30,6 +35,8 @@ export interface BuildAppOptions {
   agentService?: AgentServiceContract;
   figureDraftService?: FigureDraftService;
   figureDraftPreviewService?: FigureDraftPreviewService;
+  agentVisioExecutionSnapshotStore?: AgentVisioExecutionSnapshotStore;
+  agentVisioExecutionSnapshotService?: AgentVisioExecutionSnapshotService;
   visioExecutor?: VisioExecutor;
   visioJobRunner?: VisioJobRunner;
   universalFigureExportService?: UniversalFigureExportService;
@@ -69,8 +76,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const adminService = new AdminService(store, sessionService);
   const figureDraftService = options.figureDraftService ?? new FigureDraftService({ store });
   const figureDraftPreviewService = options.figureDraftPreviewService ?? new FigureDraftPreviewService({ figureDraftService });
+  const agentVisioExecutionSnapshotStore = options.agentVisioExecutionSnapshotStore ?? new InMemoryAgentVisioExecutionSnapshotStore();
+  const agentVisioExecutionSnapshotService = options.agentVisioExecutionSnapshotService ?? new AgentVisioExecutionSnapshotService({
+    foundation: store,
+    figureDraftService,
+    snapshotStore: agentVisioExecutionSnapshotStore,
+  });
   const visioExecutor = options.visioExecutor ?? createVisioExecutorForConfig(config);
-  const visioJobRunner = options.visioJobRunner ?? new VisioJobRunner({ store, jobService, executor: visioExecutor, maxConcurrentJobs: config.visioMaxConcurrency });
+  const visioJobRunner = options.visioJobRunner ?? new VisioJobRunner({
+    store,
+    jobService,
+    executor: visioExecutor,
+    agentVisioExecutionSnapshotStore,
+    maxConcurrentJobs: config.visioMaxConcurrency,
+  });
   const figureAnalysisService = options.figureAnalysisService ?? new FigureAnalysisService({ store });
   const figureAnalysisPreviewService = options.figureAnalysisPreviewService ?? new FigureAnalysisPreviewServiceImpl({ store });
   const app = Fastify({ logger: false });
@@ -85,6 +104,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     agentService: options.agentService,
     figureDraftService,
     figureDraftPreviewService,
+    agentVisioExecutionSnapshotService,
     visioExecutor,
     visioJobRunner,
     universalFigureExportService: options.universalFigureExportService,

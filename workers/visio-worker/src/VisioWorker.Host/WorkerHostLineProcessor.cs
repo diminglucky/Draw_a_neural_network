@@ -142,11 +142,20 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            return new WorkerV2Response(request?.RequestId ?? "unknown", "failed", Error: "Invalid or failed Worker v2 request.");
+            return new WorkerV2Response(
+                request?.RequestId ?? WorkerV2RequestParser.TryReadRequestId(line, _options.OutputRoot) ?? "unknown",
+                "failed",
+                Error: V2FailureMessage(error));
         }
     }
+
+    private static string V2FailureMessage(Exception error) =>
+        string.Equals(Environment.GetEnvironmentVariable("SYNAPSE_DEBUG_AGENT_VISIO"), "1", StringComparison.Ordinal)
+        && error is WorkerProtocolException
+            ? $"Invalid Worker v2 request: {error.Message}"
+            : "Invalid or failed Worker v2 request.";
 
     private async Task<LongLivedWorkerRuntime> GetOrCreateV2RuntimeAsync()
     {

@@ -14,6 +14,7 @@ import type { AgentTaskIntent } from "./agent-intent.js";
 import { parseEvidenceBundle, publicEvidenceSummary, type EvidenceBundle, type EvidenceKind } from "./evidence-bundle.js";
 import { FigureDraftService, type FigureDraftConfirmation } from "./figure-draft-service.js";
 import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
+import { AgentVisioExecutionSnapshotService } from "./agent-visio-execution-snapshot.js";
 import { UniversalFigureExportService } from "./figure-export-service.js";
 import { FigureAnalysisService } from "./figure-analysis-service.js";
 import { parsePyTorchSourcePack, type SourcePack } from "./source-pack.js";
@@ -92,6 +93,7 @@ interface RouteOptions {
   agentService?: AgentServiceContract;
   figureDraftService: FigureDraftService;
   figureDraftPreviewService: FigureDraftPreviewService;
+  agentVisioExecutionSnapshotService: AgentVisioExecutionSnapshotService;
   visioExecutor: VisioExecutor;
   visioJobRunner: VisioJobRunner;
   universalFigureExportService?: UniversalFigureExportService;
@@ -1221,6 +1223,75 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     return reply.code(202).send({ ...job, pollUrl: `/api/jobs/${job.id}` });
   };
   app.post("/api/legacy/visio-exports", legacyVisioExportHandler);
+
+  app.post("/api/figure-drafts/:draftId/revisions/:revision/visio-exports", async (request, reply) => {
+    const access = await requireUser(request, options);
+    const input = body(request);
+    if (Object.keys(input).length !== 0) {
+      throw validationError("Agent Visio export body must not contain drawing or Worker fields", {
+        field: "body",
+        reason: "server_bound_snapshot_required",
+      });
+    }
+    const draftId = (request.params as { draftId: string }).draftId;
+    const revision = Number((request.params as { revision: string }).revision);
+    if (!Number.isSafeInteger(revision) || revision <= 0) {
+      throw validationError("Figure draft revision is invalid", { field: "revision", reason: "invalid" });
+    }
+    const health = await options.visioExecutor.healthCheck();
+    if (!health.connected) {
+      throw new FoundationError(health.reason === ApiErrorCode.VISIO_EXECUTION_FAILED ? ApiErrorCode.VISIO_EXECUTION_FAILED : ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED, "Visio Worker is not configured or unavailable", 503, { reason: health.reason });
+    }
+    const snapshot = await options.agentVisioExecutionSnapshotService.create({
+      owner: { tenantId: "synapse-local", userId: access.user.id },
+      draftId,
+      revision,
+    });
+    const key = idempotencyKey(request);
+    const requestHash = visioRequestHash({ snapshotId: snapshot.snapshotId, planDigest: snapshot.planDigest });
+    const created = await options.jobService.createVisioIdempotent({
+      userId: access.user.id,
+      deviceId: access.device.id,
+      input: {
+        agentVisioExecutionSnapshotId: snapshot.snapshotId,
+        planDigest: snapshot.planDigest,
+        draftId: snapshot.draftId,
+        revision: snapshot.revision,
+        requestHash,
+      },
+      idempotencyKey: key,
+      requestHash,
+    });
+    if (created.duplicate) {
+      if (!created.requestHashMatches) {
+        throw new FoundationError(ApiErrorCode.VISIO_IDEMPOTENCY_KEY_REUSED, "Idempotency-Key has already been used for a different Agent Visio revision", 409, {
+          requestHashMatches: false,
+          jobId: created.job.id,
+        });
+      }
+      return reply.code(200).send({
+        id: created.job.id,
+        type: created.job.type,
+        status: created.job.status,
+        draftId: snapshot.draftId,
+        revision: snapshot.revision,
+        snapshotId: snapshot.snapshotId,
+        planDigest: snapshot.planDigest,
+        pollUrl: `/api/jobs/${created.job.id}`,
+      });
+    }
+    options.visioJobRunner.submit(created.job.id);
+    return reply.code(202).send({
+      id: created.job.id,
+      type: created.job.type,
+      status: created.job.status,
+      draftId: snapshot.draftId,
+      revision: snapshot.revision,
+      snapshotId: snapshot.snapshotId,
+      planDigest: snapshot.planDigest,
+      pollUrl: `/api/jobs/${created.job.id}`,
+    });
+  });
 
   app.get("/api/jobs/:id", async (request) => {
     const access = await requireUser(request, options);

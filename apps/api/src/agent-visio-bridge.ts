@@ -152,5 +152,5 @@ function numericChannelCount(shape: Array<number | string>): number | null {
 }
 
 function isIdentifier(value: string): boolean {
-  return /^[A-Za-z][A-Za-z0-9._:-]*$/.test(value) && value.length <= 128;
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) && value.length <= 128;
 }

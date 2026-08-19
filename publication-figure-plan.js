@@ -1,6 +1,6 @@
 const FIGURE_UNIT_INCHES = 0.01;
-const PAGE = Object.freeze({ width: 1600, height: 540, margin: 45 });
-const CENTER_Y = 270;
+const PAGE = Object.freeze({ width: 1800, height: 720, margin: 55 });
+const CENTER_Y = 350;
 
 export const VGG_TENSOR_PLATE_V3 = Object.freeze({
   id: "vgg-tensor-plate-v3",
@@ -22,15 +22,7 @@ export const VGG_PAPER_STYLE_V1 = VGG_TENSOR_PLATE_V3;
 export function buildPublicationFigurePlan(networkIR, options = {}) {
   const style = options.style ?? VGG_TENSOR_PLATE_V3;
   const nodes = orderedNodes(networkIR);
-  const draftGroups = buildGroups(nodes, style);
-  const totalWidth = draftGroups.reduce((sum, group) => sum + group.bounds.width, 0);
-  const gap = Math.max(20, Math.floor((PAGE.width - PAGE.margin * 2 - totalWidth) / Math.max(1, draftGroups.length - 1)));
-  let cursorX = PAGE.margin;
-  const primitiveGroups = draftGroups.map((group) => {
-    const positioned = { ...group, bounds: { ...group.bounds, x: cursorX } };
-    cursorX += group.bounds.width + gap;
-    return positioned;
-  });
+  const primitiveGroups = layoutCnnPlate(buildGroups(nodes, style));
   const byId = new Map(primitiveGroups.map((group) => [group.id, group]));
   const connectors = connectorsFor(networkIR, byId);
   const labels = primitiveGroups.flatMap((group) => labelsFor(group));
@@ -109,11 +101,14 @@ export function validatePublicationFigurePlan(plan) {
     if (!Number.isFinite(label?.fontSizePt) || label.fontSizePt < 7) violations.push("unreadable-label:" + String(label?.id));
     if (!validBounds(label) || !inCanvas(label)) violations.push("invalid-label-bounds:" + String(label?.id));
   });
+  validateAnnotationTracks(labels, violations);
   const connectors = Array.isArray(plan?.connectors) ? plan.connectors : [];
   connectors.forEach((connector) => {
     if (!groupIds.has(connector?.sourceGroupId) || !groupIds.has(connector?.targetGroupId)) violations.push("invalid-connector:" + String(connector?.id));
     if (!Array.isArray(connector?.points) || connector.points.length < 2) violations.push("invalid-connector-route:" + String(connector?.id));
   });
+  validateCnnAnchors(groups, violations);
+  validateConnectorLabelClearance(connectors, labels, violations);
   return { valid: violations.length === 0, violations, summary: { groupCount: groups.length, primitiveCount: primitiveIds.size, connectorCount: connectors.length, labelCount: labels.length } };
 }
 
@@ -188,6 +183,73 @@ function buildFlattenGroup(previous, node, index, style) {
   };
 }
 
+function layoutCnnPlate(groups) {
+  const xById = new Map([
+    ["input", 55],
+    ["block-1", 210],
+    ["pool-1", 0],
+    ["block-2", 400],
+    ["pool-2", 0],
+    ["block-3", 590],
+    ["pool-3", 0],
+    ["block-4", 780],
+    ["pool-4", 0],
+    ["block-5", 970],
+    ["pool-5", 0],
+    ["flatten", 1120],
+    ["fc-1", 1310],
+    ["fc-2", 1450],
+    ["softmax", 1590],
+  ]);
+  const positioned = groups.map((group) => {
+    const x = xById.get(group.id);
+    if (!Number.isFinite(x)) throw new Error("Unsupported CNN publication group: " + group.id);
+    const bounds = { ...group.bounds, x };
+    return { ...group, bounds, semantic: { ...group.semantic, stageRegion: stageRegionFor(group) } };
+  });
+  const byId = new Map(positioned.map((group) => [group.id, group]));
+  for (const [index, group] of positioned.entries()) {
+    if (group.kind === "downsample-transition") {
+      const source = positioned.slice(0, index).reverse().find(candidate => candidate.kind === "feature-map-stack");
+      const target = positioned.slice(index + 1).find(candidate => candidate.kind === "feature-map-stack" || candidate.kind === "flatten-ribbon");
+      if (!source) throw new Error("Pooling transition requires an upstream CNN stage: " + group.id);
+      const leftAnchor = rightAnchorFor(source);
+      const rightAnchor = target ? leftAnchorFor(target) : { x: leftAnchor.x + 62, top: leftAnchor.top, bottom: leftAnchor.bottom, y: leftAnchor.y };
+      group.bounds = {
+        x: leftAnchor.x,
+        y: leftAnchor.top,
+        width: rightAnchor.x - leftAnchor.x,
+        height: leftAnchor.bottom - leftAnchor.top,
+      };
+      group.semantic = {
+        ...group.semantic,
+        sourceStageId: source.id,
+        targetStageId: target?.id ?? null,
+        leftAnchor,
+        rightAnchor,
+      };
+    } else {
+      group.semantic = { ...group.semantic, leftAnchor: leftAnchorFor(group), rightAnchor: rightAnchorFor(group) };
+    }
+  }
+  return positioned;
+}
+
+function stageRegionFor(group) {
+  if (group.id === "input") return "input";
+  if (group.kind === "feature-map-stack") return "feature-extraction";
+  if (group.kind === "downsample-transition") return "downsample";
+  return "classifier";
+}
+
+function leftAnchorFor(group) {
+  return { x: group.bounds.x, top: group.bounds.y, bottom: group.bounds.y + group.bounds.height, y: group.bounds.y + group.bounds.height / 2 };
+}
+
+function rightAnchorFor(group) {
+  return { x: group.bounds.x + group.bounds.width, top: group.bounds.y, bottom: group.bounds.y + group.bounds.height, y: group.bounds.y + group.bounds.height / 2 };
+}
+
 function groupKind(id, role) {
   if (id === "input") return "input-rgb-tile";
   if (role === "feature-map-stack") return "feature-map-stack";
@@ -248,19 +310,19 @@ function connectorFor(edge, index, byId, targetId = edge.target) {
 }
 
 function labelsFor(group) {
-  const headingY = Math.max(PAGE.margin, group.bounds.y - 42);
-  const detailY = Math.min(PAGE.height - PAGE.margin - 46, group.bounds.y + group.bounds.height + 22);
-  const width = Math.max(112, group.bounds.width + 46);
+  const headingY = 72;
+  const detailY = 622;
+  const width = Math.max(122, group.bounds.width + 48);
   const x = Math.round(group.bounds.x + (group.bounds.width - width) / 2);
   if (group.kind === "downsample-transition") {
-    return [{ id: group.id + ".detail", groupId: group.id, text: "MaxPool 2×2", x, y: detailY, width, height: 20, fontSizePt: 8.25 }];
+    return [{ id: group.id + ".detail", groupId: group.id, text: "MaxPool 2×2", x, y: 572, width, height: 22, fontSizePt: 8.5 }];
   }
   if (group.kind === "flatten-ribbon") {
-    return [{ id: group.id + ".detail", groupId: group.id, text: "Flatten", x, y: detailY, width, height: 20, fontSizePt: 8.5 }];
+    return [{ id: group.id + ".detail", groupId: group.id, text: "Flatten", x, y: 596, width, height: 22, fontSizePt: 8.5 }];
   }
   return [
     { id: group.id + ".heading", groupId: group.id, text: headingFor(group), x, y: headingY, width, height: 24, fontSizePt: 10 },
-    { id: group.id + ".detail", groupId: group.id, text: detailFor(group), x, y: detailY, width, height: 42, fontSizePt: 8.75 },
+    { id: group.id + ".detail", groupId: group.id, text: detailFor(group), x, y: detailY, width, height: 42, fontSizePt: 9 },
   ];
 }
 
@@ -268,7 +330,7 @@ function headingFor(group) {
   if (group.kind === "input-rgb-tile") return "Input";
   if (group.kind === "dense-vector-layer") return group.id === "fc-1" ? "FC6" : "FC7";
   if (group.kind === "score-vector-layer") return "FC8";
-  return stageHeading("CONV", group.id, /^block-(\d+)$/);
+  return stageHeading("Block", group.id, /^block-(\d+)$/);
 }
 
 function detailFor(group) {
@@ -374,4 +436,52 @@ function inCanvas(bounds) {
 
 function sameValues(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function validateCnnAnchors(groups, violations) {
+  const byId = new Map(groups.map((group) => [group.id, group]));
+  groups.filter((group) => group.kind === "feature-map-stack" || group.kind === "input-rgb-tile").forEach((group) => {
+    if (!validAnchor(group.semantic?.leftAnchor) || !validAnchor(group.semantic?.rightAnchor)) violations.push("invalid-stage-anchor:" + group.id);
+  });
+  groups.filter((group) => group.kind === "downsample-transition").forEach((group) => {
+    const source = byId.get(group.semantic?.sourceStageId);
+    const target = byId.get(group.semantic?.targetStageId);
+    if (!source || !target || !validAnchor(group.semantic?.leftAnchor) || !validAnchor(group.semantic?.rightAnchor)) {
+      violations.push("invalid-pool-anchors:" + group.id);
+      return;
+    }
+    if (group.semantic.leftAnchor.x !== source.semantic?.rightAnchor?.x || group.semantic.rightAnchor.x !== target.semantic?.leftAnchor?.x) violations.push("unowned-pool-transition:" + group.id);
+  });
+}
+
+function validAnchor(anchor) {
+  return Boolean(anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y) && Number.isFinite(anchor.top) && Number.isFinite(anchor.bottom) && anchor.bottom > anchor.top);
+}
+
+function validateAnnotationTracks(labels, violations) {
+  for (let left = 0; left < labels.length; left += 1) {
+    for (let right = left + 1; right < labels.length; right += 1) {
+      if (rectanglesIntersect(labels[left], labels[right])) violations.push("overlapping-labels:" + labels[left].id + ":" + labels[right].id);
+    }
+  }
+}
+
+function validateConnectorLabelClearance(connectors, labels, violations) {
+  connectors.forEach((connector) => {
+    const [start, end] = connector.points ?? [];
+    if (!start || !end) return;
+    labels.forEach((label) => {
+      if (segmentIntersectsRectangle(start, end, label)) violations.push("connector-label-overlap:" + connector.id + ":" + label.id);
+    });
+  });
+}
+
+function rectanglesIntersect(left, right) {
+  return left.x < right.x + right.width && right.x < left.x + left.width && left.y < right.y + right.height && right.y < left.y + left.height;
+}
+
+function segmentIntersectsRectangle(start, end, rectangle) {
+  if (start.x === end.x) return start.x > rectangle.x && start.x < rectangle.x + rectangle.width && Math.max(start.y, end.y) > rectangle.y && Math.min(start.y, end.y) < rectangle.y + rectangle.height;
+  if (start.y === end.y) return start.y > rectangle.y && start.y < rectangle.y + rectangle.height && Math.max(start.x, end.x) > rectangle.x && Math.min(start.x, end.x) < rectangle.x + rectangle.width;
+  return false;
 }

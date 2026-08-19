@@ -64,6 +64,57 @@ public static class WorkerV2RequestParser
         return ParseCore(json, outputRoot);
     }
 
+    // A v2 command may fail strict validation after its correlation ID has been read.
+    // Preserve only a valid, unambiguous ID so the persistent client can receive the
+    // failure for its own pending command rather than treating it as a foreign response.
+    public static string? TryReadRequestId(string json, string outputRoot)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
+
+            var properties = ReadProperties(document.RootElement, "request");
+            if (!properties.TryGetValue("protocolVersion", out var version)
+                || version.ValueKind != JsonValueKind.Number
+                || !string.Equals(version.GetRawText(), "2", StringComparison.Ordinal)) return null;
+
+            var requestId = RequiredString(properties, "requestId");
+            ValidateIdentifier(requestId, "requestId");
+            var command = ParseCommand(RequiredString(properties, "command"));
+            var allowed = AllowedProperties[command];
+            var required = command is WorkerV2Command.Apply or WorkerV2Command.ApplyDiff
+                ? allowed.Where(name => name != "planHash")
+                : allowed;
+            if (!allowed.IsSupersetOf(properties.Keys) || required.Any(name => !properties.ContainsKey(name))) return null;
+
+            _ = ParseSession(properties["session"]);
+            switch (command)
+            {
+                case WorkerV2Command.Open:
+                case WorkerV2Command.Save:
+                    _ = NormalizeOutputPath(properties["outputPath"], outputRoot);
+                    break;
+                case WorkerV2Command.Apply:
+                case WorkerV2Command.ApplyDiff:
+                    var operationId = RequiredString(properties, "operationId");
+                    ValidateIdentifier(operationId, "operationId");
+                    if (properties.TryGetValue("planHash", out var planHash)) _ = new VisioSessionOperation(operationId, RequiredString(planHash, "planHash"));
+                    if (properties["diagram"].ValueKind != JsonValueKind.Object) return null;
+                    break;
+                case WorkerV2Command.Close:
+                    if (RequiredString(properties, "closeDisposition") is not ("save" or "discard")) return null;
+                    break;
+            }
+
+            return requestId;
+        }
+        catch (Exception error) when (error is JsonException or WorkerProtocolException or ArgumentException or KeyNotFoundException)
+        {
+            return null;
+        }
+    }
+
     private static WorkerV2Request ParseCore(string json, string? outputRoot)
     {
         if (string.IsNullOrWhiteSpace(json)) throw new WorkerProtocolException("JSON request is required");
