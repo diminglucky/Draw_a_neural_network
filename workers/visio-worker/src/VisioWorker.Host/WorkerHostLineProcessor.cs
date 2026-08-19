@@ -16,7 +16,8 @@ public sealed class WorkerHostLineProcessorOptions
     public IWorkerClock? Clock { get; init; }
     public TimeSpan CheckpointInterval { get; init; } = TimeSpan.FromMinutes(15);
     public int Capacity { get; init; } = 4;
-    internal Func<VisioComEngineOptions, (IVisioSessionBackend Backend, IAsyncDisposable Engine)>? OwnedEngineFactory { get; init; }
+    // Internal test seam: production still creates only VisioComEngine and its typed backend.
+    internal Func<VisioComEngineOptions, (IAsyncDisposable Engine, Func<IVisioSessionBackend> CreateSessionBackend)>? OwnedEngineFactory { get; init; }
 }
 
 internal enum WorkerHostProtocol
@@ -70,7 +71,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
             return FailedV1Result();
         }
 
-        if (classification.IsDuplicateV1Discriminator) return FailedV1Result();
+        if (classification.RequiresSafeV1Failure) return FailedV1Result();
 
         return classification.Protocol switch
         {
@@ -174,7 +175,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
                 AttachToRunning: _options.AttachToRunning,
                 Visible: _options.Visible,
                 OutputRoot: _options.OutputRoot);
-            var owned = _options.OwnedEngineFactory?.Invoke(engineOptions) ?? await CreateOwnedEngineAsync(engineOptions).ConfigureAwait(false);
+            var owned = await CreateOwnedEngineAsync(engineOptions).ConfigureAwait(false);
             createdEngine = owned.Engine;
             var runtime = new LongLivedWorkerRuntime(
                 owned.Backend,
@@ -203,18 +204,18 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         }
     }
 
-    private static async Task<(IVisioSessionBackend Backend, IAsyncDisposable Engine)> CreateOwnedEngineAsync(VisioComEngineOptions options)
+    private async Task<(IVisioSessionBackend Backend, IAsyncDisposable Engine)> CreateOwnedEngineAsync(VisioComEngineOptions options)
     {
-        var engine = new VisioComEngine(options);
+        var owned = _options.OwnedEngineFactory?.Invoke(options) ?? CreateProductionOwnedEngine(options);
         try
         {
-            return (engine.CreateSessionBackend(), engine);
+            return (owned.CreateSessionBackend(), owned.Engine);
         }
         catch (Exception initializationFailure)
         {
             try
             {
-                await engine.DisposeAsync().ConfigureAwait(false);
+                await owned.Engine.DisposeAsync().ConfigureAwait(false);
             }
             catch (Exception cleanupFailure)
             {
@@ -223,6 +224,12 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
 
             throw;
         }
+    }
+
+    private static (IAsyncDisposable Engine, Func<IVisioSessionBackend> CreateSessionBackend) CreateProductionOwnedEngine(VisioComEngineOptions options)
+    {
+        var engine = new VisioComEngine(options);
+        return (engine, engine.CreateSessionBackend);
     }
 
     private static ProtocolClassification ReadProtocolVersion(string line)
@@ -237,21 +244,29 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object) throw new WorkerProtocolException("Worker request must be a JSON object.");
 
-        var versions = new List<int>();
+        var discriminators = new List<JsonElement>();
         foreach (var property in root.EnumerateObject())
         {
             if (!string.Equals(property.Name, "protocolVersion", StringComparison.OrdinalIgnoreCase)) continue;
-            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out var value)) versions.Add(value);
+            discriminators.Add(property.Value);
         }
 
-        if (versions.Count == 0)
-            throw new WorkerProtocolException("protocolVersion must be an integer.");
-        if (versions.Contains(2)) return new ProtocolClassification(WorkerHostProtocol.V2, IsDuplicateV1Discriminator: false);
-        if (versions.Count > 1) return new ProtocolClassification(WorkerHostProtocol.V1, IsDuplicateV1Discriminator: true);
-        return new ProtocolClassification(versions[0] == 2 ? WorkerHostProtocol.V2 : WorkerHostProtocol.V1, IsDuplicateV1Discriminator: false);
+        // Any numeric v2 marker stays in the strict v2 parser, even if another discriminator is malformed.
+        // Every other duplicate is rejected before the case-insensitive legacy v1 deserializer can observe it.
+        if (discriminators.Any(value => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var version) && version == 2))
+            return new ProtocolClassification(WorkerHostProtocol.V2, RequiresSafeV1Failure: false);
+        if (discriminators.Count != 1)
+            return new ProtocolClassification(WorkerHostProtocol.V1, RequiresSafeV1Failure: true);
+
+        var onlyDiscriminator = discriminators[0];
+        return onlyDiscriminator.ValueKind == JsonValueKind.Number
+            && onlyDiscriminator.TryGetInt32(out var onlyVersion)
+            && onlyVersion == 1
+            ? new ProtocolClassification(WorkerHostProtocol.V1, RequiresSafeV1Failure: false)
+            : new ProtocolClassification(WorkerHostProtocol.V1, RequiresSafeV1Failure: true);
     }
 
-    private sealed record ProtocolClassification(WorkerHostProtocol Protocol, bool IsDuplicateV1Discriminator);
+    private sealed record ProtocolClassification(WorkerHostProtocol Protocol, bool RequiresSafeV1Failure);
 
     private static WorkerHostLineResult FailedV1Result() => new(WorkerHostProtocol.V1, FailedV1());
 

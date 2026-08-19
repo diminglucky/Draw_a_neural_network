@@ -9,6 +9,134 @@ namespace VisioWorker.Core.Tests;
 
 public sealed class WorkerHostLineProcessorTests
 {
+    public static IEnumerable<object[]> MalformedProtocolDiscriminatorCases()
+    {
+        yield return ProtocolCase("exact-v1-duplicate", "\"protocolVersion\":1,\"protocolVersion\":1", false);
+        yield return ProtocolCase("case-v1-duplicate", "\"protocolVersion\":1,\"ProtocolVersion\":1", false);
+        yield return ProtocolCase("string-before-v1", "\"protocolVersion\":\"bad\",\"ProtocolVersion\":1", false);
+        yield return ProtocolCase("v1-before-string", "\"protocolVersion\":1,\"ProtocolVersion\":\"bad\"", false);
+        yield return ProtocolCase("null-before-v1", "\"protocolVersion\":null,\"ProtocolVersion\":1", false);
+        yield return ProtocolCase("v1-before-null", "\"protocolVersion\":1,\"ProtocolVersion\":null", false);
+        yield return ProtocolCase("string-before-v1-again", "\"protocolVersion\":\"not-an-integer\",\"ProtocolVersion\":1", false);
+        yield return ProtocolCase("overflow-before-v1", "\"protocolVersion\":2147483648,\"ProtocolVersion\":1", false);
+        yield return ProtocolCase("v1-before-overflow", "\"protocolVersion\":1,\"ProtocolVersion\":2147483648", false);
+        yield return ProtocolCase("exact-v2-duplicate", "\"protocolVersion\":2,\"protocolVersion\":2", true);
+        yield return ProtocolCase("case-v2-duplicate", "\"protocolVersion\":2,\"ProtocolVersion\":2", true);
+        yield return ProtocolCase("null-before-v2", "\"protocolVersion\":null,\"ProtocolVersion\":2", true);
+        yield return ProtocolCase("v2-before-null", "\"protocolVersion\":2,\"ProtocolVersion\":null", true);
+        yield return ProtocolCase("string-before-v2", "\"protocolVersion\":\"bad\",\"ProtocolVersion\":2", true);
+        yield return ProtocolCase("v2-before-string", "\"protocolVersion\":2,\"ProtocolVersion\":\"bad\"", true);
+        yield return ProtocolCase("overflow-before-v2", "\"protocolVersion\":2147483648,\"ProtocolVersion\":2", true);
+        yield return ProtocolCase("v2-before-overflow", "\"protocolVersion\":2,\"ProtocolVersion\":2147483648", true);
+        yield return ProtocolCase("single-null", "\"protocolVersion\":null", false);
+        yield return ProtocolCase("single-string", "\"protocolVersion\":\"bad\"", false);
+        yield return ProtocolCase("single-overflow", "\"protocolVersion\":2147483648", false);
+        yield return ProtocolCase("single-unsupported", "\"protocolVersion\":3", false);
+    }
+
+    [Theory]
+    [MemberData(nameof(MalformedProtocolDiscriminatorCases))]
+    public async Task Duplicate_or_invalid_protocol_discriminators_fail_closed_before_any_v1_draw(
+        string caseName,
+        string protocolProperties,
+        bool expectsV2Failure)
+    {
+        using var fixture = new HostFixture();
+        var line = fixture.V1EnvelopeWithProtocolProperties(protocolProperties, caseName);
+        await using var processor = fixture.CreateLineProcessor();
+        var classification = ReadProtocolClassification(line);
+
+        Assert.Equal(expectsV2Failure ? "V2" : "V1", classification.Protocol);
+        Assert.Equal(!expectsV2Failure, classification.IsSafeV1Failure);
+
+        var response = await processor.ProcessLineAsync(line);
+
+        if (expectsV2Failure)
+        {
+            var v2 = Assert.IsType<WorkerV2Response>(response);
+            Assert.Equal("unknown", v2.RequestId);
+            Assert.Equal("failed", v2.Status);
+        }
+        else
+        {
+            var v1 = Assert.IsType<WorkerResponse>(response);
+            Assert.Equal("unknown", v1.RequestId);
+            Assert.Equal("failed", v1.Status);
+        }
+
+        Assert.False(File.Exists(fixture.V1OutputPath));
+        Assert.Equal(0, fixture.Backend.OpenOrCreateCalls);
+
+        var output = new TrackingTextWriter();
+        var exitCode = await RunHostLoopAsync(new StringReader(line), output, fixture.CreateOptions());
+        var envelope = JsonDocument.Parse(output.Lines.Single()).RootElement;
+
+        Assert.Equal(expectsV2Failure ? 0 : 1, exitCode);
+        Assert.Equal("unknown", envelope.GetProperty("requestId").GetString());
+        Assert.Equal("failed", envelope.GetProperty("status").GetString());
+        Assert.False(File.Exists(fixture.V1OutputPath));
+        Assert.Equal(0, fixture.Backend.OpenOrCreateCalls);
+    }
+
+    [Theory]
+    [InlineData(WriterFailurePoint.WriteLine)]
+    [InlineData(WriterFailurePoint.Flush)]
+    public async Task Host_loop_propagates_writer_failure_only_after_scheduler_and_active_session_are_released(WriterFailurePoint failurePoint)
+    {
+        using var fixture = new HostFixture();
+        var ticker = new ManualCheckpointTicker();
+        var input = new ControlledTextReader();
+        var output = new ThrowingTextWriter(failurePoint);
+
+        var running = RunHostLoopAsync(input, output, fixture.CreateOptions(), ticker.WaitAsync, CancellationToken.None);
+        await ticker.FirstWait;
+        input.ProvideLine(fixture.OpenJson($"writer-{failurePoint}"));
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(async () => await running);
+
+        Assert.Equal(failurePoint.ToString(), failure.Message);
+        await ticker.CancellationObserved;
+        Assert.Equal(1, fixture.Backend.OpenOrCreateCalls);
+        Assert.Equal(1, fixture.Backend.SaveCalls);
+        Assert.Equal(1, fixture.Backend.CloseCalls);
+
+        ticker.Tick();
+        Assert.Equal(1, fixture.Backend.SaveCalls);
+        Assert.Equal(1, fixture.Backend.CloseCalls);
+    }
+
+    [Fact]
+    public async Task Owned_engine_backend_initialization_preserves_the_primary_failure_after_successful_cleanup()
+    {
+        using var fixture = new HostFixture();
+        var engine = new TrackedOwnedEngine();
+        var options = fixture.CreateOptions(mode: "live", injectBackend: false);
+        SetOwnedEngineFactory(options, new Func<VisioComEngineOptions, (IAsyncDisposable Engine, Func<IVisioSessionBackend> CreateSessionBackend)>(_ =>
+            (engine, () => throw new InvalidOperationException("backend-initialization"))));
+        await using var processor = new WorkerHostLineProcessor(options);
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(async () => await InvokeGetOrCreateV2RuntimeAsync(processor));
+
+        Assert.Equal("backend-initialization", failure.Message);
+        Assert.True(engine.Disposed);
+    }
+
+    [Fact]
+    public async Task Owned_engine_backend_initialization_aggregates_primary_and_cleanup_failures()
+    {
+        using var fixture = new HostFixture();
+        var engine = new ThrowingDisposeOwnedEngine();
+        var options = fixture.CreateOptions(mode: "live", injectBackend: false);
+        SetOwnedEngineFactory(options, new Func<VisioComEngineOptions, (IAsyncDisposable Engine, Func<IVisioSessionBackend> CreateSessionBackend)>(_ =>
+            (engine, () => throw new InvalidOperationException("backend-initialization"))));
+        await using var processor = new WorkerHostLineProcessor(options);
+
+        var failure = await Assert.ThrowsAsync<AggregateException>(async () => await InvokeGetOrCreateV2RuntimeAsync(processor));
+
+        Assert.Contains(failure.InnerExceptions, error => error is InvalidOperationException { Message: "backend-initialization" });
+        Assert.Contains(failure.InnerExceptions, error => error is InvalidOperationException { Message: "engine-cleanup" });
+    }
+
     [Fact]
     public async Task Host_loop_checkpoints_an_idle_v2_session_on_a_fake_tick_while_stdin_is_blocked()
     {
@@ -288,6 +416,11 @@ public sealed class WorkerHostLineProcessorTests
             return $$"""{ {{protocolProperties}},"requestId":"v1-request","jobId":"v1-job","mode":"mock","outputPath":{{JsonSerializer.Serialize(Path.Combine(_root, "v1.vsdx"))}},"diagram":{{JsonSerializer.Serialize(_diagram, JsonOptions)}} }""";
         }
 
+        public string V1EnvelopeWithProtocolProperties(string protocolProperties, string requestId) =>
+            $$"""{ {{protocolProperties}},"requestId":"{{requestId}}","jobId":"v1-job","mode":"mock","outputPath":{{JsonSerializer.Serialize(V1OutputPath)}},"diagram":{{JsonSerializer.Serialize(_diagram, JsonOptions)}} }""";
+
+        public string V1OutputPath => Path.Combine(_root, "v1.vsdx");
+
         public string ApplyJson(string operationId)
         {
             var planHash = DiagramPlanDigest.Compute(DiagramMapper.Map(_diagram));
@@ -433,9 +566,7 @@ public sealed class WorkerHostLineProcessorTests
         return method ?? throw new InvalidOperationException("WorkerHostLoop tick scheduler overload is missing.");
     }
 
-    private static void SetOwnedEngineFactory(
-        WorkerHostLineProcessorOptions options,
-        Func<VisioComEngineOptions, (IVisioSessionBackend Backend, IAsyncDisposable Engine)> factory)
+    private static void SetOwnedEngineFactory(WorkerHostLineProcessorOptions options, Delegate factory)
     {
         var property = typeof(WorkerHostLineProcessorOptions).GetProperty("OwnedEngineFactory", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         Assert.True(property is not null, "The line processor must provide an internal owned-engine creation seam.");
@@ -462,6 +593,25 @@ public sealed class WorkerHostLineProcessorTests
         }
     }
 
+    public enum WriterFailurePoint
+    {
+        WriteLine,
+        Flush,
+    }
+
+    private sealed class ThrowingTextWriter(WriterFailurePoint failurePoint) : TextWriter
+    {
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override Task WriteLineAsync(string? value) => failurePoint == WriterFailurePoint.WriteLine
+            ? Task.FromException(new InvalidOperationException(nameof(WriterFailurePoint.WriteLine)))
+            : Task.CompletedTask;
+
+        public override Task FlushAsync() => failurePoint == WriterFailurePoint.Flush
+            ? Task.FromException(new InvalidOperationException(nameof(WriterFailurePoint.Flush)))
+            : Task.CompletedTask;
+    }
+
     private sealed class FakeWorkerClock(DateTimeOffset utcNow) : IWorkerClock
     {
         public DateTimeOffset UtcNow { get; private set; } = utcNow;
@@ -480,6 +630,8 @@ public sealed class WorkerHostLineProcessorTests
         }
 
         public void CompleteEof() => _next.TrySetResult(null);
+
+        public void ProvideLine(string line) => _next.TrySetResult(line);
     }
 
     private sealed class ManualCheckpointTicker
@@ -519,11 +671,11 @@ public sealed class WorkerHostLineProcessorTests
     {
         public List<TrackedOwnedEngine> Created { get; } = [];
 
-        public (IVisioSessionBackend Backend, IAsyncDisposable Engine) Create(VisioComEngineOptions options)
+        public (IAsyncDisposable Engine, Func<IVisioSessionBackend> CreateSessionBackend) Create(VisioComEngineOptions options)
         {
             var engine = new TrackedOwnedEngine();
             Created.Add(engine);
-            return (null!, engine);
+            return (engine, () => null!);
         }
     }
 
@@ -536,5 +688,30 @@ public sealed class WorkerHostLineProcessorTests
             Disposed = true;
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class ThrowingDisposeOwnedEngine : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => ValueTask.FromException(new InvalidOperationException("engine-cleanup"));
+    }
+
+    private static object[] ProtocolCase(string caseName, string protocolProperties, bool expectsV2Failure) => [caseName, protocolProperties, expectsV2Failure];
+
+    private static async Task<LongLivedWorkerRuntime> InvokeGetOrCreateV2RuntimeAsync(WorkerHostLineProcessor processor)
+    {
+        var method = typeof(WorkerHostLineProcessor).GetMethod("GetOrCreateV2RuntimeAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.True(method is not null, "The owned-engine factory must share the production initialization transaction.");
+        return await (Task<LongLivedWorkerRuntime>)method!.Invoke(processor, null)!;
+    }
+
+    private static (string Protocol, bool IsSafeV1Failure) ReadProtocolClassification(string line)
+    {
+        var method = typeof(WorkerHostLineProcessor).GetMethod("ReadProtocolVersion", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.True(method is not null, "The host must classify the protocol before legacy v1 deserialization.");
+        var classification = method!.Invoke(null, [line])!;
+        var type = classification.GetType();
+        return (
+            type.GetProperty("Protocol")!.GetValue(classification)!.ToString()!,
+            (bool)type.GetProperty("RequiresSafeV1Failure")!.GetValue(classification)!);
     }
 }
