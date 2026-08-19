@@ -137,3 +137,39 @@ It exited `1`: **8 failed, 22 passed**. Five failures showed that `null`/string/
 - `.superpowers/sdd/task-4-report.md`
 
 The two existing untracked plan documents remain outside this allowlist. No push is authorized or performed by this follow-up.
+
+## Numeric-2 protocol candidate correction
+
+### Scope
+
+This narrowly corrects the Host protocol classifier before the existing strict v2 parser. `JsonElement.TryGetInt32` recognized only the integer spelling `2`, so JSON Number tokens such as `2.0`, `2.00`, `2e0`, and `2E+0` were incorrectly treated as legacy v1 safe failures. With a duplicate `ProtocolVersion: 1`, that produced a v1 response and EOF exit `1` instead of the required v2 safe failure and exit `0`.
+
+The classifier now interprets a JSON Number token's original number lexeme exactly, without `double`, `decimal`, or an approximate comparison. It regards a token as a v2 candidate only when its mathematical value is exactly two: its single non-zero significand digit is `2`, and its fractional scale and signed exponent cancel exactly. The original JSON is then still passed unchanged to `WorkerV2RequestParser`; non-integer spellings are deliberately rejected there as `WorkerV2Response(requestId: "unknown", status: "failed")`. The v2 parser and its strict field/command allowlists are unchanged. Non-number and non-two discriminator values retain the existing fail-closed v1 behavior.
+
+### TDD evidence
+
+Only `WorkerHostLineProcessorTests.cs` was changed before the production classifier. The focused RED command was:
+
+```text
+dotnet test .\tests\VisioWorker.Core.Tests\VisioWorker.Core.Tests.csproj --filter "FullyQualifiedName~WorkerHostLineProcessorTests" --no-restore
+```
+
+It exited `1`: **36 failed, 39 passed**. Every new failure asserted a required v2 classification but observed v1, including standalone `2.0`, `2.00`, `2e0`, and `2E+0`, plus both property orders when each was paired with `null`, a string, an `Int32` overflow literal, or integer `1`.
+
+After the minimal exact-lexeme classifier was added, the same focused command exited `0`: **75 passed, 0 failed, 0 skipped**. Every new case asserts the response type is `WorkerV2Response`, `requestId` is `unknown`, status is `failed`, Host EOF exit is `0`, and the v1 backend performs no `OpenOrCreate` call.
+
+### Verification
+
+| Command | Result |
+| --- | --- |
+| Focused Host regression: `dotnet test .\tests\VisioWorker.Core.Tests\VisioWorker.Core.Tests.csproj --filter "FullyQualifiedName~WorkerHostLineProcessorTests" --no-restore` | Exit 0; **75 passed**, 0 failed, 0 skipped. |
+| Full Worker suite: `dotnet test .\VisioWorker.sln --no-restore` | Exit 0; **205 passed**, 0 failed, 1 skipped. The sole skip is the existing installed-Visio live acceptance test. |
+| Release build: `dotnet build .\VisioWorker.sln -c Release --no-restore` | Exit 0; **0 warnings, 0 errors**. |
+
+### Files
+
+- `workers/visio-worker/src/VisioWorker.Host/WorkerHostLineProcessor.cs`
+- `workers/visio-worker/tests/VisioWorker.Core.Tests/WorkerHostLineProcessorTests.cs`
+- `.superpowers/sdd/task-4-report.md`
+
+The two pre-existing untracked plan documents remain unmodified and unstaged. This follow-up does not push and does not claim real installed-Microsoft-Visio/VSDX acceptance.

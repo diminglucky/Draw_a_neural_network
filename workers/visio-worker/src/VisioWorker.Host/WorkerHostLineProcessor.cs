@@ -253,7 +253,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
 
         // Any numeric v2 marker stays in the strict v2 parser, even if another discriminator is malformed.
         // Every other duplicate is rejected before the case-insensitive legacy v1 deserializer can observe it.
-        if (discriminators.Any(value => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var version) && version == 2))
+        if (discriminators.Any(IsMathematicallyTwo))
             return new ProtocolClassification(WorkerHostProtocol.V2, RequiresSafeV1Failure: false);
         if (discriminators.Count != 1)
             return new ProtocolClassification(WorkerHostProtocol.V1, RequiresSafeV1Failure: true);
@@ -264,6 +264,72 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
             && onlyVersion == 1
             ? new ProtocolClassification(WorkerHostProtocol.V1, RequiresSafeV1Failure: false)
             : new ProtocolClassification(WorkerHostProtocol.V1, RequiresSafeV1Failure: true);
+    }
+
+    private static bool IsMathematicallyTwo(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Number) return false;
+
+        // Preserve strict parser semantics: this is classification only. Interpret the JSON
+        // number lexeme exactly so values such as 2.0 and 2e0 are v2 candidates without
+        // admitting a nearby floating-point value through rounding.
+        var literal = value.GetRawText().AsSpan();
+        var exponentIndex = literal.IndexOfAny('e', 'E');
+        var significand = exponentIndex >= 0 ? literal[..exponentIndex] : literal;
+        if (significand.IsEmpty || significand[0] == '-') return false;
+
+        var decimalIndex = significand.IndexOf('.');
+        var fractionalDigits = decimalIndex >= 0 ? significand.Length - decimalIndex - 1 : 0;
+        var nonZeroCount = 0;
+        var nonZeroDigit = '\0';
+        var trailingZeros = 0;
+
+        foreach (var character in significand)
+        {
+            if (character == '.') continue;
+            if (character == '0')
+            {
+                if (nonZeroCount > 0) trailingZeros++;
+                continue;
+            }
+
+            nonZeroCount++;
+            nonZeroDigit = character;
+            trailingZeros = 0;
+        }
+
+        if (nonZeroCount != 1 || nonZeroDigit != '2') return false;
+        return ExponentEquals(exponentIndex >= 0 ? literal[(exponentIndex + 1)..] : ReadOnlySpan<char>.Empty, fractionalDigits - trailingZeros);
+    }
+
+    private static bool ExponentEquals(ReadOnlySpan<char> exponent, int expected)
+    {
+        if (exponent.IsEmpty) return expected == 0;
+
+        var negative = false;
+        if (exponent[0] is '+' or '-')
+        {
+            negative = exponent[0] == '-';
+            exponent = exponent[1..];
+        }
+
+        var firstNonZero = 0;
+        while (firstNonZero < exponent.Length && exponent[firstNonZero] == '0') firstNonZero++;
+        if (firstNonZero == exponent.Length) return expected == 0;
+        if (expected == 0 || negative != (expected < 0)) return false;
+
+        // The maximum possible expected exponent is bounded by MaximumLineLength, so values
+        // with more digits cannot equal it and do not need a lossy numeric conversion.
+        var expectedMagnitude = Math.Abs(expected);
+        var magnitude = 0;
+        for (var index = firstNonZero; index < exponent.Length; index++)
+        {
+            if (magnitude > expectedMagnitude / 10) return false;
+            magnitude = (magnitude * 10) + (exponent[index] - '0');
+            if (magnitude > expectedMagnitude) return false;
+        }
+
+        return magnitude == expectedMagnitude;
     }
 
     private sealed record ProtocolClassification(WorkerHostProtocol Protocol, bool RequiresSafeV1Failure);

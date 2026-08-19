@@ -32,6 +32,25 @@ public sealed class WorkerHostLineProcessorTests
         yield return ProtocolCase("single-string", "\"protocolVersion\":\"bad\"", false);
         yield return ProtocolCase("single-overflow", "\"protocolVersion\":2147483648", false);
         yield return ProtocolCase("single-unsupported", "\"protocolVersion\":3", false);
+
+        // JSON Number values mathematically equal to two are v2 candidates even when the
+        // strict v2 parser later rejects their non-integer representation.
+        foreach (var numericTwo in new[] { "2.0", "2.00", "2e0", "2E+0" })
+        {
+            yield return ProtocolCase($"numeric-{numericTwo}-single", $"\"protocolVersion\":{numericTwo}", true);
+
+            foreach (var (name, value) in new[]
+            {
+                ("null", "null"),
+                ("string", "\"bad\""),
+                ("overflow", "2147483648"),
+                ("v1", "1"),
+            })
+            {
+                yield return ProtocolCase($"numeric-{numericTwo}-before-{name}", $"\"protocolVersion\":{numericTwo},\"ProtocolVersion\":{value}", true);
+                yield return ProtocolCase($"{name}-before-numeric-{numericTwo}", $"\"protocolVersion\":{value},\"ProtocolVersion\":{numericTwo}", true);
+            }
+        }
     }
 
     [Theory]
