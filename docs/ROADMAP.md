@@ -1,8 +1,8 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-18T02:39:47.192Z`
-Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md](./superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md)
+Updated: `2026-08-19T10:14:12.056Z`
+Architecture: [docs/superpowers/specs/2026-08-19-universal-neural-figure-agent-design.md](./superpowers/specs/2026-08-19-universal-neural-figure-agent-design.md)
 
 ## Current Focus
 

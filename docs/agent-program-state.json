@@ -4,9 +4,9 @@
     "id": "universal-neural-figure-agent",
     "name": "Universal Neural Figure Agent",
     "branch": "agent",
-    "architectureSpec": "docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md"
+    "architectureSpec": "docs/superpowers/specs/2026-08-19-universal-neural-figure-agent-design.md"
   },
-  "updatedAt": "2026-08-18T02:39:47.192Z",
+  "updatedAt": "2026-08-19T10:14:12.056Z",
   "currentFocus": "M2.5",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
