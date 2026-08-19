@@ -3,11 +3,123 @@ using System.Reflection;
 using System.Text;
 using VisioWorker.Core;
 using VisioWorker.Host;
+using VisioWorker.Live;
 
 namespace VisioWorker.Core.Tests;
 
 public sealed class WorkerHostLineProcessorTests
 {
+    [Fact]
+    public async Task Host_loop_checkpoints_an_idle_v2_session_on_a_fake_tick_while_stdin_is_blocked()
+    {
+        using var fixture = new HostFixture();
+        var clock = new FakeWorkerClock(DateTimeOffset.Parse("2026-08-19T00:00:00Z"));
+        var ticker = new ManualCheckpointTicker();
+        var input = new ControlledTextReader(fixture.OpenJson());
+        var output = new TrackingTextWriter();
+        using var cancellation = new CancellationTokenSource();
+
+        AssertHostTickSchedulerSeam();
+        var running = RunHostLoopAsync(input, output, fixture.CreateOptions(clock), ticker.WaitAsync, cancellation.Token);
+        await output.FirstLineWritten;
+        await ticker.FirstWait;
+
+        clock.Advance(TimeSpan.FromMinutes(15));
+        ticker.Tick();
+        await ticker.SecondWait;
+
+        Assert.Equal(1, fixture.Backend.SaveCalls);
+        Assert.Equal(1, fixture.Backend.CloseCalls);
+
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await running);
+        await ticker.CancellationObserved;
+    }
+
+    [Fact]
+    public async Task Host_loop_stops_and_awaits_its_tick_scheduler_at_eof()
+    {
+        using var fixture = new HostFixture();
+        var ticker = new ManualCheckpointTicker();
+        var input = new ControlledTextReader(fixture.V1Json());
+        var output = new TrackingTextWriter();
+
+        AssertHostTickSchedulerSeam();
+        var running = RunHostLoopAsync(input, output, fixture.CreateOptions(), ticker.WaitAsync, CancellationToken.None);
+        await output.FirstLineWritten;
+        await ticker.FirstWait;
+
+        input.CompleteEof();
+
+        Assert.Equal(0, await running);
+        await ticker.CancellationObserved;
+        Assert.Equal(1, output.FlushCount);
+    }
+
+    [Fact]
+    public async Task Two_failed_owned_engine_initializations_dispose_each_engine_and_allow_a_safe_retry()
+    {
+        using var fixture = new HostFixture();
+        var factory = new FailingOwnedEngineFactory();
+        var options = fixture.CreateOptions(mode: "live", injectBackend: false);
+        SetOwnedEngineFactory(options, factory.Create);
+        await using var processor = new WorkerHostLineProcessor(options);
+
+        var first = Assert.IsType<WorkerV2Response>(await processor.ProcessLineAsync(fixture.OpenJson("engine-failure-1")));
+        var second = Assert.IsType<WorkerV2Response>(await processor.ProcessLineAsync(fixture.OpenJson("engine-failure-2")));
+
+        Assert.Equal("engine-failure-1", first.RequestId);
+        Assert.Equal("engine-failure-2", second.RequestId);
+        Assert.Equal(2, factory.Created.Count);
+        Assert.All(factory.Created, engine => Assert.True(engine.Disposed));
+    }
+
+    [Theory]
+    [InlineData("""{"protocolVersion":2,"protocolVersion":2,"requestId":"duplicate","command":"open","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"outputPath":"session.vsdx"}""")]
+    [InlineData("""{"protocolVersion":2,"ProtocolVersion":2,"requestId":"case-duplicate","command":"open","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"outputPath":"session.vsdx"}""")]
+    public async Task V2_candidate_duplicate_discriminators_remain_safe_v2_failures(string line)
+    {
+        using var fixture = new HostFixture();
+        await using var processor = fixture.CreateLineProcessor();
+
+        var response = Assert.IsType<WorkerV2Response>(await processor.ProcessLineAsync(line));
+
+        Assert.Equal("unknown", response.RequestId);
+        Assert.Equal("failed", response.Status);
+    }
+
+    [Fact]
+    public async Task Host_loop_uses_trusted_protocol_classification_for_duplicate_v1_and_v2_candidates()
+    {
+        using var fixture = new HostFixture();
+        var v1Output = new TrackingTextWriter();
+        var v2Output = new TrackingTextWriter();
+        var v1Duplicate = fixture.V1Json("protocolVersion", "ProtocolVersion");
+        const string v2Duplicate = """{"protocolVersion":2,"ProtocolVersion":2,"requestId":"duplicate","command":"open","session":{"tenantId":"tenant","userId":"user","deviceId":"device","workflowId":"workflow"},"outputPath":"session.vsdx"}""";
+
+        var v1Exit = await RunHostLoopAsync(new StringReader(v1Duplicate), v1Output, fixture.CreateOptions());
+        var v2Exit = await RunHostLoopAsync(new StringReader(v2Duplicate), v2Output, fixture.CreateOptions());
+
+        Assert.Equal(1, v1Exit);
+        Assert.Equal("failed", JsonDocument.Parse(v1Output.Lines.Single()).RootElement.GetProperty("status").GetString());
+        Assert.Equal(0, v2Exit);
+        Assert.Equal("unknown", JsonDocument.Parse(v2Output.Lines.Single()).RootElement.GetProperty("requestId").GetString());
+        Assert.Equal("failed", JsonDocument.Parse(v2Output.Lines.Single()).RootElement.GetProperty("status").GetString());
+        Assert.Equal(1, v1Output.FlushCount);
+        Assert.Equal(1, v2Output.FlushCount);
+    }
+
+    [Fact]
+    public async Task Cancelled_line_processor_request_is_rethrown_instead_of_becoming_a_failure_response()
+    {
+        using var fixture = new HostFixture();
+        await using var processor = fixture.CreateLineProcessor();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await processor.ProcessLineAsync(fixture.OpenJson(), cancellation.Token));
+    }
+
     [Fact]
     public async Task V1_protocol_discriminator_is_case_insensitive_but_case_variant_duplicates_fail_closed()
     {
@@ -40,11 +152,13 @@ public sealed class WorkerHostLineProcessorTests
 
         var noRequestExit = await RunHostLoopAsync(new StringReader(" \r\n\t\r\n"), new TrackingTextWriter(), fixture.CreateOptions());
         var v1FailureExit = await RunHostLoopAsync(new StringReader("{\"protocolVersion\":1}\r\n"), new TrackingTextWriter(), fixture.CreateOptions());
-        var v2FailureExit = await RunHostLoopAsync(new StringReader(fixture.OpenJson("v2-failure") + "\r\n"), new TrackingTextWriter(), fixture.CreateOptions());
+        var v2FailureOutput = new TrackingTextWriter();
+        var v2FailureExit = await RunHostLoopAsync(new StringReader(fixture.UnsupportedV2CommandJson("v2-failure") + "\r\n"), v2FailureOutput, fixture.CreateOptions());
 
         Assert.Equal(2, noRequestExit);
         Assert.Equal(1, v1FailureExit);
         Assert.Equal(0, v2FailureExit);
+        Assert.Equal("failed", JsonDocument.Parse(v2FailureOutput.Lines.Single()).RootElement.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -139,13 +253,13 @@ public sealed class WorkerHostLineProcessorTests
 
         public WorkerHostLineProcessor CreateLineProcessor() => new(CreateOptions());
 
-        public WorkerHostLineProcessorOptions CreateOptions() => new()
+        public WorkerHostLineProcessorOptions CreateOptions(IWorkerClock? clock = null, string mode = "mock", bool injectBackend = true) => new()
         {
             OutputRoot = _root,
-            Mode = "mock",
-            SessionBackend = _sessionBackend,
+            Mode = mode,
+            SessionBackend = injectBackend ? _sessionBackend : null,
             ManifestStore = _manifestStore,
-            Clock = new SystemWorkerClock(),
+            Clock = clock ?? new SystemWorkerClock(),
             CheckpointInterval = TimeSpan.FromMinutes(15),
             Capacity = 4,
         };
@@ -157,6 +271,14 @@ public sealed class WorkerHostLineProcessorTests
             command = "open",
             session = Session(),
             outputPath = Path.Combine(_root, "session.vsdx"),
+        }, JsonOptions);
+
+        public string UnsupportedV2CommandJson(string requestId) => JsonSerializer.Serialize(new
+        {
+            protocolVersion = 2,
+            requestId,
+            command = "launchShell",
+            session = Session(),
         }, JsonOptions);
 
         public string V1Json(params string[] protocolPropertyNames)
@@ -212,6 +334,7 @@ public sealed class WorkerHostLineProcessorTests
     {
         public int OpenOrCreateCalls { get; private set; }
         public int ApplyPlanCalls { get; private set; }
+        public int SaveCalls { get; private set; }
         public int CloseCalls { get; private set; }
 
         public string NormalizeOutputPath(string outputPath) => Path.GetFullPath(outputPath);
@@ -241,7 +364,11 @@ public sealed class WorkerHostLineProcessorTests
         public Task<VisioSessionDocument> SaveAsAsync(
             VisioSessionDocument document,
             string outputPath,
-            CancellationToken cancellationToken = default) => Task.FromResult(document);
+            CancellationToken cancellationToken = default)
+        {
+            SaveCalls++;
+            return Task.FromResult(document);
+        }
 
         public Task CloseAsync(
             VisioSessionDocument document,
@@ -278,15 +405,136 @@ public sealed class WorkerHostLineProcessorTests
         return await (Task<int>)method.Invoke(null, [input, output, options, CancellationToken.None])!;
     }
 
+    private static async Task<int> RunHostLoopAsync(
+        TextReader input,
+        TextWriter output,
+        WorkerHostLineProcessorOptions options,
+        Func<CancellationToken, Task> waitForTickAsync,
+        CancellationToken cancellationToken)
+    {
+        var method = GetHostTickSchedulerRunMethod();
+
+        return await (Task<int>)method.Invoke(null, [input, output, options, waitForTickAsync, cancellationToken])!;
+    }
+
+    private static void AssertHostTickSchedulerSeam() => _ = GetHostTickSchedulerRunMethod();
+
+    private static MethodInfo GetHostTickSchedulerRunMethod()
+    {
+        var loopType = typeof(WorkerHostLineProcessor).Assembly.GetType("VisioWorker.Host.WorkerHostLoop");
+        Assert.True(loopType is not null, "The host loop must expose a tick scheduler seam.");
+        if (loopType is null) throw new InvalidOperationException("WorkerHostLoop is missing.");
+
+        var method = loopType.GetMethod(
+            "RunAsync",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+            [typeof(TextReader), typeof(TextWriter), typeof(WorkerHostLineProcessorOptions), typeof(Func<CancellationToken, Task>), typeof(CancellationToken)]);
+        Assert.True(method is not null, "The host loop must schedule checkpoints while it waits for stdin.");
+        return method ?? throw new InvalidOperationException("WorkerHostLoop tick scheduler overload is missing.");
+    }
+
+    private static void SetOwnedEngineFactory(
+        WorkerHostLineProcessorOptions options,
+        Func<VisioComEngineOptions, (IVisioSessionBackend Backend, IAsyncDisposable Engine)> factory)
+    {
+        var property = typeof(WorkerHostLineProcessorOptions).GetProperty("OwnedEngineFactory", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Assert.True(property is not null, "The line processor must provide an internal owned-engine creation seam.");
+        property?.SetValue(options, factory);
+    }
+
     private sealed class TrackingTextWriter : StringWriter
     {
+        private readonly TaskCompletionSource _firstLineWritten = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int FlushCount { get; private set; }
+        public Task FirstLineWritten => _firstLineWritten.Task;
         public IReadOnlyList<string> Lines => ToString().Split([Environment.NewLine], StringSplitOptions.RemoveEmptyEntries);
+
+        public override async Task WriteLineAsync(string? value)
+        {
+            await base.WriteLineAsync(value);
+            _firstLineWritten.TrySetResult();
+        }
 
         public override Task FlushAsync()
         {
             FlushCount++;
             return base.FlushAsync();
+        }
+    }
+
+    private sealed class FakeWorkerClock(DateTimeOffset utcNow) : IWorkerClock
+    {
+        public DateTimeOffset UtcNow { get; private set; } = utcNow;
+        public void Advance(TimeSpan elapsed) => UtcNow = UtcNow.Add(elapsed);
+    }
+
+    private sealed class ControlledTextReader(params string[] lines) : TextReader
+    {
+        private readonly Queue<string> _lines = new(lines);
+        private readonly TaskCompletionSource<string?> _next = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
+        {
+            if (_lines.TryDequeue(out var line)) return ValueTask.FromResult<string?>(line);
+            return new ValueTask<string?>(_next.Task.WaitAsync(cancellationToken));
+        }
+
+        public void CompleteEof() => _next.TrySetResult(null);
+    }
+
+    private sealed class ManualCheckpointTicker
+    {
+        private readonly TaskCompletionSource _firstWait = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _secondWait = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _cancellationObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource? _pending;
+        private int _waitCount;
+
+        public Task FirstWait => _firstWait.Task;
+        public Task SecondWait => _secondWait.Task;
+        public Task CancellationObserved => _cancellationObserved.Task;
+
+        public async Task WaitAsync(CancellationToken cancellationToken)
+        {
+            var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pending = pending;
+            if (Interlocked.Increment(ref _waitCount) == 1) _firstWait.TrySetResult();
+            else _secondWait.TrySetResult();
+
+            try
+            {
+                await pending.Task.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _cancellationObserved.TrySetResult();
+                throw;
+            }
+        }
+
+        public void Tick() => _pending?.TrySetResult();
+    }
+
+    private sealed class FailingOwnedEngineFactory
+    {
+        public List<TrackedOwnedEngine> Created { get; } = [];
+
+        public (IVisioSessionBackend Backend, IAsyncDisposable Engine) Create(VisioComEngineOptions options)
+        {
+            var engine = new TrackedOwnedEngine();
+            Created.Add(engine);
+            return (null!, engine);
+        }
+    }
+
+    private sealed class TrackedOwnedEngine : IAsyncDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
         }
     }
 }

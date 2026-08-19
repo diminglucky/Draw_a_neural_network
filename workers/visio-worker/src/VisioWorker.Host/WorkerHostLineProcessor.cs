@@ -16,7 +16,16 @@ public sealed class WorkerHostLineProcessorOptions
     public IWorkerClock? Clock { get; init; }
     public TimeSpan CheckpointInterval { get; init; } = TimeSpan.FromMinutes(15);
     public int Capacity { get; init; } = 4;
+    internal Func<VisioComEngineOptions, (IVisioSessionBackend Backend, IAsyncDisposable Engine)>? OwnedEngineFactory { get; init; }
 }
+
+internal enum WorkerHostProtocol
+{
+    V1,
+    V2,
+}
+
+internal sealed record WorkerHostLineResult(WorkerHostProtocol Protocol, object Response);
 
 public sealed class WorkerHostLineProcessor : IAsyncDisposable
 {
@@ -30,7 +39,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
     private readonly WorkerHostLineProcessorOptions _options;
     private readonly WorkerRequestProcessor _v1Processor;
     private LongLivedWorkerRuntime? _v2Runtime;
-    private VisioComEngine? _ownedEngine;
+    private IAsyncDisposable? _ownedEngine;
     private bool _disposed;
 
     public WorkerHostLineProcessor(WorkerHostLineProcessorOptions options)
@@ -43,28 +52,36 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         _v1Processor = new WorkerRequestProcessor(options.OutputRoot, options.Visible, options.AttachToRunning);
     }
 
-    public async Task<object> ProcessLineAsync(string line, CancellationToken cancellationToken = default)
+    public async Task<object> ProcessLineAsync(string line, CancellationToken cancellationToken = default) =>
+        (await ProcessLineWithMetadataAsync(line, cancellationToken).ConfigureAwait(false)).Response;
+
+    internal async Task<WorkerHostLineResult> ProcessLineWithMetadataAsync(string line, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(line)) return FailedV1();
+        if (string.IsNullOrWhiteSpace(line)) return FailedV1Result();
 
-        int protocolVersion;
+        ProtocolClassification classification;
         try
         {
-            protocolVersion = ReadProtocolVersion(line);
+            classification = ReadProtocolVersion(line);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            return FailedV1();
+            return FailedV1Result();
         }
 
-        return protocolVersion switch
+        if (classification.IsDuplicateV1Discriminator) return FailedV1Result();
+
+        return classification.Protocol switch
         {
-            1 => await ProcessV1Async(line, cancellationToken).ConfigureAwait(false),
-            2 => await ProcessV2Async(line, cancellationToken).ConfigureAwait(false),
-            _ => FailedV1(),
+            WorkerHostProtocol.V1 => new WorkerHostLineResult(WorkerHostProtocol.V1, await ProcessV1Async(line, cancellationToken).ConfigureAwait(false)),
+            WorkerHostProtocol.V2 => new WorkerHostLineResult(WorkerHostProtocol.V2, await ProcessV2Async(line, cancellationToken).ConfigureAwait(false)),
+            _ => FailedV1Result(),
         };
     }
+
+    internal Task CheckpointIdleSessionsAsync(CancellationToken cancellationToken = default) =>
+        _v2Runtime?.CheckpointIdleSessionsAsync(cancellationToken) ?? Task.CompletedTask;
 
     public async ValueTask DisposeAsync()
     {
@@ -118,7 +135,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         try
         {
             request = WorkerV2RequestParser.Parse(line, _options.OutputRoot);
-            return await GetOrCreateV2Runtime().ProcessAsync(request, cancellationToken).ConfigureAwait(false);
+            return await (await GetOrCreateV2RuntimeAsync().ConfigureAwait(false)).ProcessAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -130,33 +147,85 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         }
     }
 
-    private LongLivedWorkerRuntime GetOrCreateV2Runtime()
+    private async Task<LongLivedWorkerRuntime> GetOrCreateV2RuntimeAsync()
     {
         if (_v2Runtime is not null) return _v2Runtime;
 
         var backend = _options.SessionBackend;
-        if (backend is null)
+        if (backend is not null)
         {
-            if (!_options.Mode.Equals("live", StringComparison.OrdinalIgnoreCase))
-                throw new WorkerProtocolException("Protocol v2 requires live mode or an injected session backend.");
-
-            _ownedEngine = new VisioComEngine(new VisioComEngineOptions(
-                AttachToRunning: _options.AttachToRunning,
-                Visible: _options.Visible,
-                OutputRoot: _options.OutputRoot));
-            backend = _ownedEngine.CreateSessionBackend();
+            var injectedRuntime = new LongLivedWorkerRuntime(
+                backend,
+                _options.ManifestStore ?? new SessionRecoveryManifestStore(_options.OutputRoot),
+                _options.Clock ?? new SystemWorkerClock(),
+                _options.CheckpointInterval,
+                _options.Capacity);
+            _v2Runtime = injectedRuntime;
+            return injectedRuntime;
         }
 
-        _v2Runtime = new LongLivedWorkerRuntime(
-            backend,
-            _options.ManifestStore ?? new SessionRecoveryManifestStore(_options.OutputRoot),
-            _options.Clock ?? new SystemWorkerClock(),
-            _options.CheckpointInterval,
-            _options.Capacity);
-        return _v2Runtime;
+        if (!_options.Mode.Equals("live", StringComparison.OrdinalIgnoreCase))
+            throw new WorkerProtocolException("Protocol v2 requires live mode or an injected session backend.");
+
+        IAsyncDisposable? createdEngine = null;
+        try
+        {
+            var engineOptions = new VisioComEngineOptions(
+                AttachToRunning: _options.AttachToRunning,
+                Visible: _options.Visible,
+                OutputRoot: _options.OutputRoot);
+            var owned = _options.OwnedEngineFactory?.Invoke(engineOptions) ?? await CreateOwnedEngineAsync(engineOptions).ConfigureAwait(false);
+            createdEngine = owned.Engine;
+            var runtime = new LongLivedWorkerRuntime(
+                owned.Backend,
+                _options.ManifestStore ?? new SessionRecoveryManifestStore(_options.OutputRoot),
+                _options.Clock ?? new SystemWorkerClock(),
+                _options.CheckpointInterval,
+                _options.Capacity);
+
+            _ownedEngine = createdEngine;
+            _v2Runtime = runtime;
+            return runtime;
+        }
+        catch (Exception initializationFailure)
+        {
+            if (createdEngine is null) throw;
+            try
+            {
+                await createdEngine.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception cleanupFailure)
+            {
+                throw new AggregateException(initializationFailure, cleanupFailure);
+            }
+
+            throw;
+        }
     }
 
-    private static int ReadProtocolVersion(string line)
+    private static async Task<(IVisioSessionBackend Backend, IAsyncDisposable Engine)> CreateOwnedEngineAsync(VisioComEngineOptions options)
+    {
+        var engine = new VisioComEngine(options);
+        try
+        {
+            return (engine.CreateSessionBackend(), engine);
+        }
+        catch (Exception initializationFailure)
+        {
+            try
+            {
+                await engine.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception cleanupFailure)
+            {
+                throw new AggregateException(initializationFailure, cleanupFailure);
+            }
+
+            throw;
+        }
+    }
+
+    private static ProtocolClassification ReadProtocolVersion(string line)
     {
         if (line.Length > MaximumLineLength) throw new WorkerProtocolException("Worker request is too large.");
         using var document = JsonDocument.Parse(line, new JsonDocumentOptions
@@ -168,18 +237,23 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object) throw new WorkerProtocolException("Worker request must be a JSON object.");
 
-        JsonElement? version = null;
+        var versions = new List<int>();
         foreach (var property in root.EnumerateObject())
         {
             if (!string.Equals(property.Name, "protocolVersion", StringComparison.OrdinalIgnoreCase)) continue;
-            if (version is not null) throw new WorkerProtocolException("Duplicate protocolVersion property.");
-            version = property.Value;
+            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out var value)) versions.Add(value);
         }
 
-        if (version is null || version.Value.ValueKind != JsonValueKind.Number || !version.Value.TryGetInt32(out var value))
+        if (versions.Count == 0)
             throw new WorkerProtocolException("protocolVersion must be an integer.");
-        return value;
+        if (versions.Contains(2)) return new ProtocolClassification(WorkerHostProtocol.V2, IsDuplicateV1Discriminator: false);
+        if (versions.Count > 1) return new ProtocolClassification(WorkerHostProtocol.V1, IsDuplicateV1Discriminator: true);
+        return new ProtocolClassification(versions[0] == 2 ? WorkerHostProtocol.V2 : WorkerHostProtocol.V1, IsDuplicateV1Discriminator: false);
     }
+
+    private sealed record ProtocolClassification(WorkerHostProtocol Protocol, bool IsDuplicateV1Discriminator);
+
+    private static WorkerHostLineResult FailedV1Result() => new(WorkerHostProtocol.V1, FailedV1());
 
     private static WorkerResponse FailedV1() => new()
     {
