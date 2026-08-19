@@ -26,6 +26,72 @@ public sealed class VisioComSessionOperationsTests
     }
 
     [Fact]
+    public void Owned_application_with_a_window_handle_creates_a_verified_process_lease()
+    {
+        var startTimeUtc = new DateTime(2026, 8, 19, 1, 2, 3, DateTimeKind.Utc);
+        var adapter = new RecordingProcessWindowAdapter
+        {
+            WindowProcessId = 4512,
+            ProcessExecutableName = "VISIO.EXE",
+            ProcessStartTimeUtc = startTimeUtc,
+        };
+
+        var lease = CreateOwnedApplicationLease(new FakeVisioApplication(0x1234), ownsApplication: true, adapter);
+
+        Assert.NotNull(lease);
+        Assert.Equal(4512, LeaseProperty<int>(lease, "ProcessId"));
+        Assert.Equal(startTimeUtc, LeaseProperty<DateTime>(lease, "ProcessStartTimeUtc"));
+        Assert.True(LeaseProperty<bool>(lease, "OwnsApplication"));
+        Assert.Equal("VISIO.EXE", LeaseProperty<string>(lease, "ExecutableName"));
+        Assert.Equal(1, adapter.WindowLookupCount);
+        Assert.Equal([4512], adapter.ProcessIdentityLookups);
+    }
+
+    [Fact]
+    public void Attached_or_unresolved_applications_do_not_receive_an_owned_process_lease()
+    {
+        var attachedAdapter = new RecordingProcessWindowAdapter
+        {
+            WindowProcessId = 4512,
+            ProcessExecutableName = "VISIO.EXE",
+            ProcessStartTimeUtc = new DateTime(2026, 8, 19, 1, 2, 3, DateTimeKind.Utc),
+        };
+
+        var attachedLease = CreateOwnedApplicationLease(new FakeVisioApplication(0x1234), ownsApplication: false, attachedAdapter);
+
+        Assert.Null(attachedLease);
+        Assert.Equal(0, attachedAdapter.WindowLookupCount);
+        var unresolvedAdapter = new RecordingProcessWindowAdapter { ResolvesWindowProcess = false };
+
+        var unresolvedLease = CreateOwnedApplicationLease(new FakeVisioApplication(0x1234), ownsApplication: true, unresolvedAdapter);
+
+        Assert.Null(unresolvedLease);
+        Assert.Equal(1, unresolvedAdapter.WindowLookupCount);
+        Assert.Empty(unresolvedAdapter.ProcessIdentityLookups);
+    }
+
+    [Fact]
+    public void Lease_rejects_a_process_when_its_executable_name_or_start_time_changes()
+    {
+        var startTimeUtc = new DateTime(2026, 8, 19, 1, 2, 3, DateTimeKind.Utc);
+        var adapter = new RecordingProcessWindowAdapter
+        {
+            WindowProcessId = 4512,
+            ProcessExecutableName = "VISIO.EXE",
+            ProcessStartTimeUtc = startTimeUtc,
+        };
+        var lease = CreateOwnedApplicationLease(new FakeVisioApplication(0x1234), ownsApplication: true, adapter);
+
+        Assert.NotNull(lease);
+        adapter.ProcessExecutableName = "NOTEPAD.EXE";
+        Assert.False(LeaseMatchesCurrentProcess(lease, adapter));
+        adapter.ProcessExecutableName = "VISIO.EXE";
+        adapter.ProcessStartTimeUtc = startTimeUtc.AddSeconds(1);
+
+        Assert.False(LeaseMatchesCurrentProcess(lease, adapter));
+    }
+
+    [Fact]
     public void Explicit_session_close_discards_unsaved_native_changes_instead_of_leaving_a_hidden_prompt()
     {
         Assert.True(VisioDocumentLifecycle.ShouldDiscardUnsavedChangesOnExplicitClose());
@@ -206,6 +272,35 @@ public sealed class VisioComSessionOperationsTests
         [new VisioNode(nodeId, "conv", "Encoder", null, 0, 1, 1, 1, 1, "", "standard", "network-node", 1, 1, false, null, new Dictionary<string, string>())],
         [new VisioConnector(nodeId + "-to-output", nodeId, "output", "signal", [new DiagramPoint(1, 1), new DiagramPoint(2, 1)])]);
 
+    private static object? CreateOwnedApplicationLease(FakeVisioApplication application, bool ownsApplication, RecordingProcessWindowAdapter adapter)
+    {
+        var assembly = typeof(VisioComEngine).Assembly;
+        var leaseType = assembly.GetType("VisioWorker.Live.OwnedVisioApplicationLease", throwOnError: false);
+        Assert.NotNull(leaseType);
+        var adapterType = assembly.GetType("VisioWorker.Live.IVisioProcessWindowAdapter", throwOnError: false);
+        Assert.NotNull(adapterType);
+        var proxy = DispatchProxy.Create(adapterType, typeof(RecordingProcessWindowAdapter));
+        ((RecordingProcessWindowAdapter)proxy).CopyFrom(adapter);
+        adapter.Proxy = (RecordingProcessWindowAdapter)proxy;
+        var factory = leaseType.GetMethod("TryCreate", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(factory);
+        return factory.Invoke(null, [application, ownsApplication, proxy]);
+    }
+
+    private static T LeaseProperty<T>(object lease, string propertyName)
+    {
+        var property = lease.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(property);
+        return Assert.IsType<T>(property.GetValue(lease));
+    }
+
+    private static bool LeaseMatchesCurrentProcess(object lease, RecordingProcessWindowAdapter adapter)
+    {
+        var method = lease.GetType().GetMethod("MatchesCurrentProcess", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        return Assert.IsType<bool>(method.Invoke(lease, [adapter.Proxy]));
+    }
+
     private sealed class RecordingNativeSessionOperations : IVisioComSessionNative
     {
         public int OpenOrCreateCalls { get; private set; }
@@ -299,5 +394,57 @@ public sealed class VisioComSessionOperationsTests
     public sealed class FakeNativeCell(string identity)
     {
         public string[] ResultStr { get; } = [identity];
+    }
+
+    public sealed class FakeVisioApplication(int windowHandle32)
+    {
+        public int WindowHandle32 { get; } = windowHandle32;
+    }
+
+    public class RecordingProcessWindowAdapter : DispatchProxy
+    {
+        public RecordingProcessWindowAdapter? Proxy { get; set; }
+        private RecordingProcessWindowAdapter? Source { get; set; }
+        public bool ResolvesWindowProcess { get; set; } = true;
+        public int WindowProcessId { get; set; }
+        public string ProcessExecutableName { get; set; } = "VISIO.EXE";
+        public DateTime ProcessStartTimeUtc { get; set; }
+        public int WindowLookupCount { get; private set; }
+        public List<int> ProcessIdentityLookups { get; } = [];
+
+        public void CopyFrom(RecordingProcessWindowAdapter source)
+        {
+            Source = source;
+        }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? arguments)
+        {
+            Assert.NotNull(targetMethod);
+            Assert.NotNull(arguments);
+            return targetMethod.Name switch
+            {
+                "TryGetWindowProcessId" => ResolveWindowProcess(arguments),
+                "TryGetProcessIdentity" => ResolveProcessIdentity(targetMethod, arguments),
+                _ => throw new InvalidOperationException($"Unexpected process/window adapter member '{targetMethod.Name}'."),
+            };
+        }
+
+        private bool ResolveWindowProcess(object?[] arguments)
+        {
+            var source = Source ?? this;
+            source.WindowLookupCount++;
+            arguments[1] = source.WindowProcessId;
+            return source.ResolvesWindowProcess;
+        }
+
+        private bool ResolveProcessIdentity(MethodInfo targetMethod, object?[] arguments)
+        {
+            var source = Source ?? this;
+            source.ProcessIdentityLookups.Add(Assert.IsType<int>(arguments[0]));
+            var identityType = targetMethod.GetParameters()[1].ParameterType.GetElementType();
+            Assert.NotNull(identityType);
+            arguments[1] = Activator.CreateInstance(identityType, source.ProcessExecutableName, source.ProcessStartTimeUtc);
+            return true;
+        }
     }
 }

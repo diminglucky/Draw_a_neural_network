@@ -47,12 +47,19 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
     private const double PageHeightInches = 9.5;
     private readonly VisioComEngineOptions _options;
     private readonly ComStaRunner _runner;
+    private readonly IVisioProcessWindowAdapter _processWindowAdapter;
     private readonly object _sessionBackendGate = new();
     private VisioComSessionBackend? _sessionBackend;
 
     public VisioComEngine(VisioComEngineOptions options)
+        : this(options, new WindowsVisioProcessWindowAdapter())
+    {
+    }
+
+    internal VisioComEngine(VisioComEngineOptions options, IVisioProcessWindowAdapter processWindowAdapter)
     {
         _options = options;
+        _processWindowAdapter = processWindowAdapter ?? throw new ArgumentNullException(nameof(processWindowAdapter));
         _runner = new ComStaRunner();
     }
 
@@ -113,9 +120,10 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         dynamic? doc = null;
         bool launched = false;
         bool keepVisibleDocumentOpen = false;
+        OwnedVisioApplicationLease? ownedApplicationLease = null;
         try
         {
-            app = ConnectVisio(_options, out launched);
+            app = ConnectVisio(_options, _processWindowAdapter, out launched, out ownedApplicationLease);
             TrySet(() => app.Visible = _options.Visible);
             TrySet(() => app.AlertResponse = 1);
             docs = app.Documents;
@@ -166,6 +174,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         {
             if (!keepVisibleDocumentOpen) TryClose(doc);
             if (launched && !keepVisibleDocumentOpen) TryQuit(app);
+            GC.KeepAlive(ownedApplicationLease);
             ReleaseCom(doc);
             ReleaseCom(docs);
             ReleaseCom(app);
@@ -187,6 +196,18 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             ?? throw new WorkerProtocolException("Visio.Application could not be created");
         launched = true;
         return created;
+    }
+
+    internal static dynamic ConnectVisio(
+        VisioComEngineOptions options,
+        IVisioProcessWindowAdapter processWindowAdapter,
+        out bool launched,
+        out OwnedVisioApplicationLease? ownedApplicationLease)
+    {
+        ArgumentNullException.ThrowIfNull(processWindowAdapter);
+        var application = ConnectVisio(options, out launched);
+        ownedApplicationLease = OwnedVisioApplicationLease.TryCreate(application, launched, processWindowAdapter);
+        return application;
     }
 
     internal static void ConfigureAndDrawDocument(dynamic page, DiagramDocument document)
