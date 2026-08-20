@@ -1,7 +1,7 @@
-# 自适应通用神经网络绘图 Agent：重新设计
+# 通用神经网络绘图 Agent：正式架构修订
 
-**状态：** 设计草案，等待用户审核后才进入实施计划。
-**取代：** `2026-08-19-universal-neural-figure-agent-design.md` 中“网络家族 Grammar 决定能否绘制”的路线。
+**状态：** 修订设计草案，等待用户审核后才进入实施计划。
+**取代：** 任何以模型名称、固定网络家族或预设模板决定绘制资格、布局或导出资格的路线。
 **不取代：** 证据追溯、不可变 Snapshot、密封导出、Worker 最小权限、同画布更新、原生 Shape/readback 等安全与稳定性边界。
 
 ## 1. 设计目标
@@ -59,6 +59,30 @@
 - 未匹配任何高级模式时，仍输出专业的通用模块图；
 - 新模式的产生不要求新增模型专用 TypeScript、C# 或 Visio 模板代码，而是在受限的 Pattern DSL 内生成候选组合。
 
+### 2.1 本次正式修订
+
+本设计不再保留任何模型专用主链、首批目标、导出入口或回归前提。历史实现即使仍暂时存在，也只可作为隔离迁移对象，不能决定产品路线。
+
+以下合同在实施前固定：
+
+1. **唯一计划：** 新增 renderer-neutral 的 `PublicationVisualPlan`。浏览器预览、Visio Shape、导出文件、Visual QA、Snapshot、sealed export 与 readback 必须使用同一 canonical Plan；不得继续新增并行 Figure Plan DTO。
+2. **资格状态：** topology-complete UGS 经过 QA 后可以正式预览、快照和导出；candidate、blocking、未获专项支持的 feedback/state 结构只能保留为候选局部或澄清状态，零快照、零导出。
+3. **Profile 的权力：** Presentation Profile 只能增强局部 primitive、布局、标签和连接样式，绝不能增加、删除、重定向或猜测 UGS 拓扑；Profile 不匹配时必须回退到高质量 General 图。
+4. **通用图不是矩形降级：** General 图必须具有端口锚点、主流/辅助流层级、branch/merge 对齐、repeat/collapse、connector route、annotation track、print/gray 规则和稳定 semantic ID。
+5. **同页合同：** 每次 apply/applyDiff 都绑定 owner、device、workflow、document、page、snapshot hash、expected revision 和 readback revision；重复或陈旧请求不能新建画布。
+6. **模式库后置：** PatternCandidate/PatternLibrary 只有在通用预览、通用 Plan、同页 Visio 更新和真实视觉验收稳定后才开始实现，不能成为基础绘制前提。
+
+PublicationVisualPlan 至少包含：
+
+```text
+version / rendererCompatibilityVersion / planId / planHash
+UGS hash / General Publication Graph hash / source hashes
+detail level / page / regions / primitive groups / port anchors
+connector routes / annotations / legend / style tokens
+profile applications / source mappings / Visual QA contract
+document-page update identities
+```
+
 ## 3. 目标架构
 
 ```mermaid
@@ -70,10 +94,11 @@ flowchart LR
     D --> E["UniversalGraphSpec"]
     E --> F["Topology and Evidence Validator"]
     F --> G["Adaptive Semantic Composer"]
-    G --> H["Universal Visual Composer"]
-    H --> I["General Publication Graph"]
-    I --> J["Optional Presentation Profiles"]
-    J --> K["Publication Figure Plan"]
+    G --> H["General Publication Graph"]
+    H --> I["Universal Visual Composer"]
+    G --> J["Optional Presentation Profiles"]
+    J --> I
+    I --> K["PublicationVisualPlan"]
     K --> L["Visual QA and Immutable PlanSnapshot"]
     L --> M["Sealed Export Job"]
     M --> N["Restricted Visio Worker"]
@@ -337,7 +362,7 @@ UGS hash + Presentation Graph hash + Figure Plan hash
 → native Visio Shape
 ```
 
-`assertCanonicalVgg16` 仅可保留在 legacy VGG 验收夹具中，绝不能位于通用 export 路径。
+任何基于固定拓扑、固定节点命名、固定层数或固定坐标的校验都必须退出公共 export 路径；通用路径只接受服务端构造且已密封的 PublicationVisualPlan。
 
 Worker 维持以下不变边界：
 
@@ -375,14 +400,14 @@ Worker 维持以下不变边界：
 
 ## 10. 验收目标
 
-系统不能以“已支持 VGG16/ResNet/U-Net/ViT”作为主要完成标准。首批验收必须是零模板案例：
+系统不能以任何特定模型支持数量作为完成标准。首批验收必须是零模板、按结构类型定义的案例：
 
 | 案例 | 输入 | 必须证明 |
 |---|---|---|
 | Unknown dual-stream fusion | 未见模块名的代码 | 直接生成双支路、汇聚和 CustomFusion；无需新增 renderer 代码 |
 | Prompt-only novel model | 新结构提示 | 生成 schema-valid UGS、专业预览和可编辑 VSDX |
 | Unknown repeated block | 代码或提示 | 识别重复并支持 `×N`/展开 |
-| Custom encoder-like graph | 新组合代码 | 使用通用 stage/skip/fusion 组件，不要求命中 U-Net 模型名 |
+| Custom encoder-like graph | 新组合代码 | 使用通用 stage/skip/fusion 组件，不要求命中任何预设名称 |
 | Clear sketch with unknown labels | 草图 | 箭头正确、未知框作为 CustomModule、同页更新 |
 | Ambiguous sketch | 模糊箭头/merge | 已知区域可绘制，候选局部只问一个问题 |
 | Dynamic topology | 动态控制流代码 | 不执行代码，不伪造结构，不允许错误导出 |
@@ -395,58 +420,54 @@ Worker 维持以下不变边界：
 
 ### 11.1 与正式路线图的映射
 
-R0–R5 是本规格定义的能力轨道，不自动改变 `docs/agent-program-state.json` 中 M2/M3 的正式状态。路线图迁移完成后，当前正式焦点是 M2.6；其在独立审查清零后进入 `awaiting_acceptance`，不得直接标为 accepted。每个 R gate 都已映射为现有节点的验收扩展或新增依赖节点；没有这次迁移时：
+本规格定义的 U0–U6 是能力顺序，不自动改变 docs/agent-program-state.json 中 M2/M3 的正式状态。状态账本、Implementation Record、Design Baseline 和 Operation History 必须在有真实实现及验证证据后才同步更新，避免设计、状态页和实际代码出现三种事实。
 
-- R0 只能作为当前 VGG 夹具回归修复，不得声称已推进通用能力；
-- R1/R3/R4/R5 只能作为已批准设计，不能标记为 active/accepted；
-- M2.5 的 Snapshot 实现必须绑定通用 UGS/Presentation/Figure Plan，而不能固化 legacy VGG DTO；
-- `agent-program-state.json`、Implementation Record 和 Design Baseline 必须同步说明映射状态。
+### Gate U0：工程与安全基线
 
-这项规则消除“规格说先做 R1、状态页说做 M2.5”的双重事实源问题。
+完成通用 immutable Snapshot 的完整性收尾。快照必须从服务端 canonical object 生成；candidate、blocking、feedback 与 QA 失败结构必须零写入、零导出。
 
-### Gate R0：恢复工程真相
+### Gate U1：统一 PublicationVisualPlan
 
-先修复当前 `conv-1` publication group 回归，使 canonical VGG16 bridge、execution snapshot 和 export route 的 API 测试恢复；该步骤只恢复现有夹具，不扩展 VGG 特例。
+1. 固化唯一 Plan 合同、canonicalization、版本协商与 renderer-neutral primitive DSL；
+2. 将 General Publication Graph 编译为有 port anchors、connector routes、annotation tracks、style tokens 和 stable IDs 的通用计划；
+3. 让 Visual QA、Snapshot 与浏览器投影均消费该计划。
 
-### Gate R1：UniversalGraphSpec 与 General Publication Graph
+### Gate U2：通用预览主链
 
-1. 定义 UGS schema、Evidence mapping、`CustomOperator`、topology/operation/shape 不确定性；
-2. 让现有 Architecture IR v3 可无损投影到 UGS；
-3. 实现通用图布局、端口、分支、merge、repeat、skip 和 CustomModule；
-4. 让任意 renderable UGS 都能产生 General Publication Graph。
+1. UGS → General Graph → PublicationVisualPlan 成为默认预览路径；
+2. 未知但拓扑明确的 custom graph 必须得到正式预览；
+3. 模型名和家族匹配不再参与资格判断；
+4. 旧的并行 renderer DTO 只允许存在于隔离迁移测试中。
 
-### Gate R2：通用 Snapshot 和导出资格
+### Gate U3：局部 Profile 与组合
 
-将当前 M2.5 实现为 UGS/Presentation/Figure Plan 的不可变绑定。所有 export 都必须消费该 snapshot；candidate topology 永远没有 export 资格。
+实现空间尺度、残差、token/attention、encoder-decoder、多输入融合等可组合 profile，并证明每一个 profile 的失败、缺失或版本不兼容都无损回退到 General 图。
 
-### Gate R3：Adaptive Pattern Library
-
-1. 实现结构 signature、局部模式发现、PatternCandidate 与 owner scope；
-2. 实现受限 Pattern DSL 和 deterministic conflict resolution；
-3. 添加用户确认、人工审查、提升、版本回滚和回归 fixture；
-4. 将 CNN、Residual、Encoder–Decoder、Token/Attention 等作为初始模式，不作为模型白名单。
-
-### Gate R4：三类输入直绘
+### Gate U4：三类输入直绘
 
 1. Prompt-to-UGS；
 2. 通用静态 Code-to-UGS，先覆盖任意调用、分支和自定义模块，再逐步提高精度；
 3. Sketch-to-UGS；
 4. 用零模板案例验证未知网络首次输入即可得到图。
 
-### Gate R5：通用 Visio 和真实主机验收
+### Gate U5：通用 Visio 与真实主机验收
 
-1. 用通用 Figure Plan 替代 VGG 专用 bridge 的公共路径；
-2. 完成同页面 applyDiff、save/reopen/readback/recovery；
+1. Worker 只消费 sealed universal plan；
+2. 实现 allowlisted primitive 映射、同一 document/page applyDiff、save/reopen/readback、cancel/recovery；
 3. 在真实 Windows/Visio 上运行所有零模板案例；
-4. 将 VGG16 降为 regression fixture，不再作为系统中心。
+4. 每个案例保留 SVG、VSDX、PNG、readback 和人工视觉结论。
+
+### Gate U6：受控 PatternLibrary
+
+只有 U0–U5 稳定后，才实现 owner-scoped PatternCandidate、确认、审查、提升和版本化回归。共享模式库不得自动从用户输入学习。
 
 ## 12. 迁移规则
 
-- 保留现有 VGG bridge、Worker 会话与 UTF-8/readback/recovery 代码作为兼容夹具和可复用基础；
-- 不再向 `assertCanonicalVgg16`、VGG 节点名称、固定 stage 或固定坐标添加功能；
+- 保留 Worker 会话、UTF-8/readback/recovery 与可复用 geometry/connector 基础；
+- 任何基于固定拓扑、固定节点名称、固定 stage 或固定坐标的历史路径只能隔离迁移，不能接入用户可见主链，也不得新增功能；
 - 现有 `Architecture IR v3`、Figure Component Graph 和 Visual QA 通过适配层迁移到 UGS，不做破坏性替换；
 - 旧的 family Grammar 迁移为 PatternLibrary 的初始版本化模式；
-- 在 R5 验收前，不能声称已经支持“任意代码/草图到 Visio”。
+- 在 U5 真实主机验收前，不能声称已经支持任意代码/草图到 Visio。
 
 ## 13. 本规格的完成定义
 
@@ -455,7 +476,7 @@ R0–R5 是本规格定义的能力轨道，不自动改变 `docs/agent-program-
 1. 用户确认“未知结构直绘 + 模式学习”的目标优先级；
 2. 用户接受未知模块可直接绘制、未知拓扑才澄清的边界；
 3. 用户接受 PatternCandidate 默认 owner-scoped、提升共享库需要审查；
-4. 路线图和实现计划以 R0–R5 为顺序，停止把模型家族支持数量作为第一 KPI。
+4. 路线图和实现计划以 U0–U6 为顺序，停止把模型家族支持数量作为第一 KPI。
 
 在此之前，本文件是当前架构草案，不等同于通用 Visio 功能已经实现。
 
