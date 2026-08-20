@@ -97,8 +97,12 @@ function serializeCanonicalValue(value: unknown): string {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) if (!(index in value)) throw new Error("canonical JSON does not permit sparse arrays");
-    return `[${value.map(serializeCanonicalValue).join(",")}]`;
+    const items: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) throw new Error("canonical JSON does not permit sparse arrays");
+      items.push(serializeCanonicalValue(value[index]));
+    }
+    return `[${items.join(",")}]`;
   }
   if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
     const record = value as Record<string, unknown>;

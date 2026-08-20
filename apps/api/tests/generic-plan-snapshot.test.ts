@@ -66,6 +66,10 @@ describe("GenericPlanSnapshot", () => {
     expect(() => canonicalGenericPlanSnapshotJson(Number.POSITIVE_INFINITY)).toThrow(/non-finite/i);
     expect(() => canonicalGenericPlanSnapshotJson(new Array(1))).toThrow(/sparse|array/i);
     expect(() => canonicalGenericPlanSnapshotJson([1, , 2])).toThrow(/sparse|array/i);
+    const inheritedIndex = new Array(1);
+    Object.setPrototypeOf(inheritedIndex, { 0: "inherited" });
+    expect(() => canonicalGenericPlanSnapshotJson(inheritedIndex)).toThrow(/sparse|array/i);
+    expect(() => createGenericPlanSnapshot(input({ sourceHashes: ["d".repeat(64), "D".repeat(64)] }))).toThrow(/sourceHashes|unique/i);
   });
 
   it("deep-freezes clone-isolated metadata and exposes no renderer or source payload fields", () => {
