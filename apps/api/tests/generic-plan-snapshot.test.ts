@@ -45,9 +45,23 @@ describe("GenericPlanSnapshot", () => {
     expect(second.createdAt).not.toBe(first.createdAt);
   });
 
+  it("normalizes accepted SHA-256 spellings before deriving identity or retaining metadata", () => {
+    const lower = createGenericPlanSnapshot(input());
+    const upper = createGenericPlanSnapshot(input({
+      ugsCanonicalHash: "A".repeat(64),
+      generalPublicationGraphHash: "B".repeat(64),
+      generalPublicationFigurePlanHash: "C".repeat(64),
+      sourceHashes: ["E".repeat(64), "D".repeat(64)],
+    }));
+    expect(upper.snapshotId).toBe(lower.snapshotId);
+    expect(upper.ugsCanonicalHash).toBe("a".repeat(64));
+    expect(upper.sourceHashes).toEqual(["d".repeat(64), "e".repeat(64)]);
+  });
+
   it("rejects invalid IDs, timestamps, duplicate source hashes, and non-finite canonical values", () => {
     expect(() => createGenericPlanSnapshot(input({ deviceId: "C:\\device" }))).toThrow(/deviceId|identifier/i);
     expect(() => createGenericPlanSnapshot(input({ createdAt: "20/08/2026" }))).toThrow(/timestamp|datetime|createdAt/i);
+    expect(() => createGenericPlanSnapshot(input({ createdAt: "2026-02-30T00:00:00.000Z" }))).toThrow(/timestamp|datetime|createdAt/i);
     expect(() => createGenericPlanSnapshot(input({ sourceHashes: ["d".repeat(64), "d".repeat(64)] }))).toThrow(/sourceHashes|duplicate/i);
     expect(() => canonicalGenericPlanSnapshotJson(Number.POSITIVE_INFINITY)).toThrow(/non-finite/i);
   });

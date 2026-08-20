@@ -20,17 +20,17 @@ export interface CreateGenericPlanSnapshotInput extends GenericPlanSnapshotOwner
   createdAt: string;
 }
 
-export interface GenericPlanSnapshot extends GenericPlanSnapshotOwner {
-  version: 1;
-  snapshotId: string;
-  graphId: string;
-  ugsRevision: number;
-  ugsCanonicalHash: string;
-  generalPublicationGraphHash: string;
-  generalPublicationFigurePlanHash: string;
-  sourceHashes: string[];
-  createdAt: string;
-  immutable: true;
+export interface GenericPlanSnapshot extends Readonly<GenericPlanSnapshotOwner> {
+  readonly version: 1;
+  readonly snapshotId: string;
+  readonly graphId: string;
+  readonly ugsRevision: number;
+  readonly ugsCanonicalHash: string;
+  readonly generalPublicationGraphHash: string;
+  readonly generalPublicationFigurePlanHash: string;
+  readonly sourceHashes: readonly string[];
+  readonly createdAt: string;
+  readonly immutable: true;
 }
 
 export function createGenericPlanSnapshot(input: CreateGenericPlanSnapshotInput): GenericPlanSnapshot {
@@ -76,11 +76,17 @@ function validateGenericPlanSnapshotInput(input: CreateGenericPlanSnapshotInput)
   assertDigest(input.ugsCanonicalHash, "ugsCanonicalHash");
   assertDigest(input.generalPublicationGraphHash, "generalPublicationGraphHash");
   assertDigest(input.generalPublicationFigurePlanHash, "generalPublicationFigurePlanHash");
-  if (!Number.isFinite(Date.parse(input.createdAt)) || !/^\d{4}-\d{2}-\d{2}T/.test(input.createdAt)) throw new Error("createdAt must be an ISO timestamp");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(input.createdAt) || new Date(input.createdAt).toISOString() !== input.createdAt) throw new Error("createdAt must be a canonical UTC timestamp");
   if (!Array.isArray(input.sourceHashes) || input.sourceHashes.length === 0) throw new Error("sourceHashes must be non-empty");
   for (const sourceHash of input.sourceHashes) assertDigest(sourceHash, "sourceHashes");
   if (new Set(input.sourceHashes.map((value) => value.toLowerCase())).size !== input.sourceHashes.length) throw new Error("sourceHashes must be unique");
-  return structuredClone(input);
+  return {
+    ...structuredClone(input),
+    ugsCanonicalHash: input.ugsCanonicalHash.toLowerCase(),
+    generalPublicationGraphHash: input.generalPublicationGraphHash.toLowerCase(),
+    generalPublicationFigurePlanHash: input.generalPublicationFigurePlanHash.toLowerCase(),
+    sourceHashes: input.sourceHashes.map((value) => value.toLowerCase()),
+  };
 }
 
 function serializeCanonicalValue(value: unknown): string {
