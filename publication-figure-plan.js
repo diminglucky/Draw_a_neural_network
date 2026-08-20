@@ -187,19 +187,25 @@ function layoutCnnPlate(groups) {
   const xById = new Map([
     ["input", 55],
     ["block-1", 210],
+    ["conv-1", 210],
     ["pool-1", 0],
     ["block-2", 400],
+    ["conv-2", 400],
     ["pool-2", 0],
     ["block-3", 590],
+    ["conv-3", 590],
     ["pool-3", 0],
     ["block-4", 780],
+    ["conv-4", 780],
     ["pool-4", 0],
     ["block-5", 970],
+    ["conv-5", 970],
     ["pool-5", 0],
     ["flatten", 1120],
     ["fc-1", 1310],
     ["fc-2", 1450],
     ["softmax", 1590],
+    ["classifier", 1590],
   ]);
   const positioned = groups.map((group) => {
     const x = xById.get(group.id);
@@ -330,7 +336,7 @@ function headingFor(group) {
   if (group.kind === "input-rgb-tile") return "Input";
   if (group.kind === "dense-vector-layer") return group.id === "fc-1" ? "FC6" : "FC7";
   if (group.kind === "score-vector-layer") return "FC8";
-  return stageHeading("Block", group.id, /^block-(\d+)$/);
+  return stageHeading("Block", group.id, /^(?:block|conv)-(\d+)$/);
 }
 
 function detailFor(group) {

@@ -1,5 +1,7 @@
 # 通用神经网络顶刊绘图 Agent：完整设计
 
+> **已被取代。** 本文件记录 2026-08-19 的“家族 Grammar 优先”设计决策；当前正式架构以 [2026-08-20-adaptive-universal-neural-figure-agent-design.md](2026-08-20-adaptive-universal-neural-figure-agent-design.md) 为准。旧文档保留用于解释已有 VGG/Visio WIP 的来源，不能作为新功能的实现依据。
+
 ## 1. 决策摘要
 
 本项目的目标不是“能够绘制 VGG16 的 Visio 工具”，而是一个通用神经网络绘图 Agent：用户上传代码或草图后，Agent 先可靠地理解网络结构，再以可追溯、可展开、可编辑的方式拆分或合并网络模块，选择适合该结构的论文图视觉语法，最后在 Microsoft Visio 中生成可编辑、可保存、可重开和可原生回读的图。

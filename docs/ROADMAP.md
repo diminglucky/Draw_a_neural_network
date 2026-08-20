@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-19T10:14:12.056Z`
-Architecture: [docs/superpowers/specs/2026-08-19-universal-neural-figure-agent-design.md](./superpowers/specs/2026-08-19-universal-neural-figure-agent-design.md)
+Updated: `2026-08-20T01:50:45.842Z`
+Architecture: [docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md](./superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md)
 
 ## Current Focus
 
-- M2.5: Immutable PlanSnapshot binding
+- M2.6: UniversalGraphSpec and General Publication Graph
 - Status: planned
-- Outcome: Passing previews bind to immutable hashes and invalidate on visual changes.
-- Next action: Implement after the preview route is accepted.
+- Outcome: Any topology-complete network becomes a deterministic general publication graph without model-name templates.
+- Next action: Implement UGS schema, validator, generic components, and zero-template fixtures.
 
 ## Milestones
 
@@ -23,7 +23,7 @@ Architecture: [docs/superpowers/specs/2026-08-19-universal-neural-figure-agent-d
 
 ## Executable Nodes
 
-- M2.5: Immutable PlanSnapshot binding
+- M2.6: UniversalGraphSpec and General Publication Graph
 
 ## Open Blockers
 

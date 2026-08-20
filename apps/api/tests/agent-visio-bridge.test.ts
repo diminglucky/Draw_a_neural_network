@@ -19,8 +19,8 @@ describe("compileAgentCnnVisioDiagram", () => {
       unit: "figure-unit",
       figureUnitInches: 0.01,
       origin: "top-left",
-      width: 1600,
-      height: 540,
+      width: 1800,
+      height: 720,
     });
 
     const groups = result.diagram.figurePlan.primitiveGroups;
@@ -31,6 +31,10 @@ describe("compileAgentCnnVisioDiagram", () => {
     expect(groups.filter((group) => group.kind === "score-vector-layer")).toHaveLength(1);
     expect(groups.find((group) => group.id === "conv-1")?.semantic.repeatCount).toBe(2);
     expect(groups.find((group) => group.id === "conv-5")?.semantic.repeatCount).toBe(3);
+    expect(groups.find((group) => group.id === "conv-1")?.bounds.x).toBe(210);
+    expect(groups.find((group) => group.id === "conv-5")?.bounds.x).toBe(970);
+    expect(groups.find((group) => group.id === "classifier")?.bounds.x).toBe(1590);
+    expect(result.diagram.figurePlan.labels.find((label) => label.id === "conv-1.heading")?.text).toBe("Block 1");
     expect(groups.find((group) => group.id === "classifier")?.semantic.channelCount).toBe(1000);
     expect(result.planDigest).toMatch(/^[a-f0-9]{64}$/);
   });
