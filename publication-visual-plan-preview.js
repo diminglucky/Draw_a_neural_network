@@ -84,9 +84,10 @@ function parsePvp(value, responseKind) {
   if (eligibility.kind !== responseKind || !["pending", "passed"].includes(eligibility.qaStatus) || !stringArray(eligibility.formalReasons) || !stringArray(eligibility.blockingReasons)) throw new Error("PVP eligibility is invalid");
   if (responseKind === "candidate" && (eligibility.qaStatus === "passed" || eligibility.formalReasons.length !== 0)) throw new Error("Candidate PVP eligibility is invalid");
   const coordinateSpace = parseCoordinateSpace(pvp.coordinateSpace);
-  const primitives = parsePrimitives(pvp.primitives, coordinateSpace.page);
+  const styleTokens = parseStyleTokens(pvp.styleTokens);
+  const primitives = parsePrimitives(pvp.primitives, coordinateSpace.page, styleTokens);
   const ports = parsePorts(pvp.ports, primitives, coordinateSpace.page);
-  const connectors = parseConnectors(pvp.connectors, ports, coordinateSpace.page);
+  const connectors = parseConnectors(pvp.connectors, ports, coordinateSpace.page, styleTokens);
   const annotations = parseAnnotations(pvp.annotations, primitives, coordinateSpace.page);
   parseRendererRequirements(pvp.rendererRequirements);
   assertDenseArray(pvp.regions, "PVP regions");
@@ -95,7 +96,6 @@ function parsePvp(value, responseKind) {
   assertDenseArray(pvp.sourceMappings, "PVP sourceMappings");
   plainRecord(pvp.lineage, "PVP lineage is invalid");
   plainRecord(pvp.legend, "PVP legend is invalid");
-  plainRecord(pvp.styleTokens, "PVP styleTokens are invalid");
   plainRecord(pvp.updateIdentity, "PVP update identity is invalid");
   return Object.freeze({ identity: Object.freeze({ planId: identity.planId }), qaStatus: eligibility.qaStatus, coordinateSpace, primitives, ports, connectors, annotations });
 }
@@ -124,19 +124,20 @@ function parseCoordinateSpace(value) {
   return Object.freeze({ page, safeMargins });
 }
 
-function parsePrimitives(value, page) {
+function parsePrimitives(value, page, styleTokens) {
   assertDenseArray(value, "PVP primitives");
   if (value.length > MAX_ITEMS) throw new Error("PVP has too many primitives");
   const ids = new Set();
   return Object.freeze(value.map((item) => {
     const primitive = plainRecord(item, "PVP primitive is invalid");
     assertExactKeys(primitive, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label"], "PVP primitive");
-    if (!identifier(primitive.primitiveId) || ids.has(primitive.primitiveId) || !identifier(primitive.componentId) || !identifier(primitive.regionId) || !PRIMITIVE_KINDS.has(primitive.kind) || !integer(primitive.zIndex) || !stringArray(primitive.styleTokenIds)) throw new Error("PVP primitive is invalid");
+    const styles = resolveStyleTokens(primitive.styleTokenIds, styleTokens, "PVP primitive");
+    if (!identifier(primitive.primitiveId) || ids.has(primitive.primitiveId) || !identifier(primitive.componentId) || !identifier(primitive.regionId) || !PRIMITIVE_KINDS.has(primitive.kind) || !integer(primitive.zIndex)) throw new Error("PVP primitive is invalid");
     if (primitive.label !== undefined && !displayText(primitive.label)) throw new Error("PVP primitive label is invalid");
     const bounds = parseBounds(primitive.bounds, "PVP primitive bounds", false);
     if (!contains(page, bounds)) throw new Error("PVP primitive is outside page bounds");
     ids.add(primitive.primitiveId);
-    return Object.freeze({ primitiveId: primitive.primitiveId, kind: primitive.kind, bounds, label: primitive.label || "" });
+    return Object.freeze({ primitiveId: primitive.primitiveId, kind: primitive.kind, bounds, label: primitive.label || "", styles });
   }));
 }
 
@@ -160,7 +161,7 @@ function parsePorts(value, primitives, page) {
   return Object.freeze(ports);
 }
 
-function parseConnectors(value, ports, page) {
+function parseConnectors(value, ports, page, styleTokens) {
   assertDenseArray(value, "PVP connectors");
   if (value.length > MAX_ITEMS * 4) throw new Error("PVP has too many connectors");
   const portById = new Map(ports.map((port) => [port.portId, port]));
@@ -170,12 +171,37 @@ function parseConnectors(value, ports, page) {
     assertExactKeys(connector, ["connectorId", "sourcePortId", "targetPortId", "relation", "route", "styleTokenIds", "zIndex"], "PVP connector");
     const source = portById.get(connector.sourcePortId);
     const target = portById.get(connector.targetPortId);
-    if (!identifier(connector.connectorId) || ids.has(connector.connectorId) || !source || !target || source.primitiveId === target.primitiveId || !displayText(connector.relation) || !stringArray(connector.styleTokenIds) || !integer(connector.zIndex)) throw new Error("PVP connector is invalid");
+    const styles = resolveStyleTokens(connector.styleTokenIds, styleTokens, "PVP connector");
+    if (!identifier(connector.connectorId) || ids.has(connector.connectorId) || !source || !target || source.primitiveId === target.primitiveId || !displayText(connector.relation) || !integer(connector.zIndex)) throw new Error("PVP connector is invalid");
     const route = parseRoute(connector.route, page);
     if (!samePoint(route[0], source.point) || !samePoint(route.at(-1), target.point)) throw new Error("PVP connector route endpoint is invalid");
     ids.add(connector.connectorId);
-    return Object.freeze({ connectorId: connector.connectorId, route });
+    return Object.freeze({ connectorId: connector.connectorId, route, styles });
   }));
+}
+
+function parseStyleTokens(value) {
+  const styleTokens = plainRecord(value, "PVP styleTokens are invalid");
+  if (Object.keys(styleTokens).length === 0) return new Map();
+  assertExactKeys(styleTokens, ["tokenSetVersion", "tokens"], "PVP styleTokens");
+  if (styleTokens.tokenSetVersion !== "pvp-style-1") throw new Error("PVP styleTokens are invalid");
+  assertDenseArray(styleTokens.tokens, "PVP style tokens");
+  const tokens = new Map();
+  for (const value of styleTokens.tokens) {
+    const token = plainRecord(value, "PVP style token is invalid");
+    assertExactKeys(token, ["tokenId", "values"], "PVP style token");
+    const values = plainRecord(token.values, "PVP style token values are invalid");
+    if (!identifier(token.tokenId) || tokens.has(token.tokenId) || Object.keys(values).length === 0 || Object.keys(values).some((key) => !["stroke", "fill", "strokeWidth"].includes(key)) || !Object.entries(values).every(([key, item]) => validStyleValue(key, item))) throw new Error("PVP style token is invalid");
+    tokens.set(token.tokenId, Object.freeze({ ...values }));
+  }
+  return tokens;
+}
+
+function resolveStyleTokens(value, styleTokens, label) {
+  if (!stringArray(value) || new Set(value).size !== value.length || value.some((tokenId) => !styleTokens.has(tokenId))) throw new Error(`${label} style token is invalid`);
+  const styles = {};
+  for (const tokenId of value) Object.assign(styles, styleTokens.get(tokenId));
+  return Object.freeze(styles);
 }
 
 function parseAnnotations(value, primitives, page) {
@@ -225,13 +251,13 @@ function parseBounds(value, label, allowPageOrigin) {
 
 function renderConnector(connector) {
   const d = connector.route.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
-  return `<path class="publication-visual-plan-connector" data-pvp-connector="${escapeAttribute(connector.connectorId)}" d="${d}"/>`;
+  return `<path class="publication-visual-plan-connector" data-pvp-connector="${escapeAttribute(connector.connectorId)}"${styleAttributes(connector.styles)} d="${d}"/>`;
 }
 
 function renderPrimitive(primitive) {
   const { bounds } = primitive;
   const className = primitive.kind.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
-  return `<g class="publication-visual-plan-primitive publication-visual-plan-primitive--${className}" data-pvp-primitive="${escapeAttribute(primitive.primitiveId)}"><rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="12" ry="12"/><text x="${bounds.x + 12}" y="${bounds.y + Math.floor(bounds.height / 2)}">${escapeHtml(primitive.label || primitive.kind)}</text></g>`;
+  return `<g class="publication-visual-plan-primitive publication-visual-plan-primitive--${className}" data-pvp-primitive="${escapeAttribute(primitive.primitiveId)}"><rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="12" ry="12"${styleAttributes(primitive.styles)}/><text x="${bounds.x + 12}" y="${bounds.y + Math.floor(bounds.height / 2)}">${escapeHtml(primitive.label || primitive.kind)}</text></g>`;
 }
 
 function renderAnnotation(annotation) {
@@ -261,6 +287,19 @@ function parseIdentifierArray(value, label) {
   assertDenseArray(value, label);
   if (value.length > MAX_ITEMS || !value.every(identifier)) throw new Error(`${label} is invalid`);
   return Object.freeze([...value]);
+}
+
+function validStyleValue(key, value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 32) return false;
+  if (key === "strokeWidth") return /^[1-9][0-9]?$/.test(value);
+  return /^#[0-9a-fA-F]{6}$/.test(value);
+}
+function styleAttributes(styles) {
+  const attributes = [];
+  if (styles.stroke) attributes.push(` stroke="${escapeAttribute(styles.stroke)}"`);
+  if (styles.fill) attributes.push(` fill="${escapeAttribute(styles.fill)}"`);
+  if (styles.strokeWidth) attributes.push(` stroke-width="${escapeAttribute(styles.strokeWidth)}"`);
+  return attributes.join("");
 }
 
 function identifier(value) { return typeof value === "string" && /^[A-Za-z][A-Za-z0-9._:-]{0,239}$/.test(value); }

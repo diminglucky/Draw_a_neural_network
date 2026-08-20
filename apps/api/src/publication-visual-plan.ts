@@ -42,9 +42,17 @@ export function parsePublicationVisualPlan(input: unknown): PublicationVisualPla
   const primitives = plan.primitives as unknown[];
   const ports = plan.ports as unknown[];
   const connectors = plan.connectors as unknown[];
+  const profileApplications = plan.profileApplications as unknown[];
   assertSortedUnique(primitives, "primitiveId", "PVP primitive");
   assertSortedUnique(ports, "portId", "PVP port");
   assertSortedUnique(connectors, "connectorId", "PVP connector");
+  assertSortedUnique(profileApplications, "applicationId", "PVP Profile application");
+  for (const value of profileApplications) {
+    const application = record(value, "PVP Profile application is invalid");
+    assertExactKeys(application, ["applicationId", "profileId", "profileVersion", "inputHash", "outputHash", "affectedIds"], "PVP Profile application");
+    const affectedIds = application.affectedIds;
+    if (application.applicationId !== `profile-application:${String(application.profileId ?? "")}` || !identifier(application.profileId) || typeof application.profileVersion !== "string" || application.profileVersion.length === 0 || application.profileVersion.length > 64 || typeof application.inputHash !== "string" || !DIGEST.test(application.inputHash) || typeof application.outputHash !== "string" || !DIGEST.test(application.outputHash) || !Array.isArray(affectedIds) || affectedIds.length === 0 || affectedIds.some((id) => !identifier(id)) || new Set(affectedIds).size !== affectedIds.length || affectedIds.some((id, index) => id !== [...affectedIds].sort(compareCodeUnits)[index])) throw new Error("PVP Profile application is invalid");
+  }
   const primitiveById = new Map<string, Record<string, unknown>>();
   for (const value of primitives) {
     const primitive = record(value, "PVP primitive is invalid");

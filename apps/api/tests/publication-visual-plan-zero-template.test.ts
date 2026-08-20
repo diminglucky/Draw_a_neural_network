@@ -8,15 +8,17 @@ import {
   unknownCustomSpatialBackboneUgs,
   unknownDualTowerCrossModalFusionUgs,
   unknownMultiScaleEncoderDecoderUgs,
+  unknownRepeatedFusionStackUgs,
   unknownResidualMultiBranchUgs,
 } from "./fixtures/universal-graph-spec.js";
 
 const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
 const fixtureFamilies = [
-  ["custom spatial backbone", unknownCustomSpatialBackboneUgs],
-  ["residual multi-branch network", unknownResidualMultiBranchUgs],
-  ["multi-scale encoder-decoder", unknownMultiScaleEncoderDecoderUgs],
-  ["dual-tower cross-modal fusion", unknownDualTowerCrossModalFusionUgs],
+  ["custom spatial backbone", unknownCustomSpatialBackboneUgs, "spatial-scale"],
+  ["residual multi-branch network", unknownResidualMultiBranchUgs, "residual-branch"],
+  ["multi-scale encoder-decoder", unknownMultiScaleEncoderDecoderUgs, "encoder-decoder"],
+  ["dual-tower cross-modal fusion", unknownDualTowerCrossModalFusionUgs, "dual-tower-fusion"],
+  ["repeated fusion stack", unknownRepeatedFusionStackUgs, "repeat-collapse"],
 ] as const;
 
 function compile(creator: () => any) {
@@ -57,7 +59,7 @@ function assertPvpGeometry(plan: any) {
 }
 
 describe("zero-template universal PVP fixture matrix", () => {
-  it.each(fixtureFamilies)("renders %s through the same deterministic UGS to SVG path", (_name, creator) => {
+  it.each(fixtureFamilies)("renders %s through the same deterministic UGS to SVG path", (_name, creator, expectedProfileId) => {
     const first = compile(creator);
     const second = compile(creator);
     const qa = evaluatePublicationVisualPlanQa(first);
@@ -70,12 +72,18 @@ describe("zero-template universal PVP fixture matrix", () => {
 
     expect(first.identity.canonicalHash).toBe(second.identity.canonicalHash);
     expect(first.eligibility).toMatchObject({ kind: "formal", qaStatus: "pending" });
+    expect(first.profileApplications).toMatchObject([{ profileId: expectedProfileId, profileVersion: "u3-1" }]);
     expect(qa).toMatchObject({ status: "passed", planHash: first.identity.canonicalHash });
     expect(first.sourceMappings).toHaveLength(first.primitives.length);
     assertPvpGeometry(first);
     const coordinateSpace = first.coordinateSpace as any;
     expect(svg).toContain(`viewBox="0 0 ${coordinateSpace.page.width} ${coordinateSpace.page.height}"`);
     for (const primitive of first.primitives as any[]) expect(svg).toContain(`data-pvp-primitive="${primitive.primitiveId}"`);
+    const appliedPrimitive = (first.primitives as any[]).find((primitive) => primitive.styleTokenIds.length > 0);
+    expect(appliedPrimitive).toBeDefined();
+    const tokenId = appliedPrimitive.styleTokenIds[0];
+    const token = (first.styleTokens as any).tokens.find((item: any) => item.tokenId === tokenId);
+    expect(svg).toContain(`stroke="${token.values.stroke}"`);
     expect(svg).not.toMatch(/vgg|resnet|unet|transformer/i);
   });
 

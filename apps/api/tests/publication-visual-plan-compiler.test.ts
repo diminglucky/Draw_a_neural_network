@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { assertPublicationVisualPlanRendererCapabilities, compilePublicationVisualPlan } from "../src/publication-visual-plan-compiler.js";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
-import { unknownDualStreamFusionUgs } from "./fixtures/universal-graph-spec.js";
+import { unknownDualStreamFusionUgs, unknownResidualMultiBranchUgs } from "./fixtures/universal-graph-spec.js";
 
 const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
 
@@ -51,5 +51,20 @@ describe("PublicationVisualPlan compiler", () => {
 
     expect(() => assertPublicationVisualPlanRendererCapabilities(plan, ["native-text", "orthogonal-route"])).toThrow(/shape-data|capability/i);
     expect(() => assertPublicationVisualPlanRendererCapabilities(plan, ["native-text", "orthogonal-route", "shape-data"])).not.toThrow();
+  });
+
+  it("records deterministic Profile provenance without changing structural PVP topology", () => {
+    const ugs = parseUniversalGraphSpec(unknownResidualMultiBranchUgs());
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const first = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const second = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+
+    expect(first.profileApplications).toEqual(second.profileApplications);
+    expect(first.profileApplications).toMatchObject([{ profileId: "residual-branch", profileVersion: "u3-1" }]);
+    expect((first.lineage as any).profileSetHash).not.toBe("4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945");
+    expect(first.sourceMappings).toEqual(second.sourceMappings);
+    expect(first.ports).toEqual(second.ports);
+    expect((first.connectors as any[]).map(({ connectorId, sourcePortId, targetPortId, route }) => ({ connectorId, sourcePortId, targetPortId, route })))
+      .toEqual((second.connectors as any[]).map(({ connectorId, sourcePortId, targetPortId, route }) => ({ connectorId, sourcePortId, targetPortId, route })));
   });
 });

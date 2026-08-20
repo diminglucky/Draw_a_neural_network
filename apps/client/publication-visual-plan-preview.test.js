@@ -80,6 +80,28 @@ describe("PublicationVisualPlan browser preview", () => {
     expect(svg).toContain("No source is rendered");
   });
 
+  it("projects stored Profile style tokens without inferring new topology or geometry", () => {
+    const response = planResponse();
+    response.pvp.styleTokens = {
+      tokenSetVersion: "pvp-style-1",
+      tokens: [
+        { tokenId: "profile:test:primitive", values: { stroke: "#1d4ed8", fill: "#eff6ff", strokeWidth: "3" } },
+        { tokenId: "profile:test:connector", values: { stroke: "#2563eb", strokeWidth: "3" } },
+      ],
+    };
+    response.pvp.primitives[1].styleTokenIds = ["profile:test:primitive"];
+    response.pvp.connectors[0].styleTokenIds = ["profile:test:connector"];
+
+    const svg = renderPublicationVisualPlanPreview(response);
+
+    expect(svg).toContain('data-pvp-primitive="primitive:custom"');
+    expect(svg).toContain('stroke="#1d4ed8"');
+    expect(svg).toContain('fill="#eff6ff"');
+    expect(svg).toContain('data-pvp-connector="connector:input-custom"');
+    expect(svg).toContain('stroke="#2563eb"');
+    expect(svg).toContain('stroke-width="3"');
+  });
+
   it("makes candidate state visible and never advertises export", () => {
     const response = planResponse("candidate");
     const svg = renderPublicationVisualPlanPreview(response);

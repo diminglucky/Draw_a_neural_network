@@ -56,4 +56,18 @@ describe("PublicationVisualPlan v1", () => {
 
     expect(() => parsePublicationVisualPlan(plan)).toThrow();
   });
+
+  it("rejects forged or malformed Presentation Profile provenance before canonicalization", () => {
+    const draft = formalDraft() as any;
+    draft.profileApplications = [{
+      applicationId: "profile-application:residual-branch",
+      profileId: "residual-branch",
+      profileVersion: "u3-1",
+      inputHash: "not-a-digest",
+      outputHash: digest("f"),
+      affectedIds: ["node:merge"],
+    }];
+
+    expect(() => createPublicationVisualPlan(draft)).toThrow(/Profile application|PVP/i);
+  });
 });

@@ -1,6 +1,7 @@
 import { digestGenericPlanSnapshotValue } from "./generic-plan-snapshot.js";
 import { composeGeneralPublicationGraph, type GeneralPublicationComponentRole, type GeneralPublicationGraph } from "./general-publication-graph.js";
 import { createPublicationVisualPlan, type PublicationVisualPlan } from "./publication-visual-plan.js";
+import { applyPresentationProfiles } from "./presentation-profile-registry.js";
 import { getUniversalGraphEligibility, parseUniversalGraphSpec, type UniversalGraphSpec } from "./universal-graph-spec.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
@@ -25,6 +26,15 @@ export function assertPublicationVisualPlanRendererCapabilities(plan: Publicatio
 }
 
 export function compilePublicationVisualPlan(input: { ugs: UniversalGraphSpec; graph: GeneralPublicationGraph; updateIdentity: PublicationVisualPlanUpdateIdentity }): PublicationVisualPlan {
+  const ugs = parseUniversalGraphSpec(input.ugs);
+  const graph = composeGeneralPublicationGraph(ugs, { detail: input.graph.detail });
+  if (digestGenericPlanSnapshotValue(input.graph) !== digestGenericPlanSnapshotValue(graph)) throw new Error("General Publication Graph must match canonical UGS projection");
+  const generalPlan = compileGeneralPublicationVisualPlan({ ugs, graph, updateIdentity: input.updateIdentity });
+  return applyPresentationProfiles({ ugs, graph, plan: generalPlan }).plan;
+}
+
+/** Produces the renderer-neutral General PVP before any optional presentation enhancement. */
+export function compileGeneralPublicationVisualPlan(input: { ugs: UniversalGraphSpec; graph: GeneralPublicationGraph; updateIdentity: PublicationVisualPlanUpdateIdentity }): PublicationVisualPlan {
   const ugs = parseUniversalGraphSpec(input.ugs);
   const canonicalGraph = composeGeneralPublicationGraph(ugs, { detail: input.graph.detail });
   if (digestGenericPlanSnapshotValue(input.graph) !== digestGenericPlanSnapshotValue(canonicalGraph)) throw new Error("General Publication Graph must match canonical UGS projection");
