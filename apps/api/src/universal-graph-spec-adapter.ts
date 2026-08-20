@@ -1,5 +1,6 @@
 import type { ArchitectureEdge, ArchitectureIRNode, ArchitectureIRv3, TypedPort, UnresolvedQuestion } from "./network-ir-v3.js";
 import { parseUniversalGraphSpec, type UniversalEdgeRelation, type UniversalEvidence, type UniversalGraphSpec, type UniversalNode, type UniversalNodeKind } from "./universal-graph-spec.js";
+import { compareCodeUnits } from "./stable-string-order.js";
 
 const knownOperatorRoles = new Set([
   "conv2d", "normalization", "activation", "pool", "dense", "flatten", "identity_projection",
@@ -132,7 +133,7 @@ function projectEdge(edge: ArchitectureEdge, evidenceIdsBySourceEvidenceId: Map<
 function projectEvidence(ir: ArchitectureIRv3): { items: UniversalEvidence[]; idsBySourceEvidenceId: Map<string, string[]> } {
   const idsBySourceEvidenceId = new Map<string, string[]>();
   const reservedEvidenceIds = new Set(Object.keys(ir.evidenceIndex));
-  const items = Object.entries(ir.evidenceIndex).sort(([left], [right]) => left.localeCompare(right)).flatMap(([evidenceId, refs]) => {
+  const items = Object.entries(ir.evidenceIndex).sort(([left], [right]) => compareCodeUnits(left, right)).flatMap(([evidenceId, refs]) => {
     const projectedIds = refs.map((_, index) => index === 0 ? evidenceId : allocateDerivedEvidenceId(evidenceId, index + 1, reservedEvidenceIds));
     idsBySourceEvidenceId.set(evidenceId, projectedIds);
     return refs.map((ref, index) => ({

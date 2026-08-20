@@ -35,6 +35,13 @@ describe("UniversalGraphSpec", () => {
     expect(() => parseUniversalGraphSpec(input)).toThrow(/unrecognized|unknown/i);
   });
 
+  it.each(["worker", "browser", "com", "sourceBytes", "rawSource", "workerCommand", "rendererPath", "visioModel", "outputPath", "geometry", "geometryMode", "geometry_mode", "rendering", "renderingMode", "rendering_mode", "execution", "executionTarget", "execution_target"])('rejects forbidden execution or renderer attribute key %s', (attributeKey) => {
+    const input = unknownDualStreamFusionUgs();
+    input.nodes[1].attributes = { [attributeKey]: "unsafe" };
+
+    expect(() => parseUniversalGraphSpec(input)).toThrow(/attribute|permitted/i);
+  });
+
   it("rejects a non-feedback cycle instead of treating it as a drawable DAG", () => {
     const input = unknownDualStreamFusionUgs();
     input.edges.push({

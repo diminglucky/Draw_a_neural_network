@@ -83,4 +83,15 @@ describe("ArchitectureIRv3 to UniversalGraphSpec adapter", () => {
       "evidence-main:ref-2",
     ]));
   });
+
+  it("uses code-unit ordering for projected evidence keys", () => {
+    const source = cnnGoldIr();
+    source.evidenceIndex.I = [{ ...source.evidenceIndex["evidence-main"]![0]! }];
+    source.evidenceIndex.i = [{ ...source.evidenceIndex["evidence-main"]![0]! }];
+
+    const ugs = projectArchitectureIrV3ToUniversalGraphSpec(parseArchitectureIRv3(source));
+    const evidenceIds = ugs.evidence.map((item) => item.evidenceId);
+
+    expect(evidenceIds.indexOf("I")).toBeLessThan(evidenceIds.indexOf("i"));
+  });
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { compareCodeUnits } from "./stable-string-order.js";
 
 const MAX_NODES = 256;
 const MAX_PORTS = 1_024;
@@ -13,7 +14,8 @@ const nullableLabelSchema = z.string().trim().min(1).max(240).nullable();
 const evidenceIdListSchema = z.array(idSchema).max(64);
 const structuralEvidenceIdListSchema = evidenceIdListSchema.min(1);
 const attributeValueSchema = z.union([z.string().trim().max(240), z.number().finite(), z.boolean(), z.null()]);
-const forbiddenAttributeKey = /(?:^|_)(?:x|y|width|height|bounds|coordinate|coordinates|path|command|script|visio|svg|xml|renderer)(?:$|_)/i;
+const forbiddenAttributeTokens = new Set(["x", "y", "width", "height", "bounds", "coordinate", "coordinates", "geometry", "path", "command", "script", "execution", "visio", "svg", "xml", "renderer", "rendering", "worker", "browser", "com"]);
+const forbiddenAttributeCompounds = new Set(["sourcebytes", "rawsource", "sourcecode"]);
 
 export type UniversalNodeKind = "input" | "output" | "operator" | "custom_operator" | "custom_module" | "container" | "state";
 export type UniversalPortDirection = "input" | "output";
@@ -107,11 +109,16 @@ const attributesSchema = z.record(attributeValueSchema).superRefine((value, cont
   const keys = Object.keys(value);
   if (keys.length > 32) context.addIssue({ code: z.ZodIssueCode.custom, message: "attributes may contain at most 32 values" });
   for (const key of keys) {
-    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key) || forbiddenAttributeKey.test(key)) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key) || isForbiddenAttributeKey(key)) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: `attribute "${key}" is not permitted` });
     }
   }
 });
+
+function isForbiddenAttributeKey(key: string): boolean {
+  const tokens = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").split("_").filter(Boolean).map((token) => token.toLowerCase());
+  return tokens.some((token) => forbiddenAttributeTokens.has(token)) || forbiddenAttributeCompounds.has(tokens.join(""));
+}
 
 const nodeSchema = z.object({
   nodeId: idSchema,
@@ -298,7 +305,7 @@ function findNonFeedbackCycle(ugs: UniversalGraphSpec, portById: Map<string, Uni
     outgoing.push({ edgeId: edge.edgeId, targetNodeId });
     adjacency.set(sourceNodeId, outgoing);
   }
-  for (const outgoing of adjacency.values()) outgoing.sort((left, right) => left.edgeId.localeCompare(right.edgeId));
+  for (const outgoing of adjacency.values()) outgoing.sort((left, right) => compareCodeUnits(left.edgeId, right.edgeId));
 
   const state = new Map<string, "visiting" | "visited">();
   const nodeStack: string[] = [];
@@ -323,7 +330,7 @@ function findNonFeedbackCycle(ugs: UniversalGraphSpec, portById: Map<string, Uni
     return [];
   };
 
-  for (const nodeId of [...ugs.nodes.map((node) => node.nodeId)].sort((left, right) => left.localeCompare(right))) {
+  for (const nodeId of [...ugs.nodes.map((node) => node.nodeId)].sort(compareCodeUnits)) {
     if (!state.has(nodeId)) {
       const cycle = visit(nodeId);
       if (cycle.length > 0) return cycle;

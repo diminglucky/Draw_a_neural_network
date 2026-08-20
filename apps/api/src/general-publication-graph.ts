@@ -1,4 +1,5 @@
-import { getUniversalGraphEligibility, type UniversalGraphSpec } from "./universal-graph-spec.js";
+import { getUniversalGraphEligibility, parseUniversalGraphSpec, type UniversalGraphSpec } from "./universal-graph-spec.js";
+import { compareCodeUnits } from "./stable-string-order.js";
 
 export type GeneralPublicationComponentRole = "input" | "output" | "generic_module" | "custom_operator" | "custom_module" | "split" | "merge_add" | "merge_concat" | "custom_fusion" | "repeat_badge" | "candidate_region";
 
@@ -33,10 +34,11 @@ export interface GeneralPublicationGraph {
   layoutOrder: Array<{ componentId: string; rank: number; order: number }>;
 }
 
-export function composeGeneralPublicationGraph(ugs: UniversalGraphSpec, intent: { detail: "overview" | "architecture" | "operator_detail" }): GeneralPublicationGraph {
+export function composeGeneralPublicationGraph(input: UniversalGraphSpec, intent: { detail: "overview" | "architecture" | "operator_detail" }): GeneralPublicationGraph {
+  const ugs = parseUniversalGraphSpec(input);
   const rankByNodeId = ranksFor(ugs);
   const nodeComponentId = (nodeId: string) => `node:${nodeId}`;
-  const orderedNodes = [...ugs.nodes].sort((left, right) => rankByNodeId.get(left.nodeId)! - rankByNodeId.get(right.nodeId)! || left.nodeId.localeCompare(right.nodeId));
+  const orderedNodes = [...ugs.nodes].sort((left, right) => rankByNodeId.get(left.nodeId)! - rankByNodeId.get(right.nodeId)! || compareCodeUnits(left.nodeId, right.nodeId));
   const components: GeneralPublicationComponent[] = [];
 
   for (const [order, node] of orderedNodes.entries()) {
@@ -80,7 +82,7 @@ export function composeGeneralPublicationGraph(ugs: UniversalGraphSpec, intent: 
 
   const relations: GeneralPublicationRelation[] = [];
   const candidateEdges = [];
-  for (const edge of [...ugs.edges].sort((left, right) => left.edgeId.localeCompare(right.edgeId))) {
+  for (const edge of [...ugs.edges].sort((left, right) => compareCodeUnits(left.edgeId, right.edgeId))) {
     const sourceNodeId = portOwner(ugs, edge.sourcePortId);
     const targetNodeId = portOwner(ugs, edge.targetPortId);
     if (!sourceNodeId || !targetNodeId) continue;
@@ -110,12 +112,12 @@ export function composeGeneralPublicationGraph(ugs: UniversalGraphSpec, intent: 
   }
   const blockingTopologyUnresolved = ugs.unresolved
     .filter((item) => item.scope === "topology" && item.severity === "blocking")
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareCodeUnits(left.id, right.id));
   for (const [index, unresolved] of blockingTopologyUnresolved.entries()) {
     const sourceNodeIds = ugs.nodes
       .filter((node) => node.evidenceIds.some((evidenceId) => unresolved.evidenceIds.includes(evidenceId)))
       .map((node) => node.nodeId)
-      .sort((left, right) => left.localeCompare(right));
+      .sort(compareCodeUnits);
     components.push({
       componentId: `candidate:unresolved:${unresolved.id}`,
       role: "candidate_region",
@@ -130,7 +132,7 @@ export function composeGeneralPublicationGraph(ugs: UniversalGraphSpec, intent: 
     });
   }
 
-  const sortedComponents = [...components].sort((left, right) => left.layoutOrder.rank - right.layoutOrder.rank || left.layoutOrder.order - right.layoutOrder.order || left.componentId.localeCompare(right.componentId));
+  const sortedComponents = [...components].sort((left, right) => left.layoutOrder.rank - right.layoutOrder.rank || left.layoutOrder.order - right.layoutOrder.order || compareCodeUnits(left.componentId, right.componentId));
   const eligibility = getUniversalGraphEligibility(ugs);
   const exportEligibility = candidateEdges.some((item) => item.edge.relation === "feedback") ? "ineligible" : eligibility.export;
   return {
@@ -160,7 +162,7 @@ function ranksFor(ugs: UniversalGraphSpec): Map<string, number> {
     .filter((edge) => edge.relation !== "candidate" && edge.knowledge !== "candidate" && edge.relation !== "feedback")
     .map((edge) => ({ edge, sourceNodeId: portOwner(ugs, edge.sourcePortId), targetNodeId: portOwner(ugs, edge.targetPortId) }))
     .filter((item): item is { edge: UniversalGraphSpec["edges"][number]; sourceNodeId: string; targetNodeId: string } => item.sourceNodeId !== null && item.targetNodeId !== null)
-    .sort((left, right) => left.edge.edgeId.localeCompare(right.edge.edgeId));
+    .sort((left, right) => compareCodeUnits(left.edge.edgeId, right.edge.edgeId));
   for (let iteration = 0; iteration < ugs.nodes.length; iteration += 1) {
     let changed = false;
     for (const item of edges) {
@@ -199,5 +201,5 @@ function relationRole(relation: UniversalGraphSpec["edges"][number]["relation"])
 }
 
 function uniqueSorted(values: string[]): string[] {
-  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+  return [...new Set(values)].sort(compareCodeUnits);
 }
