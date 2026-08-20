@@ -14,6 +14,8 @@ import type { AgentTaskIntent } from "./agent-intent.js";
 import { parseEvidenceBundle, publicEvidenceSummary, type EvidenceBundle, type EvidenceKind } from "./evidence-bundle.js";
 import { FigureDraftService, type FigureDraftConfirmation } from "./figure-draft-service.js";
 import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
+import { parseFigureDraftRevisionPayload } from "./figure-draft-payload.js";
+import { PublicationVisualPreviewService } from "./publication-visual-preview-service.js";
 import { AgentVisioExecutionSnapshotService } from "./agent-visio-execution-snapshot.js";
 import { UniversalFigureExportService } from "./figure-export-service.js";
 import { FigureAnalysisService } from "./figure-analysis-service.js";
@@ -1084,6 +1086,84 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const preview = await options.figureDraftPreviewService.compile(access.user.id, draftId);
     await auditFigureDraftPreview(options.store, access.user.id, draftId, preview);
     return preview;
+  });
+
+  app.get("/api/figure-drafts/:draftId/revisions/:revision/publication-preview", async (request) => {
+    const access = await requireUser(request, options);
+    universalFigureVersion(request);
+    const { draftId, revision: revisionParam } = request.params as { draftId: string; revision: string };
+    const revisionNumber = Number(revisionParam);
+    if (!Number.isSafeInteger(revisionNumber) || revisionNumber < 1) {
+      throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft revision was not found", 404);
+    }
+    const snapshot = await options.figureDraftService.getRevision(access.user.id, draftId, revisionNumber);
+    if (!snapshot) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft revision was not found", 404);
+    const payload = parseFigureDraftRevisionPayload(snapshot.revision.payload, { statusCode: 500 });
+    if (!payload.universalGraphSpec) {
+      throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Figure draft revision cannot generate a publication preview", 409, {
+        reason: "universal_graph_spec_missing",
+      });
+    }
+    const blockingQuestion = payload.blockingQuestions[0];
+    if (snapshot.revision.status === "needs_confirmation" || blockingQuestion) {
+      if (snapshot.revision.status !== "needs_confirmation" || !blockingQuestion) {
+        throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Figure draft revision clarification state is invalid", 500);
+      }
+      await options.store.createAuditRecord({
+        id: randomUUID(),
+        actorType: "user",
+        actorId: access.user.id,
+        action: "figure-draft.publication-preview.read",
+        targetType: "figure-draft",
+        targetId: draftId,
+        reason: null,
+        metadata: { draftId, revision: revisionNumber, kind: "clarification" },
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        kind: "clarification" as const,
+        draft: { id: snapshot.draft.id, revision: snapshot.revision.revision },
+        question: blockingQuestion,
+        affectedRegionIds: [],
+        evidenceIds: [],
+      };
+    }
+    const preview = new PublicationVisualPreviewService().preview({
+      ugs: payload.universalGraphSpec,
+      detail: "architecture",
+      updateIdentity: {
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        workflowId: `draft:${draftId}`,
+        documentId: `preview:${draftId}`,
+        pageId: "publication-preview",
+        expectedRevision: revisionNumber,
+      },
+    });
+    await options.store.createAuditRecord({
+      id: randomUUID(),
+      actorType: "user",
+      actorId: access.user.id,
+      action: "figure-draft.publication-preview.read",
+      targetType: "figure-draft",
+      targetId: draftId,
+      reason: null,
+      metadata: {
+        draftId,
+        revision: revisionNumber,
+        kind: preview.kind,
+        exportEligible: preview.exportEligible,
+        planId: preview.pvp.identity.planId,
+        planHash: preview.pvp.identity.canonicalHash,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    return {
+      kind: preview.kind,
+      exportEligible: preview.exportEligible,
+      draft: { id: snapshot.draft.id, revision: snapshot.revision.revision },
+      pvp: preview.pvp,
+    };
   });
 
   app.get("/api/figure-drafts/:draftId/revisions/:revision", async (request) => {

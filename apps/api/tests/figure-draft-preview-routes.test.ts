@@ -94,4 +94,68 @@ describe("figure draft preview route", () => {
     expect(JSON.stringify(response.json())).not.toMatch(/plan|semanticModel|sourceMappings|provider|locator|excerpt/i);
     expect((await store.listAuditRecords()).some((record) => record.action === "figure-draft.preview.read")).toBe(false);
   });
+
+  it("returns a revision-bound publication visual plan without exposing source or renderer controls", async () => {
+    const store = new InMemoryFoundationStore();
+    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-pvp", now: () => "2026-08-14T09:00:00.000Z" });
+    const app = buildApp({
+      sessionSecret: SESSION_SECRET,
+      store,
+      figureDraftService: drafts,
+      figureDraftPreviewService: new FigureDraftPreviewService({ figureDraftService: drafts }),
+    });
+    apps.add(app);
+    const owner = await registerAndLogin(app, "pvp-owner@example.com");
+    const other = await registerAndLogin(app, "pvp-other@example.com");
+    await drafts.createFromAnalysis(owner.userId, "conversation-1", readyVgg16FigureAnalysis());
+
+    const url = "/api/figure-drafts/draft-pvp/revisions/1/publication-preview";
+    const unauthenticated = await app.inject({ method: "GET", url, headers: { "accept-figure-version": "3" } });
+    const foreign = await app.inject({ method: "GET", url, headers: { ...other.headers, "accept-figure-version": "3" } });
+    const response = await app.inject({ method: "GET", url, headers: { ...owner.headers, "accept-figure-version": "3" } });
+
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(foreign.statusCode).toBe(404);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      kind: "formal",
+      exportEligible: true,
+      draft: { id: "draft-pvp", revision: 1 },
+      pvp: {
+        identity: { schemaVersion: 1, planId: expect.any(String), canonicalHash: expect.any(String) },
+        coordinateSpace: { id: "pvp-du-1", duPerInch: 1000 },
+      },
+    });
+    const serialized = JSON.stringify(response.json()).toLowerCase();
+    for (const forbidden of ["locator", "excerpt", "snapshot", "worker", "command"]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it("returns clarification without a PVP while the revision has a blocking topology question", async () => {
+    const store = new InMemoryFoundationStore();
+    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-clarification", now: () => "2026-08-14T09:00:00.000Z" });
+    const app = buildApp({ sessionSecret: SESSION_SECRET, store, figureDraftService: drafts });
+    apps.add(app);
+    const owner = await registerAndLogin(app, "clarification-owner@example.com");
+    const analysis = readyVgg16FigureAnalysis();
+    analysis.status = "needs_confirmation";
+    analysis.blockingQuestions = [{ id: "topology-direction", question: "Which direction does this branch use?", candidateValues: ["forward", "reverse"] }];
+    await drafts.createFromAnalysis(owner.userId, "conversation-1", analysis);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/figure-drafts/draft-clarification/revisions/1/publication-preview",
+      headers: { ...owner.headers, "accept-figure-version": "3" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      kind: "clarification",
+      draft: { id: "draft-clarification", revision: 1 },
+      question: { id: "topology-direction", question: "Which direction does this branch use?", candidateValues: ["forward", "reverse"] },
+      affectedRegionIds: [],
+      evidenceIds: [],
+    });
+  });
 });

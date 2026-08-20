@@ -94,4 +94,43 @@ describe("ArchitectureIRv3 to UniversalGraphSpec adapter", () => {
 
     expect(evidenceIds.indexOf("I")).toBeLessThan(evidenceIds.indexOf("i"));
   });
+
+  it("closes legacy structural evidence references when the v3 evidence index is unavailable", () => {
+    const source = cnnGoldIr();
+    source.evidenceIndex = {};
+
+    const ugs = projectArchitectureIrV3ToUniversalGraphSpec(parseArchitectureIRv3(source));
+    const evidenceIds = new Set(ugs.evidence.map((item) => item.evidenceId));
+
+    expect(ugs.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceId: "evidence-main",
+        sourceId: "architecture-v3",
+        sourceHash: "0".repeat(64),
+        locator: "architecture-v3:evidence-main",
+        excerptDigest: "0".repeat(64),
+      }),
+    ]));
+    expect(ugs.nodes.flatMap((node) => node.evidenceIds).every((id) => evidenceIds.has(id))).toBe(true);
+    expect(ugs.edges.flatMap((edge) => edge.evidenceIds).every((id) => evidenceIds.has(id))).toBe(true);
+  });
+
+  it("marks a legacy edge without direct evidence as a declared migration fact instead of rejecting the graph", () => {
+    const source = cnnGoldIr();
+    source.edges[0] = { ...source.edges[0]!, evidenceIds: [] };
+
+    const ugs = projectArchitectureIrV3ToUniversalGraphSpec(parseArchitectureIRv3(source));
+
+    expect(ugs.edges[0]).toMatchObject({
+      knowledge: "declared",
+      evidenceIds: ["architecture-v3-edge:edge-input-operator"],
+    });
+    expect(ugs.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceId: "architecture-v3-edge:edge-input-operator",
+        sourceId: "architecture-v3",
+        locator: "architecture-v3:architecture-v3-edge:edge-input-operator",
+      }),
+    ]));
+  });
 });

@@ -8,6 +8,8 @@ import {
 } from "./figure-draft-payload.js";
 import type { FigureAnalysisResult } from "./publication-figure-agent.js";
 import type { FoundationStore } from "./store.js";
+import { adaptCanonicalNetworkIRv2 } from "./network-ir-v2-to-v3.js";
+import { projectArchitectureIrV3ToUniversalGraphSpec } from "./universal-graph-spec-adapter.js";
 
 export interface FigureDraftServiceOptions {
   store: FoundationStore;
@@ -58,6 +60,14 @@ export class FigureDraftService {
     return { draft, revision };
   }
 
+  async getRevision(userId: string, draftId: string, revisionNumber: number): Promise<FigureDraftSnapshot | null> {
+    const draft = await this.options.store.getFigureDraft(userId, draftId);
+    if (!draft) return null;
+    const revision = await this.options.store.getFigureDraftRevision(userId, draftId, revisionNumber);
+    if (!revision) return null;
+    return { draft, revision };
+  }
+
   async confirm(userId: string, draftId: string, expectedRevision: number, answer: FigureDraftConfirmation): Promise<FigureDraftConfirmationResult> {
     const confirmation = parseFigureDraftConfirmation(answer);
     const draft = await this.options.store.getFigureDraft(userId, draftId);
@@ -102,6 +112,7 @@ function publicPayload(analysis: FigureAnalysisResult): FigureDraftRevisionPaylo
     taskIntent: structuredClone(analysis.taskIntent),
     evidence: structuredClone(analysis.evidence),
     canonicalNetworkIR: structuredClone(analysis.canonicalNetworkIR),
+    universalGraphSpec: projectArchitectureIrV3ToUniversalGraphSpec(adaptCanonicalNetworkIRv2(analysis.canonicalNetworkIR)),
     blockingQuestions,
     resolvedConfirmations: [],
     warnings: [...analysis.warnings],

@@ -31,13 +31,13 @@ export function projectArchitectureIrV3ToUniversalGraphSpec(ir: ArchitectureIRv3
         groupId: module.id,
         label: module.label,
         memberNodeIds: [...module.memberNodeIds],
-        evidenceIds: projectEvidenceIds(module.evidenceIds, projectedEvidence.idsBySourceEvidenceId),
+        evidenceIds: projectStructuralEvidenceIds(module.evidenceIds, "group", module.id, projectedEvidence.idsBySourceEvidenceId),
       })),
       ...ir.nodes.filter((node) => node.repeat).map((node) => ({
         groupId: repeatGroupIds.get(node.id)!,
         label: `${node.semanticRole} unit`,
         memberNodeIds: [...node.repeat!.unitNodeIds],
-        evidenceIds: projectEvidenceIds(node.evidenceIds, projectedEvidence.idsBySourceEvidenceId),
+        evidenceIds: projectStructuralEvidenceIds(node.evidenceIds, "node", node.id, projectedEvidence.idsBySourceEvidenceId),
       })),
     ],
     evidence: safeEvidence,
@@ -58,7 +58,7 @@ function projectNode(node: ArchitectureIRNode, repeatGroupIds: Map<string, strin
     attributes: nodeAttributes(node, repeatGroupIds),
     shapeClaim: nodeHasKnownShape(node) ? "proven" : "unknown",
     operationKnowledge: kind === "custom_operator" || kind === "custom_module" ? "custom" : "known",
-    evidenceIds: projectEvidenceIds(node.evidenceIds, evidenceIdsBySourceEvidenceId),
+    evidenceIds: projectStructuralEvidenceIds(node.evidenceIds, "node", node.id, evidenceIdsBySourceEvidenceId),
   };
 }
 
@@ -125,17 +125,18 @@ function projectEdge(edge: ArchitectureEdge, evidenceIdsBySourceEvidenceId: Map<
     sourcePortId: portId(edge.source.nodeId, edge.source.portId),
     targetPortId: portId(edge.target.nodeId, edge.target.portId),
     relation,
-    knowledge: "proven" as const,
-    evidenceIds: projectEvidenceIds(edge.evidenceIds, evidenceIdsBySourceEvidenceId),
+    knowledge: edge.evidenceIds.length === 0 ? "declared" as const : "proven" as const,
+    evidenceIds: projectStructuralEvidenceIds(edge.evidenceIds, "edge", edge.id, evidenceIdsBySourceEvidenceId),
   };
 }
 
 function projectEvidence(ir: ArchitectureIRv3): { items: UniversalEvidence[]; idsBySourceEvidenceId: Map<string, string[]> } {
   const idsBySourceEvidenceId = new Map<string, string[]>();
-  const reservedEvidenceIds = new Set(Object.keys(ir.evidenceIndex));
+  const referencedEvidenceIds = collectReferencedEvidenceIds(ir);
+  const reservedEvidenceIds = new Set([...Object.keys(ir.evidenceIndex), ...referencedEvidenceIds]);
   const items = Object.entries(ir.evidenceIndex).sort(([left], [right]) => compareCodeUnits(left, right)).flatMap(([evidenceId, refs]) => {
     const projectedIds = refs.map((_, index) => index === 0 ? evidenceId : allocateDerivedEvidenceId(evidenceId, index + 1, reservedEvidenceIds));
-    idsBySourceEvidenceId.set(evidenceId, projectedIds);
+    if (projectedIds.length > 0) idsBySourceEvidenceId.set(evidenceId, projectedIds);
     return refs.map((ref, index) => ({
       evidenceId: projectedIds[index]!,
       sourceId: ref.sourceId,
@@ -144,7 +145,33 @@ function projectEvidence(ir: ArchitectureIRv3): { items: UniversalEvidence[]; id
       excerptDigest: ref.excerptDigest,
     }));
   });
-  return { items, idsBySourceEvidenceId };
+
+  for (const evidenceId of referencedEvidenceIds) {
+    if (idsBySourceEvidenceId.has(evidenceId)) continue;
+    idsBySourceEvidenceId.set(evidenceId, [evidenceId]);
+    items.push(structuralFallbackEvidence(evidenceId));
+  }
+
+  return { items: items.sort((left, right) => compareCodeUnits(left.evidenceId, right.evidenceId)), idsBySourceEvidenceId };
+}
+
+function collectReferencedEvidenceIds(ir: ArchitectureIRv3): string[] {
+  return unique([
+    ...ir.nodes.flatMap((node) => structuralSourceEvidenceIds(node.evidenceIds, "node", node.id)),
+    ...ir.edges.flatMap((edge) => structuralSourceEvidenceIds(edge.evidenceIds, "edge", edge.id)),
+    ...ir.modules.flatMap((module) => structuralSourceEvidenceIds(module.evidenceIds, "group", module.id)),
+    ...ir.unresolved.flatMap((question) => structuralSourceEvidenceIds(question.evidenceFactIds, "unresolved", question.id)),
+  ]).sort(compareCodeUnits);
+}
+
+function structuralFallbackEvidence(evidenceId: string): UniversalEvidence {
+  return {
+    evidenceId,
+    sourceId: "architecture-v3",
+    sourceHash: "0".repeat(64),
+    locator: `architecture-v3:${evidenceId}`,
+    excerptDigest: "0".repeat(64),
+  };
 }
 
 function allocateDerivedEvidenceId(sourceEvidenceId: string, ordinal: number, reservedEvidenceIds: Set<string>): string {
@@ -161,8 +188,25 @@ function projectUnresolved(question: UnresolvedQuestion, evidenceIdsBySourceEvid
     id: question.id,
     scope: isTopologyQuestion(question) ? "topology" as const : isShapeQuestion(question) ? "shape" as const : "operation" as const,
     severity: question.severity,
-    evidenceIds: projectEvidenceIds(question.evidenceFactIds, evidenceIdsBySourceEvidenceId),
+    evidenceIds: projectStructuralEvidenceIds(question.evidenceFactIds, "unresolved", question.id, evidenceIdsBySourceEvidenceId),
   };
+}
+
+function projectStructuralEvidenceIds(
+  sourceEvidenceIds: string[],
+  kind: "node" | "edge" | "group" | "unresolved",
+  entityId: string,
+  idsBySourceEvidenceId: Map<string, string[]>,
+): string[] {
+  return projectEvidenceIds(structuralSourceEvidenceIds(sourceEvidenceIds, kind, entityId), idsBySourceEvidenceId);
+}
+
+function structuralSourceEvidenceIds(
+  sourceEvidenceIds: string[],
+  kind: "node" | "edge" | "group" | "unresolved",
+  entityId: string,
+): string[] {
+  return sourceEvidenceIds.length > 0 ? sourceEvidenceIds : [`architecture-v3-${kind}:${entityId}`];
 }
 
 function projectEvidenceIds(sourceEvidenceIds: string[], idsBySourceEvidenceId: Map<string, string[]>): string[] {

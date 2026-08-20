@@ -1113,6 +1113,12 @@ kbd {
   font-weight: 800;
 }
 
+.publication-figure-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .publication-figure-card__meta span,
 .publication-figure-card__summary span {
   padding: 3px 7px;
@@ -1158,6 +1164,45 @@ kbd {
 .publication-figure-svg--grayscale .publication-figure-block rect,
 .publication-figure-svg--grayscale .publication-figure-merge { fill: #f0f1f3; stroke: #2d3742; }
 .publication-figure-svg--grayscale .publication-figure-residual { stroke: #111; }
+
+.publication-visual-plan-svg {
+  display: block;
+  width: 100%;
+  min-width: 520px;
+  height: auto;
+  background: #fff;
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+.publication-visual-plan-page { fill: #fff; }
+.publication-visual-plan-connector { fill: none; stroke: #36516e; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.publication-visual-plan-primitive rect { fill: #eff6ff; stroke: #264f78; stroke-width: 2; }
+.publication-visual-plan-primitive text { fill: #183b5e; font-size: 24px; font-weight: 750; dominant-baseline: middle; }
+.publication-visual-plan-primitive--input rect,
+.publication-visual-plan-primitive--output rect { fill: #dceeff; stroke: #155e98; }
+.publication-visual-plan-primitive--custom-operator rect { fill: #ffe8b8; stroke: #9c6517; }
+.publication-visual-plan-primitive--custom-module rect { fill: #e6e1ff; stroke: #6554a8; }
+.publication-visual-plan-primitive--merge-add rect,
+.publication-visual-plan-primitive--merge-concat rect,
+.publication-visual-plan-primitive--custom-fusion rect { fill: #d9f4e5; stroke: #277251; }
+.publication-visual-plan-primitive--candidate-region rect { fill: #fff6cc; stroke: #9b7413; stroke-dasharray: 10 7; }
+.publication-visual-plan-annotation { fill: #36516e; font-size: 19px; font-weight: 650; dominant-baseline: middle; }
+.publication-visual-plan-candidate rect { fill: rgba(255, 205, 78, 0.12); stroke: #b17a00; stroke-width: 4; stroke-dasharray: 14 10; }
+.publication-visual-plan-candidate text { fill: #765100; font-size: 25px; font-weight: 850; letter-spacing: 0.04em; }
+.publication-visual-plan-svg--candidate .publication-visual-plan-connector { stroke-dasharray: 9 6; }
+
+.publication-visual-plan-clarification {
+  padding: 10px 12px;
+  color: #604807;
+  border: 1px solid rgba(161, 119, 18, 0.45);
+  border-radius: 9px;
+  background: #fff9e8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.publication-visual-plan-clarification p { margin: 0 0 6px; font-weight: 800; }
+.publication-visual-plan-clarification ul { margin: 0; padding-left: 18px; }
 
 .agent-chat-visio-result {
   margin: 10px 0 0;
