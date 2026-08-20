@@ -64,6 +64,8 @@ describe("GenericPlanSnapshot", () => {
     expect(() => createGenericPlanSnapshot(input({ createdAt: "2026-02-30T00:00:00.000Z" }))).toThrow(/timestamp|datetime|createdAt/i);
     expect(() => createGenericPlanSnapshot(input({ sourceHashes: ["d".repeat(64), "d".repeat(64)] }))).toThrow(/sourceHashes|duplicate/i);
     expect(() => canonicalGenericPlanSnapshotJson(Number.POSITIVE_INFINITY)).toThrow(/non-finite/i);
+    expect(() => canonicalGenericPlanSnapshotJson(new Array(1))).toThrow(/sparse|array/i);
+    expect(() => canonicalGenericPlanSnapshotJson([1, , 2])).toThrow(/sparse|array/i);
   });
 
   it("deep-freezes clone-isolated metadata and exposes no renderer or source payload fields", () => {

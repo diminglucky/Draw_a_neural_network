@@ -96,7 +96,10 @@ function serializeCanonicalValue(value: unknown): string {
     if (!Number.isFinite(value)) throw new Error("canonical JSON does not permit non-finite numbers");
     return JSON.stringify(value);
   }
-  if (Array.isArray(value)) return `[${value.map(serializeCanonicalValue).join(",")}]`;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) if (!(index in value)) throw new Error("canonical JSON does not permit sparse arrays");
+    return `[${value.map(serializeCanonicalValue).join(",")}]`;
+  }
   if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
     const record = value as Record<string, unknown>;
     return `{${Object.keys(record).sort(compareCodeUnits).map((key) => `${JSON.stringify(key)}:${serializeCanonicalValue(record[key])}`).join(",")}}`;
