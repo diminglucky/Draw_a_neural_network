@@ -68,8 +68,8 @@ function parsePvpResponse(value) {
   if (kind === "clarification") {
     return Object.freeze({ kind, draft, question: parseQuestion(response.question), affectedRegionIds: parseIdentifierArray(response.affectedRegionIds, "affectedRegionIds"), evidenceIds: parseIdentifierArray(response.evidenceIds, "evidenceIds") });
   }
-  if (response.exportEligible !== (kind === "formal")) throw new Error("PVP preview export eligibility is invalid");
   const pvp = parsePvp(response.pvp, kind);
+  if (response.exportEligible !== (kind === "formal" && pvp.qaStatus === "passed")) throw new Error("PVP preview export eligibility is invalid");
   return Object.freeze({ kind, exportEligible: response.exportEligible, draft, pvp });
 }
 
@@ -97,7 +97,7 @@ function parsePvp(value, responseKind) {
   plainRecord(pvp.legend, "PVP legend is invalid");
   plainRecord(pvp.styleTokens, "PVP styleTokens are invalid");
   plainRecord(pvp.updateIdentity, "PVP update identity is invalid");
-  return Object.freeze({ identity: Object.freeze({ planId: identity.planId }), coordinateSpace, primitives, ports, connectors, annotations });
+  return Object.freeze({ identity: Object.freeze({ planId: identity.planId }), qaStatus: eligibility.qaStatus, coordinateSpace, primitives, ports, connectors, annotations });
 }
 
 function parseDraft(value) {

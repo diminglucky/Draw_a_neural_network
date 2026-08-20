@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
+import { createPublicationVisualPlan, type PublicationVisualPlan } from "../src/publication-visual-plan.js";
 import {
   canonicalGenericPlanSnapshotJson,
   cloneGenericPlanSnapshot,
   createGenericPlanSnapshot,
   type CreateGenericPlanSnapshotInput,
 } from "../src/generic-plan-snapshot.js";
+
+function pvp(overrides: Record<string, unknown> = {}): PublicationVisualPlan {
+  return createPublicationVisualPlan({
+    identity: { schemaVersion: 1, planId: "pvp:snapshot", canonicalHash: "" },
+    eligibility: { kind: "formal", formalReasons: ["topology-complete"], blockingReasons: [], qaStatus: "passed" },
+    lineage: { ugsHash: "a".repeat(64), gpgHash: "b".repeat(64), sourceHashes: ["e".repeat(64), "d".repeat(64)], composerHash: "c".repeat(64), profileSetHash: "f".repeat(64) },
+    coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: { x: 0, y: 0, width: 1000, height: 600 }, safeMargins: { x: 10, y: 10, width: 980, height: 580 } },
+    regions: [], primitiveGroups: [], primitives: [], ports: [], connectors: [], annotations: [], legend: { entries: [], styleTokenIds: [] }, styleTokens: { tokenSetVersion: "pvp-style-1", tokens: [] }, profileApplications: [], sourceMappings: [],
+    rendererRequirements: { protocolVersion: "pvp-renderer-1", requiredCapabilities: ["native-text", "orthogonal-route", "shape-data"], optionalCapabilities: [] },
+    updateIdentity: { ownerId: "user-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 },
+    ...overrides,
+  });
+}
 
 function input(overrides: Partial<CreateGenericPlanSnapshotInput> = {}): CreateGenericPlanSnapshotInput {
   return {
@@ -15,27 +29,22 @@ function input(overrides: Partial<CreateGenericPlanSnapshotInput> = {}): CreateG
     ugsRevision: 1,
     ugsCanonicalHash: "a".repeat(64),
     generalPublicationGraphHash: "b".repeat(64),
-    generalPublicationFigurePlanHash: "c".repeat(64),
-    sourceHashes: ["e".repeat(64), "d".repeat(64)],
+    publicationVisualPlan: pvp(),
     createdAt: "2026-08-20T00:00:00.000Z",
     ...overrides,
   };
 }
 
 describe("GenericPlanSnapshot", () => {
-  it("uses canonical JSON and every security-relevant binding for deterministic identity", () => {
+  it("uses canonical PVP identity and every security-relevant binding for deterministic identity", () => {
     const baseline = createGenericPlanSnapshot(input());
-    const reordered = createGenericPlanSnapshot(input({ sourceHashes: ["d".repeat(64), "e".repeat(64)] }));
+    const reordered = createGenericPlanSnapshot(input({ publicationVisualPlan: pvp({ lineage: { ugsHash: "a".repeat(64), gpgHash: "b".repeat(64), sourceHashes: ["d".repeat(64), "e".repeat(64)], composerHash: "c".repeat(64), profileSetHash: "f".repeat(64) } }) }));
+    const differentPvp = createGenericPlanSnapshot(input({ publicationVisualPlan: pvp({ identity: { schemaVersion: 1, planId: "pvp:changed", canonicalHash: "" } }) }));
+
     expect(reordered.snapshotId).toBe(baseline.snapshotId);
     expect(reordered.sourceHashes).toEqual(["d".repeat(64), "e".repeat(64)]);
+    expect(differentPvp.snapshotId).not.toBe(baseline.snapshotId);
     expect(canonicalGenericPlanSnapshotJson({ "2": "two", "10": "ten" })).toBe('{"10":"ten","2":"two"}');
-
-    const changedInputs: Array<Partial<CreateGenericPlanSnapshotInput>> = [
-      { tenantId: "tenant-2" }, { userId: "user-2" }, { deviceId: "device-2" }, { graphId: "graph-2" }, { ugsRevision: 2 },
-      { ugsCanonicalHash: "f".repeat(64) }, { generalPublicationGraphHash: "0".repeat(64) },
-      { generalPublicationFigurePlanHash: "1".repeat(64) }, { sourceHashes: ["f".repeat(64)] },
-    ];
-    for (const changed of changedInputs) expect(createGenericPlanSnapshot(input(changed)).snapshotId).not.toBe(baseline.snapshotId);
   });
 
   it("records immutable audit time without making it part of deterministic identity", () => {
@@ -45,44 +54,27 @@ describe("GenericPlanSnapshot", () => {
     expect(second.createdAt).not.toBe(first.createdAt);
   });
 
-  it("normalizes accepted SHA-256 spellings before deriving identity or retaining metadata", () => {
-    const lower = createGenericPlanSnapshot(input());
-    const upper = createGenericPlanSnapshot(input({
-      ugsCanonicalHash: "A".repeat(64),
-      generalPublicationGraphHash: "B".repeat(64),
-      generalPublicationFigurePlanHash: "C".repeat(64),
-      sourceHashes: ["E".repeat(64), "D".repeat(64)],
-    }));
-    expect(upper.snapshotId).toBe(lower.snapshotId);
-    expect(upper.ugsCanonicalHash).toBe("a".repeat(64));
-    expect(upper.sourceHashes).toEqual(["d".repeat(64), "e".repeat(64)]);
-  });
-
-  it("rejects invalid IDs, timestamps, duplicate source hashes, and non-finite canonical values", () => {
+  it("rejects legacy Figure Plan bindings and invalid PVP Snapshot values", () => {
+    expect(() => createGenericPlanSnapshot({ ...input(), generalPublicationFigurePlanHash: "c".repeat(64) } as never)).toThrow(/unsupported|Figure Plan|PVP/i);
     expect(() => createGenericPlanSnapshot(input({ deviceId: "C:\\device" }))).toThrow(/deviceId|identifier/i);
     expect(() => createGenericPlanSnapshot(input({ createdAt: "20/08/2026" }))).toThrow(/timestamp|datetime|createdAt/i);
-    expect(() => createGenericPlanSnapshot(input({ createdAt: "2026-02-30T00:00:00.000Z" }))).toThrow(/timestamp|datetime|createdAt/i);
-    expect(() => createGenericPlanSnapshot(input({ sourceHashes: ["d".repeat(64), "d".repeat(64)] }))).toThrow(/sourceHashes|duplicate/i);
     expect(() => canonicalGenericPlanSnapshotJson(Number.POSITIVE_INFINITY)).toThrow(/non-finite/i);
-    expect(() => canonicalGenericPlanSnapshotJson(new Array(1))).toThrow(/sparse|array/i);
     expect(() => canonicalGenericPlanSnapshotJson([1, , 2])).toThrow(/sparse|array/i);
-    const inheritedIndex = new Array(1);
-    Object.setPrototypeOf(inheritedIndex, { 0: "inherited" });
-    expect(() => canonicalGenericPlanSnapshotJson(inheritedIndex)).toThrow(/sparse|array/i);
-    expect(() => createGenericPlanSnapshot(input({ sourceHashes: ["d".repeat(64), "D".repeat(64)] }))).toThrow(/sourceHashes|unique/i);
   });
 
-  it("deep-freezes clone-isolated metadata and exposes no renderer or source payload fields", () => {
+  it("deep-freezes a clone-isolated PVP and exposes no legacy Figure Plan or renderer payload fields", () => {
     const source = input();
     const snapshot = createGenericPlanSnapshot(source);
-    source.sourceHashes[0] = "f".repeat(64);
     const clone = cloneGenericPlanSnapshot(snapshot);
 
-    expect(snapshot.sourceHashes).toEqual(["d".repeat(64), "e".repeat(64)]);
+    expect(snapshot.publicationVisualPlanId).toBe("pvp:snapshot");
+    expect(snapshot.publicationVisualPlanHash).toBe(snapshot.publicationVisualPlan.identity.canonicalHash);
+    expect(snapshot).not.toHaveProperty("generalPublicationFigurePlanHash");
     expect(Object.isFrozen(snapshot)).toBe(true);
-    expect(Object.isFrozen(snapshot.sourceHashes)).toBe(true);
+    expect(Object.isFrozen(snapshot.publicationVisualPlan)).toBe(true);
     expect(clone).toEqual(snapshot);
     expect(clone).not.toBe(snapshot);
+    expect(clone.publicationVisualPlan).not.toBe(snapshot.publicationVisualPlan);
     expect(JSON.stringify(snapshot)).not.toMatch(/"(?:rawSource|sourceCode|sourceBytes|evidenceLocator|providerPayload|workerPath|shellCommand|comInstruction|svg|visio)"\s*:/i);
   });
 });

@@ -4,7 +4,7 @@ import { parseUniversalGraphSpec, type UniversalGraphSpec } from "./universal-gr
 import type { PublicationVisualPlan } from "./publication-visual-plan.js";
 
 export type PublicationVisualPreview =
-  | { kind: "formal"; exportEligible: true; graph: GeneralPublicationGraph; pvp: PublicationVisualPlan }
+  | { kind: "formal"; exportEligible: boolean; graph: GeneralPublicationGraph; pvp: PublicationVisualPlan }
   | { kind: "candidate"; exportEligible: false; graph: GeneralPublicationGraph; pvp: PublicationVisualPlan };
 
 export class PublicationVisualPreviewService {
@@ -13,7 +13,7 @@ export class PublicationVisualPreviewService {
     const graph = composeGeneralPublicationGraph(ugs, { detail: input.detail });
     const pvp = compilePublicationVisualPlan({ ugs, graph, updateIdentity: input.updateIdentity });
     return pvp.eligibility.kind === "formal"
-      ? { kind: "formal", exportEligible: true, graph, pvp }
+      ? { kind: "formal", exportEligible: pvp.eligibility.qaStatus === "passed", graph, pvp }
       : { kind: "candidate", exportEligible: false, graph, pvp };
   }
 }

@@ -85,6 +85,10 @@ export function canonicalPublicationVisualPlanJson(value: PublicationVisualPlan)
 function normalize(plan: Record<string, unknown>): void {
   const identifiers: Record<string, string> = { regions: "regionId", primitiveGroups: "groupId", primitives: "primitiveId", ports: "portId", connectors: "connectorId", annotations: "annotationId", profileApplications: "applicationId", sourceMappings: "visualId" };
   for (const [field, identifierField] of Object.entries(identifiers)) if (Array.isArray(plan[field])) (plan[field] as Record<string, unknown>[]).sort((left, right) => compareCodeUnits(String(left[identifierField]), String(right[identifierField])));
+  const lineage = plan.lineage;
+  if (lineage && typeof lineage === "object" && !Array.isArray(lineage) && Array.isArray((lineage as Record<string, unknown>).sourceHashes)) {
+    ((lineage as Record<string, unknown>).sourceHashes as string[]).sort(compareCodeUnits);
+  }
 }
 function record(value: unknown, message: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(message); return value as Record<string, unknown>; }
 function cloneRecord(value: unknown, message: string): Record<string, unknown> { try { return structuredClone(record(value, message)); } catch { throw new Error(message); } }

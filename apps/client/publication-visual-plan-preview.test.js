@@ -5,15 +5,15 @@ import {
   renderPublicationVisualPlanPreview,
 } from "../../publication-visual-plan-preview.js";
 
-function planResponse(kind = "formal") {
+function planResponse(kind = "formal", qaStatus = "pending") {
   const candidate = kind === "candidate";
   return {
     kind,
-    exportEligible: !candidate,
+    exportEligible: !candidate && qaStatus === "passed",
     draft: { id: "draft-dual-stream", revision: 3 },
     pvp: {
       identity: { schemaVersion: 1, planId: "pvp:dual-stream", canonicalHash: "a".repeat(64) },
-      eligibility: { kind, formalReasons: candidate ? [] : ["topology-complete"], blockingReasons: candidate ? ["topology-candidate"] : [], qaStatus: "pending" },
+      eligibility: { kind, formalReasons: candidate ? [] : ["topology-complete"], blockingReasons: candidate ? ["topology-candidate"] : [], qaStatus },
       lineage: {},
       coordinateSpace: {
         id: "pvp-du-1",
@@ -60,6 +60,13 @@ function planResponse(kind = "formal") {
 }
 
 describe("PublicationVisualPlan browser preview", () => {
+  it("renders a formal QA-pending PVP without advertising export", () => {
+    const response = planResponse("formal", "pending");
+
+    expect(renderPublicationVisualPlanPreview(response)).toContain("publication-visual-plan-svg");
+    expect(publicationVisualPreviewSummary(response)).toMatchObject({ kind: "formal", exportEligible: false });
+  });
+
   it("renders PVP page geometry, generic primitives, stored routes, and escaped text", () => {
     const svg = renderPublicationVisualPlanPreview(planResponse());
 

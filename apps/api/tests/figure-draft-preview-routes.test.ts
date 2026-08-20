@@ -119,7 +119,7 @@ describe("figure draft preview route", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       kind: "formal",
-      exportEligible: true,
+      exportEligible: false,
       draft: { id: "draft-pvp", revision: 1 },
       pvp: {
         identity: { schemaVersion: 1, planId: expect.any(String), canonicalHash: expect.any(String) },

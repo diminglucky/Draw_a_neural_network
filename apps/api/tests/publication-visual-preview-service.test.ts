@@ -9,8 +9,8 @@ describe("PublicationVisualPreviewService", () => {
     const preview = new PublicationVisualPreviewService().preview({ ugs: unknownDualStreamFusionUgs(), detail: "architecture", updateIdentity });
 
     expect(preview.kind).toBe("formal");
-    expect(preview.exportEligible).toBe(true);
-    expect(preview.pvp.eligibility.kind).toBe("formal");
+    expect(preview.exportEligible).toBe(false);
+    expect(preview.pvp.eligibility).toMatchObject({ kind: "formal", qaStatus: "pending" });
   });
 
   it("returns a candidate PVP preview without export eligibility for ambiguous topology", () => {

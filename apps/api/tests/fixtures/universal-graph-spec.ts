@@ -79,6 +79,145 @@ export function unknownRepeatedFusionStackUgs(): any {
   return input;
 }
 
+type FixtureNode = {
+  id: string;
+  kind: string;
+  label: string;
+  semanticHints?: string[];
+  attributes?: Record<string, string | number | boolean | null>;
+};
+
+type FixtureEdge = { id: string; from: string; to: string; relation?: string };
+
+/** Deliberately uses arbitrary operator names rather than a model-family grammar. */
+export function unknownCustomSpatialBackboneUgs(): any {
+  return zeroTemplateUgs({
+    graphId: "unknown-spatial-backbone",
+    nodes: [
+      { id: "image_input", kind: "input", label: "Image input" },
+      { id: "phase_stem", kind: "custom_operator", label: "Phase stem" },
+      { id: "dilation_weaver", kind: "custom_operator", label: "Dilation weaver" },
+      { id: "local_context_bank", kind: "custom_module", label: "Local context bank" },
+      { id: "spatial_output", kind: "output", label: "Spatial prediction" },
+    ],
+    edges: [
+      { id: "image-phase", from: "image_input", to: "phase_stem" },
+      { id: "phase-weaver", from: "phase_stem", to: "dilation_weaver" },
+      { id: "weaver-bank", from: "dilation_weaver", to: "local_context_bank" },
+      { id: "bank-output", from: "local_context_bank", to: "spatial_output" },
+    ],
+  });
+}
+
+export function unknownResidualMultiBranchUgs(): any {
+  return zeroTemplateUgs({
+    graphId: "unknown-residual-multibranch",
+    nodes: [
+      { id: "signal_input", kind: "input", label: "Signal input" },
+      { id: "branch_gate", kind: "operator", label: "Branch gate", semanticHints: ["split"] },
+      { id: "detail_path", kind: "custom_operator", label: "Detail path" },
+      { id: "context_path", kind: "custom_operator", label: "Context path" },
+      { id: "residual_mixer", kind: "operator", label: "Residual mixer", attributes: { mergeKind: "add" } },
+      { id: "residual_output", kind: "output", label: "Residual prediction" },
+    ],
+    edges: [
+      { id: "signal-gate", from: "signal_input", to: "branch_gate" },
+      { id: "gate-detail", from: "branch_gate", to: "detail_path" },
+      { id: "gate-context", from: "branch_gate", to: "context_path" },
+      { id: "detail-mixer", from: "detail_path", to: "residual_mixer", relation: "merge" },
+      { id: "context-mixer", from: "context_path", to: "residual_mixer", relation: "merge" },
+      { id: "signal-skip", from: "signal_input", to: "residual_mixer", relation: "skip" },
+      { id: "mixer-output", from: "residual_mixer", to: "residual_output" },
+    ],
+  });
+}
+
+export function unknownMultiScaleEncoderDecoderUgs(): any {
+  return zeroTemplateUgs({
+    graphId: "unknown-multiscale-encoder-decoder",
+    nodes: [
+      { id: "map_input", kind: "input", label: "Map input" },
+      { id: "scale_probe", kind: "custom_operator", label: "Scale probe" },
+      { id: "coarse_encoder", kind: "custom_module", label: "Coarse encoder" },
+      { id: "latent_router", kind: "custom_operator", label: "Latent router" },
+      { id: "upstream_decoder", kind: "custom_module", label: "Upstream decoder" },
+      { id: "scale_join", kind: "operator", label: "Scale join", attributes: { mergeKind: "concat" } },
+      { id: "detail_projector", kind: "custom_operator", label: "Detail projector" },
+      { id: "map_output", kind: "output", label: "Dense output" },
+    ],
+    edges: [
+      { id: "map-probe", from: "map_input", to: "scale_probe" },
+      { id: "probe-encoder", from: "scale_probe", to: "coarse_encoder" },
+      { id: "encoder-latent", from: "coarse_encoder", to: "latent_router" },
+      { id: "latent-decoder", from: "latent_router", to: "upstream_decoder" },
+      { id: "decoder-join", from: "upstream_decoder", to: "scale_join", relation: "merge" },
+      { id: "encoder-skip", from: "coarse_encoder", to: "scale_join", relation: "skip" },
+      { id: "join-projector", from: "scale_join", to: "detail_projector" },
+      { id: "projector-output", from: "detail_projector", to: "map_output" },
+    ],
+  });
+}
+
+export function unknownDualTowerCrossModalFusionUgs(): any {
+  return zeroTemplateUgs({
+    graphId: "unknown-dual-tower-crossmodal",
+    nodes: [
+      { id: "frame_input", kind: "input", label: "Frame input" },
+      { id: "phrase_input", kind: "input", label: "Phrase input" },
+      { id: "frame_tower", kind: "custom_module", label: "Frame tower" },
+      { id: "phrase_tower", kind: "custom_operator", label: "Phrase tower" },
+      { id: "cross_modal_hub", kind: "custom_module", label: "Cross modal hub" },
+      { id: "fusion_output", kind: "output", label: "Joint prediction" },
+    ],
+    edges: [
+      { id: "frame-tower", from: "frame_input", to: "frame_tower" },
+      { id: "phrase-tower", from: "phrase_input", to: "phrase_tower" },
+      { id: "frame-hub", from: "frame_tower", to: "cross_modal_hub", relation: "merge" },
+      { id: "phrase-hub", from: "phrase_tower", to: "cross_modal_hub", relation: "merge" },
+      { id: "hub-output", from: "cross_modal_hub", to: "fusion_output" },
+    ],
+  });
+}
+
+function zeroTemplateUgs(input: { graphId: string; nodes: FixtureNode[]; edges: FixtureEdge[] }): any {
+  const sourceId = "fixture-source";
+  const fixtureSourceHash = "c".repeat(64);
+  const incoming = new Map(input.nodes.map((node) => [node.id, input.edges.filter((edge) => edge.to === node.id)]));
+  const outgoing = new Map(input.nodes.map((node) => [node.id, input.edges.filter((edge) => edge.from === node.id)]));
+  const nodeById = new Map(input.nodes.map((node) => [node.id, node]));
+  if (input.edges.some((edge) => !nodeById.has(edge.from) || !nodeById.has(edge.to))) throw new Error("Fixture edge references an unknown node");
+  const portId = (edge: FixtureEdge, direction: "input" | "output") => `${edge.id}:${direction}`;
+  const nodes = input.nodes.map((node) => ({
+    nodeId: node.id,
+    kind: node.kind,
+    label: node.label,
+    semanticHints: node.semanticHints ?? [],
+    inputPortIds: (incoming.get(node.id) ?? []).map((edge) => portId(edge, "input")),
+    outputPortIds: (outgoing.get(node.id) ?? []).map((edge) => portId(edge, "output")),
+    attributes: node.attributes ?? {},
+    shapeClaim: "unknown",
+    operationKnowledge: node.kind.startsWith("custom_") ? "custom" : "known",
+    evidenceIds: ["e-topology"],
+  }));
+  return {
+    version: 1,
+    graphId: input.graphId,
+    revision: 1,
+    sourceIds: [sourceId],
+    sourceHashes: [fixtureSourceHash],
+    nodes,
+    ports: input.edges.flatMap((edge) => [
+      port(portId(edge, "output"), edge.from, "output"),
+      port(portId(edge, "input"), edge.to, "input"),
+    ]),
+    edges: input.edges.map((edge) => ({ edgeId: edge.id, sourcePortId: portId(edge, "output"), targetPortId: portId(edge, "input"), relation: edge.relation ?? "data", knowledge: "declared", evidenceIds: ["e-topology"] })),
+    groups: [],
+    evidence: [{ evidenceId: "e-topology", sourceId, sourceHash: fixtureSourceHash, locator: "fixture-structure", excerptDigest: "d".repeat(64) }],
+    topologyConfidence: 0.95,
+    unresolved: [],
+  };
+}
+
 function node(nodeId: string, kind: string, label: string, inputPortIds: string[], outputPortIds: string[], operationKnowledge: string, shapeClaim: string, evidenceIds: string[]) {
   return { nodeId, kind, label, semanticHints: [], inputPortIds, outputPortIds, attributes: {}, shapeClaim, operationKnowledge, evidenceIds };
 }

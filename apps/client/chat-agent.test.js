@@ -23,15 +23,15 @@ import {
   waitForVisioExport,
 } from "../../chat-agent.js";
 
-function publicationVisualResponse(kind = "formal") {
+function publicationVisualResponse(kind = "formal", qaStatus = "pending") {
   const candidate = kind === "candidate";
   return {
     kind,
-    exportEligible: !candidate,
+    exportEligible: !candidate && qaStatus === "passed",
     draft: { id: "draft-pvp", revision: 7 },
     pvp: {
       identity: { schemaVersion: 1, planId: "pvp:chat", canonicalHash: "b".repeat(64) },
-      eligibility: { kind, formalReasons: candidate ? [] : ["topology-complete"], blockingReasons: candidate ? ["topology-candidate"] : [], qaStatus: "pending" },
+      eligibility: { kind, formalReasons: candidate ? [] : ["topology-complete"], blockingReasons: candidate ? ["topology-candidate"] : [], qaStatus },
       lineage: {},
       coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: { x: 0, y: 0, width: 600, height: 300 }, safeMargins: { x: 25, y: 25, width: 550, height: 250 } },
       regions: [], primitiveGroups: [],
