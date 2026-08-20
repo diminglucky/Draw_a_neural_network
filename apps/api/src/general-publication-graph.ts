@@ -30,6 +30,7 @@ export interface GeneralPublicationGraph {
   components: GeneralPublicationComponent[];
   relations: GeneralPublicationRelation[];
   sourceMappings: Array<{ componentId: string; sourceNodeIds: string[]; sourceEdgeIds: string[]; evidenceIds: string[] }>;
+  layoutOrder: Array<{ componentId: string; rank: number; order: number }>;
 }
 
 export function composeGeneralPublicationGraph(ugs: UniversalGraphSpec, intent: { detail: "overview" | "architecture" | "operator_detail" }): GeneralPublicationGraph {
@@ -144,6 +145,11 @@ export function composeGeneralPublicationGraph(ugs: UniversalGraphSpec, intent: 
       sourceNodeIds: [...component.sourceNodeIds],
       sourceEdgeIds: [...component.sourceEdgeIds],
       evidenceIds: [...component.evidenceIds],
+    })),
+    layoutOrder: sortedComponents.map((component) => ({
+      componentId: component.componentId,
+      rank: component.layoutOrder.rank,
+      order: component.layoutOrder.order,
     })),
   };
 }

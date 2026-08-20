@@ -18,8 +18,8 @@ describe("agent roadmap CLI", () => {
       strictFailures: string[];
     };
     expect(status.currentFocus.id).toBe("M2.6");
-    expect(status.executableNodes).toHaveLength(1);
-    expect(status.executableNodes[0]).toMatchObject({ id: "M2.6", title: "UniversalGraphSpec and General Publication Graph", status: "planned" });
+    expect(status.currentFocus).toMatchObject({ status: "active" });
+    expect(status.executableNodes).toEqual([]);
     expect(status.git).toMatchObject({ branch: "agent", behind: 0 });
     expect(status.strictFailures).toEqual(status.git.ahead > 0 ? ["branch diverges from upstream"] : []);
     expect(JSON.stringify(status)).not.toMatch(/[A-Za-z]:\\/);

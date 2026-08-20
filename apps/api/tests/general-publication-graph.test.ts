@@ -16,6 +16,11 @@ describe("General Publication Graph", () => {
       expect.objectContaining({ role: "custom_fusion", sourceNodeIds: ["spectral_fusion"] }),
     ]));
     expect(first.exportEligibility).toBe("eligible");
+    expect(first.layoutOrder).toEqual(first.components.map((component) => ({
+      componentId: component.componentId,
+      rank: component.layoutOrder.rank,
+      order: component.layoutOrder.order,
+    })));
     expect(JSON.stringify(first)).not.toMatch(/\b(x|y|width|height|visio|svg|command|path)\b/i);
   });
 

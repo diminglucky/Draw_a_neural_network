@@ -6,7 +6,7 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md"
   },
-  "updatedAt": "2026-08-20T01:50:45.842Z",
+  "updatedAt": "2026-08-20T03:29:46.708Z",
   "currentFocus": "M2.6",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -165,12 +165,13 @@
       "id": "M2.6",
       "milestoneId": "M2",
       "title": "UniversalGraphSpec and General Publication Graph",
-      "status": "planned",
+      "status": "active",
+      "previousStatus": "planned",
       "dependsOn": ["M2.1", "M2.2", "M2.3", "M2.4"],
       "outcome": "Any topology-complete network becomes a deterministic general publication graph without model-name templates.",
       "acceptance": [{ "id": "M2.6.ugs", "text": "UGS preserves evidence, ports, custom modules, topology uncertainty, and deterministic general layout.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [],
-      "nextAction": "Implement UGS schema, validator, generic components, and zero-template fixtures.",
+      "nextAction": "Independently review the deterministic generic Figure Plan bridge before beginning M2.5 immutable generic snapshot binding.",
       "blockerIds": [],
       "successorId": null
     },
