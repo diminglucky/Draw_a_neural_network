@@ -35,6 +35,15 @@ describe("InMemoryGenericPlanSnapshotStore", () => {
     await expect(store.get({ ...owner, deviceId: "device-2" }, snapshot.graphId, snapshot.ugsRevision, snapshot.snapshotId)).resolves.toBeNull();
     await expect(store.get(owner, "graph-2", snapshot.ugsRevision, snapshot.snapshotId)).resolves.toBeNull();
     await expect(store.get(owner, snapshot.graphId, 2, snapshot.snapshotId)).resolves.toBeNull();
+    await expect(store.get(owner, snapshot.graphId, snapshot.ugsRevision, "generic-plan-wrong")).resolves.toBeNull();
+  });
+
+  it("rejects forged or invalid runtime snapshot metadata before persistence", async () => {
+    const store = new InMemoryGenericPlanSnapshotStore();
+    const snapshot = createGenericPlanSnapshot(input());
+    await expect(store.insert(owner, { ...snapshot, snapshotId: "generic-plan-forged" } as never)).rejects.toThrow(/canonical|snapshot/i);
+    await expect(store.insert(owner, { ...snapshot, ugsRevision: 0 } as never)).rejects.toThrow(/revision|canonical/i);
+    await expect(store.insert(owner, { ...snapshot, immutable: false } as never)).rejects.toThrow(/immutable/i);
   });
 
   it("returns clone-isolated deeply frozen snapshots", async () => {

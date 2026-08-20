@@ -1,5 +1,7 @@
 import {
+  canonicalGenericPlanSnapshotJson,
   cloneGenericPlanSnapshot,
+  createGenericPlanSnapshot,
   type GenericPlanSnapshot,
   type GenericPlanSnapshotOwner,
 } from "./generic-plan-snapshot.js";
@@ -21,7 +23,21 @@ export class InMemoryGenericPlanSnapshotStore implements GenericPlanSnapshotStor
 
   async insert(owner: GenericPlanSnapshotOwner, snapshot: GenericPlanSnapshot): Promise<GenericPlanSnapshot> {
     assertOwner(owner);
-    if (!snapshot.immutable || !sameOwner(owner, snapshot)) throw new Error("GenericPlanSnapshot owner does not match the store owner");
+    if (!snapshot.immutable) throw new Error("GenericPlanSnapshot must be immutable");
+    if (!sameOwner(owner, snapshot)) throw new Error("GenericPlanSnapshot owner does not match the store owner");
+    const canonical = createGenericPlanSnapshot({
+      tenantId: snapshot.tenantId,
+      userId: snapshot.userId,
+      deviceId: snapshot.deviceId,
+      graphId: snapshot.graphId,
+      ugsRevision: snapshot.ugsRevision,
+      ugsCanonicalHash: snapshot.ugsCanonicalHash,
+      generalPublicationGraphHash: snapshot.generalPublicationGraphHash,
+      generalPublicationFigurePlanHash: snapshot.generalPublicationFigurePlanHash,
+      sourceHashes: [...snapshot.sourceHashes],
+      createdAt: snapshot.createdAt,
+    });
+    if (canonicalGenericPlanSnapshotJson(snapshot) !== canonicalGenericPlanSnapshotJson(canonical)) throw new Error("GenericPlanSnapshot must be canonical");
     const key = snapshotKey(owner, snapshot.graphId, snapshot.ugsRevision, snapshot.snapshotId);
     if (this.snapshots.has(key)) throw new GenericPlanSnapshotStoreConflictError();
     const stored = cloneGenericPlanSnapshot(snapshot);
