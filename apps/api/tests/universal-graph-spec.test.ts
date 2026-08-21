@@ -21,6 +21,15 @@ describe("UniversalGraphSpec", () => {
     expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "candidate", export: "ineligible" });
   });
 
+  it.each(["operation", "shape"] as const)("keeps blocking %s uncertainty as a candidate and denies export eligibility", (scope) => {
+    const input = unknownDualStreamFusionUgs();
+    input.unresolved = [{ id: `${scope}-unresolved`, scope, severity: "blocking", evidenceIds: ["e-fusion"] }];
+
+    const ugs = parseUniversalGraphSpec(input);
+
+    expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "candidate", export: "ineligible" });
+  });
+
   it("rejects ports that are not owned by their declared node", () => {
     const input = unknownDualStreamFusionUgs();
     input.nodes[1].inputPortIds = ["context_router:in"];

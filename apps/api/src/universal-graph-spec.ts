@@ -270,9 +270,9 @@ export function parseUniversalGraphSpec(input: unknown): UniversalGraphSpec {
 }
 
 export function getUniversalGraphEligibility(ugs: UniversalGraphSpec): { preview: UniversalPreviewEligibility; export: UniversalExportEligibility } {
-  const topologyCandidate = ugs.edges.some((edge) => edge.relation === "candidate" || edge.knowledge === "candidate")
-    || ugs.unresolved.some((item) => item.scope === "topology" && item.severity === "blocking");
-  return topologyCandidate ? { preview: "candidate", export: "ineligible" } : { preview: "renderable", export: "eligible" };
+  const candidate = ugs.edges.some((edge) => edge.relation === "candidate" || edge.knowledge === "candidate")
+    || ugs.unresolved.some((item) => item.severity === "blocking");
+  return candidate ? { preview: "candidate", export: "ineligible" } : { preview: "renderable", export: "eligible" };
 }
 
 function unique(values: string[], kind: string, path: string, issues: UniversalGraphSpecValidationIssue[]): void {

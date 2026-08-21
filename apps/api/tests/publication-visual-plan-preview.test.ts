@@ -1,0 +1,142 @@
+import { describe, expect, it } from "vitest";
+import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
+import { createPublicationVisualPlan } from "../src/publication-visual-plan.js";
+import { compilePublicationVisualPlan } from "../src/publication-visual-plan-compiler.js";
+import { projectPublicationVisualPlanPreview } from "../src/publication-visual-plan-preview.js";
+import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
+import { unknownDualStreamFusionUgs } from "./fixtures/universal-graph-spec.js";
+
+const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
+
+function compiledPlan(kind: "formal" | "candidate") {
+  const source = unknownDualStreamFusionUgs();
+  if (kind === "candidate") source.edges[1] = { ...source.edges[1], relation: "candidate", knowledge: "candidate" };
+  const ugs = parseUniversalGraphSpec(source);
+  const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+  const pvp = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+  return { graph, pvp };
+}
+
+describe("projectPublicationVisualPlanPreview", () => {
+  it("projects a parsed, QA-passed formal PVP and GPG through nested allowlists without mutating either input", () => {
+    const { graph, pvp } = compiledPlan("formal");
+    const planDraft = structuredClone(pvp) as any;
+    planDraft.eligibility.qaStatus = "passed";
+    const inputPvp = createPublicationVisualPlan(planDraft);
+    const inputGraph = structuredClone(graph);
+    const originalPvp = structuredClone(inputPvp);
+    const originalGraph = structuredClone(inputGraph);
+
+    const preview = projectPublicationVisualPlanPreview({ graph: inputGraph, pvp: inputPvp });
+
+    expect(preview).toMatchObject({ schemaVersion: 1, kind: "formal", exportEligible: true });
+    expect(Object.keys(preview.plan).sort()).toEqual([
+      "annotations", "connectors", "coordinateSpace", "eligibility", "identity", "legend", "ports", "primitiveGroups", "primitives", "profileApplications", "regions", "styleTokens",
+    ]);
+    expect(Object.keys(preview.graph).sort()).toEqual([
+      "components", "detail", "exportEligibility", "graphId", "layoutOrder", "relations", "version",
+    ]);
+    expect(JSON.stringify(preview)).not.toContain("prompt text");
+    expect(JSON.stringify(preview)).not.toContain("workerControl");
+    expect(preview).not.toHaveProperty("updateIdentity");
+    expect(preview).not.toHaveProperty("sourceMappings");
+    expect(preview.graph.components[0]).not.toHaveProperty("sourceNodeIds");
+    expect(preview.graph.components[0]).not.toHaveProperty("evidenceIds");
+    expect(preview.graph.relations[0]).not.toHaveProperty("sourceEdgeIds");
+    expect(preview.graph.relations[0]).not.toHaveProperty("evidenceIds");
+    expect(inputPvp).toEqual(originalPvp);
+    expect(inputGraph).toEqual(originalGraph);
+
+    (preview.plan.primitives[0] as any).label = "changed only in preview";
+    preview.graph.components[0]!.label = "changed only in preview";
+    expect((inputPvp.primitives[0] as any).label).not.toBe("changed only in preview");
+    expect(inputGraph.components[0]!.label).not.toBe("changed only in preview");
+  });
+
+  it("keeps candidate component and connector preview data bounded and always export-ineligible", () => {
+    const { graph, pvp } = compiledPlan("candidate");
+
+    const preview = projectPublicationVisualPlanPreview({ graph, pvp });
+
+    expect(preview).toMatchObject({ schemaVersion: 1, kind: "candidate", exportEligible: false });
+    expect(preview.plan.primitives).toHaveLength((pvp.primitives as unknown[]).length);
+    expect(preview.plan.connectors).toHaveLength((pvp.connectors as unknown[]).length);
+    expect(preview.graph.components).toEqual(expect.arrayContaining([
+      expect.objectContaining({ componentId: expect.any(String), role: expect.any(String), label: expect.any(String), layoutOrder: expect.any(Object) }),
+    ]));
+    expect(preview.graph.components.every((component) => !Object.hasOwn(component, "sourceNodeIds") && !Object.hasOwn(component, "sourceEdgeIds") && !Object.hasOwn(component, "evidenceIds"))).toBe(true);
+    expect(preview.graph.relations.every((relation) => !Object.hasOwn(relation, "sourceEdgeIds") && !Object.hasOwn(relation, "evidenceIds"))).toBe(true);
+  });
+
+  it("keeps a formal pending plan non-exportable and rejects contradictory formal graph eligibility", () => {
+    const { graph, pvp } = compiledPlan("formal");
+
+    expect(projectPublicationVisualPlanPreview({ graph, pvp }).exportEligible).toBe(false);
+    expect(() => projectPublicationVisualPlanPreview({ graph: { ...graph, exportEligibility: "ineligible" }, pvp })).toThrow(/eligibility|graph/i);
+  });
+
+  it("rejects a candidate plan paired with an eligible graph", () => {
+    const { graph, pvp } = compiledPlan("candidate");
+
+    expect(() => projectPublicationVisualPlanPreview({ graph: { ...graph, exportEligibility: "eligible" }, pvp })).toThrow(/eligibility|graph/i);
+  });
+
+  it("rejects unsafe retained PVP labels and text rather than copying or coercing them", () => {
+    const cases: Array<[string, (draft: any) => void]> = [
+      ["primitive prompt label", (draft) => { draft.primitives[0].label = { prompt: "raw prompt" }; }],
+      ["primitive-group path label", (draft) => { draft.primitiveGroups = [{ groupId: "group:unsafe", regionId: "region:main", label: { path: "C:\\secret" }, zIndex: 0, primitiveIds: [], styleTokenIds: [] }]; }],
+      ["annotation control text", (draft) => { draft.annotations = [{ annotationId: "annotation:unsafe", targetIds: [draft.primitives[0].primitiveId], bounds: { x: 100, y: 100, width: 100, height: 50 }, text: { workerControl: "run" }, role: "note", styleTokenIds: [] }]; }],
+      ["legend object label", (draft) => { draft.legend = { entries: [{ legendId: "legend:unsafe", label: { path: "C:\\secret" }, kind: "swatch", targetIds: [], styleTokenIds: [] }], styleTokenIds: [] }; }],
+      ["newline label", (draft) => { draft.primitives[0].label = "unsafe\nlabel"; }],
+      ["oversized annotation text", (draft) => { draft.annotations = [{ annotationId: "annotation:long", targetIds: [draft.primitives[0].primitiveId], bounds: { x: 100, y: 100, width: 100, height: 50 }, text: "x".repeat(513), role: "note", styleTokenIds: [] }]; }],
+    ];
+
+    for (const [name, mutate] of cases) {
+      const { graph, pvp } = compiledPlan("formal");
+      const draft = structuredClone(pvp) as any;
+      mutate(draft);
+      const unsafePlan = createPublicationVisualPlan(draft);
+      expect(() => projectPublicationVisualPlanPreview({ graph, pvp: unsafePlan })).toThrow(/PVP|display|preview/i);
+    }
+  });
+
+  it("rejects unsafe style values instead of retaining arbitrary objects", () => {
+    const { graph, pvp } = compiledPlan("formal");
+    const draft = structuredClone(pvp) as any;
+    draft.styleTokens = { tokenSetVersion: "pvp-style-1", tokens: [{ tokenId: "style:unsafe", values: { stroke: { prompt: "raw prompt" } } }] };
+    const unsafePlan = createPublicationVisualPlan(draft);
+
+    expect(() => projectPublicationVisualPlanPreview({ graph, pvp: unsafePlan })).toThrow(/style|PVP|preview/i);
+  });
+
+  it("rejects invalid graph version, path-shaped graph ID, and non-string component label", () => {
+    const { graph, pvp } = compiledPlan("formal");
+    const invalidGraphs = [
+      { ...graph, version: 2 },
+      { ...graph, graphId: "C:\\private\\model.py" },
+      { ...graph, components: [{ ...graph.components[0], label: { prompt: "raw prompt" } }, ...graph.components.slice(1)] },
+    ];
+
+    for (const invalidGraph of invalidGraphs) {
+      expect(() => projectPublicationVisualPlanPreview({ graph: invalidGraph as any, pvp })).toThrow(/graph|component|preview/i);
+    }
+  });
+
+  it("detaches every retained nested result value", () => {
+    const { graph, pvp } = compiledPlan("formal");
+    const draft = structuredClone(pvp) as any;
+    draft.styleTokens = { tokenSetVersion: "pvp-style-1", tokens: [{ tokenId: "style:one", values: { stroke: "#000000", fill: "#ffffff", strokeWidth: "3" } }] };
+    const inputPvp = createPublicationVisualPlan(draft);
+    const inputGraph = structuredClone(graph);
+
+    const preview = projectPublicationVisualPlanPreview({ graph: inputGraph, pvp: inputPvp });
+    const styleToken = ((preview.plan.styleTokens.tokens as any[])[0]);
+    styleToken.values.stroke = "#ff0000";
+    (preview.plan.primitives[0] as any).bounds.x = 999;
+    preview.graph.components[0]!.layoutOrder.rank = 999;
+
+    expect((((inputPvp.styleTokens as any).tokens[0]).values.stroke)).toBe("#000000");
+    expect(((inputPvp.primitives[0] as any).bounds.x)).not.toBe(999);
+    expect(inputGraph.components[0]!.layoutOrder.rank).not.toBe(999);
+  });
+});

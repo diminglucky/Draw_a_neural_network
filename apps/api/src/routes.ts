@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ApiErrorCode, FoundationError, type FigureDraft, type FigureDraftRevision, type User } from "./domain.js";
 import { AdminService } from "./admin-service.js";
@@ -22,12 +22,15 @@ import { FigureAnalysisService } from "./figure-analysis-service.js";
 import { parsePyTorchSourcePack, type SourcePack } from "./source-pack.js";
 import { publicFigureAnalysis, type FigureAnalysisRecord } from "./figure-analysis.js";
 import { FigureAnalysisPreviewServiceImpl, type FigureAnalysisPreviewResponse } from "./figure-analysis-preview-service.js";
+import { compileUniversalInputToPublicationPreview, type UniversalPreviewInput } from "./universal-input-compilation-service.js";
+import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_ATTACHMENTS = 6;
 const MAX_CODE_CHARACTERS = 200_000;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_UNIVERSAL_PREVIEW_SOURCE_BYTES = 200_000;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 const MAX_PROVIDER_API_KEY_LENGTH = 512;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
@@ -171,6 +174,117 @@ function figureAnalysisVersion(request: FastifyRequest): void {
       supported: [3],
     });
   }
+}
+
+function universalPreviewVersion(request: FastifyRequest): void {
+  if (request.headers["accept-figure-version"] !== "4") {
+    throw validationError("Accept-Figure-Version: 4 is required for universal figure preview", {
+      field: "Accept-Figure-Version",
+      reason: "unsupported_version",
+      supported: [4],
+    });
+  }
+}
+
+function parseUniversalPreviewBody(request: FastifyRequest): {
+  input: UniversalPreviewInput;
+  detail: "overview" | "architecture" | "operator_detail";
+} {
+  const input = body(request);
+  assertOnlyKeys(input, ["input", "detail"], "universal figure preview");
+  const detail = input.detail === undefined ? "architecture" : input.detail;
+  if (detail !== "overview" && detail !== "architecture" && detail !== "operator_detail") {
+    throw validationError("detail is invalid", { field: "detail", reason: "invalid_value" });
+  }
+
+  const source = objectField(input.input, "input");
+  const kind = requiredStringField(source.kind, "input.kind");
+  if (kind === "typed-prompt") {
+    assertOnlyKeys(source, ["kind", "sourceId", "prompt", "revision"], "input");
+    const sourceId = requiredIdentifierField(source.sourceId, "input.sourceId");
+    const prompt = boundedRawSourceField(source.prompt, "input.prompt");
+    const revisionValue = source.revision;
+    if (revisionValue !== undefined && (typeof revisionValue !== "number" || !Number.isSafeInteger(revisionValue) || revisionValue < 1)) {
+      throw validationError("input.revision must be a positive integer", { field: "input.revision", reason: "invalid_value" });
+    }
+    const revision = revisionValue as number | undefined;
+    return { input: { kind, sourceId, prompt, ...(revision === undefined ? {} : { revision }) }, detail };
+  }
+
+  if (kind === "static-pytorch") {
+    assertOnlyKeys(source, ["kind", "sourceId", "sourceSha256", "code"], "input");
+    const sourceId = requiredIdentifierField(source.sourceId, "input.sourceId");
+    const sourceSha256 = requiredSha256Field(source.sourceSha256, "input.sourceSha256");
+    const code = boundedRawSourceField(source.code, "input.code");
+    const actualSha256 = createHash("sha256").update(code, "utf8").digest("hex");
+    if (actualSha256 !== sourceSha256) {
+      throw validationError("input.sourceSha256 does not match input.code", { field: "input.sourceSha256", reason: "digest_mismatch" });
+    }
+    return { input: { kind, sourceId, sourceSha256, code }, detail };
+  }
+
+  throw validationError("input.kind is not supported", { field: "input.kind", reason: "unsupported_value" });
+}
+
+function universalPreviewUpdateIdentity(
+  serverSecret: string,
+  userId: string,
+  deviceId: string,
+  input: UniversalPreviewInput,
+  detail: "overview" | "architecture" | "operator_detail",
+) {
+  const fingerprint = input.kind === "typed-prompt"
+    ? { kind: input.kind, sourceId: input.sourceId, sourceHash: createHash("sha256").update(input.prompt, "utf8").digest("hex"), revision: input.revision ?? 1, detail }
+    : { kind: input.kind, sourceId: input.sourceId, sourceHash: input.sourceSha256, detail };
+  const key = universalPreviewOpaqueKey(serverSecret, "update-identity", { userId, deviceId, ...fingerprint });
+  return {
+    ownerId: userId,
+    deviceId,
+    workflowId: `universal-preview-${key}`,
+    documentId: `preview-${key}`,
+    pageId: "pvp-preview",
+    expectedRevision: input.kind === "typed-prompt" ? input.revision ?? 1 : 1,
+  };
+}
+
+function serverBoundUniversalPreviewInput(serverSecret: string, userId: string, deviceId: string, input: UniversalPreviewInput): UniversalPreviewInput {
+  const sourceHash = input.kind === "typed-prompt"
+    ? createHash("sha256").update(input.prompt, "utf8").digest("hex")
+    : input.sourceSha256;
+  const sourceId = `preview-source-${universalPreviewOpaqueKey(serverSecret, "compile-source", { userId, deviceId, kind: input.kind, sourceId: input.sourceId, sourceHash })}`;
+  return input.kind === "typed-prompt"
+    ? { ...input, sourceId }
+    : { ...input, sourceId };
+}
+
+function universalPreviewOpaqueKey(serverSecret: string, domain: string, value: Record<string, unknown>): string {
+  return createHmac("sha256", serverSecret).update(`${domain}\n${JSON.stringify(value)}`, "utf8").digest("hex").slice(0, 48);
+}
+
+async function auditUniversalPreview(
+  store: FoundationStore,
+  userId: string,
+  inputKind: UniversalPreviewInput["kind"],
+  preview: PublicationVisualPlanPreview,
+): Promise<void> {
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId: userId,
+    action: "universal-figure.preview.read",
+    targetType: "universal-figure-preview",
+    targetId: preview.plan.identity.canonicalHash,
+    reason: null,
+    metadata: {
+      version: 4,
+      inputKind,
+      kind: preview.kind,
+      exportEligible: preview.exportEligible,
+      planId: preview.plan.identity.planId,
+      planHash: preview.plan.identity.canonicalHash,
+    },
+    createdAt: new Date().toISOString(),
+  });
 }
 
 function parseFigureAnalysisBody(request: FastifyRequest): Record<string, unknown> {
@@ -824,6 +938,43 @@ function requiredStringField(value: unknown, field: string): string {
   return value;
 }
 
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], field: string): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw validationError(`${field} contains an unsupported field`, { field: `${field}.${key}`, reason: "forbidden" });
+    }
+  }
+}
+
+function requiredIdentifierField(value: unknown, field: string): string {
+  const identifier = requiredStringField(value, field);
+  if (!safeIdentifier(identifier)) {
+    throw validationError(`${field} must be a safe identifier`, { field, reason: "invalid_value" });
+  }
+  return identifier;
+}
+
+function boundedRawSourceField(value: unknown, field: string): string {
+  const source = requiredStringField(value, field);
+  const bytes = Buffer.byteLength(source, "utf8");
+  if (bytes === 0 || bytes > MAX_UNIVERSAL_PREVIEW_SOURCE_BYTES || source.includes("\0")) {
+    throw validationError(`${field} is outside the allowed source bounds`, {
+      field,
+      reason: "invalid_value",
+      maxBytes: MAX_UNIVERSAL_PREVIEW_SOURCE_BYTES,
+    });
+  }
+  return source;
+}
+
+function requiredSha256Field(value: unknown, field: string): string {
+  const digest = requiredStringField(value, field).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw validationError(`${field} must be a SHA-256 digest`, { field, reason: "invalid_value" });
+  }
+  return digest;
+}
+
 function optionalStringField(value: unknown, field: string): string | undefined {
   if (value == null) return undefined;
   return requiredStringField(value, field);
@@ -925,6 +1076,28 @@ function parseAgentBody(request: FastifyRequest): { conversationId: string; hash
 
 export function registerRoutes(app: FastifyInstance, options: RouteOptions): void {
   app.get("/health", async () => ({ status: "ok" }));
+
+  app.post("/api/universal-figure-previews", async (request, reply) => {
+    universalPreviewVersion(request);
+    const access = await requireUser(request, options);
+    const parsed = parseUniversalPreviewBody(request);
+    let compiled;
+    try {
+      compiled = compileUniversalInputToPublicationPreview(serverBoundUniversalPreviewInput(options.sessionSecret, access.user.id, access.device.id, parsed.input), {
+        detail: parsed.detail,
+        updateIdentity: universalPreviewUpdateIdentity(options.sessionSecret, access.user.id, access.device.id, parsed.input, parsed.detail),
+      });
+    } catch {
+      throw validationError("Universal figure preview input is invalid", {
+        field: "input",
+        reason: "invalid",
+      });
+    }
+    const preview = projectPublicationVisualPlanPreview(compiled);
+    await auditUniversalPreview(options.store, access.user.id, parsed.input.kind, preview);
+    reply.header("Figure-Version", "4");
+    return reply.send(preview);
+  });
 
   app.post("/api/figure-analyses", async (request, reply) => {
     figureAnalysisVersion(request);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectArchitectureIrV3ToUniversalGraphSpec } from "../src/universal-graph-spec-adapter.js";
+import { getUniversalGraphEligibility } from "../src/universal-graph-spec.js";
 import { parseArchitectureIRv3 } from "../src/network-ir-v3.js";
 import { cnnGoldIr, tokenTransformerGoldIr } from "./fixtures/figure-component-gold-ir.js";
 
@@ -23,6 +24,23 @@ describe("ArchitectureIRv3 to UniversalGraphSpec adapter", () => {
       expect.objectContaining({ sourcePortId: "input:out", targetPortId: "operator:in", relation: "data", knowledge: "proven" }),
     ]));
     expect(ugs.evidence.find((item) => item.evidenceId === "evidence-main")).toMatchObject({ sourceId: "fixture-source", sourceHash: "0".repeat(64) });
+  });
+
+  it("keeps a blocking operation question candidate-only after canonical projection", () => {
+    const source = cnnGoldIr();
+    source.unresolved = [{
+      id: "unknown-module-call",
+      severity: "blocking",
+      conflictKey: "unknown-module-call",
+      candidateValues: [],
+      evidenceFactIds: [],
+      dependencyQuestionIds: [],
+    }];
+
+    const ugs = projectArchitectureIrV3ToUniversalGraphSpec(parseArchitectureIRv3(source));
+
+    expect(ugs.unresolved).toEqual(expect.arrayContaining([expect.objectContaining({ scope: "operation", severity: "blocking" })]));
+    expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "candidate", export: "ineligible" });
   });
 
   it("projects a repeated unit into an explicit group that a general renderer can trace", () => {
