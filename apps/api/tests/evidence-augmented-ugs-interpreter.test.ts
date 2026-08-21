@@ -185,10 +185,28 @@ describe("evidence-augmented UGS interpreter", () => {
     expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/locator|invalid/i);
   });
 
+  it.each(["/model.py", "models/model.py", "models\\model.py", "model.py"])('rejects a root, one-directory, or bare filesystem locator: %s', (locator) => {
+    const unsafeRequest = { ...request(), evidence: [{ ...request().evidence[0]!, locator }] };
+
+    expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/locator|invalid/i);
+  });
+
   it.each([
     ["node label", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "C:\\Users\\private\\model.py" }, ...customModuleProposal().nodes.slice(1)] })],
     ["source snippet", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "def forward(self, x):" }, ...customModuleProposal().nodes.slice(1)] })],
   ])("rejects %s from proposal public text", (_label, proposal) => {
+    expect(() => interpretEvidenceAugmentedInput(request(), proposal())).toThrow(/invalid/i);
+  });
+
+  it.each([
+    ["node label", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "print('unsafe')" }, ...customModuleProposal().nodes.slice(1)] })],
+    ["node operation", () => ({ ...customModuleProposal(), nodes: customModuleProposal().nodes.map((item) => item.nodeId === "spectral" ? { ...item, operation: "const unsafe = 1;" } : item) })],
+    ["semantic hint", () => ({ ...customModuleProposal(), nodes: customModuleProposal().nodes.map((item) => item.nodeId === "spectral" ? { ...item, semanticHints: ["function unsafe() {}"] } : item) })],
+    ["string attribute", () => ({ ...customModuleProposal(), nodes: customModuleProposal().nodes.map((item) => item.nodeId === "spectral" ? { ...item, attributes: { description: "public void Draw() {}" } } : item) })],
+    ["port label", () => ({ ...customModuleProposal(), ports: [{ ...customModuleProposal().ports[0]!, label: "Write-Host unsafe" }, ...customModuleProposal().ports.slice(1)] })],
+    ["port representation", () => ({ ...customModuleProposal(), ports: [{ ...customModuleProposal().ports[0]!, representation: "self.layer = value" }, ...customModuleProposal().ports.slice(1)] })],
+    ["port semantic type", () => ({ ...customModuleProposal(), ports: [{ ...customModuleProposal().ports[0]!, semanticType: "IMPORT module" }, ...customModuleProposal().ports.slice(1)] })],
+  ])("rejects source-like payload in %s", (_label, proposal) => {
     expect(() => interpretEvidenceAugmentedInput(request(), proposal())).toThrow(/invalid/i);
   });
 

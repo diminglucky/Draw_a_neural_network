@@ -7,8 +7,10 @@ const identifier = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
 const digest = /^[a-f0-9]{64}$/i;
 const safeText = /^[^\u0000-\u001f]{1,240}$/;
 const forbiddenControlText = /\b(?:provider|renderer|native|worker|com|visio|command|script|execution|snapshot)\b/i;
-const filesystemPath = /(?:[A-Za-z]:[\\/])|(?:\\\\[^\\/\s]+[\\/])|(?:^|[\s"'])\/(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+|(?:^|[\s"'])(?:\.\.?[\\/]|(?:[A-Za-z0-9._-]+[\\/]){2,}[A-Za-z0-9._-]+)/;
-const sourceLikeText = /\b(?:class\s+[A-Za-z_]\w*|def\s+[A-Za-z_]\w*\s*\(|import\s+[A-Za-z_]\w*|from\s+[A-Za-z_]\w*\s+import|return\s+|self\.)/;
+const filesystemPath = /[\\/]/;
+const sourceFileName = /\b[A-Za-z0-9_-]+\.(?:py|pyi|js|mjs|cjs|jsx|ts|mts|cts|tsx|cs|csproj|java|kt|kts|go|rs|c|cc|cpp|cxx|h|hpp|json|ya?ml|toml|ini|cfg|conf|sh|ps1|bat|cmd|exe|dll|so|dylib|vsdx|svg|png|jpe?g|pdf)\b/i;
+const sourceLikeText = /(?:\b(?:async\s+)?(?:class|def|function|interface|struct|enum|namespace|module|import|export|from|return|throw|try|catch|finally|if|else|for|while|switch|case|const|let|var|using|package|public|private|protected|static|void|new|func|fn|sub)\b|\b(?:print|console\.log|system\.console\.writeline|write-host|invoke-expression|start-process|echo)\s*(?:\(|\b)|\bself(?:\.[A-Za-z_]\w*)+\s*=|(?:^|[;\r\n])\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*=(?!=|>))/i;
+const publicEvidenceLocator = /^[A-Za-z][A-Za-z0-9_-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9_-]{0,127}){0,7}$/;
 const knownOperations = new Set([
   "conv2d", "normalization", "activation", "pool", "dense", "flatten", "identity_projection",
   "token_projection", "encoder_stage", "decoder_stage", "self_attention", "cross_attention",
@@ -212,8 +214,8 @@ function record(input: unknown, location: string): Record<string, unknown> { if 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], location: string): void { for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`${location} contains an unknown field`); }
 function identifierValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !identifier.test(value)) throw new Error(`${location} is invalid`); }
 function digestValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !digest.test(value)) throw new Error(`${location} is invalid`); }
-function textValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !safeText.test(value) || forbiddenControlText.test(value) || filesystemPath.test(value) || sourceLikeText.test(value)) throw new Error(`${location} is invalid`); }
-function locatorValue(value: unknown, location: string): asserts value is string { textValue(value, location); if (filesystemPath.test(value)) throw new Error(`${location} is invalid`); }
+function textValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !safeText.test(value) || forbiddenControlText.test(value) || filesystemPath.test(value) || sourceFileName.test(value) || sourceLikeText.test(value)) throw new Error(`${location} is invalid`); }
+function locatorValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !publicEvidenceLocator.test(value)) throw new Error(`${location} is invalid`); }
 function capacity(value: unknown, location: string, maximum: number): asserts value is number { if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > maximum) throw new Error(`${location} is invalid`); }
 function unique(values: readonly string[], location: string): void { if (new Set(values).size !== values.length) throw new Error(`${location} contains duplicate values`); }
 function uniqueSorted(values: readonly string[]): string[] { return [...new Set(values)].sort(compareCodeUnits); }
