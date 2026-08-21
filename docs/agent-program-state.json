@@ -6,8 +6,8 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md"
   },
-  "updatedAt": "2026-08-21T06:49:18.700Z",
-  "currentFocus": "M2.11",
+  "updatedAt": "2026-08-21T07:13:31.831Z",
+  "currentFocus": "M2.12",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
     { "id": "M1", "title": "Static source analysis", "status": "accepted" },
@@ -200,16 +200,18 @@
       "id": "M2.8",
       "milestoneId": "M2",
       "title": "Prompt-to-UniversalGraphSpec",
-      "status": "awaiting_acceptance",
-      "previousStatus": "planned",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M2.6"],
       "outcome": "Prompt declarations produce evidence-backed generic graph candidates while preserving unknown modules and unresolved topology.",
       "acceptance": [{ "id": "M2.8.prompt", "text": "Prompt adapter preserves unknown modules and isolates unresolved topology without model-name templates.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [
         { "kind": "test", "satisfies": ["M2.8.prompt"], "ref": "apps/api/tests/prompt-universal-graph-spec.test.ts", "summary": "Bounded typed prompt declarations preserve custom modules and fail closed to candidate when topology is unresolved.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" },
-        { "kind": "document", "satisfies": ["M2.8.prompt"], "ref": "docs/superpowers/plans/2026-08-21-universal-pvp-preview-convergence.md", "summary": "The shared prompt/code-to-PVP preview boundary is documented without model-name templates.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" }
+        { "kind": "document", "satisfies": ["M2.8.prompt"], "ref": "docs/superpowers/plans/2026-08-21-universal-pvp-preview-convergence.md", "summary": "The shared prompt/code-to-PVP preview boundary is documented without model-name templates.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" },
+        { "kind": "test", "satisfies": ["M2.8.prompt"], "ref": "docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md", "summary": "Port-level evidence lineage, candidate isolation, focused regressions, and the full API suite passed after independent review.", "verifiedAt": "2026-08-21T07:13:31.831Z", "commit": "aa9835c383aa18c804a23856893685af97443fef" },
+        { "kind": "document", "satisfies": ["M2.8.prompt"], "ref": "docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md", "summary": "Independent acceptance, scope exclusions, and Git delivery are recorded.", "verifiedAt": "2026-08-21T07:13:31.831Z", "commit": "aa9835c383aa18c804a23856893685af97443fef" }
       ],
-      "nextAction": "Obtain independent acceptance of the committed bounded Prompt-to-UGS adapter and keep it non-exporting.",
+      "nextAction": "Keep the accepted bounded Prompt-to-UGS adapter non-exporting while M2.12 consumes only its canonical evidence.",
       "blockerIds": [],
       "successorId": null
     },
@@ -217,16 +219,18 @@
       "id": "M2.10",
       "milestoneId": "M2",
       "title": "Static-code-to-UniversalGraphSpec",
-      "status": "awaiting_acceptance",
-      "previousStatus": "planned",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M2.6"],
       "outcome": "Non-executed static code produces evidence-backed generic graph candidates while preserving unknown modules and unresolved topology.",
       "acceptance": [{ "id": "M2.10.static-code", "text": "Static-code adapter never executes source, preserves unknown modules, and isolates unresolved topology.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [
         { "kind": "test", "satisfies": ["M2.10.static-code"], "ref": "apps/api/tests/static-pytorch-universal-graph-spec.test.ts", "summary": "Non-executing static PyTorch analysis preserves unknown modules and fails closed to candidate on dynamic or unresolved structure.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" },
-        { "kind": "document", "satisfies": ["M2.10.static-code"], "ref": "docs/superpowers/plans/2026-08-21-universal-pvp-preview-convergence.md", "summary": "The shared prompt/code-to-PVP preview boundary documents non-executing static source intake.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" }
+        { "kind": "document", "satisfies": ["M2.10.static-code"], "ref": "docs/superpowers/plans/2026-08-21-universal-pvp-preview-convergence.md", "summary": "The shared prompt/code-to-PVP preview boundary documents non-executing static source intake.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" },
+        { "kind": "test", "satisfies": ["M2.10.static-code"], "ref": "docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md", "summary": "Direct digest binding and conditional declaration fail-closed regressions passed with the full API suite.", "verifiedAt": "2026-08-21T07:13:31.831Z", "commit": "aa9835c383aa18c804a23856893685af97443fef" },
+        { "kind": "document", "satisfies": ["M2.10.static-code"], "ref": "docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md", "summary": "Independent acceptance, scope exclusions, and Git delivery are recorded.", "verifiedAt": "2026-08-21T07:13:31.831Z", "commit": "aa9835c383aa18c804a23856893685af97443fef" }
       ],
-      "nextAction": "Obtain independent acceptance of the committed non-executing Static-code-to-UGS adapter and keep it non-exporting.",
+      "nextAction": "Keep the accepted non-executing static adapter non-exporting while M2.12 consumes only its canonical evidence.",
       "blockerIds": [],
       "successorId": null
     },
@@ -235,11 +239,11 @@
       "milestoneId": "M2",
       "title": "M2 preview acceptance",
       "status": "planned",
-      "dependsOn": ["M2.1", "M2.2", "M2.3", "M2.4", "M2.5", "M2.6", "M2.8", "M2.10"],
+      "dependsOn": ["M2.1", "M2.2", "M2.3", "M2.4", "M2.5", "M2.6", "M2.8", "M2.10", "M2.12"],
       "outcome": "The viewed generic preview is the exact object eligible for later export.",
       "acceptance": [{ "id": "M2.9.review", "text": "Zero-template fixtures and visual review accept generic preview identity.", "requiredEvidenceKinds": ["test", "manual-visual-review", "document"] }],
       "evidence": [],
-      "nextAction": "Review zero-template Prompt/static-code preview identity and browser diagnostic evidence after M2.5, M2.8, and M2.10 are accepted, PatternLibrary is not a prerequisite.",
+      "nextAction": "Review zero-template preview identity and browser diagnostic evidence only after M2.12 is accepted. PatternLibrary is not a prerequisite.",
       "blockerIds": [],
       "successorId": null
     },
@@ -247,13 +251,16 @@
       "id": "M2.11",
       "milestoneId": "M2",
       "title": "Evidence-constrained drawing session",
-      "status": "awaiting_acceptance",
-      "previousStatus": "active",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M2.6"],
       "outcome": "Prompt and static-code evidence produces an owner/device-bound renderer-neutral UGS/GPG/PVP session or one clarification without model-name routing.",
       "acceptance": [{ "id": "M2.11.session", "text": "The session deterministically preserves evidence lineage, rejects foreign or stale confirmation, emits no PVP for blocking topology, and recomputes a local semantic PVP delta after bounded confirmation.", "requiredEvidenceKinds": ["test", "document"] }],
-      "evidence": [],
-      "nextAction": "Keep the independently reviewed pure session slice unexpanded and await narrow Git delivery plus formal ledger acceptance before persistence provider Snapshot export renderer or Visio work.",
+      "evidence": [
+        { "kind": "test", "satisfies": ["M2.11.session"], "ref": "docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md", "summary": "Session provenance pairing clarification delta and cross-slice regressions passed with the full API suite of 820 tests.", "verifiedAt": "2026-08-21T07:13:31.831Z", "commit": "aa9835c383aa18c804a23856893685af97443fef" },
+        { "kind": "document", "satisfies": ["M2.11.session"], "ref": "docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md", "summary": "Two independent reviews accepted the renderer-neutral session boundary and recorded excluded native capabilities.", "verifiedAt": "2026-08-21T07:13:31.831Z", "commit": "aa9835c383aa18c804a23856893685af97443fef" }
+      ],
+      "nextAction": "Keep the accepted renderer-neutral session boundary unchanged while M2.12 implements bounded interpretation without native authority.",
       "blockerIds": [],
       "successorId": null
     },
@@ -261,12 +268,13 @@
       "id": "M2.12",
       "milestoneId": "M2",
       "title": "Evidence-augmented architecture interpretation",
-      "status": "planned",
+      "status": "active",
+      "previousStatus": "planned",
       "dependsOn": ["M2.8", "M2.10", "M2.11"],
       "outcome": "Bounded architecture declarations and interpreter proposals become evidence-validated UniversalGraphSpec facts or deterministic clarification without source execution or native authority.",
       "acceptance": [{ "id": "M2.12.interpreter", "text": "The Harness rejects unbounded or unsupported proposals, preserves evidence lineage, and returns only formal UGS or clarification.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [],
-      "nextAction": "Activate only after M2.8, M2.10, and M2.11 are accepted, then implement the bounded interpreter and Harness without Provider or Visio authority.",
+      "nextAction": "Implement the bounded interpreter proposal and Harness validation contract without Provider, renderer, Worker, or Visio authority.",
       "blockerIds": [],
       "successorId": "M2.13"
     },

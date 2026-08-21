@@ -43,3 +43,11 @@ This append-only operational log records a deliberate product decision separatel
 - **Change:** Registered `M2.12` and `M2.13` as planned Core Drawing V1 nodes. M2.12 is the bounded evidence-augmented architecture-interpreter/Harness boundary after accepted M2.8, M2.10, and M2.11. M2.13 is the semantic publication-visual-grammar and acceptance-corpus boundary after accepted M2.12.
 - **Preserved state:** M2.8, M2.10, and M2.11 remain unchanged; `currentFocus` remains M2.11 in `awaiting_acceptance`. The new nodes have no evidence and cannot become active solely because this ledger registration exists.
 - **Non-goals:** This change does not implement an interpreter, Provider call, visual grammar, sketch intake, Snapshot/export, Worker attach, Visio mutation, save/reopen, or real-host validation.
+
+## 2026-08-21 — CD0 foundation acceptance and M2.12 activation
+
+- **Delivered revision:** `aa9835c383aa18c804a23856893685af97443fef` was pushed to `origin/agent` and remote SHA readback matched the delivered commit.
+- **Accepted scope:** M2.8 Prompt-to-UGS, M2.10 Static-code-to-UGS, and M2.11 Evidence-constrained drawing session are accepted. The acceptance record is `docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md`.
+- **Evidence:** The targeted 58-test matrix, full API suite (125 files / 820 tests), TypeScript, foundation check, roadmap verification, and diff check passed. Two independent reviews accepted provenance-pair binding, port-level evidence lineage, direct static-source digest binding, and conditional-declaration fail-closed behavior.
+- **Ledger effect:** `currentFocus` advances to active M2.12. M2.13 remains planned. This activates only the bounded interpreter/Harness task.
+- **Preserved exclusions:** No Provider, natural-language topology guess, raw source execution, SVG/coordinate control, Snapshot/export, Worker/COM/Visio call, current-page attachment, save/reopen, real-host, or manual visual-acceptance claim is created by this acceptance.
