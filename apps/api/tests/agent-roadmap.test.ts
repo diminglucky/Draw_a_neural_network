@@ -153,6 +153,7 @@ function configuredAcceptanceNode(input: {
   dependsOn?: string[];
   title?: string;
   outcome?: string;
+  capabilities?: string[];
 }): LedgerFixture {
   return {
     id: input.id,
@@ -161,6 +162,7 @@ function configuredAcceptanceNode(input: {
     status: "accepted",
     previousStatus: "awaiting_acceptance",
     dependsOn: input.dependsOn ?? ["M1.9"],
+    capabilities: input.capabilities ?? [],
     outcome: input.outcome ?? "Acceptance requires independent evidence.",
     acceptance: input.acceptance,
     evidence: input.acceptance.flatMap((item: { id: string }) => [{
@@ -195,9 +197,10 @@ function currentPageVisioCapabilityState(): LedgerFixture {
   for (const id of CURRENT_PAGE_VISIO_PREDECESSORS) state.nodes.push(acceptedPrerequisiteNode(id));
   state.nodes.push(configuredAcceptanceNode({
     id: "M4.2",
-    title: "Current-page Visio capability",
-    outcome: "A bounded update to one selected existing Visio page is governed by the canonical chain.",
+    title: "Selected Visio page update",
+    outcome: "A bounded update to one selected diagram surface is governed by the canonical chain.",
     dependsOn: CURRENT_PAGE_VISIO_PREDECESSORS,
+    capabilities: ["current-page-visio"],
     acceptance: [{
       id: "M4.2.current-page",
       text: "The capability accepts only the complete governance chain.",
@@ -234,11 +237,12 @@ describe("agent roadmap ledger", () => {
     }
   });
 
-  it("records the complete formal-PVP-to-real-host chain for the planned current-page Visio node", () => {
+  it("records the structured current-page Visio capability and complete formal-PVP-to-real-host chain", () => {
     const live = liveRoadmapState();
     const currentPageVisio = live.nodes.find((node: { id: string }) => node.id === "M3.6");
 
     expect(currentPageVisio).toMatchObject({ status: "planned" });
+    expect(currentPageVisio?.capabilities).toEqual(["current-page-visio"]);
     expect(currentPageVisio?.dependsOn).toEqual(expect.arrayContaining(CURRENT_PAGE_VISIO_PREDECESSORS));
   });
 
@@ -250,12 +254,23 @@ describe("agent roadmap ledger", () => {
     expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
   });
 
-  it("does not treat a later current-page Visio reference as a capability claim", () => {
+  it("does not allow prose changes to evade a marked current-page Visio capability", () => {
+    const state = currentPageVisioCapabilityState();
+    const capability = state.nodes.find((node: { id: string }) => node.id === "M4.2")!;
+    capability.title = "Selected diagram update";
+    capability.outcome = "A bounded update to a chosen surface.";
+    capability.acceptance[0].text = "Page update evidence is required.";
+    capability.dependsOn = capability.dependsOn.filter((id: string) => id !== "M3.5");
+
+    expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
+  });
+
+  it("does not treat unmarked future-work or prerequisite prose as a current-page Visio capability", () => {
     const state = nonBootstrapState();
     const visualGrammar = configuredAcceptanceNode({
       id: "M2.13",
-      title: "Publication visual grammar",
-      outcome: "Semantic architecture families compile into deterministic visual grammars.",
+      title: "Prerequisite for selected Visio page updates",
+      outcome: "This node does not provide current-page Visio capability and prepares future governed work.",
       acceptance: [{
         id: "M2.13.grammar",
         text: "The visual corpus is reviewed.",
@@ -268,6 +283,17 @@ describe("agent roadmap ledger", () => {
     state.nodes.push(visualGrammar);
 
     expect(() => validateProgramState(state, fixtures())).not.toThrow();
+  });
+
+  it.each([
+    ["a non-array capability value", "current-page-visio"],
+    ["an unknown capability", ["unrecognized-capability"]],
+    ["a duplicate capability", ["current-page-visio", "current-page-visio"]],
+  ])("rejects %s", (_label, capabilities) => {
+    const state = nonBootstrapState();
+    state.nodes[1].capabilities = capabilities;
+
+    expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
   });
 
   it("requires matching evidence for each accepted acceptance item", () => {

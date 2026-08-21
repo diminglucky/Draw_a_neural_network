@@ -371,6 +371,7 @@
       "title": "Existing-page Visio binding and controlled update",
       "status": "planned",
       "dependsOn": ["M2.13", "M3.2", "M3.3", "M3.4", "M3.5"],
+      "capabilities": ["current-page-visio"],
       "outcome": "A formal PVP, sealed binding, Worker, independent readback, and real-host proof govern a bounded update to one explicitly selected existing Visio page.",
       "acceptance": [{ "id": "M3.6.current-page", "text": "Current-page Visio evidence proves formal PVP lineage, sealed page binding, Worker execution, preserved-shape readback, save/reopen, and real-host review.", "requiredEvidenceKinds": ["test", "real-host", "manual-visual-review", "document"] }],
       "evidence": [],

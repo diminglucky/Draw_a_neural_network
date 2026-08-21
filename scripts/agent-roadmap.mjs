@@ -25,6 +25,7 @@ const EVIDENCE_KINDS = new Set([
 ]);
 const BLOCKER_SEVERITIES = new Set(["low", "medium", "high"]);
 const BLOCKER_STATUSES = new Set(["open", "closed"]);
+const NODE_CAPABILITIES = new Set(["current-page-visio"]);
 const CURRENT_PAGE_VISIO_DIRECT_PREDECESSORS = ["M2.13", "M3.2", "M3.3", "M3.4", "M3.5"];
 const TRANSITIONS = new Map([
   ["planned", new Set(["active", "awaiting_acceptance", "deferred", "superseded"])],
@@ -238,6 +239,19 @@ function validateTransition(node, label) {
   }
 }
 
+function validateCapabilities(value, label) {
+  if (value === undefined) return [];
+  const capabilities = expectArray(value, label);
+  const seen = new Set();
+  for (const capability of capabilities) {
+    if (typeof capability !== "string" || !NODE_CAPABILITIES.has(capability) || seen.has(capability)) {
+      fail(`${label} must contain unique, known capability tokens.`);
+    }
+    seen.add(capability);
+  }
+  return capabilities;
+}
+
 function validateNodes(nodes, milestoneIds, root, resolveCommit) {
   const nodeIds = new Set();
   const nodeById = new Map();
@@ -245,7 +259,7 @@ function validateNodes(nodes, milestoneIds, root, resolveCommit) {
     const label = `nodes[${index}]`;
     expectExactKeys(node, new Set([
       "id", "milestoneId", "title", "status", "previousStatus", "dependsOn", "outcome",
-      "acceptance", "evidence", "nextAction", "blockerIds", "successorId", "bootstrapBaseline",
+      "acceptance", "evidence", "nextAction", "blockerIds", "successorId", "bootstrapBaseline", "capabilities",
     ]), label);
     const id = expectRequiredString(node.id, `${label}.id`);
     if (!NODE_ID.test(id) || nodeIds.has(id)) fail(`${label}.id must be a unique node ID.`);
@@ -260,6 +274,7 @@ function validateNodes(nodes, milestoneIds, root, resolveCommit) {
     const evidence = expectArray(node.evidence, `${label}.evidence`);
     validateEvidence(evidence, acceptanceIds, root, resolveCommit, `${label}.evidence`);
     const dependsOn = expectArray(node.dependsOn, `${label}.dependsOn`);
+    validateCapabilities(node.capabilities, `${label}.capabilities`);
     const blockerIds = expectArray(node.blockerIds, `${label}.blockerIds`);
     if (node.successorId !== null && typeof node.successorId !== "string") fail(`${label}.successorId must be a node ID or null.`);
     nodeIds.add(id);
@@ -359,17 +374,9 @@ function validateAcceptedNodes(nodesById) {
   }
 }
 
-function isCurrentPageVisioCapabilityClaim(node) {
-  const claimText = [
-    node.title,
-    node.outcome,
-  ].join(" ");
-  return /\b(?:current|existing)[ -]page\b/i.test(claimText) && /\bvisio\b/i.test(claimText);
-}
-
 function validateCurrentPageVisioCapabilityClaims(nodesById) {
   for (const [nodeId, node] of nodesById) {
-    if (!isCurrentPageVisioCapabilityClaim(node)) continue;
+    if (!node.capabilities?.includes("current-page-visio")) continue;
     const declared = new Set(node.dependsOn);
     const missing = CURRENT_PAGE_VISIO_DIRECT_PREDECESSORS.filter((id) => !declared.has(id));
     if (missing.length > 0) {

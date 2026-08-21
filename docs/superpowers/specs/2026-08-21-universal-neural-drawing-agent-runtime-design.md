@@ -30,7 +30,7 @@ DrawingIntent
 
 The structural result is terminal before composition unless it is a formal UGS. A candidate, clarification, rejection, cancellation, stale revision, foreign owner/device, or changed target must not mint a PVP, Snapshot, native intent, Worker command, COM operation, page binding, or Visio artifact.
 
-Only the later, formal chain can make an existing-page claim. Such a claim must directly depend on formal PVP (`M2.13`), sealed binding (`M3.2`), Worker (`M3.3`), readback/recovery (`M3.4`), and real-host acceptance (`M3.5`). `OpenOrCreate` is never a fallback for a selected existing page.
+Only the later, formal chain can make an existing-page claim. The roadmap node must declare the structured `capabilities: ["current-page-visio"]` marker; prose in a title, outcome, acceptance item, or next action neither creates nor suppresses this policy. A marked claim must directly depend on formal PVP (`M2.13`), sealed binding (`M3.2`), Worker (`M3.3`), readback/recovery (`M3.4`), and real-host acceptance (`M3.5`). `OpenOrCreate` is never a fallback for a selected existing page.
 
 ## Privacy and public-projection fences
 
