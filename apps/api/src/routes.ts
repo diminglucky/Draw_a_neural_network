@@ -22,7 +22,7 @@ import { FigureAnalysisService } from "./figure-analysis-service.js";
 import { parsePyTorchSourcePack, type SourcePack } from "./source-pack.js";
 import { publicFigureAnalysis, type FigureAnalysisRecord } from "./figure-analysis.js";
 import { FigureAnalysisPreviewServiceImpl, type FigureAnalysisPreviewResponse } from "./figure-analysis-preview-service.js";
-import { compileUniversalInputToPublicationPreview, type UniversalPreviewInput } from "./universal-input-compilation-service.js";
+import { compileUniversalInputToPublicationPreview, type LegacyUniversalPreviewInput } from "./universal-input-compilation-service.js";
 import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
@@ -187,7 +187,7 @@ function universalPreviewVersion(request: FastifyRequest): void {
 }
 
 function parseUniversalPreviewBody(request: FastifyRequest): {
-  input: UniversalPreviewInput;
+  input: LegacyUniversalPreviewInput;
   detail: "overview" | "architecture" | "operator_detail";
 } {
   const input = body(request);
@@ -230,7 +230,7 @@ function universalPreviewUpdateIdentity(
   serverSecret: string,
   userId: string,
   deviceId: string,
-  input: UniversalPreviewInput,
+  input: LegacyUniversalPreviewInput,
   detail: "overview" | "architecture" | "operator_detail",
 ) {
   const fingerprint = input.kind === "typed-prompt"
@@ -247,7 +247,7 @@ function universalPreviewUpdateIdentity(
   };
 }
 
-function serverBoundUniversalPreviewInput(serverSecret: string, userId: string, deviceId: string, input: UniversalPreviewInput): UniversalPreviewInput {
+function serverBoundUniversalPreviewInput(serverSecret: string, userId: string, deviceId: string, input: LegacyUniversalPreviewInput): LegacyUniversalPreviewInput {
   const sourceHash = input.kind === "typed-prompt"
     ? createHash("sha256").update(input.prompt, "utf8").digest("hex")
     : input.sourceSha256;
@@ -264,7 +264,7 @@ function universalPreviewOpaqueKey(serverSecret: string, domain: string, value: 
 async function auditUniversalPreview(
   store: FoundationStore,
   userId: string,
-  inputKind: UniversalPreviewInput["kind"],
+  inputKind: LegacyUniversalPreviewInput["kind"],
   preview: PublicationVisualPlanPreview,
 ): Promise<void> {
   await store.createAuditRecord({

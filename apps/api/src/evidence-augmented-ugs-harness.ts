@@ -7,7 +7,8 @@ const identifier = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
 const digest = /^[a-f0-9]{64}$/i;
 const safeText = /^[^\u0000-\u001f]{1,240}$/;
 const forbiddenControlText = /\b(?:provider|renderer|native|worker|com|visio|command|script|execution|snapshot)\b/i;
-const filesystemPath = /(?:[A-Za-z]:[\\/])|(?:^|\s)\/(?:[A-Za-z0-9._-]+\/){1,}[A-Za-z0-9._-]+/;
+const filesystemPath = /(?:[A-Za-z]:[\\/])|(?:\\\\[^\\/\s]+[\\/])|(?:^|[\s"'])\/(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+|(?:^|[\s"'])(?:\.\.?[\\/]|(?:[A-Za-z0-9._-]+[\\/]){2,}[A-Za-z0-9._-]+)/;
+const sourceLikeText = /\b(?:class\s+[A-Za-z_]\w*|def\s+[A-Za-z_]\w*\s*\(|import\s+[A-Za-z_]\w*|from\s+[A-Za-z_]\w*\s+import|return\s+|self\.)/;
 const knownOperations = new Set([
   "conv2d", "normalization", "activation", "pool", "dense", "flatten", "identity_projection",
   "token_projection", "encoder_stage", "decoder_stage", "self_attention", "cross_attention",
@@ -102,14 +103,18 @@ function topologySemanticUnresolved(proposal: InterpreterProposal): Array<{ id: 
   const portById = new Map(proposal.ports.map((port) => [port.portId, port]));
   const incomingByNode = new Map<string, number>();
   const outgoingByNode = new Map<string, number>();
+  const incomingSourceNodes = new Map<string, Set<string>>();
   const skipByTargetNode = new Set<string>();
+  const dataByTargetNode = new Set<string>();
   for (const edge of proposal.edges) {
     const source = portById.get(edge.sourcePortId);
     const target = portById.get(edge.targetPortId);
     if (source) outgoingByNode.set(source.nodeId, (outgoingByNode.get(source.nodeId) ?? 0) + 1);
     if (target) {
       incomingByNode.set(target.nodeId, (incomingByNode.get(target.nodeId) ?? 0) + 1);
+      if (source) (incomingSourceNodes.get(target.nodeId) ?? incomingSourceNodes.set(target.nodeId, new Set()).get(target.nodeId)!).add(source.nodeId);
       if (edge.relation === "skip") skipByTargetNode.add(target.nodeId);
+      if (edge.relation === "data") dataByTargetNode.add(target.nodeId);
     }
   }
   const usedIds = new Set(proposal.unresolved.map((item) => item.id));
@@ -124,11 +129,18 @@ function topologySemanticUnresolved(proposal: InterpreterProposal): Array<{ id: 
   for (const node of [...proposal.nodes].sort((left, right) => compareCodeUnits(left.nodeId, right.nodeId))) {
     const incoming = incomingByNode.get(node.nodeId) ?? 0;
     const outgoing = outgoingByNode.get(node.nodeId) ?? 0;
-    if (node.kind === "input" && incoming > 0) add(`topology-input-direction:${node.nodeId}`, node.evidenceIds);
-    if (node.kind === "output" && outgoing > 0) add(`topology-output-direction:${node.nodeId}`, node.evidenceIds);
-    if ((node.operation === "add" || node.operation === "concat") && incoming < 2) add(`topology-merge-arity:${node.nodeId}`, node.evidenceIds);
-    if (node.operation === "residual" && (incoming < 2 || !skipByTargetNode.has(node.nodeId))) add(`topology-residual-direction:${node.nodeId}`, node.evidenceIds);
-    if (node.operation === "cross_attention" && incoming < 2) add(`topology-cross-attention-direction:${node.nodeId}`, node.evidenceIds);
+    const sourceCount = incomingSourceNodes.get(node.nodeId)?.size ?? 0;
+    const hasConnectedOutput = node.outputPortIds.length > 0 && outgoing > 0;
+    if (node.kind === "input" && (incoming > 0 || !hasConnectedOutput)) add(`topology-input-direction:${node.nodeId}`, node.evidenceIds);
+    if (node.kind === "output" && (outgoing > 0 || node.inputPortIds.length === 0 || incoming === 0)) add(`topology-output-direction:${node.nodeId}`, node.evidenceIds);
+    if ((node.operation === "add" || node.operation === "concat") && (node.inputPortIds.length < 2 || sourceCount < 2 || !hasConnectedOutput)) add(`topology-merge-arity:${node.nodeId}`, node.evidenceIds);
+    if (node.operation === "residual" && (node.inputPortIds.length < 2 || sourceCount < 2 || !dataByTargetNode.has(node.nodeId) || !skipByTargetNode.has(node.nodeId) || !hasConnectedOutput)) add(`topology-residual-direction:${node.nodeId}`, node.evidenceIds);
+    if (node.operation === "cross_attention") {
+      const inputSemanticTypes = node.inputPortIds.map((portId) => portById.get(portId)?.semanticType?.toLowerCase() ?? "");
+      const hasQuery = inputSemanticTypes.includes("query");
+      const hasContext = inputSemanticTypes.some((type) => type === "context" || type === "key" || type === "value");
+      if (node.inputPortIds.length < 2 || sourceCount < 2 || !hasQuery || !hasContext || !hasConnectedOutput) add(`topology-cross-attention-direction:${node.nodeId}`, node.evidenceIds);
+    }
   }
   return result;
 }
@@ -200,7 +212,7 @@ function record(input: unknown, location: string): Record<string, unknown> { if 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], location: string): void { for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`${location} contains an unknown field`); }
 function identifierValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !identifier.test(value)) throw new Error(`${location} is invalid`); }
 function digestValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !digest.test(value)) throw new Error(`${location} is invalid`); }
-function textValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !safeText.test(value) || forbiddenControlText.test(value)) throw new Error(`${location} is invalid`); }
+function textValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !safeText.test(value) || forbiddenControlText.test(value) || filesystemPath.test(value) || sourceLikeText.test(value)) throw new Error(`${location} is invalid`); }
 function locatorValue(value: unknown, location: string): asserts value is string { textValue(value, location); if (filesystemPath.test(value)) throw new Error(`${location} is invalid`); }
 function capacity(value: unknown, location: string, maximum: number): asserts value is number { if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > maximum) throw new Error(`${location} is invalid`); }
 function unique(values: readonly string[], location: string): void { if (new Set(values).size !== values.length) throw new Error(`${location} contains duplicate values`); }

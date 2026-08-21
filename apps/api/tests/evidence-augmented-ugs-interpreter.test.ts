@@ -87,6 +87,26 @@ function edge(edgeId: string, sourcePortId: string, targetPortId: string) {
   return { edgeId, sourcePortId, targetPortId, evidenceIds: ["e-description"] };
 }
 
+function mergeProposal(operation: "add" | "concat" | "residual" | "cross_attention", relation: "data" | "skip" = "data"): InterpreterProposal {
+  return {
+    version: 1,
+    nodes: [
+      node("left", "operator", "Left", [], ["left:out"], "identity"),
+      node("right", "operator", "Right", [], ["right:out"], "identity"),
+      node("merge", "operator", "Merge", ["merge:left", "merge:right"], [], operation),
+    ],
+    ports: [
+      port("left:out", "left", "output"), port("right:out", "right", "output"),
+      port("merge:left", "merge", "input"), port("merge:right", "merge", "input"),
+    ],
+    edges: [
+      edge("left-merge", "left:out", "merge:left"),
+      { ...edge("right-merge", "right:out", "merge:right"), relation },
+    ],
+    unresolved: [],
+  };
+}
+
 describe("evidence-augmented UGS interpreter", () => {
   it("projects explicitly wired unfamiliar modules as custom operators with a canonical proposal hash", () => {
     const result = interpretEvidenceAugmentedInput(request(), customModuleProposal());
@@ -159,6 +179,19 @@ describe("evidence-augmented UGS interpreter", () => {
     expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/locator|invalid/i);
   });
 
+  it.each(["models/private/model.py", "..\\private\\model.py", "\\\\server\\share\\model.py"])("rejects a relative or UNC evidence locator", (locator) => {
+    const unsafeRequest = { ...request(), evidence: [{ ...request().evidence[0]!, locator }] };
+
+    expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/locator|invalid/i);
+  });
+
+  it.each([
+    ["node label", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "C:\\Users\\private\\model.py" }, ...customModuleProposal().nodes.slice(1)] })],
+    ["source snippet", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "def forward(self, x):" }, ...customModuleProposal().nodes.slice(1)] })],
+  ])("rejects %s from proposal public text", (_label, proposal) => {
+    expect(() => interpretEvidenceAugmentedInput(request(), proposal())).toThrow(/invalid/i);
+  });
+
   it("rejects an unbounded request before it reaches an interpreter", async () => {
     const propose = vi.fn(async () => customModuleProposal());
     const result = await requestEvidenceAugmentedProposal({ ...request(), rawSource: "unsafe" } as never, { propose });
@@ -186,6 +219,23 @@ describe("evidence-augmented UGS interpreter", () => {
 
     expect(result.state).toBe("clarification");
     expect(result.ugs.unresolved).toEqual([expect.objectContaining({ id: "topology-input-direction:image" })]);
+  });
+
+  it.each([
+    ["input without a connected output", () => ({ version: 1, nodes: [node("input", "input", "Input", [], [])], ports: [], edges: [], unresolved: [] })],
+    ["output without a connected input", () => ({ version: 1, nodes: [node("output", "output", "Output", [], [])], ports: [], edges: [], unresolved: [] })],
+    ["add without an output", () => mergeProposal("add")],
+    ["concat without an output", () => mergeProposal("concat")],
+    ["residual without an output", () => mergeProposal("residual", "skip")],
+    ["cross attention without query/context semantics", () => mergeProposal("cross_attention")],
+  ])("returns clarification for %s", (_label, proposal) => {
+    expect(interpretEvidenceAugmentedInput(request(), proposal()).state).toBe("clarification");
+  });
+
+  it("does not classify an interpreter-thrown timeout message as a Harness timeout", async () => {
+    const result = await requestEvidenceAugmentedProposal(request(), { propose: async () => { throw new Error("interpreter timeout"); } });
+
+    expect(result).toEqual({ status: "invalid" });
   });
 
   it("returns a evidence-only clarification when the interpreter is absent", () => {

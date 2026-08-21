@@ -9,7 +9,11 @@ import type { UniversalGraphSpec } from "./universal-graph-spec.js";
 
 export type UniversalPreviewInput =
   | { kind: "typed-prompt"; sourceId: string; prompt: string; revision?: number }
-  | { kind: "static-pytorch"; sourceId: string; sourceSha256: string; code: string };
+  | { kind: "static-pytorch"; sourceId: string; sourceSha256: string; code: string }
+  | EvidenceBoundArchitectureDescriptionInput;
+
+/** The existing v4 HTTP route deliberately admits only source-bearing inputs. */
+export type LegacyUniversalPreviewInput = Exclude<UniversalPreviewInput, EvidenceBoundArchitectureDescriptionInput>;
 
 /**
  * The architecture-description branch is intentionally not routable through
@@ -22,7 +26,7 @@ export interface EvidenceBoundArchitectureDescriptionInput {
   readonly proposal?: unknown;
 }
 
-export type UniversalInputCompilationInput = UniversalPreviewInput | EvidenceBoundArchitectureDescriptionInput;
+export type UniversalInputCompilationInput = UniversalPreviewInput;
 
 export type UniversalInputPublicationPreview = PublicationVisualPreview & {
   readonly ugs: UniversalGraphSpec;
