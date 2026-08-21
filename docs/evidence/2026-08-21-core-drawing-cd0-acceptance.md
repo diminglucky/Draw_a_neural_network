@@ -1,7 +1,7 @@
 # Core Drawing CD0 Acceptance Evidence
 
-**Acceptance timestamp:** `2026-08-21T07:13:31.831Z`  
-**Accepted implementation revision:** `aa9835c383aa18c804a23856893685af97443fef`  
+**Acceptance timestamp:** `2026-08-21T07:13:31.831Z`
+**Accepted implementation revision:** `aa9835c383aa18c804a23856893685af97443fef`
 **Remote verification:** `origin/agent` resolved to the same revision after push.
 
 ## Scope accepted
