@@ -2,16 +2,16 @@
 
 **Record ID：** `IR-2026-08-20-current-roadmap`
 **对应基线：** `DB-2026-08-21-universal-visio-parallel-delivery`
-**最后核对：** `2026-08-21T11:42:00.274Z`
-**正式 ledger 焦点：** `M3.1 — Generic PVP-to-Visio primitive mapping slice`
-**总体状态：** `in_progress` — owner 已接受 M2.5 的 PVP-backed Snapshot 合同。M3.1 只从服务端存储且经 owner/device/revision 绑定的 Snapshot 读取 PVP，随后重验 PVP 内部身份和 UGS/GPG/source-hash 谱系后才产生 allowlisted native primitive intent。它不是公开导出、真实 Windows/Visio、保存重开或人工视觉验收。
+**最后核对：** `2026-08-21T11:51:13.974Z`
+**正式 ledger 焦点：** `M3.2 — Sealed export authorization`
+**总体状态：** `in_progress` — owner 已接受 M2.5 的 PVP-backed Snapshot 合同和 M3.1 的 Snapshot-only native-intent mapping。M3.2 现在开始建立 server-only sealed authorization，仍不包含公开导出、真实 Windows/Visio、保存重开或人工视觉验收。
 
 ## 1. 当前交付判断
 
 | 层次 | 当前判断 | 证据边界 |
 |---|---|---|
 | 设计 | `approved_for_staged_implementation` | 用户已确认以未知网络直绘为目标；规格和治理资产仍是未提交 working-tree 文档 |
-| 当前路线图 | `in_progress` | M3.1 是正式 active 节点；M2.5 已接受；Prompt-to-UGS 与 Static-code-to-UGS 已提交、等待独立 acceptance；PatternLibrary 已后置 |
+| 当前路线图 | `in_progress` | M3.1 已接受，M3.2 是正式 active 节点；M2.5 已接受；Prompt-to-UGS 与 Static-code-to-UGS 已提交、等待独立 acceptance；PatternLibrary 已后置 |
 | API | `passed` | `npx tsc --noEmit`、`npm run api:check` 通过；完整 API 套件为 124 个测试文件、794 个测试通过 |
 | Worker 单元测试 | `passed` | 234 通过、2 跳过、0 失败；跳过项不是真实 Visio 验收 |
 | 通用未知网络直绘 | `awaiting_acceptance` | UGS 严格合同、未知模块直绘、重复单元、candidate topology、非 feedback 闭环拒绝、feedback 回退为 candidate、结构证据强制、code-unit 确定性排序、ArchitectureIRv3 兼容投影、碰撞安全的多来源 evidence 保真、General Publication Graph 与 PVP 均有单元、极限容量和全套 API 证据；受限的认证 v4 preview 已支持 typed prompt/static PyTorch → UGS → GPG → PVP，但尚无真实 Visio 路径 |
@@ -29,7 +29,7 @@
 | R4A | Prompt-to-UGS | `awaiting_acceptance` → `M2.8` | `75dadb8` 已实现并覆盖 evidence-backed Prompt adapter，未知模块保留，未知 topology 进入 candidate | 独立验收后才能成为 M2.9 前置条件 |
 | R4B | Static-code-to-UGS | `awaiting_acceptance` → `M2.10` | `75dadb8` 已实现并覆盖非执行静态 adapter；动态或无法证明的路径 fail closed | 独立验收后才能成为 M2.9 前置条件 |
 | R4C | Sketch-to-UGS | `planned` → `M4.5` | 在 M2.9 后才开始，且只产生 candidate/clarification | 不能静默猜拓扑，不能直接写 formal PVP、Snapshot 或 export job |
-| R5 | 通用 Visio + 真实主机验收 | `in_progress` → `M3.1`–`M3.5` | M3.1 只从服务端存储的 GenericPlanSnapshot 定位并重验 PVP。PVP 的 owner/device/revision 与 UGS/GPG/source-hash 谱系必须与 Snapshot 一致，之后才映射 allowlisted native intent。candidate、pending、手工伪造 QA、能力不完整、未知图元及非 allowlisted connector 均被拒绝。公共 bridge 仍为 VGG fixture，尚无 COM/真实主机证据 | 独立复审已关闭 Snapshot-PVP 绑定缺口，M3.1 仍待窄范围提交和 owner acceptance。M3.2 sealed authorization 仍不得开始，之后才是 Worker → readback/recovery → real-host matrix |
+| R5 | 通用 Visio + 真实主机验收 | `in_progress` → `M3.1`–`M3.5` | M3.1 已接受且只从服务端存储的 GenericPlanSnapshot 定位并重验 PVP。PVP 的 owner/device/revision 与 UGS/GPG/source-hash 谱系必须与 Snapshot 一致，之后才映射 allowlisted native intent。candidate、pending、手工伪造 QA、能力不完整、未知图元及非 allowlisted connector 均被拒绝。公共 bridge 仍为 VGG fixture，尚无 COM/真实主机证据 | M3.2 sealed authorization 现为 active，仅建立服务器端授权绑定，不得新增 Worker、COM 或公开导出，之后才是 Worker → readback/recovery → real-host matrix |
 
 ## 3. 验证矩阵
 

@@ -6,8 +6,8 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md"
   },
-  "updatedAt": "2026-08-21T11:42:00.274Z",
-  "currentFocus": "M3.1",
+  "updatedAt": "2026-08-21T11:51:13.974Z",
+  "currentFocus": "M3.2",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
     { "id": "M1", "title": "Static source analysis", "status": "accepted" },
@@ -247,16 +247,16 @@
       "id": "M3.1",
       "milestoneId": "M3",
       "title": "Generic PVP-to-Visio primitive mapping slice",
-      "status": "active",
-      "previousStatus": "planned",
+      "status": "accepted",
+      "previousStatus": "active",
       "dependsOn": ["M2.6"],
       "outcome": "An internal mapping resolves only server-stored owner/device/revision-bound PVP Snapshots and produces allowlisted native primitive intents without a public export route.",
       "acceptance": [{ "id": "M3.1.mapping", "text": "Generic zero-template PVP fixtures map deterministically to allowlisted native primitive intents with no raw input, browser geometry, COM command, or public export bypass.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [
-        { "kind": "test", "satisfies": ["M3.1.mapping"], "ref": "apps/api/tests/publication-visual-plan-native-intent.test.ts", "summary": "Focused zero-template PVP native-intent tests cover deterministic allowlisted mapping, exact ID/bounds/route/style preservation, recursive immutability, candidate and failed-QA rejection, and unsupported primitive or connector rejection.", "verifiedAt": "2026-08-21T01:41:39.990Z", "commit": "beb785d9babeb86745cf241fb2ac5b07881af6ed" },
-        { "kind": "document", "satisfies": ["M3.1.mapping"], "ref": "docs/superpowers/plans/2026-08-21-m3-1-pvp-native-intent.md", "summary": "The committed M3.1 plan fixes the formal-PVP-only boundary and excludes raw inputs, public export, Worker, COM, persistence, readback, and real-host Visio acceptance.", "verifiedAt": "2026-08-21T01:41:39.990Z", "commit": "beb785d9babeb86745cf241fb2ac5b07881af6ed" }
+        { "kind": "test", "satisfies": ["M3.1.mapping"], "ref": "apps/api/tests/publication-visual-plan-native-intent.test.ts", "summary": "Fifteen focused Snapshot-only native-intent tests cover deterministic generic mapping, full outer locator rejection, PVP identity and lineage binding, capability and coordinate gates, and immutable allowlisted output.", "verifiedAt": "2026-08-21T11:51:13.974Z", "commit": "ea3ba4d6e6b1bf90ce9460b03122a3356041a3fc" },
+        { "kind": "document", "satisfies": ["M3.1.mapping"], "ref": "docs/superpowers/plans/2026-08-21-m3-1-trusted-snapshot-native-intent.md", "summary": "The committed M3.1 plan records the Snapshot-only boundary and excludes raw inputs public export Worker COM persistence readback and real-host Visio acceptance.", "verifiedAt": "2026-08-21T11:51:13.974Z", "commit": "ea3ba4d6e6b1bf90ce9460b03122a3356041a3fc" }
       ],
-      "nextAction": "Record the narrow reviewed implementation and obtain owner acceptance before sealed authorization while avoiding public export jobs or real Visio claims.",
+      "nextAction": "Keep the accepted Snapshot-only mapping boundary stable while sealed authorization is implemented without public export or real Visio claims.",
       "blockerIds": [],
       "successorId": null
     },
@@ -264,12 +264,13 @@
       "id": "M3.2",
       "milestoneId": "M3",
       "title": "Sealed export authorization",
-      "status": "planned",
+      "status": "active",
+      "previousStatus": "planned",
       "dependsOn": ["M2.5", "M3.1"],
       "outcome": "Export authorization binds owner, device, job, plan, hashes, and revision.",
       "acceptance": [{ "id": "M3.2.binding", "text": "Sealed plans reject mismatched identity or revision.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [],
-      "nextAction": "Implement only after PVP Snapshot acceptance and generic native primitive mapping acceptance.",
+      "nextAction": "Define and implement a server-only sealed authorization binding for the accepted Snapshot-native intent without invoking a Worker or COM.",
       "blockerIds": [],
       "successorId": null
     },

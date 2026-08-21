@@ -27,7 +27,7 @@ const BLOCKER_SEVERITIES = new Set(["low", "medium", "high"]);
 const BLOCKER_STATUSES = new Set(["open", "closed"]);
 const TRANSITIONS = new Map([
   ["planned", new Set(["active", "awaiting_acceptance", "deferred", "superseded"])],
-  ["active", new Set(["blocked", "awaiting_acceptance", "deferred", "superseded"])],
+  ["active", new Set(["blocked", "awaiting_acceptance", "accepted", "deferred", "superseded"])],
   ["blocked", new Set(["active", "deferred", "superseded"])],
   ["awaiting_acceptance", new Set(["active", "blocked", "accepted"])],
 ]);

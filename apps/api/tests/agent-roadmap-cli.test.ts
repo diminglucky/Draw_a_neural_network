@@ -17,7 +17,7 @@ describe("agent roadmap CLI", () => {
       git: { branch: string; ahead: number; behind: number };
       strictFailures: string[];
     };
-    expect(status.currentFocus.id).toBe("M3.1");
+    expect(status.currentFocus.id).toBe("M3.2");
     expect(status.currentFocus).toMatchObject({ status: "active" });
     expect(status.executableNodes.map((node) => node.id)).toEqual([]);
     expect(status.git).toMatchObject({ branch: "agent", behind: 0 });
