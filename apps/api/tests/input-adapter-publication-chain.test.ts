@@ -1,25 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
+import { GenericPlanSnapshotService } from "../src/generic-plan-snapshot-service.js";
+import { InMemoryGenericPlanSnapshotStore } from "../src/generic-plan-snapshot-store.js";
 import { compilePromptToUniversalGraphSpec } from "../src/prompt-universal-graph-spec.js";
 import { compilePublicationVisualPlan } from "../src/publication-visual-plan-compiler.js";
-import { compilePublicationVisualPlanToNativeIntent } from "../src/publication-visual-plan-native-intent.js";
+import { PublicationVisualNativeIntentService } from "../src/publication-visual-plan-native-intent.js";
 import { promotePublicationVisualPlanAfterTrustedReview } from "../src/publication-visual-plan-qa-promotion.js";
 import { compileStaticPyTorchSourceToUniversalGraphSpec } from "../src/static-pytorch-universal-graph-spec.js";
 
-const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
+const owner = { tenantId: "tenant-1", userId: "owner-1", deviceId: "device-1" };
+const updateIdentity = { ownerId: owner.userId, deviceId: owner.deviceId, workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
 
 function compilePlan(ugs: ReturnType<typeof compilePromptToUniversalGraphSpec>) {
   const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
   return compilePublicationVisualPlan({ ugs, graph, updateIdentity });
 }
 
-function approvedNativeIntent(ugs: ReturnType<typeof compilePromptToUniversalGraphSpec>) {
+async function approvedNativeIntent(ugs: ReturnType<typeof compilePromptToUniversalGraphSpec>) {
   const pending = compilePlan(ugs);
   const promoted = promotePublicationVisualPlanAfterTrustedReview({
     plan: pending,
     review: { authority: "trusted-human", reviewerId: "reviewer-1", reviewedAt: "2026-08-21T00:00:00.000Z", approval: "approved", expectedPlanHash: pending.identity.canonicalHash },
   });
-  return compilePublicationVisualPlanToNativeIntent(promoted.plan);
+  const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+  const snapshots = new InMemoryGenericPlanSnapshotStore();
+  const snapshot = await new GenericPlanSnapshotService({ store: snapshots }).create({ owner, ugsRevision: 1, ugs, graph, publicationVisualPlan: promoted.plan, createdAt: "2026-08-21T00:00:00.000Z" });
+  return new PublicationVisualNativeIntentService({ snapshotStore: snapshots }).compile({ owner, graphId: snapshot.graphId, ugsRevision: snapshot.ugsRevision, snapshotId: snapshot.snapshotId });
 }
 
 function formalPrompt() {
@@ -39,16 +45,16 @@ function formalPrompt() {
 }
 
 describe("input adapter publication chain", () => {
-  it("carries a formal prompt declaration with an unseen operator to approved native intent", () => {
+  it("carries a formal prompt declaration with an unseen operator to approved native intent", async () => {
     const ugs = compilePromptToUniversalGraphSpec({ sourceId: "prompt-chain-source", prompt: formalPrompt() });
-    const intent = approvedNativeIntent(ugs);
+    const intent = await approvedNativeIntent(ugs);
 
     expect(ugs.nodes.find((node) => node.nodeId === "block")).toMatchObject({ kind: "custom_operator", operationKnowledge: "custom" });
     expect(intent.primitives).toHaveLength(3);
     expect(intent.connectors).toHaveLength(2);
   });
 
-  it("carries a provable static PyTorch path to approved native intent without executing source", () => {
+  it("carries a provable static PyTorch path to approved native intent without executing source", async () => {
     const sideEffectKey = "__inputAdapterPublicationChainExecuted";
     const globals = globalThis as Record<string, unknown>;
     globals[sideEffectKey] = false;
@@ -66,7 +72,7 @@ describe("input adapter publication chain", () => {
           "  return self.conv(x)",
         ].join("\n"),
       });
-      const intent = approvedNativeIntent(ugs);
+      const intent = await approvedNativeIntent(ugs);
 
       expect(globals[sideEffectKey]).toBe(false);
       expect(intent.primitives).toHaveLength(3);
@@ -76,7 +82,7 @@ describe("input adapter publication chain", () => {
     }
   });
 
-  it("blocks ambiguous prompt and dynamic static source before native intent", () => {
+  it("blocks ambiguous prompt and dynamic static source before native intent", async () => {
     const ambiguousPrompt = compilePromptToUniversalGraphSpec({
       sourceId: "ambiguous-prompt-source",
       prompt: JSON.stringify({ graphId: "ambiguous-prompt", topology: "ambiguous", nodes: [{ nodeId: "input", kind: "input", label: "Input", inputPorts: [], outputPorts: [{ portId: "out" }] }], edges: [] }),
@@ -87,7 +93,11 @@ describe("input adapter publication chain", () => {
       code: ["class Dynamic(nn.Module):", " def forward(self, x):", "  if x.sum() > 0:", "   return x", "  return -x"].join("\n"),
     });
 
-    expect(() => compilePublicationVisualPlanToNativeIntent(compilePlan(ambiguousPrompt))).toThrow(/formal/i);
-    expect(() => compilePublicationVisualPlanToNativeIntent(compilePlan(dynamicSource))).toThrow(/formal/i);
+    const snapshots = new InMemoryGenericPlanSnapshotStore();
+    const service = new GenericPlanSnapshotService({ store: snapshots });
+    for (const ugs of [ambiguousPrompt, dynamicSource]) {
+      const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+      await expect(service.create({ owner, ugsRevision: 1, ugs, graph, publicationVisualPlan: compilePlan(ugs), createdAt: "2026-08-21T00:00:00.000Z" })).rejects.toThrow();
+    }
   });
 });

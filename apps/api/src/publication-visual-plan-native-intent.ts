@@ -1,6 +1,10 @@
 import { assertPublicationVisualPlanRendererCapabilities } from "./publication-visual-plan-compiler.js";
+import { cloneGenericPlanSnapshot, type GenericPlanSnapshot, type GenericPlanSnapshotOwner } from "./generic-plan-snapshot.js";
+import type { GenericPlanSnapshotStore } from "./generic-plan-snapshot-store.js";
+import { assertTrustedPublicationVisualPlan } from "./generic-plan-snapshot-service.js";
 import { parsePublicationVisualPlan, type PublicationVisualPlan } from "./publication-visual-plan.js";
 import { evaluatePublicationVisualPlanQa } from "./publication-visual-plan-qa.js";
+import { compareCodeUnits } from "./stable-string-order.js";
 
 const ID = /^[A-Za-z][A-Za-z0-9._:-]*$/;
 const SHAPE_KINDS = new Map<string, NativeShapeKind>([
@@ -76,14 +80,47 @@ export interface NativeConnectorIntent {
   readonly shapeData: Readonly<Record<"pvp.planId" | "pvp.planHash" | "pvp.connectorId" | "pvp.ownership", string>>;
 }
 
+export class PublicationVisualNativeIntentService {
+  constructor(private readonly options: { snapshotStore: GenericPlanSnapshotStore }) {}
+
+  async compile(input: {
+    owner: GenericPlanSnapshotOwner;
+    graphId: string;
+    ugsRevision: number;
+    snapshotId: string;
+  }): Promise<PublicationVisualNativeIntent> {
+    const stored = await this.options.snapshotStore.get(input.owner, input.graphId, input.ugsRevision, input.snapshotId);
+    if (!stored) throw new Error("Trusted GenericPlanSnapshot was not found");
+    if (
+      stored.tenantId !== input.owner.tenantId
+      || stored.userId !== input.owner.userId
+      || stored.deviceId !== input.owner.deviceId
+      || stored.graphId !== input.graphId
+      || stored.ugsRevision !== input.ugsRevision
+      || stored.snapshotId !== input.snapshotId
+    ) throw new Error("Resolved GenericPlanSnapshot identity does not match its locator");
+
+    const snapshot = cloneGenericPlanSnapshot(stored);
+    const plan = parsePublicationVisualPlan(snapshot.publicationVisualPlan);
+    assertTrustedPublicationVisualPlan(plan);
+    if (
+      snapshot.publicationVisualPlanId !== plan.identity.planId
+      || snapshot.publicationVisualPlanHash !== plan.identity.canonicalHash
+    ) throw new Error("Trusted GenericPlanSnapshot PVP identity is invalid");
+    assertTrustedSnapshotPvpBinding(snapshot, plan);
+    return compileTrustedPublicationVisualPlanToNativeIntent(plan);
+  }
+}
+
 /**
- * Produces a closed, renderer-neutral native-intent projection for a formal PVP.
- * M3.1 intentionally does not seal it, choose a Visio document/page, call COM, or create an export job.
+ * Maps only the PVP recovered from a store-resolved trusted GenericPlanSnapshot.
+ * This helper deliberately remains module-private: M3.1 accepts no raw PVP input.
  */
-export function compilePublicationVisualPlanToNativeIntent(input: PublicationVisualPlan): PublicationVisualNativeIntent {
+function compileTrustedPublicationVisualPlanToNativeIntent(input: PublicationVisualPlan): PublicationVisualNativeIntent {
   const plan = parsePublicationVisualPlan(input);
-  if (plan.eligibility.kind !== "formal") throw new Error("Only formal PVP can become native intent");
+  assertTrustedPublicationVisualPlan(plan);
   if (evaluatePublicationVisualPlanQa(plan).status !== "passed") throw new Error("PVP structural QA must pass before native intent mapping");
+  assertRequiredNativeCapabilities(plan);
   assertPublicationVisualPlanRendererCapabilities(plan, ["native-text", "orthogonal-route", "shape-data"]);
 
   const updateIdentity = parseUpdateIdentity(plan.updateIdentity);
@@ -105,6 +142,35 @@ export function compilePublicationVisualPlanToNativeIntent(input: PublicationVis
     primitives,
     connectors,
   });
+}
+
+function assertRequiredNativeCapabilities(plan: PublicationVisualPlan): void {
+  const requirements = record(plan.rendererRequirements, "PVP renderer requirements are invalid");
+  if (requirements.protocolVersion !== "pvp-renderer-1" || !Array.isArray(requirements.requiredCapabilities)) throw new Error("PVP renderer requirements are invalid");
+  const declared = new Set(requirements.requiredCapabilities);
+  for (const required of ["native-text", "orthogonal-route", "shape-data"]) {
+    if (!declared.has(required)) throw new Error("PVP native renderer capability is required");
+  }
+}
+
+function assertTrustedSnapshotPvpBinding(snapshot: GenericPlanSnapshot, plan: PublicationVisualPlan): void {
+  const updateIdentity = record(plan.updateIdentity, "PVP update identity is invalid");
+  if (
+    updateIdentity.ownerId !== snapshot.userId
+    || updateIdentity.deviceId !== snapshot.deviceId
+    || updateIdentity.expectedRevision !== snapshot.ugsRevision
+  ) throw new Error("PVP update identity does not match its GenericPlanSnapshot");
+
+  const lineage = record(plan.lineage, "PVP lineage is invalid");
+  if (
+    lineage.ugsHash !== snapshot.ugsCanonicalHash
+    || lineage.gpgHash !== snapshot.generalPublicationGraphHash
+  ) throw new Error("PVP lineage does not match its GenericPlanSnapshot");
+  const sourceHashes = sourceHashArray(lineage.sourceHashes, "PVP lineage source hashes").sort(compareCodeUnits);
+  const expected = [...snapshot.sourceHashes].sort(compareCodeUnits);
+  if (sourceHashes.length !== expected.length || sourceHashes.some((value, index) => value !== expected[index])) {
+    throw new Error("PVP lineage source hashes do not match its GenericPlanSnapshot");
+  }
 }
 
 function parsePrimitive(value: unknown, plan: PublicationVisualPlan): NativePrimitiveIntent {
@@ -234,6 +300,11 @@ function integer(value: unknown): value is number {
 function record(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(message);
   return value as Record<string, unknown>;
+}
+
+function sourceHashArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !/^[a-f0-9]{64}$/.test(item))) throw new Error(`${label} are invalid`);
+  return [...value];
 }
 
 function deepFreeze<T>(value: T): T {

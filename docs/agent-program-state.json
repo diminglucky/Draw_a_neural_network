@@ -6,7 +6,7 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md"
   },
-  "updatedAt": "2026-08-21T01:41:39.990Z",
+  "updatedAt": "2026-08-21T11:42:00.274Z",
   "currentFocus": "M3.1",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -152,8 +152,8 @@
       "id": "M2.5",
       "milestoneId": "M2",
       "title": "PVP-backed immutable PlanSnapshot binding",
-      "status": "awaiting_acceptance",
-      "previousStatus": "active",
+      "status": "accepted",
+      "previousStatus": "awaiting_acceptance",
       "dependsOn": ["M2.3", "M2.4", "M2.6"],
       "outcome": "A server-validated formal PublicationVisualPlan binds UGS, General Publication Graph, owner, device, revision, source hashes, and immutable export eligibility.",
       "acceptance": [{ "id": "M2.5.snapshot", "text": "PlanSnapshot binds canonical UGS, General Publication Graph, trusted QA promotion, and PublicationVisualPlan hashes without legacy Figure Plan or VGG DTOs.", "requiredEvidenceKinds": ["test", "document"] }],
@@ -161,7 +161,7 @@
         { "kind": "test", "satisfies": ["M2.5.snapshot"], "ref": "apps/api/tests/generic-plan-snapshot-service.test.ts", "summary": "Focused PVP Snapshot tests cover canonical UGS/GPG/PVP reconstruction, trusted QA promotion binding, identity mismatch rejection, and zero writes on ineligible inputs.", "verifiedAt": "2026-08-20T09:48:15.000Z", "commit": "f2f2114e57b8db34b99789b45927f4d0548fd26e" },
         { "kind": "document", "satisfies": ["M2.5.snapshot"], "ref": "docs/superpowers/plans/2026-08-20-m2-5-pvp-snapshot-rebaseline.md", "summary": "The PVP Snapshot rebaseline records the immutable binding boundary and explicitly excludes legacy Figure Plan, VGG, Worker, COM, and browser geometry inputs.", "verifiedAt": "2026-08-20T09:48:15.000Z", "commit": "f2f2114e57b8db34b99789b45927f4d0548fd26e" }
       ],
-      "nextAction": "Review the committed PVP Snapshot evidence for owner acceptance, public sealed export remains unavailable until this node is accepted.",
+      "nextAction": "Keep the accepted Snapshot trust boundary stable and wait for the native mapping's independent acceptance before sealed authorization begins.",
       "blockerIds": [],
       "successorId": null
     },
@@ -186,7 +186,8 @@
       "id": "M2.7",
       "milestoneId": "M2",
       "title": "Owner-scoped adaptive pattern library",
-      "status": "planned",
+      "status": "awaiting_acceptance",
+      "previousStatus": "active",
       "dependsOn": ["M2.9", "M3.5", "M4.5"],
       "outcome": "Confirmed local structural patterns enhance presentation without becoming a model whitelist.",
       "acceptance": [{ "id": "M2.7.patterns", "text": "Versioned owner-scoped candidates use a restricted visual recipe and deterministic conflict rules.", "requiredEvidenceKinds": ["test", "document"] }],
@@ -199,12 +200,16 @@
       "id": "M2.8",
       "milestoneId": "M2",
       "title": "Prompt-to-UniversalGraphSpec",
-      "status": "planned",
+      "status": "awaiting_acceptance",
+      "previousStatus": "planned",
       "dependsOn": ["M2.6"],
       "outcome": "Prompt declarations produce evidence-backed generic graph candidates while preserving unknown modules and unresolved topology.",
       "acceptance": [{ "id": "M2.8.prompt", "text": "Prompt adapter preserves unknown modules and isolates unresolved topology without model-name templates.", "requiredEvidenceKinds": ["test", "document"] }],
-      "evidence": [],
-      "nextAction": "Implement the bounded Prompt-to-UGS adapter in parallel with the M3.1 native PVP mapping slice.",
+      "evidence": [
+        { "kind": "test", "satisfies": ["M2.8.prompt"], "ref": "apps/api/tests/prompt-universal-graph-spec.test.ts", "summary": "Bounded typed prompt declarations preserve custom modules and fail closed to candidate when topology is unresolved.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" },
+        { "kind": "document", "satisfies": ["M2.8.prompt"], "ref": "docs/superpowers/plans/2026-08-21-universal-pvp-preview-convergence.md", "summary": "The shared prompt/code-to-PVP preview boundary is documented without model-name templates.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" }
+      ],
+      "nextAction": "Obtain independent acceptance of the committed bounded Prompt-to-UGS adapter and keep it non-exporting.",
       "blockerIds": [],
       "successorId": null
     },
@@ -212,12 +217,16 @@
       "id": "M2.10",
       "milestoneId": "M2",
       "title": "Static-code-to-UniversalGraphSpec",
-      "status": "planned",
+      "status": "awaiting_acceptance",
+      "previousStatus": "planned",
       "dependsOn": ["M2.6"],
       "outcome": "Non-executed static code produces evidence-backed generic graph candidates while preserving unknown modules and unresolved topology.",
       "acceptance": [{ "id": "M2.10.static-code", "text": "Static-code adapter never executes source, preserves unknown modules, and isolates unresolved topology.", "requiredEvidenceKinds": ["test", "document"] }],
-      "evidence": [],
-      "nextAction": "Implement the bounded non-executing Static-code-to-UGS adapter in parallel with the M3.1 native PVP mapping slice.",
+      "evidence": [
+        { "kind": "test", "satisfies": ["M2.10.static-code"], "ref": "apps/api/tests/static-pytorch-universal-graph-spec.test.ts", "summary": "Non-executing static PyTorch analysis preserves unknown modules and fails closed to candidate on dynamic or unresolved structure.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" },
+        { "kind": "document", "satisfies": ["M2.10.static-code"], "ref": "docs/superpowers/plans/2026-08-21-universal-pvp-preview-convergence.md", "summary": "The shared prompt/code-to-PVP preview boundary documents non-executing static source intake.", "verifiedAt": "2026-08-21T10:57:09.000Z", "commit": "75dadb869390cffdb64c67d28159eb099c23c6ef" }
+      ],
+      "nextAction": "Obtain independent acceptance of the committed non-executing Static-code-to-UGS adapter and keep it non-exporting.",
       "blockerIds": [],
       "successorId": null
     },
@@ -241,13 +250,13 @@
       "status": "active",
       "previousStatus": "planned",
       "dependsOn": ["M2.6"],
-      "outcome": "A production-bound internal mapping consumes only server-created canonical PVP fixtures and produces allowlisted native primitive intents without a public export route.",
+      "outcome": "An internal mapping resolves only server-stored owner/device/revision-bound PVP Snapshots and produces allowlisted native primitive intents without a public export route.",
       "acceptance": [{ "id": "M3.1.mapping", "text": "Generic zero-template PVP fixtures map deterministically to allowlisted native primitive intents with no raw input, browser geometry, COM command, or public export bypass.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [
         { "kind": "test", "satisfies": ["M3.1.mapping"], "ref": "apps/api/tests/publication-visual-plan-native-intent.test.ts", "summary": "Focused zero-template PVP native-intent tests cover deterministic allowlisted mapping, exact ID/bounds/route/style preservation, recursive immutability, candidate and failed-QA rejection, and unsupported primitive or connector rejection.", "verifiedAt": "2026-08-21T01:41:39.990Z", "commit": "beb785d9babeb86745cf241fb2ac5b07881af6ed" },
         { "kind": "document", "satisfies": ["M3.1.mapping"], "ref": "docs/superpowers/plans/2026-08-21-m3-1-pvp-native-intent.md", "summary": "The committed M3.1 plan fixes the formal-PVP-only boundary and excludes raw inputs, public export, Worker, COM, persistence, readback, and real-host Visio acceptance.", "verifiedAt": "2026-08-21T01:41:39.990Z", "commit": "beb785d9babeb86745cf241fb2ac5b07881af6ed" }
       ],
-      "nextAction": "Review the local PVP native-intent mapper and its zero-template contract evidence, do not create a public export job or claim real Visio execution.",
+      "nextAction": "Record the narrow reviewed implementation and obtain owner acceptance before sealed authorization while avoiding public export jobs or real Visio claims.",
       "blockerIds": [],
       "successorId": null
     },

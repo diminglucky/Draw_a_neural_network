@@ -29,7 +29,7 @@ export class GenericPlanSnapshotService {
     if (digestGenericPlanSnapshotValue(copied.graph) !== digestGenericPlanSnapshotValue(graph)) throw new Error("General Publication Graph does not match canonical UGS projection");
     if (getUniversalGraphEligibility(ugs).preview !== "renderable" || graph.exportEligibility !== "eligible") throw new Error("UGS/GPG is not eligible for Snapshot");
     const pvp = parsePublicationVisualPlan(copied.publicationVisualPlan);
-    assertEligiblePvp(pvp);
+    assertTrustedPublicationVisualPlan(pvp);
     assertPvpLineage(pvp, ugs, graph);
     assertPvpUpdateIdentity(pvp, copied.owner, copied.ugsRevision);
     const snapshot = createGenericPlanSnapshot({
@@ -47,7 +47,7 @@ export class GenericPlanSnapshotService {
   }
 }
 
-function assertEligiblePvp(plan: PublicationVisualPlan): void {
+export function assertTrustedPublicationVisualPlan(plan: PublicationVisualPlan): void {
   if (plan.eligibility.kind !== "formal" || plan.eligibility.qaStatus !== "passed" || plan.eligibility.blockingReasons.length !== 0) throw new Error("PVP is not eligible for Snapshot");
   if (evaluatePublicationVisualPlanQa(plan).status !== "passed") throw new Error("PVP structural QA is not eligible for Snapshot");
   assertQaPromotionBinding(plan);

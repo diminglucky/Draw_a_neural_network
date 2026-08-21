@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-21T01:41:39.990Z`
+Updated: `2026-08-21T11:42:00.274Z`
 Architecture: [docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md](./superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md)
 
 ## Current Focus
 
 - M3.1: Generic PVP-to-Visio primitive mapping slice
 - Status: active
-- Outcome: A production-bound internal mapping consumes only server-created canonical PVP fixtures and produces allowlisted native primitive intents without a public export route.
-- Next action: Review the local PVP native-intent mapper and its zero-template contract evidence, do not create a public export job or claim real Visio execution.
+- Outcome: An internal mapping resolves only server-stored owner/device/revision-bound PVP Snapshots and produces allowlisted native primitive intents without a public export route.
+- Next action: Record the narrow reviewed implementation and obtain owner acceptance before sealed authorization while avoiding public export jobs or real Visio claims.
 
 ## Milestones
 
@@ -23,8 +23,7 @@ Architecture: [docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figur
 
 ## Executable Nodes
 
-- M2.8: Prompt-to-UniversalGraphSpec
-- M2.10: Static-code-to-UniversalGraphSpec
+- None
 
 ## Open Blockers
 
