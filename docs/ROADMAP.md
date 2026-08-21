@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-20T04:15:23.551Z`
+Updated: `2026-08-21T01:24:40.496Z`
 Architecture: [docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md](./superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md)
 
 ## Current Focus
 
-- M2.6: UniversalGraphSpec and General Publication Graph
-- Status: awaiting_acceptance
-- Outcome: Any topology-complete network becomes a deterministic general publication graph without model-name templates.
-- Next action: Owner acceptance is required before beginning M2.5 immutable generic snapshot binding.
+- M3.1: Generic PVP-to-Visio primitive mapping slice
+- Status: active
+- Outcome: A production-bound internal mapping consumes only server-created canonical PVP fixtures and produces allowlisted native primitive intents without a public export route.
+- Next action: Review the local PVP native-intent mapper and its zero-template contract evidence, do not create a public export job or claim real Visio execution.
 
 ## Milestones
 
@@ -23,7 +23,8 @@ Architecture: [docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figur
 
 ## Executable Nodes
 
-- None
+- M2.8: Prompt-to-UniversalGraphSpec
+- M2.10: Static-code-to-UniversalGraphSpec
 
 ## Open Blockers
 

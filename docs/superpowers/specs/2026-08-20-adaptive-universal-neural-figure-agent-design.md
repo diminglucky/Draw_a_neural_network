@@ -606,6 +606,8 @@ print-a4-gray:      3508 × 2480 px, grayscale, 300 dpi
 
 **退出证据：** profile application provenance/hash、冲突与回退 fixtures、无 Profile 的 PVP 与带 Profile 的 PVP 均保持相同 UGS/GPG source mapping。
 
+**并行交付边界：** U3 的稳定 PVP 边界形成后，可以并行启动两条不互相越权的工程轨道：一条是 U4 的 Prompt 与非执行静态代码适配器，另一条是 U5 的内部 `PVP → allowlisted native primitive intent` 映射切片，后者只用服务端创建的零模板 PVP fixture。该映射切片不能创建公开 export job、不能接收原始提示/代码/草图/浏览器 geometry 或 COM 命令，也不能被表述为 Visio 已可用。sealed export 仍依赖正式 Snapshot；任意 Prompt/Code/Sketch 到 Visio 的声明仍要等相关输入适配器和 U5 真实主机验收同时完成。
+
 ### Gate U4：三类输入直绘
 
 1. Prompt-to-UGS；
