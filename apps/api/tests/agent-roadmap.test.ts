@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -143,7 +143,82 @@ function expectInvalid(mutator: (state: ReturnType<typeof validState>) => void) 
   expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
 }
 
+function liveRoadmapState(): LedgerFixture {
+  return JSON.parse(readFileSync(resolve(process.cwd(), "docs", "agent-program-state.json"), "utf8"));
+}
+
+function configuredAcceptanceNode(input: {
+  id: string;
+  acceptance: LedgerFixture["acceptance"];
+}): LedgerFixture {
+  return {
+    id: input.id,
+    milestoneId: "M2",
+    title: "Governed platform boundary",
+    status: "accepted",
+    previousStatus: "awaiting_acceptance",
+    dependsOn: ["M1.9"],
+    outcome: "Acceptance requires independent evidence.",
+    acceptance: input.acceptance,
+    evidence: input.acceptance.flatMap((item: { id: string }) => [{
+      kind: "test",
+      satisfies: [item.id],
+      ref: "docs/evidence/accepted.md",
+      summary: "Focused tests passed.",
+      verifiedAt: "2026-08-21T00:00:00.000Z",
+      commit: COMMIT,
+    }]),
+    nextAction: "Record the remaining evidence.",
+    blockerIds: [],
+    successorId: null,
+  };
+}
+
 describe("agent roadmap ledger", () => {
+  it("keeps M2.12 active and design-gated until Phase 0 through Phase 2 prerequisites are documented", () => {
+    const live = liveRoadmapState();
+    const m212 = live.nodes.find((node: { id: string }) => node.id === "M2.12");
+    const m213 = live.nodes.find((node: { id: string }) => node.id === "M2.13");
+
+    expect(live.currentFocus).toBe("M2.12");
+    expect(m212).toMatchObject({
+      status: "active",
+      dependsOn: ["M2.8", "M2.10", "M2.11"],
+    });
+    expect(m212?.nextAction).toMatch(/Phase 0.*Phase 2/i);
+    expect(m212?.acceptance.find((item: { id: string }) => item.id === "M2.12.quality")).toMatchObject({
+      requiredEvidenceKinds: expect.arrayContaining(["document", "commit"]),
+    });
+    expect(m212?.acceptance.find((item: { id: string }) => item.id === "M2.12.quality")?.text).toMatch(/Phase 0.*Phase 2/i);
+    expect(m212?.evidence).toEqual([]);
+    expect(m213?.status).not.toBe("accepted");
+
+    for (const node of [m212, m213]) {
+      expect(node).toBeDefined();
+      const state = nonBootstrapState();
+      state.nodes.push(configuredAcceptanceNode({ id: node!.id, acceptance: node!.acceptance }));
+      expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
+    }
+  });
+
+  it("requires the complete formal-PVP-to-real-host chain before current-page Visio can be accepted", () => {
+    const live = liveRoadmapState();
+    const currentPageVisio = live.nodes.find((node: { id: string }) => node.id === "M3.6");
+
+    expect(currentPageVisio).toMatchObject({ status: "planned" });
+    expect(currentPageVisio?.dependsOn).toEqual(expect.arrayContaining([
+      "M2.13",
+      "M3.2",
+      "M3.3",
+      "M3.4",
+      "M3.5",
+    ]));
+
+    const state = nonBootstrapState();
+    state.nodes.push(configuredAcceptanceNode({ id: currentPageVisio!.id, acceptance: currentPageVisio!.acceptance }));
+    expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
+  });
+
   it("requires matching evidence for each accepted acceptance item", () => {
     const state = nonBootstrapState();
     state.nodes[0].acceptance.push({

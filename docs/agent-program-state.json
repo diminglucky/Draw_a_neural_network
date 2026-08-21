@@ -6,7 +6,7 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md"
   },
-  "updatedAt": "2026-08-21T17:36:00.000Z",
+  "updatedAt": "2026-08-21T17:55:00.000Z",
   "currentFocus": "M2.12",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -275,10 +275,10 @@
       "acceptance": [
         { "id": "M2.12.receipt-boundary", "text": "Coordinator-internal receipt/context references, redacted Provider payload, and public evidence references remain separated. No private ID, free-text locator, raw input, path, or unsafe public text reaches graph artifacts.", "requiredEvidenceKinds": ["test", "document"] },
         { "id": "M2.12.harness-rekeying", "text": "The Harness rejects unsupported/conflicting proposals, rekeys Provider-local references from canonical evidence and structural order, preserves verified lineage, and returns only formal UGS, revision-bound clarification, or rejection.", "requiredEvidenceKinds": ["test", "document"] },
-        { "id": "M2.12.quality", "text": "Focused and full regression verification plus independent review record the replacement Harness boundary before acceptance.", "requiredEvidenceKinds": ["test", "typecheck", "document", "commit"] }
+        { "id": "M2.12.quality", "text": "Focused and full regression verification, independent review, and documented Phase 0 migration plus accepted Phase 1 DrawingRun and Phase 2 Coordinator predecessor closure are required before the replacement Harness may enter review or acceptance.", "requiredEvidenceKinds": ["test", "typecheck", "document", "commit"] }
       ],
       "evidence": [],
-      "nextAction": "Replace the free-text compatibility prototype with receipt-bound Harness rekeying only after master-plan Phase 0 through Phase 2 prerequisites and Task 0 migration inventory are accepted. Do not add Provider, renderer, Worker, or Visio authority.",
+      "nextAction": "Remain active only as a design-gated compatibility target. Do not enter awaiting acceptance or accepted until Phase 0 migration governance and accepted Phase 1 DrawingRun plus Phase 2 Coordinator predecessor evidence are documented. The free-text compatibility prototype remains regression-only until Harness rekeying can replace it without Provider, renderer, Worker, or Visio authority.",
       "blockerIds": [],
       "successorId": "M2.13"
     },
@@ -362,6 +362,19 @@
       "acceptance": [{ "id": "M3.5.host", "text": "Real host evidence records editable generic VSDX and independent readback.", "requiredEvidenceKinds": ["real-host", "manual-visual-review", "document"] }],
       "evidence": [],
       "nextAction": "Run after Worker recovery acceptance.",
+      "blockerIds": [],
+      "successorId": null
+    },
+    {
+      "id": "M3.6",
+      "milestoneId": "M3",
+      "title": "Existing-page Visio binding and controlled update",
+      "status": "planned",
+      "dependsOn": ["M2.13", "M3.2", "M3.3", "M3.4", "M3.5"],
+      "outcome": "A formal PVP, sealed binding, Worker, independent readback, and real-host proof govern a bounded update to one explicitly selected existing Visio page.",
+      "acceptance": [{ "id": "M3.6.current-page", "text": "Current-page Visio evidence proves formal PVP lineage, sealed page binding, Worker execution, preserved-shape readback, save/reopen, and real-host review.", "requiredEvidenceKinds": ["test", "real-host", "manual-visual-review", "document"] }],
+      "evidence": [],
+      "nextAction": "Activate only after formal visual grammar, sealed authorization, Worker, readback, and real-host milestones are accepted. Never use OpenOrCreate as fallback.",
       "blockerIds": [],
       "successorId": null
     },
