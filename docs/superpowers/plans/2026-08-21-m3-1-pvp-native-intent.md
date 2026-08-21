@@ -86,7 +86,7 @@ Expected: PASS.
 
 **Produces:** An M3.1 governance record that distinguishes local native-intent proof from sealed export, native Visio, lifecycle, and real-host acceptance. The strict roadmap state accepts evidence entries only after an authorized, resolvable commit; uncommitted local evidence belongs in the implementation record and append-only operation history.
 
-- [x] **Step 1: Record M3.1 mapper evidence without changing its status to accepted.** Reference the new source, test, and this plan in the implementation record; leave `M3.1` active because M3.2–M3.5 remain unimplemented. Keep state evidence empty until an authorized, resolvable commit exists.
+- [x] **Step 1: Record M3.1 mapper evidence without changing its status to accepted.** Reference the new source, test, and this plan in the implementation record; leave `M3.1` active because M3.2–M3.5 remain unimplemented. After the authorized implementation commit `beb785d9babeb86745cf241fb2ac5b07881af6ed` exists, bind the test and document evidence to that resolvable SHA in state.
 
 - [x] **Step 2: Append a JSONL operation-history event.** Use `commit: null` until an authorized commit exists and state that the mapper is not a COM or real-host result.
 

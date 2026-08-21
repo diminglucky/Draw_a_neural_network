@@ -6,7 +6,7 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md"
   },
-  "updatedAt": "2026-08-21T01:24:40.496Z",
+  "updatedAt": "2026-08-21T01:41:39.990Z",
   "currentFocus": "M3.1",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -243,7 +243,10 @@
       "dependsOn": ["M2.6"],
       "outcome": "A production-bound internal mapping consumes only server-created canonical PVP fixtures and produces allowlisted native primitive intents without a public export route.",
       "acceptance": [{ "id": "M3.1.mapping", "text": "Generic zero-template PVP fixtures map deterministically to allowlisted native primitive intents with no raw input, browser geometry, COM command, or public export bypass.", "requiredEvidenceKinds": ["test", "document"] }],
-      "evidence": [],
+      "evidence": [
+        { "kind": "test", "satisfies": ["M3.1.mapping"], "ref": "apps/api/tests/publication-visual-plan-native-intent.test.ts", "summary": "Focused zero-template PVP native-intent tests cover deterministic allowlisted mapping, exact ID/bounds/route/style preservation, recursive immutability, candidate and failed-QA rejection, and unsupported primitive or connector rejection.", "verifiedAt": "2026-08-21T01:41:39.990Z", "commit": "beb785d9babeb86745cf241fb2ac5b07881af6ed" },
+        { "kind": "document", "satisfies": ["M3.1.mapping"], "ref": "docs/superpowers/plans/2026-08-21-m3-1-pvp-native-intent.md", "summary": "The committed M3.1 plan fixes the formal-PVP-only boundary and excludes raw inputs, public export, Worker, COM, persistence, readback, and real-host Visio acceptance.", "verifiedAt": "2026-08-21T01:41:39.990Z", "commit": "beb785d9babeb86745cf241fb2ac5b07881af6ed" }
+      ],
       "nextAction": "Review the local PVP native-intent mapper and its zero-template contract evidence, do not create a public export job or claim real Visio execution.",
       "blockerIds": [],
       "successorId": null

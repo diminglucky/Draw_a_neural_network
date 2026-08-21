@@ -2,9 +2,9 @@
 
 **Record ID：** `IR-2026-08-20-current-roadmap`
 **对应基线：** `DB-2026-08-21-universal-visio-parallel-delivery`
-**最后核对：** `2026-08-21T01:27:19.001Z`
+**最后核对：** `2026-08-21T01:41:39.990Z`
 **正式 ledger 焦点：** `M3.1 — Generic PVP-to-Visio primitive mapping slice`
-**总体状态：** `in_progress` — M2.5 的 PVP-backed Snapshot 已有 committed contract evidence，仍处于 `awaiting_acceptance`；M3.1 的本地工作区已实现并验证内部通用 PVP 到 allowlisted native primitive intent 的映射切片。它不是公开导出、真实 Windows/Visio、保存重开或人工视觉验收。
+**总体状态：** `in_progress` — M2.5 的 PVP-backed Snapshot 已有 committed contract evidence，仍处于 `awaiting_acceptance`；M3.1 已由 `beb785d` 记录为内部通用 PVP 到 allowlisted native primitive intent 的映射切片。它不是公开导出、真实 Windows/Visio、保存重开或人工视觉验收。
 
 ## 1. 当前交付判断
 
@@ -29,7 +29,7 @@
 | R4A | Prompt-to-UGS | `planned` → `M2.8` | 依赖已接受的 M2.6，可与 M3.1 并行 | 仅构建 evidence-backed Prompt adapter，未知模块保留，未知 topology 进入 candidate |
 | R4B | Static-code-to-UGS | `planned` → `M2.10` | 依赖已接受的 M2.6，可与 M3.1 并行 | 仅构建非执行静态 adapter；任意执行、动态 topology 或无法证明的路径 fail closed |
 | R4C | Sketch-to-UGS | `planned` → `M4.5` | 在 M2.9 后才开始，且只产生 candidate/clarification | 不能静默猜拓扑，不能直接写 formal PVP、Snapshot 或 export job |
-| R5 | 通用 Visio + 真实主机验收 | `in_progress` → `M3.1`–`M3.5` | 本地 M3.1 mapper 已在 5 个零模板结构族上确认 deterministic PVP→allowlisted native intent，逐项保留 plan hash、update identity、图元/连接器 ID、bounds、route、style token IDs 和固定 ownership ShapeData，并递归冻结输出；candidate、QA 失败、未知图元及非 allowlisted connector 均被拒绝。独立审查无 Critical，但要求补齐这些回归契约；严格 state evidence 需等待可解析 commit。公共 bridge 仍为 VGG fixture，尚无 COM/真实主机证据 | 经独立复核后的 M3.1 仍待授权提交；随后 M3.2 sealed authorization（需 M2.5 accepted）→ Worker → readback/recovery → real-host matrix |
+| R5 | 通用 Visio + 真实主机验收 | `in_progress` → `M3.1`–`M3.5` | `beb785d` 的 M3.1 mapper 已在 5 个零模板结构族上确认 deterministic PVP→allowlisted native intent，逐项保留 plan hash、update identity、图元/连接器 ID、bounds、route、style token IDs 和固定 ownership ShapeData，并递归冻结输出；candidate、QA 失败、未知图元及非 allowlisted connector 均被拒绝。独立审查无 Critical/Important/Minor，state evidence 已使用真实可解析 SHA。公共 bridge 仍为 VGG fixture，尚无 COM/真实主机证据 | M3.1 仍是 active mapping slice；M3.2 sealed authorization 仍需 M2.5 accepted，之后才是 Worker → readback/recovery → real-host matrix |
 
 ## 3. 验证矩阵
 

@@ -1,7 +1,7 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-21T01:24:40.496Z`
+Updated: `2026-08-21T01:41:39.990Z`
 Architecture: [docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md](./superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md)
 
 ## Current Focus
