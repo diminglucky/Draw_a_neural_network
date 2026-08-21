@@ -107,6 +107,51 @@ function ambiguousPromptRequest(): EvidenceConstrainedDrawingSessionOpenRequest 
   };
 }
 
+function architectureDescriptionRequest(proposal: unknown = architectureDescriptionProposal()): EvidenceConstrainedDrawingSessionOpenRequest {
+  return {
+    ...formalPromptRequest(),
+    input: {
+      kind: "architecture-description",
+      request: {
+        requestId: "session-description-request",
+        evidence: [{
+          evidenceId: "e-description",
+          sourceId: "session-public-description",
+          sourceHash: sha256("session public description"),
+          locator: "section:architecture",
+          excerptDigest: sha256("custom spectral module"),
+        }],
+        detail: "architecture",
+        maxNodes: 8,
+        maxEdges: 8,
+      },
+      proposal,
+    },
+  };
+}
+
+function architectureDescriptionProposal() {
+  return {
+    version: 1,
+    nodes: [
+      { nodeId: "input", kind: "input", label: "Image", inputPortIds: [], outputPortIds: ["input:out"], evidenceIds: ["e-description"] },
+      { nodeId: "spectral", kind: "operator", label: "Spectral mixer", operation: "spectral_mixer", inputPortIds: ["spectral:in"], outputPortIds: ["spectral:out"], evidenceIds: ["e-description"] },
+      { nodeId: "output", kind: "output", label: "Prediction", inputPortIds: ["output:in"], outputPortIds: [], evidenceIds: ["e-description"] },
+    ],
+    ports: [
+      { portId: "input:out", nodeId: "input", direction: "output", evidenceIds: ["e-description"] },
+      { portId: "spectral:in", nodeId: "spectral", direction: "input", evidenceIds: ["e-description"] },
+      { portId: "spectral:out", nodeId: "spectral", direction: "output", evidenceIds: ["e-description"] },
+      { portId: "output:in", nodeId: "output", direction: "input", evidenceIds: ["e-description"] },
+    ],
+    edges: [
+      { edgeId: "input-spectral", sourcePortId: "input:out", targetPortId: "spectral:in", evidenceIds: ["e-description"] },
+      { edgeId: "spectral-output", sourcePortId: "spectral:out", targetPortId: "output:in", evidenceIds: ["e-description"] },
+    ],
+    unresolved: [],
+  };
+}
+
 describe("EvidenceConstrainedDrawingSession", () => {
   it("opens a stable formal renderer-neutral session for a complete prompt with an unknown operator", () => {
     const first = openEvidenceConstrainedDrawingSession(formalPromptRequest());
@@ -131,6 +176,26 @@ describe("EvidenceConstrainedDrawingSession", () => {
 
     expect(session).toMatchObject({ state: "formal_preview", revision: 1, preview: { kind: "formal", exportEligible: false } });
     expect(session.sources).toEqual([{ kind: "static-pytorch", sourceId: "static-source", sourceHash }]);
+  });
+
+  it("threads only proposal and evidence digests from an unfamiliar architecture description into the session", () => {
+    const session = openEvidenceConstrainedDrawingSession(architectureDescriptionRequest());
+
+    expect(session).toMatchObject({ state: "formal_preview", interpretation: {
+      proposalHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    } });
+    expect(session.sources).toEqual([expect.objectContaining({ kind: "architecture-description", sourceId: "architecture-input:session-description-request" })]);
+    expect(session).not.toHaveProperty("proposal");
+    expect(session).not.toHaveProperty("rawSource");
+  });
+
+  it("opens an invalid unfamiliar architecture proposal as one clarification without a preview", () => {
+    const session = openEvidenceConstrainedDrawingSession(architectureDescriptionRequest({ ...architectureDescriptionProposal(), comCommand: "x" }));
+
+    expect(session).toMatchObject({ state: "clarification" });
+    expect(session.preview).toBeUndefined();
+    expect(session.clarification?.questionId).toBe("clarification:session-description-request:interpreter-unavailable");
   });
 
   it("returns exactly one clarification and no PVP for blocking topology", () => {

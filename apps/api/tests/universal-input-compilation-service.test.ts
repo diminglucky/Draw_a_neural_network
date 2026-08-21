@@ -34,6 +34,48 @@ function completeUnknownOperatorPrompt(): string {
   });
 }
 
+function architectureDescriptionInput(proposal: unknown = architectureDescriptionProposal()) {
+  return {
+    kind: "architecture-description" as const,
+    request: {
+      requestId: "description-request",
+      evidence: [{
+        evidenceId: "e-description",
+        sourceId: "public-description",
+        sourceHash: sha256("public description"),
+        locator: "section:architecture",
+        excerptDigest: sha256("custom spectral mixer"),
+      }],
+      detail: "architecture" as const,
+      maxNodes: 8,
+      maxEdges: 8,
+    },
+    proposal,
+  };
+}
+
+function architectureDescriptionProposal() {
+  return {
+    version: 1,
+    nodes: [
+      { nodeId: "input", kind: "input", label: "Image", inputPortIds: [], outputPortIds: ["input:out"], evidenceIds: ["e-description"] },
+      { nodeId: "spectral", kind: "operator", label: "Spectral mixer", operation: "spectral_mixer", inputPortIds: ["spectral:in"], outputPortIds: ["spectral:out"], evidenceIds: ["e-description"] },
+      { nodeId: "output", kind: "output", label: "Prediction", inputPortIds: ["output:in"], outputPortIds: [], evidenceIds: ["e-description"] },
+    ],
+    ports: [
+      { portId: "input:out", nodeId: "input", direction: "output", evidenceIds: ["e-description"] },
+      { portId: "spectral:in", nodeId: "spectral", direction: "input", evidenceIds: ["e-description"] },
+      { portId: "spectral:out", nodeId: "spectral", direction: "output", evidenceIds: ["e-description"] },
+      { portId: "output:in", nodeId: "output", direction: "input", evidenceIds: ["e-description"] },
+    ],
+    edges: [
+      { edgeId: "input-spectral", sourcePortId: "input:out", targetPortId: "spectral:in", evidenceIds: ["e-description"] },
+      { edgeId: "spectral-output", sourcePortId: "spectral:out", targetPortId: "output:in", evidenceIds: ["e-description"] },
+    ],
+    unresolved: [],
+  };
+}
+
 describe("compileUniversalInputToPublicationPreview", () => {
   it("compiles a complete typed declaration containing an unknown operator through the formal shared preview path", () => {
     const result = compileUniversalInputToPublicationPreview({
@@ -88,5 +130,37 @@ describe("compileUniversalInputToPublicationPreview", () => {
     expect(result.kind).toBe("candidate");
     expect(result.exportEligible).toBe(false);
     expect(result.pvp.eligibility.kind).toBe("candidate");
+  });
+
+  it("compiles only an explicitly evidenced unfamiliar architecture proposal and carries safe lineage hashes", () => {
+    const result = compileUniversalInputToPublicationPreview(architectureDescriptionInput(), options);
+
+    expect(result.kind).toBe("formal");
+    expect(result.ugs.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: "spectral", kind: "custom_operator" }),
+    ]));
+    expect(result.interpretation).toMatchObject({
+      requestHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      proposalHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      errorCategory: "none",
+    });
+    expect(result).not.toHaveProperty("rawSource");
+    expect(result).not.toHaveProperty("imageBytes");
+  });
+
+  it("keeps an unavailable or invalid interpreter result clarification-only without creating native or renderer intent", () => {
+    const unavailable = compileUniversalInputToPublicationPreview({ ...architectureDescriptionInput(), proposal: undefined, interpreterStatus: "timeout" }, options);
+    const invalid = compileUniversalInputToPublicationPreview({ ...architectureDescriptionInput(), proposal: { ...architectureDescriptionProposal(), comCommand: "x" } }, options);
+
+    expect(unavailable.kind).toBe("candidate");
+    expect(unavailable.ugs.unresolved).toEqual([expect.objectContaining({ scope: "topology", severity: "blocking" })]);
+    expect(invalid.kind).toBe("candidate");
+    expect(invalid.ugs.nodes).toEqual([expect.objectContaining({ kind: "container" })]);
+    expect(unavailable.interpretation).toMatchObject({ errorCategory: "timeout" });
+    expect(invalid.interpretation).toMatchObject({ errorCategory: "invalid" });
+    expect(invalid).not.toHaveProperty("snapshot");
+    expect(invalid).not.toHaveProperty("nativeIntent");
+    expect(invalid).not.toHaveProperty("worker");
   });
 });

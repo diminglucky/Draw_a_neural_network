@@ -4,7 +4,7 @@ import { PublicationVisualPreviewService, type PublicationVisualPreview } from "
 import type { PublicationVisualPlanUpdateIdentity } from "./publication-visual-plan-compiler.js";
 import type { PublicationVisualPlan } from "./publication-visual-plan.js";
 import { compareCodeUnits } from "./stable-string-order.js";
-import { compileUniversalInputToPublicationPreview, type UniversalPreviewInput } from "./universal-input-compilation-service.js";
+import { compileUniversalInputToPublicationPreview, type UniversalInputCompilationInput } from "./universal-input-compilation-service.js";
 import { parseUniversalGraphSpec, type UniversalGraphSpec, type UniversalUnresolved } from "./universal-graph-spec.js";
 
 const SESSION_VERSION = "evidence-constrained-drawing-session-1";
@@ -28,7 +28,7 @@ export interface EvidenceConstrainedDrawingSessionUpdateTarget {
 
 export interface EvidenceConstrainedDrawingSessionOpenRequest {
   readonly owner: EvidenceConstrainedDrawingSessionOwner;
-  readonly input: UniversalPreviewInput;
+  readonly input: UniversalInputCompilationInput;
   readonly detail: "overview" | "architecture" | "operator_detail";
   readonly updateTarget: EvidenceConstrainedDrawingSessionUpdateTarget;
 }
@@ -42,9 +42,16 @@ export interface EvidenceConstrainedDrawingSessionConfirmation {
 }
 
 export interface EvidenceConstrainedDrawingSessionSource {
-  readonly kind: UniversalPreviewInput["kind"];
+  readonly kind: UniversalInputCompilationInput["kind"];
   readonly sourceId: string;
   readonly sourceHash: string;
+}
+
+export interface EvidenceConstrainedDrawingSessionInterpretation {
+  readonly requestHash: string;
+  readonly proposalHash: string;
+  readonly evidenceDigest: string;
+  readonly errorCategory: "none" | "unavailable" | "timeout" | "invalid";
 }
 
 export interface EvidenceConstrainedDrawingSessionClarification {
@@ -87,6 +94,7 @@ export interface EvidenceConstrainedDrawingSession {
   readonly detail: EvidenceConstrainedDrawingSessionOpenRequest["detail"];
   readonly updateTarget: EvidenceConstrainedDrawingSessionUpdateTarget;
   readonly sources: readonly EvidenceConstrainedDrawingSessionSource[];
+  readonly interpretation?: EvidenceConstrainedDrawingSessionInterpretation;
   readonly ugs: UniversalGraphSpec;
   readonly ugsHash: string;
   readonly state: "formal_preview" | "candidate_preview" | "clarification";
@@ -108,8 +116,9 @@ export function openEvidenceConstrainedDrawingSession(input: EvidenceConstrained
   });
   const ugs = parseUniversalGraphSpec(previewResult.ugs);
   const ugsHash = digestGenericPlanSnapshotValue(ugs);
-  const sources = sourcesFor(input.input, ugs);
-  const sessionId = sessionIdentity(input.owner, input.detail, input.updateTarget, ugsHash);
+  const interpretation = previewResult.interpretation;
+  const sources = sourcesFor(input.input, ugs, interpretation);
+  const sessionId = sessionIdentity(input.owner, input.detail, input.updateTarget, ugsHash, interpretation);
   const blocking = firstBlockingTopologyUnresolved(ugs);
 
   if (blocking) {
@@ -121,6 +130,7 @@ export function openEvidenceConstrainedDrawingSession(input: EvidenceConstrained
       detail: input.detail,
       updateTarget: copyTarget(input.updateTarget),
       sources,
+      ...(interpretation === undefined ? {} : { interpretation: copyInterpretation(interpretation) }),
       ugs,
       ugsHash,
       state: "clarification",
@@ -136,6 +146,7 @@ export function openEvidenceConstrainedDrawingSession(input: EvidenceConstrained
     detail: input.detail,
     updateTarget: copyTarget(input.updateTarget),
     sources,
+    ...(interpretation === undefined ? {} : { interpretation: copyInterpretation(interpretation) }),
     ugs,
     ugsHash,
     ...previewState(previewResult),
@@ -173,7 +184,7 @@ export function confirmEvidenceConstrainedDrawingSession(
     updateIdentity: updateIdentityFor(current.owner, current.updateTarget),
   });
   const nextBlocking = firstBlockingTopologyUnresolved(nextUgs);
-  const nextSessionId = sessionIdentity(current.owner, current.detail, current.updateTarget, digestGenericPlanSnapshotValue(nextUgs));
+  const nextSessionId = sessionIdentity(current.owner, current.detail, current.updateTarget, digestGenericPlanSnapshotValue(nextUgs), current.interpretation);
   if (nextBlocking) {
     return freezeSession({
       version: SESSION_VERSION,
@@ -183,6 +194,7 @@ export function confirmEvidenceConstrainedDrawingSession(
       detail: current.detail,
       updateTarget: copyTarget(current.updateTarget),
       sources: copySources(current.sources),
+      ...(current.interpretation === undefined ? {} : { interpretation: copyInterpretation(current.interpretation) }),
       ugs: nextUgs,
       ugsHash: digestGenericPlanSnapshotValue(nextUgs),
       state: "clarification",
@@ -199,6 +211,7 @@ export function confirmEvidenceConstrainedDrawingSession(
     detail: current.detail,
     updateTarget: copyTarget(current.updateTarget),
     sources: copySources(current.sources),
+    ...(current.interpretation === undefined ? {} : { interpretation: copyInterpretation(current.interpretation) }),
     ugs: nextUgs,
     ugsHash: digestGenericPlanSnapshotValue(nextUgs),
     ...nextPreview,
@@ -317,7 +330,17 @@ function valuesById(values: readonly unknown[] | undefined, idKey: string): Map<
   return result;
 }
 
-function sourcesFor(input: UniversalPreviewInput, ugs: UniversalGraphSpec): EvidenceConstrainedDrawingSessionSource[] {
+function sourcesFor(
+  input: UniversalInputCompilationInput,
+  ugs: UniversalGraphSpec,
+  interpretation: EvidenceConstrainedDrawingSessionInterpretation | undefined = undefined,
+): EvidenceConstrainedDrawingSessionSource[] {
+  if (input.kind === "architecture-description") {
+    if (!interpretation) throw new Error("Architecture description session is missing safe interpretation lineage");
+    const sourceId = `architecture-input:${input.request.requestId}`;
+    if (!hasEvidenceProvenancePair(ugs, sourceId, interpretation.evidenceDigest)) throw new Error("Architecture description session provenance is invalid");
+    return [{ kind: input.kind, sourceId, sourceHash: interpretation.evidenceDigest }];
+  }
   const sourceHash = input.kind === "static-pytorch" ? input.sourceSha256 : onlyMatchingHash(input.sourceId, ugs);
   if (!hasEvidenceProvenancePair(ugs, input.sourceId, sourceHash)) throw new Error("Drawing session input is not represented by canonical UGS provenance");
   return [{ kind: input.kind, sourceId: input.sourceId, sourceHash }];
@@ -342,8 +365,9 @@ function sessionIdentity(
   detail: EvidenceConstrainedDrawingSessionOpenRequest["detail"],
   target: EvidenceConstrainedDrawingSessionUpdateTarget,
   ugsHash: string,
+  interpretation: EvidenceConstrainedDrawingSessionInterpretation | undefined,
 ): string {
-  return `session:${sha256(JSON.stringify({ version: SESSION_VERSION, ownerId: owner.ownerId, deviceId: owner.deviceId, detail, target, ugsHash }))}`;
+  return `session:${sha256(JSON.stringify({ version: SESSION_VERSION, ownerId: owner.ownerId, deviceId: owner.deviceId, detail, target, ugsHash, ...(interpretation === undefined ? {} : { interpretation }) }))}`;
 }
 
 function assertOpenRequest(input: EvidenceConstrainedDrawingSessionOpenRequest): void {
@@ -364,7 +388,7 @@ function assertConfirmation(input: EvidenceConstrainedDrawingSessionConfirmation
 }
 
 function assertSessionIntegrity(session: EvidenceConstrainedDrawingSession): void {
-  assertExactKeys(session, ["version", "sessionId", "revision", "owner", "detail", "updateTarget", "sources", "ugs", "ugsHash", "state", "preview", "clarification", "delta"], "drawing session");
+  assertExactKeys(session, ["version", "sessionId", "revision", "owner", "detail", "updateTarget", "sources", "interpretation", "ugs", "ugsHash", "state", "preview", "clarification", "delta"], "drawing session");
   if (session.version !== SESSION_VERSION || !sessionIdentifier.test(session.sessionId) || !Number.isInteger(session.revision) || session.revision <= 0) throw new Error("Drawing session identity is invalid");
   assertOwner(session.owner, "drawing session owner");
   assertTarget(session.updateTarget);
@@ -372,8 +396,9 @@ function assertSessionIntegrity(session: EvidenceConstrainedDrawingSession): voi
   if (!( ["formal_preview", "candidate_preview", "clarification"] as const).includes(session.state)) throw new Error("Drawing session state is invalid");
   const ugs = parseUniversalGraphSpec(session.ugs);
   if (session.ugsHash !== digestGenericPlanSnapshotValue(ugs)) throw new Error("Drawing session UGS hash is invalid");
-  if (session.sessionId !== sessionIdentity(session.owner, session.detail, session.updateTarget, session.ugsHash)) throw new Error("Drawing session identity does not match its canonical UGS");
   assertSources(session.sources, ugs);
+  assertInterpretation(session.interpretation, ugs, session.sources);
+  if (session.sessionId !== sessionIdentity(session.owner, session.detail, session.updateTarget, session.ugsHash, session.interpretation)) throw new Error("Drawing session identity does not match its canonical UGS");
   if (session.state === "clarification") {
     if (session.preview !== undefined || !session.clarification) throw new Error("Drawing session clarification state is invalid");
   } else if (!session.preview || session.clarification !== undefined || session.preview.kind !== (session.state === "formal_preview" ? "formal" : "candidate")) {
@@ -381,7 +406,7 @@ function assertSessionIntegrity(session: EvidenceConstrainedDrawingSession): voi
   }
 }
 
-function assertInput(input: UniversalPreviewInput): void {
+function assertInput(input: UniversalInputCompilationInput): void {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Drawing session input is invalid");
   if (input.kind === "typed-prompt") {
     assertExactKeys(input, ["kind", "sourceId", "prompt", "revision"], "typed prompt input");
@@ -394,6 +419,10 @@ function assertInput(input: UniversalPreviewInput): void {
     assertIdentifier(input.sourceId, "static source sourceId");
     if (!/^[a-f0-9]{64}$/i.test(input.sourceSha256) || typeof input.code !== "string" || input.code.length === 0) throw new Error("Static source input is invalid");
     if (input.sourceSha256.toLowerCase() !== sha256(input.code)) throw new Error("Static source digest does not match submitted bytes");
+    return;
+  }
+  if (input.kind === "architecture-description") {
+    assertExactKeys(input, ["kind", "request", "proposal", "interpreterStatus"], "architecture description input");
     return;
   }
   throw new Error("Drawing session input kind is invalid");
@@ -442,12 +471,32 @@ function copySources(sources: readonly EvidenceConstrainedDrawingSessionSource[]
   return sources.map((source) => ({ kind: source.kind, sourceId: source.sourceId, sourceHash: source.sourceHash }));
 }
 
+function copyInterpretation(interpretation: EvidenceConstrainedDrawingSessionInterpretation): EvidenceConstrainedDrawingSessionInterpretation {
+  return {
+    requestHash: interpretation.requestHash,
+    proposalHash: interpretation.proposalHash,
+    evidenceDigest: interpretation.evidenceDigest,
+    errorCategory: interpretation.errorCategory,
+  };
+}
+
+function assertInterpretation(
+  interpretation: EvidenceConstrainedDrawingSessionInterpretation | undefined,
+  ugs: UniversalGraphSpec,
+  sources: readonly EvidenceConstrainedDrawingSessionSource[],
+): void {
+  const architectureSource = sources.find((source) => source.kind === "architecture-description");
+  if (!architectureSource && interpretation === undefined) return;
+  if (!architectureSource || !interpretation || !/^[a-f0-9]{64}$/i.test(interpretation.requestHash) || !/^[a-f0-9]{64}$/i.test(interpretation.proposalHash) || !/^[a-f0-9]{64}$/i.test(interpretation.evidenceDigest) || !( ["none", "unavailable", "timeout", "invalid"] as const).includes(interpretation.errorCategory)) throw new Error("Drawing session interpretation lineage is invalid");
+  if (architectureSource.sourceHash !== interpretation.evidenceDigest || !hasEvidenceProvenancePair(ugs, architectureSource.sourceId, interpretation.evidenceDigest)) throw new Error("Drawing session interpretation provenance is invalid");
+}
+
 function assertSources(sources: unknown, ugs: UniversalGraphSpec): asserts sources is readonly EvidenceConstrainedDrawingSessionSource[] {
   if (!Array.isArray(sources) || sources.length === 0 || sources.length > ugs.sourceIds.length) throw new Error("Drawing session sources are invalid");
   const actualSourceIds: string[] = [];
   for (const source of sources) {
     assertExactKeys(source, ["kind", "sourceId", "sourceHash"], "drawing session source");
-    if (source.kind !== "typed-prompt" && source.kind !== "static-pytorch") throw new Error("Drawing session source kind is invalid");
+    if (source.kind !== "typed-prompt" && source.kind !== "static-pytorch" && source.kind !== "architecture-description") throw new Error("Drawing session source kind is invalid");
     assertIdentifier(source.sourceId, "drawing session sourceId");
     if (typeof source.sourceHash !== "string" || !/^[a-f0-9]{64}$/i.test(source.sourceHash)) throw new Error("Drawing session source hash is invalid");
     if (!hasEvidenceProvenancePair(ugs, source.sourceId, source.sourceHash)) throw new Error("Drawing session source does not match UGS provenance");
