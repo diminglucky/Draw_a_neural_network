@@ -1,8 +1,48 @@
 import { describe, expect, it } from "vitest";
 import { createDrawingRun, type DrawingRun } from "../../src/drawing-run/contracts.js";
+import { DrawingRunError } from "../../src/drawing-run/errors.js";
 import { projectPublicDrawingRun } from "../../src/drawing-run/public-projection.js";
 
 describe("public DrawingRun projection", () => {
+  it("rejects path-like opaque run IDs at creation and before projection", () => {
+    const input = {
+      runId: "run-1",
+      ownerId: "owner-1",
+      deviceId: "device-1",
+      intent: {
+        action: "create_figure",
+        requestedDetail: "architecture",
+        target: "browser_preview",
+        sourceKinds: ["architecture_description"],
+      },
+      now: "2026-08-21T00:00:00.000Z",
+    } as const;
+    const base = createDrawingRun(input);
+
+    expect(() => createDrawingRun({ ...input, runId: "C:\\private\\model.py" })).toThrow(DrawingRunError);
+    expect(() => projectPublicDrawingRun({ ...base, runId: "C:\\private\\model.py" })).toThrow(DrawingRunError);
+  });
+
+  it("does not expose the removed apply-confirmation state as a public action surface", () => {
+    const state = {
+      ...createDrawingRun({
+        runId: "run-1",
+        ownerId: "owner-1",
+        deviceId: "device-1",
+        intent: {
+          action: "create_figure",
+          requestedDetail: "architecture",
+          target: "browser_preview",
+          sourceKinds: ["architecture_description"],
+        },
+        now: "2026-08-21T00:00:00.000Z",
+      }),
+      status: "awaiting_apply_confirmation",
+    } as unknown as DrawingRun;
+
+    expect(() => projectPublicDrawingRun(state)).toThrow(DrawingRunError);
+  });
+
   it("reconstructs only allowlisted public fields and excludes private receipts, paths, source, provider, context, and native data", () => {
     const state = {
       ...createDrawingRun({

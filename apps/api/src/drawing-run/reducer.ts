@@ -4,8 +4,13 @@ import {
   type DrawingRunEvent,
   type DrawingRunEventAction,
   type DrawingRunEventErrorCategory,
+  type DrawingRunIdempotencyResponse,
   type DrawingRunStatus,
   type DrawingRunTransition,
+  isDrawingRunFailureCategory,
+  isDrawingRunStatus,
+  isDrawingRunTimestamp,
+  isSafeDrawingRunIdentifier,
 } from "./contracts.js";
 import { failDrawingRun } from "./errors.js";
 
@@ -28,9 +33,10 @@ export function reduceDrawingRun(state: DrawingRun, command: DrawingRunCommand):
   const existing = state.idempotencyRecords.find((record) => record.key === command.idempotencyKey);
   if (existing) {
     if (existing.fingerprint !== fingerprint) failDrawingRun("idempotency");
-    return { next: state, event: existing.event, replayed: true };
+    return { kind: "replayed", current: state, original: existing.response };
   }
   if (command.expectedRevision !== state.revision) failDrawingRun("revision");
+  if (Date.parse(command.occurredAt) <= Date.parse(state.updatedAt)) failDrawingRun("validation");
 
   const resolution = resolveTransition(state, command);
   const nextRevision = state.revision + 1;
@@ -42,7 +48,7 @@ export function reduceDrawingRun(state: DrawingRun, command: DrawingRunCommand):
     privateReceiptIds: appendDistinct(state.privateReceiptIds, resolution.receiptIds ?? []),
     clarification: resolution.clarification === undefined ? state.clarification : resolution.clarification,
     preview: resolution.preview === undefined ? state.preview : resolution.preview,
-    updatedAt: state.updatedAt,
+    updatedAt: command.occurredAt,
     idempotencyRecords: state.idempotencyRecords,
   };
   const event: DrawingRunEvent = {
@@ -53,14 +59,16 @@ export function reduceDrawingRun(state: DrawingRun, command: DrawingRunCommand):
     action: resolution.action,
     artifactHashes: [...next.artifactHashes],
     errorCategory: resolution.errorCategory,
-    occurredAt: state.updatedAt,
+    occurredAt: command.occurredAt,
   };
+  const response = immutableIdempotencyResponse(event);
   return {
+    kind: "accepted",
     next: {
       ...next,
-      idempotencyRecords: [...state.idempotencyRecords, { key: command.idempotencyKey, fingerprint, event }],
+      idempotencyRecords: [...state.idempotencyRecords, { key: command.idempotencyKey, fingerprint, response }],
     },
-    event,
+    event: response.event,
   };
 }
 
@@ -141,9 +149,11 @@ function resolveTransition(state: DrawingRun, command: DrawingRunCommand): Resol
       return { status: "cancelled", action: "failed", errorCategory: "cancelled" };
     case "reject":
       requireNonTerminal(state);
+      if (!isDrawingRunFailureCategory(command.errorCategory)) failDrawingRun("validation");
       return { status: "rejected", action: "failed", errorCategory: command.errorCategory };
     case "fail":
       requireNonTerminal(state);
+      if (!isDrawingRunFailureCategory(command.errorCategory)) failDrawingRun("validation");
       return { status: "failed", action: "failed", errorCategory: command.errorCategory };
     case "conflict":
       requireNonTerminal(state);
@@ -155,10 +165,15 @@ function resolveTransition(state: DrawingRun, command: DrawingRunCommand): Resol
 }
 
 function assertBoundToRun(state: DrawingRun, command: DrawingRunCommand): void {
+  if (!isDrawingRunStatus(state.status) || !isSafeDrawingRunIdentifier(state.runId) || !isSafeDrawingRunIdentifier(state.ownerId) || !isSafeDrawingRunIdentifier(state.deviceId) || !isDrawingRunTimestamp(state.updatedAt)) {
+    failDrawingRun("validation");
+  }
   if (command.ownerId !== state.ownerId) failDrawingRun("owner");
   if (command.deviceId !== state.deviceId) failDrawingRun("device");
   if (command.runId !== state.runId) failDrawingRun("run");
-  if (!isSafeKey(command.idempotencyKey)) failDrawingRun("validation");
+  if (!isSafeDrawingRunIdentifier(command.ownerId) || !isSafeDrawingRunIdentifier(command.deviceId) || !isSafeDrawingRunIdentifier(command.runId) || !isSafeDrawingRunIdentifier(command.idempotencyKey) || !isDrawingRunTimestamp(command.occurredAt)) {
+    failDrawingRun("validation");
+  }
 }
 
 function requireStatus(state: DrawingRun, expected: DrawingRunStatus): void {
@@ -186,11 +201,11 @@ function appendDistinct(existing: readonly string[], additions: readonly string[
 }
 
 function isSafeKey(value: string): boolean {
-  return /^[A-Za-z0-9._:-]{1,160}$/.test(value);
+  return isSafeDrawingRunIdentifier(value);
 }
 
 function commandFingerprint(command: DrawingRunCommand): string {
-  const base = [command.type, command.ownerId, command.deviceId, command.runId, command.expectedRevision, command.idempotencyKey];
+  const base = [command.type, command.ownerId, command.deviceId, command.runId, command.expectedRevision, command.idempotencyKey, command.occurredAt];
   switch (command.type) {
     case "accept_input": return [...base, command.artifactHash, ...command.receiptIds].join("|");
     case "begin_analysis": return [...base, command.policyHash].join("|");
@@ -216,4 +231,15 @@ function commandFingerprint(command: DrawingRunCommand): string {
 function assertNever(value: never): never {
   void value;
   return failDrawingRun("validation");
+}
+
+function immutableIdempotencyResponse(event: DrawingRunEvent): DrawingRunIdempotencyResponse {
+  const safeEvent = Object.freeze({
+    ...event,
+    artifactHashes: Object.freeze([...event.artifactHashes]),
+  });
+  return Object.freeze({
+    event: safeEvent,
+    snapshot: Object.freeze({ runId: safeEvent.runId, revision: safeEvent.revision, status: safeEvent.status }),
+  });
 }

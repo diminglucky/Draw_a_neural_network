@@ -1,4 +1,5 @@
-import { type DrawingRun, type DrawingRunCommand, type PublicDrawingRun } from "./contracts.js";
+import { type DrawingRun, type DrawingRunCommand, type PublicDrawingRun, isDrawingRunStatus, isSafeDrawingRunIdentifier } from "./contracts.js";
+import { failDrawingRun } from "./errors.js";
 
 const hashPattern = /^[a-f0-9]{64}$/;
 const publicClarificationPrompt = "A clarification is required before continuing.";
@@ -15,7 +16,6 @@ const allowedActionsByStatus: Readonly<Record<DrawingRun["status"], readonly Dra
   preview_ready: ["discover_page_target", "cancel", "reject", "fail", "conflict"],
   awaiting_page_binding: ["bind_page", "cancel", "reject", "fail", "conflict"],
   page_bound: ["request_apply", "cancel", "reject", "fail", "conflict"],
-  awaiting_apply_confirmation: ["request_apply", "cancel", "reject", "fail", "conflict"],
   applying: ["verify_readback", "cancel", "reject", "fail", "conflict"],
   readback_verified: [],
   cancelled: [],
@@ -25,6 +25,10 @@ const allowedActionsByStatus: Readonly<Record<DrawingRun["status"], readonly Dra
 };
 
 export function projectPublicDrawingRun(state: DrawingRun): PublicDrawingRun {
+  if (!isSafeDrawingRunIdentifier(state.runId) || !isDrawingRunStatus(state.status) || !Number.isSafeInteger(state.revision) || state.revision < 0) {
+    failDrawingRun("validation");
+  }
+
   const clarification = state.clarification !== null && hashPattern.test(state.clarification.hash)
     ? { id: `clarification:${state.clarification.hash}`, prompt: publicClarificationPrompt }
     : null;

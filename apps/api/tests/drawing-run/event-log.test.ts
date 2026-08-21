@@ -32,4 +32,19 @@ describe("DrawingRun event log", () => {
     expect(() => appendDrawingRunEvent(history, event)).toThrow(/event/i);
     expect(() => appendDrawingRunEvent([], { ...event, artifactHashes: ["C:\\private\\model.py"] })).toThrow(/event/i);
   });
+
+  it.each([
+    ["status", "C:\\private\\model.py"],
+    ["action", "class SecretModel(torch.nn.Module): pass"],
+    ["errorCategory", '{"providerPayload":"secret"}'],
+    ["status", "unknown_status"],
+    ["action", "unknown_action"],
+    ["errorCategory", "unknown_error_category"],
+  ] as const)("rejects a type-erased unsafe %s enum before it can be serialized", (field, value) => {
+    const unsafe = { ...event, [field]: value } as DrawingRunEvent;
+    const history: readonly DrawingRunEvent[] = [];
+
+    expect(() => appendDrawingRunEvent(history, unsafe)).toThrow(/event/i);
+    expect(JSON.stringify(history)).not.toContain(value);
+  });
 });

@@ -1,24 +1,14 @@
+import { failDrawingRun } from "./errors.js";
+
 export const DRAWING_RUN_CONTRACT_VERSION = 1 as const;
 
-export type DrawingRunStatus =
-  | "received"
-  | "input_accepted"
-  | "analyzing"
-  | "awaiting_interpreter"
-  | "candidate_structure"
-  | "awaiting_clarification"
-  | "formal_ugs"
-  | "composing_pvp"
-  | "preview_ready"
-  | "awaiting_page_binding"
-  | "page_bound"
-  | "awaiting_apply_confirmation"
-  | "applying"
-  | "readback_verified"
-  | "cancelled"
-  | "rejected"
-  | "failed"
-  | "conflicted";
+export const drawingRunStatuses = [
+  "received", "input_accepted", "analyzing", "awaiting_interpreter", "candidate_structure", "awaiting_clarification",
+  "formal_ugs", "composing_pvp", "preview_ready", "awaiting_page_binding", "page_bound", "applying", "readback_verified",
+  "cancelled", "rejected", "failed", "conflicted",
+] as const;
+
+export type DrawingRunStatus = typeof drawingRunStatuses[number];
 
 export type DrawingIntent = {
   action: "analyze_network" | "create_figure" | "revise_figure";
@@ -27,27 +17,13 @@ export type DrawingIntent = {
   sourceKinds: readonly ("typed_text" | "pytorch_source" | "architecture_description" | "sketch")[];
 };
 
-export type DrawingRunEventAction =
-  | "received"
-  | "analyzed"
-  | "proposed"
-  | "formalized"
-  | "clarified"
-  | "composed"
-  | "bound"
-  | "applied"
-  | "readback"
-  | "failed";
+export const drawingRunEventActions = ["received", "analyzed", "proposed", "formalized", "clarified", "composed", "bound", "applied", "readback", "failed"] as const;
 
-export type DrawingRunEventErrorCategory =
-  | "none"
-  | "validation"
-  | "provider_unavailable"
-  | "provider_timeout"
-  | "provider_invalid"
-  | "worker"
-  | "conflict"
-  | "cancelled";
+export type DrawingRunEventAction = typeof drawingRunEventActions[number];
+
+export const drawingRunEventErrorCategories = ["none", "validation", "provider_unavailable", "provider_timeout", "provider_invalid", "worker", "conflict", "cancelled"] as const;
+
+export type DrawingRunEventErrorCategory = typeof drawingRunEventErrorCategories[number];
 
 export type DrawingRunFailureCategory = Exclude<DrawingRunEventErrorCategory, "none">;
 
@@ -76,7 +52,18 @@ export interface InternalPreview {
 export interface DrawingRunIdempotencyRecord {
   key: string;
   fingerprint: string;
+  response: DrawingRunIdempotencyResponse;
+}
+
+export interface DrawingRunTransitionSnapshot {
+  runId: string;
+  revision: number;
+  status: DrawingRunStatus;
+}
+
+export interface DrawingRunIdempotencyResponse {
   event: DrawingRunEvent;
+  snapshot: DrawingRunTransitionSnapshot;
 }
 
 export interface DrawingRun {
@@ -102,6 +89,7 @@ export interface DrawingRunCommandBase {
   runId: string;
   expectedRevision: number;
   idempotencyKey: string;
+  occurredAt: string;
 }
 
 export type DrawingRunCommand =
@@ -123,11 +111,9 @@ export type DrawingRunCommand =
   | (DrawingRunCommandBase & { type: "fail"; errorCategory: DrawingRunFailureCategory })
   | (DrawingRunCommandBase & { type: "conflict"; conflictHash: string });
 
-export interface DrawingRunTransition {
-  next: DrawingRun;
-  event: DrawingRunEvent;
-  replayed?: true;
-}
+export type DrawingRunTransition =
+  | { kind: "accepted"; next: DrawingRun; event: DrawingRunEvent }
+  | { kind: "replayed"; current: DrawingRun; original: DrawingRunIdempotencyResponse };
 
 export interface PublicDrawingRun {
   runId: string;
@@ -140,6 +126,35 @@ export interface PublicDrawingRun {
 
 export type DrawingRunSnapshot = PublicDrawingRun;
 
+const safeOpaqueIdentifierPattern = /^[A-Za-z0-9._:-]{1,160}$/;
+const utcTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+export function isSafeDrawingRunIdentifier(value: unknown): value is string {
+  return typeof value === "string" && safeOpaqueIdentifierPattern.test(value);
+}
+
+export function isDrawingRunStatus(value: unknown): value is DrawingRunStatus {
+  return typeof value === "string" && (drawingRunStatuses as readonly string[]).includes(value);
+}
+
+export function isDrawingRunEventAction(value: unknown): value is DrawingRunEventAction {
+  return typeof value === "string" && (drawingRunEventActions as readonly string[]).includes(value);
+}
+
+export function isDrawingRunEventErrorCategory(value: unknown): value is DrawingRunEventErrorCategory {
+  return typeof value === "string" && (drawingRunEventErrorCategories as readonly string[]).includes(value);
+}
+
+export function isDrawingRunFailureCategory(value: unknown): value is DrawingRunFailureCategory {
+  return isDrawingRunEventErrorCategory(value) && value !== "none";
+}
+
+export function isDrawingRunTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || !utcTimestampPattern.test(value)) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
 export function createDrawingRun(input: {
   runId: string;
   ownerId: string;
@@ -147,6 +162,10 @@ export function createDrawingRun(input: {
   intent: DrawingIntent;
   now: string;
 }): DrawingRun {
+  if (!isSafeDrawingRunIdentifier(input.runId) || !isSafeDrawingRunIdentifier(input.ownerId) || !isSafeDrawingRunIdentifier(input.deviceId) || !isDrawingRunTimestamp(input.now)) {
+    failDrawingRun("validation");
+  }
+
   return {
     version: DRAWING_RUN_CONTRACT_VERSION,
     runId: input.runId,
