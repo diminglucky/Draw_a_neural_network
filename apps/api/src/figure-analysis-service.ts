@@ -22,7 +22,7 @@ export class FigureAnalysisService {
       sourceSha256: input.source.sourceSha256,
       code: input.source.code,
     });
-    const candidateIR = compileStaticPyTorchToArchitectureIR(analysis);
+    const candidateIR = compileStaticPyTorchToArchitectureIR(legacyCandidateProjection(analysis));
     const blockingQuestions = candidateIR.unresolved.filter((question) => question.severity === "blocking");
     const architectureIR = blockingQuestions.length > 0
       ? candidateIR
@@ -65,6 +65,16 @@ export class FigureAnalysisService {
     if (!persisted.requestHashMatches) throw new Error("Figure analysis idempotency key was reused with a different request");
     return { record: persisted.record, duplicate: persisted.duplicate };
   }
+}
+
+/**
+ * The v3 Figure Analysis contract exposes one candidate architecture question
+ * at a time. The universal drawing path keeps the complete set of blocking
+ * facts; this projection only preserves the legacy public response shape.
+ */
+function legacyCandidateProjection(analysis: StaticPyTorchAnalysis): StaticPyTorchAnalysis {
+  const firstBlocking = analysis.unresolved.find((item) => item.severity === "blocking");
+  return firstBlocking ? { ...analysis, unresolved: [firstBlocking] } : analysis;
 }
 
 function mergeUnresolved(

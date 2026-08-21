@@ -4,10 +4,10 @@
     "id": "universal-neural-figure-agent",
     "name": "Universal Neural Figure Agent",
     "branch": "agent",
-    "architectureSpec": "docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md"
+    "architectureSpec": "docs/superpowers/specs/2026-08-21-evidence-constrained-drawing-agent-design.md"
   },
-  "updatedAt": "2026-08-21T11:51:13.974Z",
-  "currentFocus": "M3.2",
+  "updatedAt": "2026-08-21T06:21:33.020Z",
+  "currentFocus": "M2.11",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
     { "id": "M1", "title": "Static source analysis", "status": "accepted" },
@@ -244,6 +244,20 @@
       "successorId": null
     },
     {
+      "id": "M2.11",
+      "milestoneId": "M2",
+      "title": "Evidence-constrained drawing session",
+      "status": "awaiting_acceptance",
+      "previousStatus": "active",
+      "dependsOn": ["M2.6"],
+      "outcome": "Prompt and static-code evidence produces an owner/device-bound renderer-neutral UGS/GPG/PVP session or one clarification without model-name routing.",
+      "acceptance": [{ "id": "M2.11.session", "text": "The session deterministically preserves evidence lineage, rejects foreign or stale confirmation, emits no PVP for blocking topology, and recomputes a local semantic PVP delta after bounded confirmation.", "requiredEvidenceKinds": ["test", "document"] }],
+      "evidence": [],
+      "nextAction": "Keep the independently reviewed pure session slice unexpanded and await narrow Git delivery plus formal ledger acceptance before persistence provider Snapshot export renderer or Visio work.",
+      "blockerIds": [],
+      "successorId": null
+    },
+    {
       "id": "M3.1",
       "milestoneId": "M3",
       "title": "Generic PVP-to-Visio primitive mapping slice",
@@ -264,13 +278,13 @@
       "id": "M3.2",
       "milestoneId": "M3",
       "title": "Sealed export authorization",
-      "status": "active",
-      "previousStatus": "planned",
+      "status": "deferred",
+      "previousStatus": "active",
       "dependsOn": ["M2.5", "M3.1"],
       "outcome": "Export authorization binds owner, device, job, plan, hashes, and revision.",
       "acceptance": [{ "id": "M3.2.binding", "text": "Sealed plans reject mismatched identity or revision.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [],
-      "nextAction": "Define and implement a server-only sealed authorization binding for the accepted Snapshot-native intent without invoking a Worker or COM.",
+      "nextAction": "Deferred by owner priority until the evidence-constrained core drawing session is independently accepted, then resume server-only authorization without invoking a Worker or COM.",
       "blockerIds": [],
       "successorId": null
     },

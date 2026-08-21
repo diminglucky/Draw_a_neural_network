@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { compileUniversalInputToPublicationPreview } from "../src/universal-input-compilation-service.js";
 
@@ -12,6 +13,10 @@ const options = {
     expectedRevision: 1,
   },
 };
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
 
 function completeUnknownOperatorPrompt(): string {
   return JSON.stringify({
@@ -49,18 +54,19 @@ describe("compileUniversalInputToPublicationPreview", () => {
   });
 
   it("compiles a provable static PyTorch path without executing the submitted source", () => {
+    const code = [
+      'raise RuntimeError("static source must not execute")',
+      "class Chain(nn.Module):",
+      " def __init__(self):",
+      "  self.projection = nn.Conv2d(3, 8, 1)",
+      " def forward(self, x):",
+      "  return self.projection(x)",
+    ].join("\n");
     const result = compileUniversalInputToPublicationPreview({
       kind: "static-pytorch",
       sourceId: "static-source",
-      sourceSha256: "a".repeat(64),
-      code: [
-        'raise RuntimeError("static source must not execute")',
-        "class Chain(nn.Module):",
-        " def __init__(self):",
-        "  self.projection = nn.Conv2d(3, 8, 1)",
-        " def forward(self, x):",
-        "  return self.projection(x)",
-      ].join("\n"),
+      sourceSha256: sha256(code),
+      code,
     }, options);
 
     expect(result.kind).toBe("formal");

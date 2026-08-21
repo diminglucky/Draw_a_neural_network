@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { compileStaticPyTorchToArchitectureIR } from "./static-pytorch-ir-compiler.js";
 import { analyzeStaticPyTorchSource, type StaticPyTorchAnalysis } from "./static-pytorch-source-analyzer.js";
 import { projectArchitectureIrV3ToUniversalGraphSpec } from "./universal-graph-spec-adapter.js";
@@ -15,6 +16,9 @@ export function compileStaticPyTorchSourceToUniversalGraphSpec(input: {
   sourceSha256: string;
   code: string;
 }): UniversalGraphSpec {
+  if (createHash("sha256").update(input.code, "utf8").digest("hex") !== input.sourceSha256.toLowerCase()) {
+    throw new Error("Static PyTorch source digest does not match submitted bytes");
+  }
   const analysis = analyzeStaticPyTorchSource(input);
   const ir = compileStaticPyTorchToArchitectureIR(analysis);
   return addTopologyCandidateForBlockingAnalysis(projectArchitectureIrV3ToUniversalGraphSpec(ir), analysis);
@@ -23,8 +27,8 @@ export function compileStaticPyTorchSourceToUniversalGraphSpec(input: {
 function addTopologyCandidateForBlockingAnalysis(ugs: UniversalGraphSpec, analysis: StaticPyTorchAnalysis): UniversalGraphSpec {
   if (!analysis.unresolved.some((item) => item.severity === "blocking")) return ugs;
 
-  const blockingUnresolved = ugs.unresolved.find((item) => item.severity === "blocking");
-  if (!blockingUnresolved || blockingUnresolved.evidenceIds.some((evidenceId) => !ugs.evidence.some((evidence) => evidence.evidenceId === evidenceId))) {
+  const blockingUnresolved = ugs.unresolved.filter((item) => item.severity === "blocking");
+  if (blockingUnresolved.length === 0 || blockingUnresolved.some((item) => item.evidenceIds.some((evidenceId) => !ugs.evidence.some((evidence) => evidence.evidenceId === evidenceId)))) {
     throw new Error("Cannot mark static PyTorch candidate topology without existing unresolved evidence");
   }
 
@@ -33,12 +37,12 @@ function addTopologyCandidateForBlockingAnalysis(ugs: UniversalGraphSpec, analys
     topologyConfidence: Math.min(ugs.topologyConfidence, 0.5),
     unresolved: [
       ...ugs.unresolved,
-      {
-        id: "static-pytorch-blocking-analysis",
-        scope: "topology",
-        severity: "blocking",
-        evidenceIds: [...blockingUnresolved.evidenceIds],
-      },
+      ...blockingUnresolved.map((item) => ({
+        id: `static-pytorch-blocking-analysis:${item.id}`,
+        scope: "topology" as const,
+        severity: "blocking" as const,
+        evidenceIds: [...item.evidenceIds],
+      })),
     ],
   };
 }

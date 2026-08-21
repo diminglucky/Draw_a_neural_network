@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-21T11:51:13.974Z`
-Architecture: [docs/superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md](./superpowers/specs/2026-08-20-adaptive-universal-neural-figure-agent-design.md)
+Updated: `2026-08-21T06:21:33.020Z`
+Architecture: [docs/superpowers/specs/2026-08-21-evidence-constrained-drawing-agent-design.md](./superpowers/specs/2026-08-21-evidence-constrained-drawing-agent-design.md)
 
 ## Current Focus
 
-- M3.2: Sealed export authorization
-- Status: active
-- Outcome: Export authorization binds owner, device, job, plan, hashes, and revision.
-- Next action: Define and implement a server-only sealed authorization binding for the accepted Snapshot-native intent without invoking a Worker or COM.
+- M2.11: Evidence-constrained drawing session
+- Status: awaiting_acceptance
+- Outcome: Prompt and static-code evidence produces an owner/device-bound renderer-neutral UGS/GPG/PVP session or one clarification without model-name routing.
+- Next action: Keep the independently reviewed pure session slice unexpanded and await narrow Git delivery plus formal ledger acceptance before persistence provider Snapshot export renderer or Visio work.
 
 ## Milestones
 

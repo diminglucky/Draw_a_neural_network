@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { GenericPlanSnapshotService } from "../src/generic-plan-snapshot-service.js";
@@ -10,6 +11,10 @@ import { compileStaticPyTorchSourceToUniversalGraphSpec } from "../src/static-py
 
 const owner = { tenantId: "tenant-1", userId: "owner-1", deviceId: "device-1" };
 const updateIdentity = { ownerId: owner.userId, deviceId: owner.deviceId, workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
 
 function compilePlan(ugs: ReturnType<typeof compilePromptToUniversalGraphSpec>) {
   const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
@@ -60,17 +65,18 @@ describe("input adapter publication chain", () => {
     globals[sideEffectKey] = false;
 
     try {
+      const code = [
+        "globalThis.__inputAdapterPublicationChainExecuted = true",
+        "class Chain(nn.Module):",
+        " def __init__(self):",
+        "  self.conv = nn.Conv2d(3, 16, 3)",
+        " def forward(self, x):",
+        "  return self.conv(x)",
+      ].join("\n");
       const ugs = compileStaticPyTorchSourceToUniversalGraphSpec({
         sourceId: "static-chain-source",
-        sourceSha256: "c".repeat(64),
-        code: [
-          "globalThis.__inputAdapterPublicationChainExecuted = true",
-          "class Chain(nn.Module):",
-          " def __init__(self):",
-          "  self.conv = nn.Conv2d(3, 16, 3)",
-          " def forward(self, x):",
-          "  return self.conv(x)",
-        ].join("\n"),
+        sourceSha256: sha256(code),
+        code,
       });
       const intent = await approvedNativeIntent(ugs);
 
@@ -87,10 +93,11 @@ describe("input adapter publication chain", () => {
       sourceId: "ambiguous-prompt-source",
       prompt: JSON.stringify({ graphId: "ambiguous-prompt", topology: "ambiguous", nodes: [{ nodeId: "input", kind: "input", label: "Input", inputPorts: [], outputPorts: [{ portId: "out" }] }], edges: [] }),
     });
+    const dynamicCode = ["class Dynamic(nn.Module):", " def forward(self, x):", "  if x.sum() > 0:", "   return x", "  return -x"].join("\n");
     const dynamicSource = compileStaticPyTorchSourceToUniversalGraphSpec({
       sourceId: "dynamic-static-source",
-      sourceSha256: "d".repeat(64),
-      code: ["class Dynamic(nn.Module):", " def forward(self, x):", "  if x.sum() > 0:", "   return x", "  return -x"].join("\n"),
+      sourceSha256: sha256(dynamicCode),
+      code: dynamicCode,
     });
 
     const snapshots = new InMemoryGenericPlanSnapshotStore();

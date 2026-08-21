@@ -17,8 +17,8 @@ describe("agent roadmap CLI", () => {
       git: { branch: string; ahead: number; behind: number };
       strictFailures: string[];
     };
-    expect(status.currentFocus.id).toBe("M3.2");
-    expect(status.currentFocus).toMatchObject({ status: "active" });
+    expect(status.currentFocus.id).toBe("M2.11");
+    expect(status.currentFocus).toMatchObject({ status: "awaiting_acceptance" });
     expect(status.executableNodes.map((node) => node.id)).toEqual([]);
     expect(status.git).toMatchObject({ branch: "agent", behind: 0 });
     expect(status.strictFailures).toEqual(status.git.ahead > 0 ? ["branch diverges from upstream"] : []);
