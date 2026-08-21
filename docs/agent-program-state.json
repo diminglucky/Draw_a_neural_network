@@ -6,7 +6,7 @@
     "branch": "agent",
     "architectureSpec": "docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md"
   },
-  "updatedAt": "2026-08-21T07:13:31.831Z",
+  "updatedAt": "2026-08-21T17:36:00.000Z",
   "currentFocus": "M2.12",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -271,10 +271,14 @@
       "status": "active",
       "previousStatus": "planned",
       "dependsOn": ["M2.8", "M2.10", "M2.11"],
-      "outcome": "Bounded architecture declarations and interpreter proposals become evidence-validated UniversalGraphSpec facts or deterministic clarification without source execution or native authority.",
-      "acceptance": [{ "id": "M2.12.interpreter", "text": "The Harness rejects unbounded or unsupported proposals, preserves evidence lineage, and returns only formal UGS or clarification.", "requiredEvidenceKinds": ["test", "document"] }],
+      "outcome": "After accepted DrawingRun and Coordinator predecessors, private receipts and verified evidence support redacted Provider-local proposals while the Harness alone mints public evidence and canonical graph identities or returns deterministic clarification without source execution or native authority.",
+      "acceptance": [
+        { "id": "M2.12.receipt-boundary", "text": "Coordinator-internal receipt/context references, redacted Provider payload, and public evidence references remain separated. No private ID, free-text locator, raw input, path, or unsafe public text reaches graph artifacts.", "requiredEvidenceKinds": ["test", "document"] },
+        { "id": "M2.12.harness-rekeying", "text": "The Harness rejects unsupported/conflicting proposals, rekeys Provider-local references from canonical evidence and structural order, preserves verified lineage, and returns only formal UGS, revision-bound clarification, or rejection.", "requiredEvidenceKinds": ["test", "document"] },
+        { "id": "M2.12.quality", "text": "Focused and full regression verification plus independent review record the replacement Harness boundary before acceptance.", "requiredEvidenceKinds": ["test", "typecheck", "document", "commit"] }
+      ],
       "evidence": [],
-      "nextAction": "Implement the bounded interpreter proposal and Harness validation contract without Provider, renderer, Worker, or Visio authority.",
+      "nextAction": "Replace the free-text compatibility prototype with receipt-bound Harness rekeying only after master-plan Phase 0 through Phase 2 prerequisites and Task 0 migration inventory are accepted. Do not add Provider, renderer, Worker, or Visio authority.",
       "blockerIds": [],
       "successorId": "M2.13"
     },

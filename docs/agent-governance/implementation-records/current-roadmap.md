@@ -1,14 +1,14 @@
 # 当前实现记录：自适应通用神经网络绘图 Agent
 
 **Record ID：** `IR-2026-08-20-current-roadmap`
-**对应基线：** `DB-2026-08-21-universal-visio-parallel-delivery`
+**对应基线：** `DB-2026-08-21-receipt-bound-harness-closure`
 **最后核对：** `2026-08-21T07:13:31.831Z`
 **正式 ledger 焦点：** `M2.12 — Evidence-augmented architecture interpretation`
-**总体状态：** `active` — `aa9835c383aa18c804a23856893685af97443fef` 已推送至 `origin/agent`。M2.8、M2.10、M2.11 的来源边界、非执行静态分析、会话澄清与局部 PVP delta 已完成全套回归和两组独立审查，且正式证据已记录；当前开始受约束的陌生架构解释，不包含 Provider、真实 Windows/Visio、保存重开或人工视觉验收。
+**总体状态：** `active` — `aa9835c383aa18c804a23856893685af97443fef` 已推送至 `origin/agent`。M2.8、M2.10、M2.11 的来源边界、非执行静态分析、会话澄清与局部 PVP delta 已完成全套回归和两组独立审查，且正式证据已记录。M2.12 当前是设计和迁移盘点焦点，而非可直接编码的独立解释器：其实现必须先依赖 DrawingRun、Coordinator、idempotency/cancellation 与 EvidencePack 前置合同。现有自由文本解释器仅为兼容原型；正式实现必须使用私有回执、Coordinator 内部上下文、脱敏 Provider payload、Harness 公共证据投影与规范 ID 重键。
 
 **修订中的产品基线：** `docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md` 将陌生网络理解、publication visual grammar、草图候选解析和当前 Visio 页增量更新收敛为一个可验证的 Core Drawing V1 垂直闭环。它保留 M2.11 的 UGS/GPG/PVP、静态不执行、证据谱系及 owner/device/revision 绑定；这是一份待 owner 审阅的设计提案，不增加已实现能力，不变更任何 ledger 节点状态，也不构成 Provider、草图、视觉语法、当前文档 Visio、真实主机或人工视觉验收。
 
-**本轮审查修订：** 该基线现明确要求 Worker 发现当前已打开的文档/页面、用户显式选择目标、绑定 Agent-owned region、每次写入前后的独立 readback 与冲突拒绝。既有 `OpenOrCreate` 生命周期不能充当当前页附着机制；日常更新不得关闭或替换用户文档。架构描述、Provider proposal、草图 intake/observation、七类语义 visual corpus 和真实主机验收也已有独立契约与顺序。本段仍是设计记录，不是实现或验收声明。
+**本轮审查修订：** 该基线现明确要求 Worker 发现当前已打开的文档/页面、用户显式选择目标、绑定 Agent-owned region、每次写入前后的独立 readback 与冲突拒绝。既有 `OpenOrCreate` 生命周期不能充当当前页附着机制；日常更新不得关闭或替换用户文档。M2.12 已进一步闭合为 `Coordinator-internal context reference -> redacted Provider payload -> local proposal -> Harness`：Provider 不接收 receipt/context/run/owner/device ID，候选或阻塞结构不产生 PVP，公开文本与证据均由 Harness 投影，局部 ID 和数组位置不得作为 canonical 排序依据。架构描述、草图 intake/observation、七类语义 visual corpus 和真实主机验收仍有独立契约与顺序。本段仍是设计记录，不是实现或验收声明。
 
 **CD0 验收记录：** `docs/evidence/2026-08-21-core-drawing-cd0-acceptance.md` 记录了 M2.8/M2.10/M2.11 的可达提交、全套回归与独立审查。三者现为 `accepted`，因此 `M2.12` 已成为唯一 `active` 节点；`M2.13` 仍为 planned，且 Provider、Visio、Worker 与真实主机行为仍未启动。
 
@@ -17,10 +17,10 @@
 | 层次 | 当前判断 | 证据边界 |
 |---|---|---|
 | 设计 | `approved_for_staged_implementation` | 用户已确认以未知网络直绘为目标；规格和治理资产仍是未提交 working-tree 文档 |
-| 当前路线图 | `active` | M2.8、M2.10、M2.11 已接受；M2.12 是唯一可执行节点。M3.2 仍因产品优先级保持 deferred，PatternLibrary 继续后置。 |
+| 当前路线图 | `active` | M2.8、M2.10、M2.11 已接受；M2.12 是唯一 active 的设计/盘点节点，但生产代码须先完成主平台 Phase 0–2 前置。M3.2 仍因产品优先级保持 deferred，PatternLibrary 继续后置。 |
 | API | `passed` | `npx tsc --noEmit`、`npm run api:check` 通过；完整 API 套件为 125 个测试文件、820 个测试通过 |
 | Worker 单元测试 | `passed` | 234 通过、2 跳过、0 失败；跳过项不是真实 Visio 验收 |
-| 通用未知网络直绘 | `M2.12 active` | UGS 严格合同、未知模块直绘、candidate topology、结构证据、GPG/PVP、会话澄清及全套 API 证据均已接受；受限 v4 preview 已支持 typed prompt/static PyTorch → UGS → GPG → PVP。当前实现陌生架构解释器，但仍无真实 Visio 路径。 |
+| 通用未知网络直绘 | `M2.12 active — design gated` | UGS 严格合同、未知模块直绘、candidate topology、结构证据、GPG/PVP、会话澄清及全套 API 证据均已接受；受限 v4 preview 已支持 typed prompt/static PyTorch → UGS → GPG → PVP。M2.12 的自由文本解释器是待迁移兼容原型，不能作为正式通用理解能力或后续视觉/Visio 权威；新 Harness 须先依赖 Phase 0–2，再完成 receipt/EvidencePack、内部 context 与外发 payload 分离、formal-only PVP 及 canonical rekeying。 |
 | 通用 Visio | `not_started` | 当前 bridge 仍是 canonical VGG16 夹具，不能作为通用导出能力 |
 | 真实 Visio / 人工视觉 | `not_started` | 尚无未知网络的真实主机保存、重开、编辑和独立 readback 证据 |
 
@@ -35,6 +35,7 @@
 | R4A | Prompt-to-UGS | `accepted` → `M2.8` | `aa9835c` 补齐端口级 evidence lineage；全套回归与独立审查均通过 | 仅以 canonical evidence 向 M2.12 提供输入，不授予 export/Visio 权限 |
 | R4B | Static-code-to-UGS | `accepted` → `M2.10` | `aa9835c` 强制直接分析器摘要绑定，并使条件初始化 fail closed；全套回归与独立审查均通过 | 仅以非执行 canonical evidence 向 M2.12 提供输入，不授予 export/Visio 权限 |
 | R4D | Evidence-constrained drawing session | `accepted` → `M2.11` | 来源配对、逐条澄清与 PVP semantic delta 已有回归和两组独立审查；正式 evidence 已记录 | 保持 renderer-neutral；M2.12 不得引入 persistence、provider、Snapshot、export、Worker 或 Visio |
+| R4E | Receipt-bound Structural Harness | `active — design gated` → `M2.12` | 现有自由文本 interpreter 原型与 83 项聚焦回归存在，但无 M2.12 acceptance evidence；其自由 locator 与 Provider ID 不能构成长期公开边界，且不能绕过 DrawingRun/Coordinator 前置 | 先完成 Phase 0–2，再建立 PrivateInputReceipt → EvidencePack → Coordinator-internal ProviderContextReference → redacted ProviderContextPayload → local proposal → Harness。Provider 仅 localRef/localFactRef；Harness 完成 canonical evidence/graph ordering 后才可发出 formal UGS |
 | R4C | Sketch-to-UGS | `planned` → `M4.5` | 在 M2.9 后才开始，且只产生 candidate/clarification | 不能静默猜拓扑，不能直接写 formal PVP、Snapshot 或 export job |
 | R5 | 通用 Visio + 真实主机验收 | `deferred` → `M3.1`–`M3.5` | M3.1 已接受且只从服务端存储的 GenericPlanSnapshot 定位并重验 PVP。PVP 的 owner/device/revision 与 UGS/GPG/source-hash 谱系必须与 Snapshot 一致，之后才映射 allowlisted native intent。candidate、pending、手工伪造 QA、能力不完整、未知图元及非 allowlisted connector 均被拒绝。公共 bridge 仍为 VGG fixture，尚无 COM/真实主机证据 | M3.2 sealed authorization 保持 deferred，等待 M2.11 核心会话获得独立验收后再恢复；之后才是 Worker → readback/recovery → real-host matrix |
 
@@ -70,4 +71,4 @@
 
 ## 5. 允许的下一步
 
-R0 的 legacy VGG16 fixture 只保留作回归基线。M2.6 已接受的 UGS、General Publication Graph 与 PublicationVisualPlan 合同仍是唯一通用结构输入。M2.8/M2.10/M2.11 现已接受：提示/静态代码的 canonical facts 进入确定性的 owner/device-bound session，阻塞 topology 只能返回一个澄清且没有 PVP，确认只更新所涉语义区域并重新编译 GPG/PVP。它不读取路径、不会产生 COM 参数、Snapshot、export job 或 renderer authority。M2.12 现开始实现受约束的陌生架构解释器；之后依次是语义 visual grammar 与 zero-template 人工审阅、仅候选/澄清的草图观察、sealed formal PVP 驱动的当前 Visio 页更新、保存/重开/独立 readback。任何 candidate 或 blocking UGS 均不得进入 Snapshot、native intent、Worker 或 Visio。M3.1 的 Snapshot-only native intent 维持已接受边界；M3.2 仍因产品优先级 deferred。PatternLibrary 必须等待预览、真实 Visio 生命周期和 Sketch 的受限证据。任何后续实现必须更新本记录、对应 baseline 和 Operation History，并根据证据决定是否更新 ledger。
+R0 的 legacy VGG16 fixture 只保留作回归基线。M2.6 已接受的 UGS、General Publication Graph 与 PublicationVisualPlan 合同仍是唯一通用结构输入。M2.8/M2.10/M2.11 现已接受：提示/静态代码的 canonical facts 进入确定性的 owner/device-bound session，阻塞 topology 只能返回一个澄清且没有 PVP，确认只更新所涉语义区域并重新编译 GPG/PVP。它不读取路径、不会产生 COM 参数、Snapshot、export job 或 renderer authority。M2.12 的下一步不是直接实现陌生架构解释器，而是完成平台 Phase 0–2 的状态机、Coordinator、存储、幂等、取消和迁移清单；之后才按 receipt/EvidencePack、内部 context/外发 payload、local proposal、Harness 的顺序实施。任何 candidate 或 blocking UGS 均不得进入 PVP、Snapshot、native intent、Worker 或 Visio。其后依次是语义 visual grammar 与 zero-template 人工审阅、仅候选/澄清的草图观察、sealed formal PVP 驱动的当前 Visio 页更新、保存/重开/独立 readback。M3.1 的 Snapshot-only native intent 维持已接受边界；M3.2 仍因产品优先级 deferred。PatternLibrary 必须等待预览、真实 Visio 生命周期和 Sketch 的受限证据。任何后续实现必须更新本记录、对应 baseline 和 Operation History，并根据证据决定是否更新 ledger。

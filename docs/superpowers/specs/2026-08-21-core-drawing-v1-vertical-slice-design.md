@@ -57,47 +57,106 @@ The V1 intake lane supports typed declarations, non-executed static PyTorch sour
 
 ### 4.2 Evidence-augmented interpretation
 
-To handle unfamiliar architectures, add a constrained proposal lane:
+To handle unfamiliar architectures, use a constrained receipt-bound proposal lane:
 
 ```text
-InterpretationRequest { bounded evidence, source descriptors, detail }
-  -> InterpreterProposal { nodes, ports, edges, evidence references, confidence, unresolved }
-  -> Harness validation
-  -> UGS or one deterministic clarification
+PrivateInputReceipt { private metadata plus content handle }
+  -> EvidencePack { verified facts and receipt lineage }
+  -> ProviderContextReference { Coordinator-only capability }
+  -> ProviderContextPayload { bounded redacted facts, no private IDs }
+  -> InterpreterLocalProposal { local refs and local fact tokens }
+  -> Structural Harness validation and rekeying
+  -> Harness-generated PublicEvidenceReference + canonical UGS
+  -> formal UGS or one deterministic clarification
 ```
 
-The interpreter may use a model provider, but is untrusted. It receives bounded evidence, never Renderer/Worker/COM controls. It can propose only data needed for UGS. The Harness rejects unknown fields, dangling ports, duplicate IDs, unsupported evidence references, invalid confidence, hidden topology, raw-source leakage, and renderer or filesystem controls.
+The interpreter may use a model provider, but is untrusted. It receives only a bounded redacted payload of verified facts, never a private receipt, internal context reference, receipt ID, run ID, owner/device identity, Renderer/Worker/COM control, page target, or native intent. It can propose only local structural relations and local fact tokens needed for UGS. The Harness rejects unknown fields, dangling ports, duplicate local references, unsupported fact tokens, invalid confidence, hidden topology, raw-source leakage, unsafe display text, and renderer or filesystem controls.
 
 #### 4.2.1 Exact proposal boundary
 
-The Provider boundary is deliberately small and replaceable. `ArchitectureInterpreter` is optional infrastructure, not an authority and not a prerequisite for static facts already proven by the parser.
+The Provider boundary is deliberately small and replaceable. `ArchitectureInterpreter` is optional infrastructure, not an authority and not a prerequisite for static facts already proven by the parser. It must not receive or mint a public graph identity.
 
 ```ts
-type BoundedInterpretationRequest = {
-  requestId: string;
-  evidence: readonly PublicArchitectureEvidence[];
-  detail: "overview" | "architecture" | "operator_detail";
-  maxNodes: number;
-  maxEdges: number;
+type PrivateInputReceipt = {
+  receiptId: string;
+  ownerId: string;
+  kind: "typed_text" | "pytorch_source" | "architecture_description" | "sketch";
+  sha256: string;
+  byteLength: number;
+  retention: "ephemeral" | "owner_revision";
 };
 
-type InterpreterProposal = {
+type ProviderContextReference = {
+  contextId: string;
+  runId: string;
+  ownerId: string;
+  deviceId: string;
+  expectedRevision: number;
+  evidencePackHash: string;
+  allowedPurpose: "architecture_interpretation";
+  expiresAt: string;
+};
+
+type ProviderContextPayload = {
   version: 1;
-  nodes: readonly ProposedNode[];
-  ports: readonly ProposedPort[];
-  edges: readonly ProposedEdge[];
+  allowedPurpose: "architecture_interpretation";
+  facts: readonly {
+    localFactRef: `fact:f:${number}`;
+    sourceKind: "static_analysis" | "typed_declaration" | "architecture_fact" | "sketch_observation";
+    summary: string;
+    confidence: number | null;
+  }[];
+  maxCharacters: number;
+};
+
+type PublicEvidenceReference = {
+  evidenceId: `evidence:e:${number}`;
+  sourceKind: "static_analysis" | "typed_declaration" | "architecture_fact" | "sketch_observation";
+  sourceHash: string;
+  locatorKind: "section" | "fact" | "observation" | "derived";
+  locatorOrdinal: number;
+  excerptDigest: string;
+};
+
+type InterpreterLocalProposal = {
+  version: 2;
+  nodes: readonly LocalNode[];
+  ports: readonly LocalPort[];
+  edges: readonly LocalEdge[];
+  unresolved: readonly LocalUnresolved[];
+};
+
+type LocalNode = {
+  localRef: string;
+  kind: "input" | "output" | "operator" | "module";
+  displayLabel: string; // Provider-local suggestion; Harness projects PublicDisplayText.
+  inputLocalRefs: readonly string[];
+  outputLocalRefs: readonly string[];
   evidenceRefs: readonly string[];
-  unresolved: readonly ProposedUnresolved[];
+};
+
+type CanonicalIdentifierMap = {
+  nodeByLocalRef: Record<string, `node:n:${number}`>;
+  portByLocalRef: Record<string, `port:p:${number}`>;
+  edgeByLocalRef: Record<string, `edge:e:${number}`>;
 };
 
 interface ArchitectureInterpreter {
-  propose(input: BoundedInterpretationRequest): Promise<InterpreterProposal>;
+  propose(input: ProviderContextPayload): Promise<InterpreterLocalProposal>;
 }
 ```
 
-`PublicArchitectureEvidence` contains only a bounded, hash-bound source descriptor, parser fact, user-declared architecture fact, or previously verified sketch observation. It never contains raw source, image bytes, provider credentials, filesystem paths, renderer data, native commands, or arbitrary JSON. Each proposed node, port, edge, and unresolved item references one or more supplied evidence IDs. The Harness reconstructs the public response from allowlisted fields rather than returning a Provider object.
+`PrivateInputReceipt` is private and is never serialized in a public DTO, UGS, PVP, route response, audit summary, Worker request, or trace sink. `ProviderContextReference` is an internal Coordinator capability created after receipt/policy validation and is never sent to the Provider. `ProviderContextPayload` is the only transmitted Provider input; it carries bounded redacted facts under local fact tokens and never a receipt/context/run/owner/device ID, raw bytes, path, or public UGS ID. `PublicEvidenceReference` is minted by the Harness from a verified EvidencePack. The only public locator is the closed pair `(locatorKind, locatorOrdinal)`, never a filename, path, source excerpt, Provider-supplied locator, or arbitrary string.
+
+Provider nodes, ports, edges, and unresolved entries use only local references; evidence relations use only Provider-local fact tokens. The Harness first canonicalizes verified evidence by `(sourceKind, sourceHash, locatorKind, locatorOrdinal, excerptDigest)`, rejecting conflicting facts at the same source/locator position. It then computes a structural fingerprint from semantic kind, evidence, port direction, typed relation, and refined neighbour fingerprints. Local references and array position are forbidden sort keys. The Harness mints canonical `node:n:*`, `port:p:*`, `edge:e:*`, and `evidence:e:*` identities only after canonical order is fixed, then rewrites every relationship before producing UGS. Indistinguishable symmetry that would change public semantic identity becomes a clarification, never an arbitrary local-ref tie-break. No Provider local reference survives into UGS, GPG, PVP, public session state, native intent, or Visio readback.
 
 Confidence cannot upgrade uncertainty. Low confidence for input/output, `add`, `concat`, residual, cross-attention, or edge direction becomes a blocking clarification. The model may preserve an unknown operator, but cannot infer the missing connection around it.
+
+#### 4.2.2 Migration invariant
+
+The prior `BoundedInterpretationRequest` plus free-text `sourceId`/`locator` boundary is a compatibility prototype only. It remains available solely for regression tests and migration adapters until callers use receipts and the new Harness. No new route, Provider adapter, visual feature, or Visio capability may consume it or extend its deny-list filters.
+
+The replacement Structural Harness is the only candidate for M2.12 acceptance. It is implemented only after the DrawingRun reducer, Coordinator/store/idempotency/cancellation fence, and Receipt/EvidencePack contracts are accepted; it must not create parallel persistence or session state. It must prove structured receipt separation, internal-context/transmitted-payload separation, Provider-local-only references, Harness rekeying, deterministic UGS hashes under proposal reordering and local-ref renaming, safe public-text projection, and safe public projection before it becomes the default path. If the Provider is unavailable, times out, returns invalid data, arrives after cancellation/revision change, or disagrees with independently proven facts, the Harness emits a deterministic clarification or formalizes only the independently proven subset. It never substitutes a guessed topology and never gives candidate/blocking topology PVP or native authority.
 
 ### 4.3 Clarification
 
@@ -223,7 +282,7 @@ The following records are part of this approved design vocabulary but remain abs
 
 | Proposed node | Title | Depends on | Activation and acceptance |
 |---|---|---|---|
-| M2.12 | Evidence-augmented architecture interpretation | M2.8, M2.10, M2.11 | Becomes active only after all dependencies are accepted; acceptance requires bounded-proposal/Harness tests, non-execution tests, and an implementation record. |
+| M2.12 | Evidence-augmented architecture interpretation | M2.8, M2.10, M2.11 | Active only after all dependencies are accepted. Acceptance requires private receipt/provider-context/public-evidence separation, Provider-local-only proposals, Harness-generated canonical IDs, formal-or-clarification tests, non-execution tests, an independent review, and an implementation record. The legacy free-text interpreter cannot satisfy this gate. |
 | M2.13 | Publication visual grammar and acceptance corpus | M2.12 | Becomes active only after M2.12 is accepted; acceptance requires all 13 corpus fixtures, deterministic browser identity, recorded human review, and an implementation record. |
 | M4.5 | Confidence-bounded Sketch-to-UGS understanding | M2.13 | Retains its existing ledger identity; acceptance requires bounded intake, candidate-only projection, and negative native-authority tests. |
 | M3.2–M3.5 | Sealed current-page Visio execution and real-host lifecycle | M2.5, M3.1, M2.13 | Existing M3 records retain their identities. M3.2 resumes only after M2.13 acceptance; M3.3–M3.5 then prove attach, Worker, readback, and real-host lifecycle separately. |
@@ -232,7 +291,7 @@ CD0 may add M2.12 and M2.13 as planned records only after their exact title, dep
 
 ### CD1 — Evidence-augmented unfamiliar-architecture interpretation
 
-Implement `ArchitectureDeclaration`, the bounded interpreter request/proposal schema, request/proposal hashing, constrained proposal parsing, and Harness validation for architecture descriptions and parser-limited code. The only valid outputs are formal UGS with evidence or clarification; Provider availability cannot alter this rule.
+After the DrawingRun/Coordinator prerequisites are accepted, implement `ArchitectureDeclaration`, private input receipts, EvidencePack, Coordinator-internal `ProviderContextReference`, transmitted `ProviderContextPayload`, `InterpreterLocalProposal`, request/proposal hashing, constrained proposal parsing, and Harness validation for architecture descriptions and parser-limited code. The only valid outputs are Harness-rekeyed formal UGS with public evidence, revision-bound clarification, or rejection; Provider availability cannot alter this rule. The existing free-text interpreter remains compatibility-only and cannot receive new capability work.
 
 ### CD2 — Publication visual grammar and quality loop
 
