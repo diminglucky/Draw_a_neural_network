@@ -25,6 +25,7 @@ const EVIDENCE_KINDS = new Set([
 ]);
 const BLOCKER_SEVERITIES = new Set(["low", "medium", "high"]);
 const BLOCKER_STATUSES = new Set(["open", "closed"]);
+const CURRENT_PAGE_VISIO_DIRECT_PREDECESSORS = ["M2.13", "M3.2", "M3.3", "M3.4", "M3.5"];
 const TRANSITIONS = new Map([
   ["planned", new Set(["active", "awaiting_acceptance", "deferred", "superseded"])],
   ["active", new Set(["blocked", "awaiting_acceptance", "accepted", "deferred", "superseded"])],
@@ -358,6 +359,25 @@ function validateAcceptedNodes(nodesById) {
   }
 }
 
+function isCurrentPageVisioCapabilityClaim(node) {
+  const claimText = [
+    node.title,
+    node.outcome,
+  ].join(" ");
+  return /\b(?:current|existing)[ -]page\b/i.test(claimText) && /\bvisio\b/i.test(claimText);
+}
+
+function validateCurrentPageVisioCapabilityClaims(nodesById) {
+  for (const [nodeId, node] of nodesById) {
+    if (!isCurrentPageVisioCapabilityClaim(node)) continue;
+    const declared = new Set(node.dependsOn);
+    const missing = CURRENT_PAGE_VISIO_DIRECT_PREDECESSORS.filter((id) => !declared.has(id));
+    if (missing.length > 0) {
+      fail(`Current-page Visio capability '${nodeId}' must directly depend on ${CURRENT_PAGE_VISIO_DIRECT_PREDECESSORS.join(", ")}; missing ${missing.join(", ")}.`);
+    }
+  }
+}
+
 function validateAcceptedMilestones(milestones, nodesById) {
   for (const milestone of milestones) {
     if (milestone.status !== "accepted") continue;
@@ -396,6 +416,7 @@ export function validateProgramState(value, options = {}) {
   const nodesById = validateNodes(nodes, milestoneIds, root, resolveCommit);
   assertAcyclic(nodesById);
   validateBlockers(expectArray(normalized.blockers, "state.blockers"), nodesById);
+  validateCurrentPageVisioCapabilityClaims(nodesById);
   validateAcceptedNodes(nodesById);
   validateAcceptedMilestones(milestones, nodesById);
 

@@ -150,15 +150,18 @@ function liveRoadmapState(): LedgerFixture {
 function configuredAcceptanceNode(input: {
   id: string;
   acceptance: LedgerFixture["acceptance"];
+  dependsOn?: string[];
+  title?: string;
+  outcome?: string;
 }): LedgerFixture {
   return {
     id: input.id,
     milestoneId: "M2",
-    title: "Governed platform boundary",
+    title: input.title ?? "Governed platform boundary",
     status: "accepted",
     previousStatus: "awaiting_acceptance",
-    dependsOn: ["M1.9"],
-    outcome: "Acceptance requires independent evidence.",
+    dependsOn: input.dependsOn ?? ["M1.9"],
+    outcome: input.outcome ?? "Acceptance requires independent evidence.",
     acceptance: input.acceptance,
     evidence: input.acceptance.flatMap((item: { id: string }) => [{
       kind: "test",
@@ -172,6 +175,36 @@ function configuredAcceptanceNode(input: {
     blockerIds: [],
     successorId: null,
   };
+}
+
+const CURRENT_PAGE_VISIO_PREDECESSORS = ["M2.13", "M3.2", "M3.3", "M3.4", "M3.5"];
+
+function acceptedPrerequisiteNode(id: string): LedgerFixture {
+  return configuredAcceptanceNode({
+    id,
+    acceptance: [{
+      id: `${id}.accepted`,
+      text: "The prerequisite is independently accepted.",
+      requiredEvidenceKinds: ["test"],
+    }],
+  });
+}
+
+function currentPageVisioCapabilityState(): LedgerFixture {
+  const state = nonBootstrapState();
+  for (const id of CURRENT_PAGE_VISIO_PREDECESSORS) state.nodes.push(acceptedPrerequisiteNode(id));
+  state.nodes.push(configuredAcceptanceNode({
+    id: "M4.2",
+    title: "Current-page Visio capability",
+    outcome: "A bounded update to one selected existing Visio page is governed by the canonical chain.",
+    dependsOn: CURRENT_PAGE_VISIO_PREDECESSORS,
+    acceptance: [{
+      id: "M4.2.current-page",
+      text: "The capability accepts only the complete governance chain.",
+      requiredEvidenceKinds: ["test"],
+    }],
+  }));
+  return state;
 }
 
 describe("agent roadmap ledger", () => {
@@ -201,22 +234,40 @@ describe("agent roadmap ledger", () => {
     }
   });
 
-  it("requires the complete formal-PVP-to-real-host chain before current-page Visio can be accepted", () => {
+  it("records the complete formal-PVP-to-real-host chain for the planned current-page Visio node", () => {
     const live = liveRoadmapState();
     const currentPageVisio = live.nodes.find((node: { id: string }) => node.id === "M3.6");
 
     expect(currentPageVisio).toMatchObject({ status: "planned" });
-    expect(currentPageVisio?.dependsOn).toEqual(expect.arrayContaining([
-      "M2.13",
-      "M3.2",
-      "M3.3",
-      "M3.4",
-      "M3.5",
-    ]));
+    expect(currentPageVisio?.dependsOn).toEqual(expect.arrayContaining(CURRENT_PAGE_VISIO_PREDECESSORS));
+  });
 
-    const state = nonBootstrapState();
-    state.nodes.push(configuredAcceptanceNode({ id: currentPageVisio!.id, acceptance: currentPageVisio!.acceptance }));
+  it.each(CURRENT_PAGE_VISIO_PREDECESSORS)("rejects a current-page Visio claim without direct predecessor %s", (missingPredecessor) => {
+    const state = currentPageVisioCapabilityState();
+    const currentPageVisio = state.nodes.find((node: { id: string }) => node.id === "M4.2")!;
+    currentPageVisio.dependsOn = currentPageVisio.dependsOn.filter((id: string) => id !== missingPredecessor);
+
     expect(() => validateProgramState(state, fixtures())).toThrow(RoadmapValidationError);
+  });
+
+  it("does not treat a later current-page Visio reference as a capability claim", () => {
+    const state = nonBootstrapState();
+    const visualGrammar = configuredAcceptanceNode({
+      id: "M2.13",
+      title: "Publication visual grammar",
+      outcome: "Semantic architecture families compile into deterministic visual grammars.",
+      acceptance: [{
+        id: "M2.13.grammar",
+        text: "The visual corpus is reviewed.",
+        requiredEvidenceKinds: ["test"],
+      }],
+    });
+    visualGrammar.status = "active";
+    visualGrammar.previousStatus = "planned";
+    visualGrammar.nextAction = "Complete this grammar before current-page Visio execution resumes.";
+    state.nodes.push(visualGrammar);
+
+    expect(() => validateProgramState(state, fixtures())).not.toThrow();
   });
 
   it("requires matching evidence for each accepted acceptance item", () => {
