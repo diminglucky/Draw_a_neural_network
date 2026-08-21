@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { digestGenericPlanSnapshotValue } from "../src/generic-plan-snapshot.js";
 import {
   confirmEvidenceConstrainedDrawingSession,
   openEvidenceConstrainedDrawingSession,
@@ -76,6 +77,15 @@ function multipleDynamicStaticSourceRequest(): EvidenceConstrainedDrawingSession
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function sessionIdentity(
+  owner: EvidenceConstrainedDrawingSessionOpenRequest["owner"],
+  detail: EvidenceConstrainedDrawingSessionOpenRequest["detail"],
+  target: EvidenceConstrainedDrawingSessionOpenRequest["updateTarget"],
+  ugsHash: string,
+): string {
+  return `session:${sha256(JSON.stringify({ version: "evidence-constrained-drawing-session-1", ownerId: owner.ownerId, deviceId: owner.deviceId, detail, target, ugsHash }))}`;
 }
 
 function ambiguousPromptRequest(): EvidenceConstrainedDrawingSessionOpenRequest {
@@ -203,6 +213,39 @@ describe("EvidenceConstrainedDrawingSession", () => {
       ...request,
       input: { ...request.input, sourceSha256: "b".repeat(64) } as typeof request.input,
     })).toThrow();
+  });
+
+  it("rejects a resumed source whose ID and digest come from different UGS evidence records", () => {
+    const pending = openEvidenceConstrainedDrawingSession(ambiguousPromptRequest());
+    const forged = structuredClone(pending) as typeof pending & {
+      sources: Array<{ kind: "typed-prompt" | "static-pytorch"; sourceId: string; sourceHash: string }>;
+      ugs: typeof pending.ugs;
+      ugsHash: string;
+      sessionId: string;
+    };
+    const secondarySourceId = "secondary-source";
+    const secondarySourceHash = "a".repeat(64);
+
+    forged.ugs.sourceIds.push(secondarySourceId);
+    forged.ugs.sourceHashes.push(secondarySourceHash);
+    forged.ugs.evidence.push({
+      evidenceId: "e:secondary-provenance",
+      sourceId: secondarySourceId,
+      sourceHash: secondarySourceHash,
+      locator: "test:secondary-provenance",
+      excerptDigest: "b".repeat(64),
+    });
+    forged.sources[0] = { ...forged.sources[0]!, sourceHash: secondarySourceHash };
+    forged.ugsHash = digestGenericPlanSnapshotValue(forged.ugs);
+    forged.sessionId = sessionIdentity(forged.owner, forged.detail, forged.updateTarget, forged.ugsHash);
+
+    expect(() => confirmEvidenceConstrainedDrawingSession(forged, {
+      owner: { ownerId: "owner-1", deviceId: "device-1" },
+      sessionId: forged.sessionId,
+      expectedRevision: forged.revision,
+      questionId: forged.clarification!.questionId,
+      value: "confirm-topology-complete",
+    })).toThrow(/provenance/i);
   });
 
   it.each(["code", "rawSource", "workerCommand", "comCommand"])("rejects a forged %s field inside a resumed source projection", (field) => {

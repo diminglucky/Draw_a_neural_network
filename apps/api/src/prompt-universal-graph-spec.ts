@@ -29,7 +29,7 @@ export function compilePromptToUniversalGraphSpec(input: { sourceId: string; pro
   const nodes = [...declaration.nodes].sort((left, right) => compareCodeUnits(left.nodeId, right.nodeId)).map((node) => projectNode(node, evidence));
   const ports = nodes.flatMap((node) => {
     const declarationNode = declaration.nodes.find((item) => item.nodeId === node.nodeId)!;
-    return [...projectPorts(node.nodeId, declarationNode.inputPorts, "input"), ...projectPorts(node.nodeId, declarationNode.outputPorts, "output")];
+    return [...projectPorts(node.nodeId, declarationNode.inputPorts, "input", evidence), ...projectPorts(node.nodeId, declarationNode.outputPorts, "output", evidence)];
   });
   const edges = [...declaration.edges].sort((left, right) => compareCodeUnits(left.edgeId, right.edgeId)).map((edge) => ({
     edgeId: edge.edgeId, sourcePortId: edge.sourcePortId, targetPortId: edge.targetPortId, relation: edge.relation ?? "data", knowledge: "declared" as const, evidenceIds: [evidence.for(`prompt:edge:${edge.edgeId}`)],
@@ -52,7 +52,7 @@ function projectNode(node: PromptDeclaredNode, evidence: EvidenceFactory) {
   const kind = nodeKind(node);
   return { nodeId: node.nodeId, kind, label: node.label, semanticHints: uniqueSorted(node.semanticHints ?? []), inputPortIds: node.inputPorts.map((port) => portId(node.nodeId, port.portId)).sort(compareCodeUnits), outputPortIds: node.outputPorts.map((port) => portId(node.nodeId, port.portId)).sort(compareCodeUnits), attributes: orderedAttributes(node.attributes ?? {}), shapeClaim: "unknown" as const, operationKnowledge: kind === "custom_operator" || kind === "custom_module" ? "custom" as const : "known" as const, evidenceIds: [evidence.for(`prompt:node:${node.nodeId}`)] };
 }
-function projectPorts(nodeId: string, ports: PromptDeclaredPort[], direction: "input" | "output") { return [...ports].sort((left, right) => compareCodeUnits(left.portId, right.portId)).map((port) => ({ portId: portId(nodeId, port.portId), nodeId, direction, label: port.label ?? null, representation: port.representation ?? null, semanticType: port.semanticType ?? null, evidenceIds: [] })); }
+function projectPorts(nodeId: string, ports: PromptDeclaredPort[], direction: "input" | "output", evidence: EvidenceFactory) { return [...ports].sort((left, right) => compareCodeUnits(left.portId, right.portId)).map((port) => ({ portId: portId(nodeId, port.portId), nodeId, direction, label: port.label ?? null, representation: port.representation ?? null, semanticType: port.semanticType ?? null, evidenceIds: [evidence.for(`prompt:port:${nodeId}:${direction}:${port.portId}`)] })); }
 function nodeKind(node: PromptDeclaredNode): UniversalNodeKind { if (node.kind === "input") return "input"; if (node.kind === "output") return "output"; if (node.kind === "module") return "custom_module"; return node.operation && knownOperations.has(node.operation) ? "operator" : "custom_operator"; }
 function allDeclaredPortsAreConnected(nodes: Array<{ inputPortIds: string[]; outputPortIds: string[] }>, edges: Array<{ sourcePortId: string; targetPortId: string }>): boolean {
   const declaredInputs = nodes.flatMap((node) => node.inputPortIds); const declaredOutputs = nodes.flatMap((node) => node.outputPortIds);

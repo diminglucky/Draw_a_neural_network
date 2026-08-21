@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { analyzeStaticPyTorchSource } from "../src/static-pytorch-source-analyzer.js";
+
+function analyze(sourceId: string, code: string) {
+  return analyzeStaticPyTorchSource({ sourceId, sourceSha256: createHash("sha256").update(code, "utf8").digest("hex"), code });
+}
 
 const code = [
   "import torch.nn as nn",
@@ -14,7 +19,7 @@ const code = [
 
 describe("analyzeStaticPyTorchSource", () => {
   it("recovers declared modules and ordered forward calls without executing code", () => {
-    const result = analyzeStaticPyTorchSource({ sourceId: "source-tiny", sourceSha256: "a".repeat(64), code });
+    const result = analyze("source-tiny", code);
     expect(result.modules).toMatchObject([
       { id: "conv", constructor: "Conv2d", locator: { kind: "code", startLine: 4 } },
       { id: "pool", constructor: "MaxPool2d", locator: { kind: "code", startLine: 5 } },
@@ -39,7 +44,7 @@ describe("analyzeStaticPyTorchSource", () => {
       "        return self.output(x)",
     ].join("\n");
 
-    const result = analyzeStaticPyTorchSource({ sourceId: "source-terminal-names", sourceSha256: "b".repeat(64), code: collisionCode });
+    const result = analyze("source-terminal-names", collisionCode);
 
     expect(result.evidence.facts).toEqual(expect.arrayContaining([
       expect.objectContaining({ subject: { kind: "node", nodeId: "input" }, payload: { kind: "node_exists", operatorKind: "module" } }),
@@ -53,10 +58,7 @@ describe("analyzeStaticPyTorchSource", () => {
   });
 
   it("reports runtime metaprogramming inside forward as blocking source evidence", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "dynamic-runtime", sourceSha256: "d".repeat(64),
-      code: "class N(nn.Module):\n def forward(self,x):\n  return eval('x')",
-    });
+    const result = analyze("dynamic-runtime", "class N(nn.Module):\n def forward(self,x):\n  return eval('x')");
 
     expect(result.unresolved).toContainEqual(expect.objectContaining({
       severity: "blocking", code: "dynamic-runtime-call", locator: expect.objectContaining({ kind: "code", startLine: 3 }),
@@ -65,19 +67,13 @@ describe("analyzeStaticPyTorchSource", () => {
   });
 
   it("ignores dynamic keywords in forward comments and quoted literals", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "static-lexical-tokens", sourceSha256: "e".repeat(64),
-      code: "class N(nn.Module):\n def __init__(self):\n  self.conv = nn.Conv2d(3,16,3)\n def forward(self,x):\n  note = \"if eval only documents static behavior\"\n  return self.conv(x) # if eval appears only in a comment",
-    });
+    const result = analyze("static-lexical-tokens", "class N(nn.Module):\n def __init__(self):\n  self.conv = nn.Conv2d(3,16,3)\n def forward(self,x):\n  note = \"if eval only documents static behavior\"\n  return self.conv(x) # if eval appears only in a comment");
 
     expect(result.unresolved).toEqual([]);
   });
 
   it("reports eval in an f-string replacement field as a blocking runtime call", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "f-string-eval", sourceSha256: "f".repeat(64),
-      code: "class N(nn.Module):\n def forward(self,x):\n  return f\"{eval('x')}\"",
-    });
+    const result = analyze("f-string-eval", "class N(nn.Module):\n def forward(self,x):\n  return f\"{eval('x')}\"");
 
     expect(result.unresolved).toContainEqual(expect.objectContaining({
       severity: "blocking", code: "dynamic-runtime-call", locator: expect.objectContaining({ kind: "code", startLine: 3 }),
@@ -86,10 +82,7 @@ describe("analyzeStaticPyTorchSource", () => {
   });
 
   it("reports a conditional in an f-string replacement field as blocking control flow", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "f-string-conditional", sourceSha256: "g".repeat(64),
-      code: "class N(nn.Module):\n def forward(self,x):\n  return f\"{x if flag else y}\"",
-    });
+    const result = analyze("f-string-conditional", "class N(nn.Module):\n def forward(self,x):\n  return f\"{x if flag else y}\"");
 
     expect(result.unresolved).toContainEqual(expect.objectContaining({
       severity: "blocking", code: "dynamic-control-flow", locator: expect.objectContaining({ kind: "code", startLine: 3 }),
@@ -98,22 +91,14 @@ describe("analyzeStaticPyTorchSource", () => {
   });
 
   it("preserves a supported linear alias chain instead of truncating the path", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "truncated-path",
-      sourceSha256: "a".repeat(64),
-      code: "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n  self.b = nn.Linear(2,1)\n def forward(self,x):\n  x = self.a(x)\n  y = self.b(x)\n  return y",
-    });
+    const result = analyze("truncated-path", "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n  self.b = nn.Linear(2,1)\n def forward(self,x):\n  x = self.a(x)\n  y = self.b(x)\n  return y");
 
     expect(result.calls.map((call) => call.moduleId)).toEqual(["a", "b"]);
     expect(result.unresolved).toEqual([]);
   });
 
   it("blocks a forward body that has no explicit return", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "missing-return",
-      sourceSha256: "b".repeat(64),
-      code: "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n def forward(self,x):\n  x = self.a(x)",
-    });
+    const result = analyze("missing-return", "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n def forward(self,x):\n  x = self.a(x)");
 
     expect(result.unresolved).toContainEqual(expect.objectContaining({
       code: "unsupported-forward",
@@ -122,11 +107,7 @@ describe("analyzeStaticPyTorchSource", () => {
   });
 
   it("blocks multiple forward definitions instead of merging their calls", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "multiple-forward",
-      sourceSha256: "c".repeat(64),
-      code: "class A(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n def forward(self,x):\n  return self.a(x)\nclass B(nn.Module):\n def __init__(self):\n  self.b = nn.Linear(2,1)\n def forward(self,x):\n  return self.b(x)",
-    });
+    const result = analyze("multiple-forward", "class A(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n def forward(self,x):\n  return self.a(x)\nclass B(nn.Module):\n def __init__(self):\n  self.b = nn.Linear(2,1)\n def forward(self,x):\n  return self.b(x)");
 
     expect(result.unresolved).toContainEqual(expect.objectContaining({
       code: "multiple-forward-definitions",
@@ -136,11 +117,7 @@ describe("analyzeStaticPyTorchSource", () => {
   });
 
   it("blocks a module redeclaration instead of silently using the last constructor", () => {
-    const result = analyzeStaticPyTorchSource({
-      sourceId: "module-redeclaration",
-      sourceSha256: "d".repeat(64),
-      code: "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n  self.a = nn.ReLU()\n def forward(self,x):\n  return self.a(x)",
-    });
+    const result = analyze("module-redeclaration", "class N(nn.Module):\n def __init__(self):\n  self.a = nn.Linear(2,2)\n  self.a = nn.ReLU()\n def forward(self,x):\n  return self.a(x)");
 
     expect(result.unresolved).toContainEqual(expect.objectContaining({
       code: "module-redeclaration",

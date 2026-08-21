@@ -4,9 +4,9 @@
     "id": "universal-neural-figure-agent",
     "name": "Universal Neural Figure Agent",
     "branch": "agent",
-    "architectureSpec": "docs/superpowers/specs/2026-08-21-evidence-constrained-drawing-agent-design.md"
+    "architectureSpec": "docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md"
   },
-  "updatedAt": "2026-08-21T06:21:33.020Z",
+  "updatedAt": "2026-08-21T06:49:18.700Z",
   "currentFocus": "M2.11",
   "milestones": [
     { "id": "M0", "title": "Engineering truth", "status": "accepted" },
@@ -254,6 +254,32 @@
       "acceptance": [{ "id": "M2.11.session", "text": "The session deterministically preserves evidence lineage, rejects foreign or stale confirmation, emits no PVP for blocking topology, and recomputes a local semantic PVP delta after bounded confirmation.", "requiredEvidenceKinds": ["test", "document"] }],
       "evidence": [],
       "nextAction": "Keep the independently reviewed pure session slice unexpanded and await narrow Git delivery plus formal ledger acceptance before persistence provider Snapshot export renderer or Visio work.",
+      "blockerIds": [],
+      "successorId": null
+    },
+    {
+      "id": "M2.12",
+      "milestoneId": "M2",
+      "title": "Evidence-augmented architecture interpretation",
+      "status": "planned",
+      "dependsOn": ["M2.8", "M2.10", "M2.11"],
+      "outcome": "Bounded architecture declarations and interpreter proposals become evidence-validated UniversalGraphSpec facts or deterministic clarification without source execution or native authority.",
+      "acceptance": [{ "id": "M2.12.interpreter", "text": "The Harness rejects unbounded or unsupported proposals, preserves evidence lineage, and returns only formal UGS or clarification.", "requiredEvidenceKinds": ["test", "document"] }],
+      "evidence": [],
+      "nextAction": "Activate only after M2.8, M2.10, and M2.11 are accepted, then implement the bounded interpreter and Harness without Provider or Visio authority.",
+      "blockerIds": [],
+      "successorId": "M2.13"
+    },
+    {
+      "id": "M2.13",
+      "milestoneId": "M2",
+      "title": "Publication visual grammar and acceptance corpus",
+      "status": "planned",
+      "dependsOn": ["M2.12"],
+      "outcome": "Semantic architecture families compile into deterministic publication visual grammars and a reviewed zero-template acceptance corpus.",
+      "acceptance": [{ "id": "M2.13.grammar", "text": "All required semantic-family fixtures have deterministic PVP and browser identity plus recorded human visual review.", "requiredEvidenceKinds": ["test", "manual-visual-review", "document"] }],
+      "evidence": [],
+      "nextAction": "Activate only after M2.12 is accepted, then implement grammar selection and the complete visual acceptance corpus before current-page Visio execution resumes.",
       "blockerIds": [],
       "successorId": null
     },

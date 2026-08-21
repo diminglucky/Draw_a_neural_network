@@ -319,8 +319,12 @@ function valuesById(values: readonly unknown[] | undefined, idKey: string): Map<
 
 function sourcesFor(input: UniversalPreviewInput, ugs: UniversalGraphSpec): EvidenceConstrainedDrawingSessionSource[] {
   const sourceHash = input.kind === "static-pytorch" ? input.sourceSha256 : onlyMatchingHash(input.sourceId, ugs);
-  if (!ugs.sourceIds.includes(input.sourceId) || !ugs.sourceHashes.includes(sourceHash)) throw new Error("Drawing session input is not represented by canonical UGS provenance");
+  if (!hasEvidenceProvenancePair(ugs, input.sourceId, sourceHash)) throw new Error("Drawing session input is not represented by canonical UGS provenance");
   return [{ kind: input.kind, sourceId: input.sourceId, sourceHash }];
+}
+
+function hasEvidenceProvenancePair(ugs: UniversalGraphSpec, sourceId: string, sourceHash: string): boolean {
+  return ugs.evidence.some((item) => item.sourceId === sourceId && item.sourceHash === sourceHash);
 }
 
 function onlyMatchingHash(sourceId: string, ugs: UniversalGraphSpec): string {
@@ -446,7 +450,7 @@ function assertSources(sources: unknown, ugs: UniversalGraphSpec): asserts sourc
     if (source.kind !== "typed-prompt" && source.kind !== "static-pytorch") throw new Error("Drawing session source kind is invalid");
     assertIdentifier(source.sourceId, "drawing session sourceId");
     if (typeof source.sourceHash !== "string" || !/^[a-f0-9]{64}$/i.test(source.sourceHash)) throw new Error("Drawing session source hash is invalid");
-    if (!ugs.sourceIds.includes(source.sourceId) || !ugs.sourceHashes.includes(source.sourceHash)) throw new Error("Drawing session source does not match UGS provenance");
+    if (!hasEvidenceProvenancePair(ugs, source.sourceId, source.sourceHash)) throw new Error("Drawing session source does not match UGS provenance");
     actualSourceIds.push(source.sourceId);
   }
   if (new Set(actualSourceIds).size !== actualSourceIds.length) throw new Error("Drawing session source IDs are duplicated");

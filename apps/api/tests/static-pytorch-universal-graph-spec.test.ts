@@ -79,6 +79,46 @@ describe("compileStaticPyTorchSourceToUniversalGraphSpec", () => {
     expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "candidate", export: "ineligible" });
   });
 
+  it("returns a blocking candidate UGS rather than treating a conditional module declaration as unconditional topology", () => {
+    const ugs = compile([
+      "class Conditional(nn.Module):",
+      " def __init__(self, enabled):",
+      "  if enabled:",
+      "   self.conv = nn.Conv2d(3, 16, 3)",
+      " def forward(self, x):",
+      "  return self.conv(x)",
+    ].join("\n"));
+
+    expect(ugs.unresolved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: "operation", severity: "blocking" }),
+      expect.objectContaining({ scope: "topology", severity: "blocking" }),
+    ]));
+    expect(ugs.edges).toEqual([]);
+    expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "candidate", export: "ineligible" });
+  });
+
+  it.each([
+    ["else", ["  if enabled:", "   pass", "  else:"]],
+    ["elif", ["  if enabled:", "   pass", "  elif fallback:"]],
+    ["except", ["  try:", "   pass", "  except Exception:"]],
+  ])("returns a blocking candidate UGS when a module declaration is inside an %s clause", (_clause, branch) => {
+    const ugs = compile([
+      "class Conditional(nn.Module):",
+      " def __init__(self, enabled, fallback):",
+      ...branch,
+      "   self.conv = nn.Conv2d(3, 16, 3)",
+      " def forward(self, x):",
+      "  return self.conv(x)",
+    ].join("\n"));
+
+    expect(ugs.unresolved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: "operation", severity: "blocking" }),
+      expect.objectContaining({ scope: "topology", severity: "blocking" }),
+    ]));
+    expect(ugs.edges).toEqual([]);
+    expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "candidate", export: "ineligible" });
+  });
+
   it("preserves every blocking static-analysis fact as independently evidenced topology uncertainty", () => {
     const code = [
       "class Dynamic(nn.Module):",
@@ -145,6 +185,15 @@ describe("compileStaticPyTorchSourceToUniversalGraphSpec", () => {
       "mismatched-static-source",
       "a".repeat(64),
     )).toThrow();
+  });
+
+  it("rejects a direct analyzer call whose source digest does not identify the submitted static bytes", () => {
+    const code = "class N(nn.Module):\n def forward(self, x):\n  return x";
+    expect(() => analyzeStaticPyTorchSource({
+      sourceId: "mismatched-analyzer-source",
+      sourceSha256: "a".repeat(64),
+      code,
+    })).toThrow(/digest.*submitted bytes/i);
   });
 
   it("does not execute source-like content while projecting analyzer output", () => {

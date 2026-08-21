@@ -1,8 +1,8 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-21T06:21:33.020Z`
-Architecture: [docs/superpowers/specs/2026-08-21-evidence-constrained-drawing-agent-design.md](./superpowers/specs/2026-08-21-evidence-constrained-drawing-agent-design.md)
+Updated: `2026-08-21T06:49:18.700Z`
+Architecture: [docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md](./superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md)
 
 ## Current Focus
 

@@ -2,9 +2,15 @@
 
 **Record ID：** `IR-2026-08-20-current-roadmap`
 **对应基线：** `DB-2026-08-21-universal-visio-parallel-delivery`
-**最后核对：** `2026-08-21T06:21:33.020Z`
+**最后核对：** `2026-08-21T06:49:18.700Z`
 **正式 ledger 焦点：** `M2.11 — Evidence-constrained drawing session`
 **总体状态：** `awaiting_acceptance` — owner 明确将优先级从 Visio/export 基础设施切回通用 Agent 绘图能力。M2.11 的 renderer-neutral 证据、UGS、澄清、GPG/PVP 和局部修订会话闭环已完成聚焦/全套回归及独立代码审查，但尚未窄范围 Git 交付或正式 ledger acceptance；它仍不包含公开导出、真实 Windows/Visio、保存重开或人工视觉验收。
+
+**修订中的产品基线：** `docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md` 将陌生网络理解、publication visual grammar、草图候选解析和当前 Visio 页增量更新收敛为一个可验证的 Core Drawing V1 垂直闭环。它保留 M2.11 的 UGS/GPG/PVP、静态不执行、证据谱系及 owner/device/revision 绑定；这是一份待 owner 审阅的设计提案，不增加已实现能力，不变更任何 ledger 节点状态，也不构成 Provider、草图、视觉语法、当前文档 Visio、真实主机或人工视觉验收。
+
+**本轮审查修订：** 该基线现明确要求 Worker 发现当前已打开的文档/页面、用户显式选择目标、绑定 Agent-owned region、每次写入前后的独立 readback 与冲突拒绝。既有 `OpenOrCreate` 生命周期不能充当当前页附着机制；日常更新不得关闭或替换用户文档。架构描述、Provider proposal、草图 intake/observation、七类语义 visual corpus 和真实主机验收也已有独立契约与顺序。本段仍是设计记录，不是实现或验收声明。
+
+**CD0 实施记录：** 已在 ledger 中登记 `M2.12 — Evidence-augmented architecture interpretation` 与 `M2.13 — Publication visual grammar and acceptance corpus` 为 `planned` 节点，且分别依赖 M2.8/M2.10/M2.11 与 M2.12。当前焦点仍为 M2.11；该登记不接受、激活或扩展任何已有能力，也不启动 Provider、Visio、Worker 或真实主机行为。
 
 ## 1. 当前交付判断
 
@@ -64,4 +70,4 @@
 
 ## 5. 允许的下一步
 
-R0 的 legacy VGG16 fixture 只保留作回归基线。M2.6 已接受的 UGS、General Publication Graph 与 PublicationVisualPlan 合同仍是唯一通用结构输入。M2.11 已把提示/静态代码事实放入确定性的 owner/device-bound session：阻塞 topology 只能返回一个澄清且没有 PVP；确认只更新所涉语义区域并重新编译 GPG/PVP。它不读取路径、不会产生 COM 参数、Snapshot、export job 或 renderer authority。M2.11 当前等待窄范围 Git 交付和正式 ledger acceptance，不能仅凭工作树回归报告为 accepted。M3.1 的 Snapshot-only native intent 维持已接受边界；M3.2 因产品优先级而回退为 deferred，不能在 M2.11 的正式 acceptance 前继续扩展。Prompt-to-UGS 与 Static-code-to-UGS 已有提交证据但仍待独立接受；两者均不能绕过 formal/candidate 边界。Sketch 永远先走 candidate/clarification。PatternLibrary 必须等待预览、真实 Visio 生命周期和 Sketch 的受限证据。任何后续实现必须更新本记录、对应 baseline 和 Operation History，并根据证据决定是否更新 ledger。
+R0 的 legacy VGG16 fixture 只保留作回归基线。M2.6 已接受的 UGS、General Publication Graph 与 PublicationVisualPlan 合同仍是唯一通用结构输入。M2.11 已把提示/静态代码事实放入确定性的 owner/device-bound session：阻塞 topology 只能返回一个澄清且没有 PVP；确认只更新所涉语义区域并重新编译 GPG/PVP。它不读取路径、不会产生 COM 参数、Snapshot、export job 或 renderer authority。M2.11 当前等待窄范围 Git 交付和正式 ledger acceptance，不能仅凭工作树回归报告为 accepted。Core Drawing V1 在 owner 审阅后按以下顺序实施：受约束的陌生架构解释（只写入证据绑定 UGS）→ 语义 visual grammar 与 zero-template 人工审阅 → 仅候选/澄清的草图观察 → sealed formal PVP 驱动的当前 Visio 页更新、保存/重开/独立 readback。任何 candidate 或 blocking UGS 均不得进入 Snapshot、native intent、Worker 或 Visio。M3.1 的 Snapshot-only native intent 维持已接受边界；M3.2 因产品优先级而回退为 deferred，不能在 M2.11 的正式 acceptance 前继续扩展。Prompt-to-UGS 与 Static-code-to-UGS 已有提交证据但仍待独立接受；两者均不能绕过 formal/candidate 边界。PatternLibrary 必须等待预览、真实 Visio 生命周期和 Sketch 的受限证据。任何后续实现必须更新本记录、对应 baseline 和 Operation History，并根据证据决定是否更新 ledger。

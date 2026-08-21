@@ -9,6 +9,11 @@ describe("Prompt-to-UniversalGraphSpec adapter", () => {
     expect(parseUniversalGraphSpec(ugs)).toEqual(ugs); expect(ugs.sourceIds).toEqual(["prompt-source"]); expect(ugs.sourceHashes).toEqual([sha256(declaration.prompt)]);
     expect(ugs.nodes.find((node) => node.nodeId === "stem")).toMatchObject({ kind: "operator", operationKnowledge: "known", inputPortIds: ["stem:in"], outputPortIds: ["stem:out"] });
     expect(ugs.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ sourceId: "prompt-source", sourceHash: sha256(declaration.prompt), locator: "prompt:node:stem" }), expect.objectContaining({ sourceId: "prompt-source", sourceHash: sha256(declaration.prompt), locator: "prompt:edge:image-to-stem" })]));
+    expect(ugs.ports).toHaveLength(4);
+    for (const port of ugs.ports) {
+      expect(port.evidenceIds).toHaveLength(1);
+      expect(ugs.evidence.some((item) => item.evidenceId === port.evidenceIds[0])).toBe(true);
+    }
     expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "renderable", export: "eligible" });
   });
   it("retains explicitly wired unknown operators and modules as custom structure", () => {
