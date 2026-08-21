@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   interpretEvidenceAugmentedInput,
+  requestEvidenceAugmentedProposal,
   type BoundedInterpretationRequest,
   type InterpreterProposal,
 } from "../src/evidence-augmented-ugs-interpreter.js";
@@ -147,6 +148,44 @@ describe("evidence-augmented UGS interpreter", () => {
     };
 
     expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/unknown|field|unsupported/i);
+  });
+
+  it.each(["C:\\Users\\private\\model.py", "/private/project/model.py"])("rejects a filesystem-path evidence locator", (locator) => {
+    const unsafeRequest = {
+      ...request(),
+      evidence: [{ ...request().evidence[0]!, locator }],
+    };
+
+    expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/locator|invalid/i);
+  });
+
+  it("rejects an unbounded request before it reaches an interpreter", async () => {
+    const propose = vi.fn(async () => customModuleProposal());
+    const result = await requestEvidenceAugmentedProposal({ ...request(), rawSource: "unsafe" } as never, { propose });
+
+    expect(result).toEqual({ status: "invalid" });
+    expect(propose).not.toHaveBeenCalled();
+  });
+
+  it("rejects a public-evidence collision with the reserved architecture-input namespace", () => {
+    const colliding = request({ evidence: [{ ...request().evidence[0]!, sourceId: "architecture-input:architecture-request" }] });
+
+    expect(() => interpretEvidenceAugmentedInput(colliding, customModuleProposal())).toThrow(/reserved|sourceId/i);
+  });
+
+  it("returns clarification instead of accepting an input node with an inbound data edge", () => {
+    const base = customModuleProposal();
+    const proposal: InterpreterProposal = {
+      ...base,
+      nodes: [node("source", "operator", "Source", [], ["source:out"], "identity"), node("image", "input", "Image", ["image:in"], ["image:out"]), ...base.nodes.slice(1)],
+      ports: [port("source:out", "source", "output"), port("image:in", "image", "input"), ...base.ports],
+      edges: [edge("source-image", "source:out", "image:in"), ...base.edges],
+    };
+
+    const result = interpretEvidenceAugmentedInput(request(), proposal);
+
+    expect(result.state).toBe("clarification");
+    expect(result.ugs.unresolved).toEqual([expect.objectContaining({ id: "topology-input-direction:image" })]);
   });
 
   it("returns a evidence-only clarification when the interpreter is absent", () => {

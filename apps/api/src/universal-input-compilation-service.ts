@@ -2,9 +2,8 @@ import { compilePromptToUniversalGraphSpec } from "./prompt-universal-graph-spec
 import { PublicationVisualPreviewService, type PublicationVisualPreview } from "./publication-visual-preview-service.js";
 import { compileStaticPyTorchSourceToUniversalGraphSpec } from "./static-pytorch-universal-graph-spec.js";
 import { digestGenericPlanSnapshotValue } from "./generic-plan-snapshot.js";
-import type { BoundedInterpretationRequest } from "./architecture-interpretation-contract.js";
-import { architectureInputSourceId } from "./evidence-augmented-ugs-harness.js";
-import { interpretEvidenceAugmentedInput } from "./evidence-augmented-ugs-interpreter.js";
+import type { ArchitectureInterpreter, BoundedInterpretationRequest } from "./architecture-interpretation-contract.js";
+import { interpretEvidenceAugmentedInput, requestEvidenceAugmentedProposal } from "./evidence-augmented-ugs-interpreter.js";
 import type { PublicationVisualPlanUpdateIdentity } from "./publication-visual-plan-compiler.js";
 import type { UniversalGraphSpec } from "./universal-graph-spec.js";
 
@@ -21,7 +20,6 @@ export interface EvidenceBoundArchitectureDescriptionInput {
   readonly kind: "architecture-description";
   readonly request: BoundedInterpretationRequest;
   readonly proposal?: unknown;
-  readonly interpreterStatus?: "unavailable" | "timeout" | "invalid";
 }
 
 export type UniversalInputCompilationInput = UniversalPreviewInput | EvidenceBoundArchitectureDescriptionInput;
@@ -50,46 +48,65 @@ export function compileUniversalInputToPublicationPreview(
   input: UniversalInputCompilationInput,
   options: UniversalInputPublicationPreviewOptions,
 ): UniversalInputPublicationPreview {
-  const interpreted = input.kind === "architecture-description" ? interpretationFor(input) : undefined;
+  if (input.kind === "architecture-description") return compileArchitectureDescription(input, options);
   const ugs = input.kind === "typed-prompt"
     ? compilePromptToUniversalGraphSpec({
       sourceId: input.sourceId,
       prompt: input.prompt,
       ...(input.revision === undefined ? {} : { revision: input.revision }),
     })
-    : input.kind === "static-pytorch" ? compileStaticPyTorchSourceToUniversalGraphSpec({
+    : compileStaticPyTorchSourceToUniversalGraphSpec({
       sourceId: input.sourceId,
       sourceSha256: input.sourceSha256,
       code: input.code,
-    }) : interpreted!.interpretation.ugs;
-  const preview = new PublicationVisualPreviewService().preview({
-    ugs,
-    detail: options.detail,
-    updateIdentity: options.updateIdentity,
-  });
+    });
+  const preview = new PublicationVisualPreviewService().preview({ ugs, detail: options.detail, updateIdentity: options.updateIdentity });
+  return { ...preview, ugs };
+}
 
-  if (!interpreted || input.kind !== "architecture-description") return { ...preview, ugs };
+/** Invokes an optional interpreter only through the Harness-validated request boundary. */
+export async function compileArchitectureDescriptionWithInterpreter(
+  input: { readonly request: BoundedInterpretationRequest; readonly interpreter?: ArchitectureInterpreter; readonly timeoutMilliseconds?: number },
+  options: UniversalInputPublicationPreviewOptions,
+): Promise<UniversalInputPublicationPreview> {
+  const attempt = await requestEvidenceAugmentedProposal(input.request, input.interpreter, input.timeoutMilliseconds);
+  return compileArchitectureDescription(
+    attempt.status === "available" ? { kind: "architecture-description", request: input.request, proposal: attempt.proposal } : { kind: "architecture-description", request: input.request },
+    options,
+    attempt.status === "available" ? undefined : attempt.status,
+  );
+}
+
+function compileArchitectureDescription(
+  input: EvidenceBoundArchitectureDescriptionInput,
+  options: UniversalInputPublicationPreviewOptions,
+  failureCategory?: "unavailable" | "timeout" | "invalid",
+): UniversalInputPublicationPreview {
+  const interpreted = interpretationFor(input, failureCategory);
+  const ugs = interpreted.interpretation.ugs;
+  const preview = new PublicationVisualPreviewService().preview({ ugs, detail: options.detail, updateIdentity: options.updateIdentity });
   return {
     ...preview,
-    ugs: interpreted!.interpretation.ugs,
+    ugs,
     interpretation: {
       requestHash: digestGenericPlanSnapshotValue(input.request),
       proposalHash: interpreted.interpretation.proposalHash,
-      evidenceDigest: evidenceDigestFor(input.request, interpreted.interpretation.ugs),
+      evidenceDigest: interpreted.interpretation.evidenceDigest,
       errorCategory: interpreted.errorCategory,
     },
   };
 }
 
-function interpretationFor(input: EvidenceBoundArchitectureDescriptionInput): {
+function interpretationFor(
+  input: EvidenceBoundArchitectureDescriptionInput,
+  failureCategory?: "unavailable" | "timeout" | "invalid",
+): {
   readonly interpretation: ReturnType<typeof interpretEvidenceAugmentedInput>;
   readonly errorCategory: "none" | "unavailable" | "timeout" | "invalid";
 } {
   assertArchitectureDescriptionInput(input);
   const fallback = interpretEvidenceAugmentedInput(input.request, undefined);
-  if (input.proposal === undefined || input.interpreterStatus !== undefined) {
-    return { interpretation: fallback, errorCategory: input.interpreterStatus ?? "unavailable" };
-  }
+  if (input.proposal === undefined) return { interpretation: fallback, errorCategory: failureCategory ?? "unavailable" };
   try {
     return { interpretation: interpretEvidenceAugmentedInput(input.request, input.proposal), errorCategory: "none" };
   } catch {
@@ -97,14 +114,7 @@ function interpretationFor(input: EvidenceBoundArchitectureDescriptionInput): {
   }
 }
 
-function evidenceDigestFor(request: BoundedInterpretationRequest, ugs: UniversalGraphSpec): string {
-  const sourceHash = ugs.evidence.find((item) => item.sourceId === architectureInputSourceId(request.requestId))?.sourceHash;
-  if (!sourceHash) throw new Error("Architecture interpretation lineage is invalid");
-  return sourceHash;
-}
-
 function assertArchitectureDescriptionInput(input: EvidenceBoundArchitectureDescriptionInput): void {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Architecture description input is invalid");
-  for (const key of Object.keys(input)) if (!( ["kind", "request", "proposal", "interpreterStatus"] as const).includes(key as never)) throw new Error("Architecture description input contains an unknown field");
-  if (input.interpreterStatus !== undefined && input.interpreterStatus !== "unavailable" && input.interpreterStatus !== "timeout" && input.interpreterStatus !== "invalid") throw new Error("Architecture description interpreter status is invalid");
+  for (const key of Object.keys(input)) if (!( ["kind", "request", "proposal"] as const).includes(key as never)) throw new Error("Architecture description input contains an unknown field");
 }

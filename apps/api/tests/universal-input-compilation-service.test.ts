@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { compileUniversalInputToPublicationPreview } from "../src/universal-input-compilation-service.js";
+import type { InterpreterProposal } from "../src/architecture-interpretation-contract.js";
+import { compileArchitectureDescriptionWithInterpreter, compileUniversalInputToPublicationPreview } from "../src/universal-input-compilation-service.js";
 
 const options = {
   detail: "architecture" as const,
@@ -54,7 +55,7 @@ function architectureDescriptionInput(proposal: unknown = architectureDescriptio
   };
 }
 
-function architectureDescriptionProposal() {
+function architectureDescriptionProposal(): InterpreterProposal {
   return {
     version: 1,
     nodes: [
@@ -150,17 +151,33 @@ describe("compileUniversalInputToPublicationPreview", () => {
   });
 
   it("keeps an unavailable or invalid interpreter result clarification-only without creating native or renderer intent", () => {
-    const unavailable = compileUniversalInputToPublicationPreview({ ...architectureDescriptionInput(), proposal: undefined, interpreterStatus: "timeout" }, options);
+    const unavailable = compileUniversalInputToPublicationPreview({ ...architectureDescriptionInput(), proposal: undefined }, options);
     const invalid = compileUniversalInputToPublicationPreview({ ...architectureDescriptionInput(), proposal: { ...architectureDescriptionProposal(), comCommand: "x" } }, options);
 
     expect(unavailable.kind).toBe("candidate");
     expect(unavailable.ugs.unresolved).toEqual([expect.objectContaining({ scope: "topology", severity: "blocking" })]);
     expect(invalid.kind).toBe("candidate");
     expect(invalid.ugs.nodes).toEqual([expect.objectContaining({ kind: "container" })]);
-    expect(unavailable.interpretation).toMatchObject({ errorCategory: "timeout" });
+    expect(unavailable.interpretation).toMatchObject({ errorCategory: "unavailable" });
     expect(invalid.interpretation).toMatchObject({ errorCategory: "invalid" });
     expect(invalid).not.toHaveProperty("snapshot");
     expect(invalid).not.toHaveProperty("nativeIntent");
     expect(invalid).not.toHaveProperty("worker");
+  });
+
+  it("runs an architecture interpreter through the bounded asynchronous path and retains timeout as a clarification", async () => {
+    const formal = await compileArchitectureDescriptionWithInterpreter({
+      request: architectureDescriptionInput().request,
+      interpreter: { propose: async () => architectureDescriptionProposal() },
+    }, options);
+    const timedOut = await compileArchitectureDescriptionWithInterpreter({
+      request: architectureDescriptionInput().request,
+      interpreter: { propose: async () => new Promise(() => {}) },
+      timeoutMilliseconds: 1,
+    }, options);
+
+    expect(formal).toMatchObject({ kind: "formal", interpretation: { errorCategory: "none" } });
+    expect(timedOut).toMatchObject({ kind: "candidate", interpretation: { errorCategory: "timeout" } });
+    expect(timedOut.ugs.unresolved).toEqual([expect.objectContaining({ id: "description-request:interpreter-unavailable" })]);
   });
 });

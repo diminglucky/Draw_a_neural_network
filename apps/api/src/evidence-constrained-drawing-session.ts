@@ -173,6 +173,7 @@ export function confirmEvidenceConstrainedDrawingSession(
 
   const blocking = firstBlockingTopologyUnresolved(current.ugs);
   if (!blocking || confirmation.questionId !== clarificationQuestionId(blocking)) throw new Error("Drawing session clarification is not canonical");
+  if (blocking.id.endsWith(":interpreter-unavailable")) throw new Error("Drawing session requires a fresh valid interpreter proposal before confirmation");
   const nextUgs = parseUniversalGraphSpec({
     ...current.ugs,
     revision: current.ugs.revision + 1,
@@ -422,7 +423,7 @@ function assertInput(input: UniversalInputCompilationInput): void {
     return;
   }
   if (input.kind === "architecture-description") {
-    assertExactKeys(input, ["kind", "request", "proposal", "interpreterStatus"], "architecture description input");
+    assertExactKeys(input, ["kind", "request", "proposal"], "architecture description input");
     return;
   }
   throw new Error("Drawing session input kind is invalid");
@@ -449,6 +450,10 @@ function assertExactKeys(value: unknown, allowed: readonly string[], location: s
 
 function assertIdentifier(value: unknown, location: string): asserts value is string {
   if (typeof value !== "string" || !identifier.test(value)) throw new Error(`${location} is invalid`);
+}
+
+function assertSourceIdentifier(value: unknown, location: string): asserts value is string {
+  if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(value)) throw new Error(`${location} is invalid`);
 }
 
 function assertSessionId(value: unknown, location: string): asserts value is string {
@@ -488,7 +493,8 @@ function assertInterpretation(
   const architectureSource = sources.find((source) => source.kind === "architecture-description");
   if (!architectureSource && interpretation === undefined) return;
   if (!architectureSource || !interpretation || !/^[a-f0-9]{64}$/i.test(interpretation.requestHash) || !/^[a-f0-9]{64}$/i.test(interpretation.proposalHash) || !/^[a-f0-9]{64}$/i.test(interpretation.evidenceDigest) || !( ["none", "unavailable", "timeout", "invalid"] as const).includes(interpretation.errorCategory)) throw new Error("Drawing session interpretation lineage is invalid");
-  if (architectureSource.sourceHash !== interpretation.evidenceDigest || !hasEvidenceProvenancePair(ugs, architectureSource.sourceId, interpretation.evidenceDigest)) throw new Error("Drawing session interpretation provenance is invalid");
+  const derivedEvidence = ugs.evidence.filter((item) => item.evidenceId === architectureSource.sourceId && item.sourceId === architectureSource.sourceId && item.sourceHash === interpretation.evidenceDigest && item.locator === "architecture-description:public-evidence" && item.excerptDigest === interpretation.proposalHash);
+  if (derivedEvidence.length !== 1) throw new Error("Drawing session interpretation provenance is invalid");
 }
 
 function assertSources(sources: unknown, ugs: UniversalGraphSpec): asserts sources is readonly EvidenceConstrainedDrawingSessionSource[] {
@@ -497,7 +503,7 @@ function assertSources(sources: unknown, ugs: UniversalGraphSpec): asserts sourc
   for (const source of sources) {
     assertExactKeys(source, ["kind", "sourceId", "sourceHash"], "drawing session source");
     if (source.kind !== "typed-prompt" && source.kind !== "static-pytorch" && source.kind !== "architecture-description") throw new Error("Drawing session source kind is invalid");
-    assertIdentifier(source.sourceId, "drawing session sourceId");
+    assertSourceIdentifier(source.sourceId, "drawing session sourceId");
     if (typeof source.sourceHash !== "string" || !/^[a-f0-9]{64}$/i.test(source.sourceHash)) throw new Error("Drawing session source hash is invalid");
     if (!hasEvidenceProvenancePair(ugs, source.sourceId, source.sourceHash)) throw new Error("Drawing session source does not match UGS provenance");
     actualSourceIds.push(source.sourceId);

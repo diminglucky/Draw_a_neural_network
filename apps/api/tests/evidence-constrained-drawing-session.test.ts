@@ -198,6 +198,18 @@ describe("EvidenceConstrainedDrawingSession", () => {
     expect(session.clarification?.questionId).toBe("clarification:session-description-request:interpreter-unavailable");
   });
 
+  it("does not convert an unavailable architecture interpreter into a formal preview through generic confirmation", () => {
+    const pending = openEvidenceConstrainedDrawingSession(architectureDescriptionRequest({ ...architectureDescriptionProposal(), comCommand: "x" }));
+
+    expect(() => confirmEvidenceConstrainedDrawingSession(pending, {
+      owner: { ownerId: "owner-1", deviceId: "device-1" },
+      sessionId: pending.sessionId,
+      expectedRevision: pending.revision,
+      questionId: pending.clarification!.questionId,
+      value: "confirm-topology-complete",
+    })).toThrow(/interpreter|proposal/i);
+  });
+
   it("returns exactly one clarification and no PVP for blocking topology", () => {
     const session = openEvidenceConstrainedDrawingSession(ambiguousPromptRequest());
 

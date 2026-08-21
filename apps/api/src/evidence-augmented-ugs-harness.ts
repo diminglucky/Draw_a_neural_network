@@ -7,6 +7,7 @@ const identifier = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
 const digest = /^[a-f0-9]{64}$/i;
 const safeText = /^[^\u0000-\u001f]{1,240}$/;
 const forbiddenControlText = /\b(?:provider|renderer|native|worker|com|visio|command|script|execution|snapshot)\b/i;
+const filesystemPath = /(?:[A-Za-z]:[\\/])|(?:^|\s)\/(?:[A-Za-z0-9._-]+\/){1,}[A-Za-z0-9._-]+/;
 const knownOperations = new Set([
   "conv2d", "normalization", "activation", "pool", "dense", "flatten", "identity_projection",
   "token_projection", "encoder_stage", "decoder_stage", "self_attention", "cross_attention",
@@ -16,13 +17,19 @@ export interface EvidenceAugmentedInterpretation {
   readonly ugs: UniversalGraphSpec;
   readonly state: "formal" | "clarification";
   readonly proposalHash: string;
+  readonly evidenceDigest: string;
+}
+
+/** Parses and canonicalizes the only data that may reach an optional interpreter. */
+export function parseBoundedInterpretationRequest(input: unknown): BoundedInterpretationRequest {
+  return parseRequest(input);
 }
 
 export function interpretBoundedEvidenceAugmentedProposal(
   input: BoundedInterpretationRequest,
   proposal: unknown,
 ): EvidenceAugmentedInterpretation {
-  const request = parseRequest(input);
+  const request = parseBoundedInterpretationRequest(input);
   const evidenceDigest = digestGenericPlanSnapshotValue(request.evidence);
   if (proposal === undefined) return clarificationForUnavailableInterpreter(request, evidenceDigest);
 
@@ -33,8 +40,8 @@ export function interpretBoundedEvidenceAugmentedProposal(
     .filter((item) => item.scope === "topology" && item.severity === "blocking")
     .sort((left, right) => compareCodeUnits(left.id, right.id))[0];
 
-  if (!firstClarification) return { ugs, state: "formal", proposalHash };
-  return { ugs: parseUniversalGraphSpec({ ...ugs, unresolved: [firstClarification] }), state: "clarification", proposalHash };
+  if (!firstClarification) return { ugs, state: "formal", proposalHash, evidenceDigest };
+  return { ugs: parseUniversalGraphSpec({ ...ugs, unresolved: [firstClarification] }), state: "clarification", proposalHash, evidenceDigest };
 }
 
 export function architectureInputSourceId(requestId: string): string {
@@ -52,12 +59,12 @@ function clarificationForUnavailableInterpreter(request: BoundedInterpretationRe
     ports: [], edges: [], groups: [], evidence: [...request.evidence, derivedEvidence], topologyConfidence: 0,
     unresolved: [{ id: `${request.requestId}:interpreter-unavailable`, scope: "topology", severity: "blocking", evidenceIds: [derivedEvidence.evidenceId] }],
   });
-  return { ugs, state: "clarification", proposalHash };
+  return { ugs, state: "clarification", proposalHash, evidenceDigest };
 }
 
 function projectProposal(request: BoundedInterpretationRequest, proposal: InterpreterProposal, evidenceDigest: string, proposalHash: string): UniversalGraphSpec {
   const derivedEvidence = requestEvidence(request, evidenceDigest, proposalHash);
-  const unresolved = [...proposal.unresolved, ...topologyDirectionUnresolved(proposal)];
+  const unresolved = [...proposal.unresolved, ...topologyDirectionUnresolved(proposal), ...topologySemanticUnresolved(proposal)];
   return parseUniversalGraphSpec({
     version: 1, graphId: `architecture:${request.requestId}`, revision: 1,
     sourceIds: uniqueSorted([...request.evidence.map((item) => item.sourceId), derivedEvidence.sourceId]),
@@ -91,6 +98,41 @@ function topologyDirectionUnresolved(proposal: InterpreterProposal): Array<{ id:
     });
 }
 
+function topologySemanticUnresolved(proposal: InterpreterProposal): Array<{ id: string; scope: "topology"; severity: "blocking"; evidenceIds: readonly string[] }> {
+  const portById = new Map(proposal.ports.map((port) => [port.portId, port]));
+  const incomingByNode = new Map<string, number>();
+  const outgoingByNode = new Map<string, number>();
+  const skipByTargetNode = new Set<string>();
+  for (const edge of proposal.edges) {
+    const source = portById.get(edge.sourcePortId);
+    const target = portById.get(edge.targetPortId);
+    if (source) outgoingByNode.set(source.nodeId, (outgoingByNode.get(source.nodeId) ?? 0) + 1);
+    if (target) {
+      incomingByNode.set(target.nodeId, (incomingByNode.get(target.nodeId) ?? 0) + 1);
+      if (edge.relation === "skip") skipByTargetNode.add(target.nodeId);
+    }
+  }
+  const usedIds = new Set(proposal.unresolved.map((item) => item.id));
+  const result: Array<{ id: string; scope: "topology"; severity: "blocking"; evidenceIds: readonly string[] }> = [];
+  const add = (base: string, evidenceIds: readonly string[]) => {
+    let id = base;
+    let suffix = 2;
+    while (usedIds.has(id)) id = `${base}:${suffix++}`;
+    usedIds.add(id);
+    result.push({ id, scope: "topology", severity: "blocking", evidenceIds });
+  };
+  for (const node of [...proposal.nodes].sort((left, right) => compareCodeUnits(left.nodeId, right.nodeId))) {
+    const incoming = incomingByNode.get(node.nodeId) ?? 0;
+    const outgoing = outgoingByNode.get(node.nodeId) ?? 0;
+    if (node.kind === "input" && incoming > 0) add(`topology-input-direction:${node.nodeId}`, node.evidenceIds);
+    if (node.kind === "output" && outgoing > 0) add(`topology-output-direction:${node.nodeId}`, node.evidenceIds);
+    if ((node.operation === "add" || node.operation === "concat") && incoming < 2) add(`topology-merge-arity:${node.nodeId}`, node.evidenceIds);
+    if (node.operation === "residual" && (incoming < 2 || !skipByTargetNode.has(node.nodeId))) add(`topology-residual-direction:${node.nodeId}`, node.evidenceIds);
+    if (node.operation === "cross_attention" && incoming < 2) add(`topology-cross-attention-direction:${node.nodeId}`, node.evidenceIds);
+  }
+  return result;
+}
+
 function requestEvidence(request: BoundedInterpretationRequest, evidenceDigest: string, proposalHash: string): UniversalEvidence {
   return { evidenceId: `architecture-input:${request.requestId}`, sourceId: architectureInputSourceId(request.requestId), sourceHash: evidenceDigest, locator: "architecture-description:public-evidence", excerptDigest: proposalHash };
 }
@@ -110,7 +152,8 @@ function parseRequest(input: unknown): BoundedInterpretationRequest {
 
 function parseEvidence(input: unknown, location: string): BoundedPublicEvidence {
   const value = record(input, location); exactKeys(value, ["evidenceId", "sourceId", "sourceHash", "locator", "excerptDigest"], location);
-  identifierValue(value.evidenceId, `${location}.evidenceId`); identifierValue(value.sourceId, `${location}.sourceId`); digestValue(value.sourceHash, `${location}.sourceHash`); textValue(value.locator, `${location}.locator`); digestValue(value.excerptDigest, `${location}.excerptDigest`);
+  identifierValue(value.evidenceId, `${location}.evidenceId`); identifierValue(value.sourceId, `${location}.sourceId`); digestValue(value.sourceHash, `${location}.sourceHash`); locatorValue(value.locator, `${location}.locator`); digestValue(value.excerptDigest, `${location}.excerptDigest`);
+  if ((value.evidenceId as string).startsWith("architecture-input:") || (value.sourceId as string).startsWith("architecture-input:")) throw new Error(`${location} uses a reserved architecture-input namespace`);
   return { evidenceId: value.evidenceId as string, sourceId: value.sourceId as string, sourceHash: (value.sourceHash as string).toLowerCase(), locator: value.locator as string, excerptDigest: (value.excerptDigest as string).toLowerCase() };
 }
 
@@ -158,6 +201,7 @@ function exactKeys(value: Record<string, unknown>, allowed: readonly string[], l
 function identifierValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !identifier.test(value)) throw new Error(`${location} is invalid`); }
 function digestValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !digest.test(value)) throw new Error(`${location} is invalid`); }
 function textValue(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || !safeText.test(value) || forbiddenControlText.test(value)) throw new Error(`${location} is invalid`); }
+function locatorValue(value: unknown, location: string): asserts value is string { textValue(value, location); if (filesystemPath.test(value)) throw new Error(`${location} is invalid`); }
 function capacity(value: unknown, location: string, maximum: number): asserts value is number { if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > maximum) throw new Error(`${location} is invalid`); }
 function unique(values: readonly string[], location: string): void { if (new Set(values).size !== values.length) throw new Error(`${location} contains duplicate values`); }
 function uniqueSorted(values: readonly string[]): string[] { return [...new Set(values)].sort(compareCodeUnits); }
