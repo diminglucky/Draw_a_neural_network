@@ -62,6 +62,23 @@ function advanceToCandidate() {
 }
 
 describe("DrawingRun reducer", () => {
+  it.each([
+    [{ ...intent, action: "provider_native_action" }, "action"],
+    [{ ...intent, requestedDetail: "raw_source" }, "requested detail"],
+    [{ ...intent, target: "C:\\private\\drawing.vsdx" }, "target"],
+    [{ ...intent, sourceKinds: "pytorch_source" }, "source kind array"],
+    [{ ...intent, sourceKinds: ["pytorch_source", "pytorch_source"] }, "duplicate source kinds"],
+    [{ ...intent, sourceKinds: ["provider_payload"] }, "unknown source kind"],
+  ])("rejects a type-erased malformed DrawingIntent before creating state (%s)", (malformedIntent, _label) => {
+    expect(() => createDrawingRun({
+      runId: "run-1",
+      ownerId: "owner-1",
+      deviceId: "device-1",
+      intent: malformedIntent as never,
+      now: "2026-08-21T00:00:00.000Z",
+    })).toThrow(DrawingRunError);
+  });
+
   it("rejects composition before a formal UGS without changing state", () => {
     const state = createRun();
 
@@ -173,5 +190,62 @@ describe("DrawingRun reducer", () => {
     expect(accepted.event.occurredAt).toBe(occurredAt);
     expect(() => reduceDrawingRun(createRun(), command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") }, "2026-08-21T00:00:00.000Z"))).toThrow(DrawingRunError);
     expect(() => reduceDrawingRun(createRun(), command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") }, "not-a-timestamp"))).toThrow(DrawingRunError);
+  });
+
+  it("rejects coercible non-string hashes before they can enter state or events", () => {
+    const initial = createRun();
+    const coercibleHash = {
+      secret: "C:\\private\\model.py",
+      toString: () => hash("a"),
+    } as unknown as string;
+    const malformed = command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: coercibleHash });
+
+    expect(() => reduceDrawingRun(initial, malformed)).toThrow(DrawingRunError);
+    expect(initial.artifactHashes).toEqual([]);
+    expect(JSON.stringify(initial)).not.toContain("C:\\private\\model.py");
+  });
+
+  it("rejects an invalid type-erased cancellation reason before advancing state", () => {
+    const initial = createRun();
+    const malformed = command("cancel", 0, { reasonCategory: "C:\\private\\reason.txt" as never });
+
+    expect(() => reduceDrawingRun(initial, malformed)).toThrow(DrawingRunError);
+    expect(initial).toMatchObject({ status: "received", revision: 0 });
+  });
+
+  it("rejects a persisted state with a non-minted run identity at the reducer boundary", () => {
+    const hostile = { ...createRun(), runId: "C:private" };
+    const malformed = { ...command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") }), runId: "C:private" };
+
+    expect(() => reduceDrawingRun(hostile, malformed)).toThrow(DrawingRunError);
+  });
+
+  it.each([
+    ["historical action", (state: any) => { state.idempotencyRecords[0].response.event.action = "C:\\private\\provider.txt"; }],
+    ["historical hash", (state: any) => { state.idempotencyRecords[0].response.event.artifactHashes = [{ secret: "class SecretModel" }]; }],
+    ["historical event id", (state: any) => { state.idempotencyRecords[0].response.event.eventId = "C:\\private\\event.txt"; }],
+    ["historical snapshot", (state: any) => { state.idempotencyRecords[0].response.snapshot.status = "failed"; }],
+    ["historical fingerprint", (state: any) => { state.idempotencyRecords[0].fingerprint = { providerPayload: "secret" }; }],
+  ])("fails closed when JSON-restored replay data has a malformed %s", (_label, tamper) => {
+    const accept = command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") });
+    const accepted = acceptedTransition(reduceDrawingRun(createRun(), accept));
+    const persisted = JSON.parse(JSON.stringify(accepted.next));
+    tamper(persisted);
+
+    expect(() => reduceDrawingRun(persisted, accept)).toThrow(DrawingRunError);
+  });
+
+  it("validates and deep-freezes a safely reconstructed replay response after JSON restoration", () => {
+    const accept = command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") });
+    const accepted = acceptedTransition(reduceDrawingRun(createRun(), accept));
+    const persisted = JSON.parse(JSON.stringify(accepted.next));
+    const replay = replayedTransition(reduceDrawingRun(persisted, accept));
+
+    expect(replay.original).toEqual(accepted.next.idempotencyRecords[0].response);
+    expect(replay.original).not.toBe(persisted.idempotencyRecords[0].response);
+    expect(Object.isFrozen(replay.original)).toBe(true);
+    expect(Object.isFrozen(replay.original.event)).toBe(true);
+    expect(Object.isFrozen(replay.original.event.artifactHashes)).toBe(true);
+    expect(Object.isFrozen(replay.original.snapshot)).toBe(true);
   });
 });

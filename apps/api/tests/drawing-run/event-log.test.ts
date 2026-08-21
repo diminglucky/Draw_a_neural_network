@@ -13,6 +13,17 @@ const event: DrawingRunEvent = {
   occurredAt: "2026-08-21T00:00:00.000Z",
 };
 
+const nextEvent: DrawingRunEvent = {
+  eventId: "run-1:2",
+  runId: "run-1",
+  revision: 2,
+  status: "analyzing",
+  action: "analyzed",
+  artifactHashes: ["a".repeat(64), "b".repeat(64)],
+  errorCategory: "none",
+  occurredAt: "2026-08-21T00:00:01.000Z",
+};
+
 describe("DrawingRun event log", () => {
   it("appends an allowlisted copy without mutating previous history or retaining unsafe fields", () => {
     const previous: readonly DrawingRunEvent[] = [];
@@ -46,5 +57,47 @@ describe("DrawingRun event log", () => {
 
     expect(() => appendDrawingRunEvent(history, unsafe)).toThrow(/event/i);
     expect(JSON.stringify(history)).not.toContain(value);
+  });
+
+  it("rejects a coercible non-string hash without retaining the hostile object", () => {
+    const coercibleHash = {
+      secret: "C:\\private\\model.py",
+      toString: () => "a".repeat(64),
+    } as unknown as string;
+    const unsafe = { ...event, artifactHashes: [coercibleHash] };
+
+    expect(() => appendDrawingRunEvent([], unsafe)).toThrow(/event/i);
+  });
+
+  it.each([
+    ["unsafe historical enum", (history: any[]) => { history[0].action = "C:\\private\\provider.txt"; }],
+    ["unsafe historical hash", (history: any[]) => { history[0].artifactHashes = [{ providerPayload: "secret" }]; }],
+    ["foreign run", (history: any[]) => { history[0].runId = "run-2"; }],
+    ["non-canonical event id", (history: any[]) => { history[0].eventId = "event-1"; }],
+  ])("validates all existing history before appending: %s", (_label, tamper) => {
+    const history = [JSON.parse(JSON.stringify(event))];
+    tamper(history);
+
+    expect(() => appendDrawingRunEvent(history, nextEvent)).toThrow(/event/i);
+  });
+
+  it.each([
+    ["revision gap", { ...nextEvent, revision: 3, eventId: "run-1:3" }],
+    ["non-increasing timestamp", { ...nextEvent, occurredAt: event.occurredAt }],
+    ["invalid status/action tuple", { ...nextEvent, status: "readback_verified", action: "received" }],
+    ["invalid error tuple", { ...nextEvent, errorCategory: "provider_invalid" }],
+  ] as const)("rejects a semantically inconsistent appended event: %s", (_label, malformed) => {
+    expect(() => appendDrawingRunEvent([event], malformed as DrawingRunEvent)).toThrow(/event/i);
+  });
+
+  it("returns a deeply immutable reconstruction without retaining caller references", () => {
+    const source = { ...event, artifactHashes: [...event.artifactHashes] };
+    const history = appendDrawingRunEvent([], source);
+
+    expect(history[0]).not.toBe(source);
+    expect(history[0].artifactHashes).not.toBe(source.artifactHashes);
+    expect(Object.isFrozen(history)).toBe(true);
+    expect(Object.isFrozen(history[0])).toBe(true);
+    expect(Object.isFrozen(history[0].artifactHashes)).toBe(true);
   });
 });

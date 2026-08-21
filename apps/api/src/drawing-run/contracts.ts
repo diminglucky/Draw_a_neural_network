@@ -10,11 +10,16 @@ export const drawingRunStatuses = [
 
 export type DrawingRunStatus = typeof drawingRunStatuses[number];
 
+export const drawingIntentActions = ["analyze_network", "create_figure", "revise_figure"] as const;
+export const drawingIntentDetailLevels = ["overview", "architecture", "operator_detail"] as const;
+export const drawingIntentTargets = ["browser_preview", "existing_visio_page"] as const;
+export const drawingIntentSourceKinds = ["typed_text", "pytorch_source", "architecture_description", "sketch"] as const;
+
 export type DrawingIntent = {
-  action: "analyze_network" | "create_figure" | "revise_figure";
-  requestedDetail: "overview" | "architecture" | "operator_detail";
-  target: "browser_preview" | "existing_visio_page";
-  sourceKinds: readonly ("typed_text" | "pytorch_source" | "architecture_description" | "sketch")[];
+  action: typeof drawingIntentActions[number];
+  requestedDetail: typeof drawingIntentDetailLevels[number];
+  target: typeof drawingIntentTargets[number];
+  sourceKinds: readonly (typeof drawingIntentSourceKinds[number])[];
 };
 
 export const drawingRunEventActions = ["received", "analyzed", "proposed", "formalized", "clarified", "composed", "bound", "applied", "readback", "failed"] as const;
@@ -92,6 +97,9 @@ export interface DrawingRunCommandBase {
   occurredAt: string;
 }
 
+export const drawingRunCancelReasonCategories = ["user", "timeout", "lease_lost"] as const;
+export type DrawingRunCancelReasonCategory = typeof drawingRunCancelReasonCategories[number];
+
 export type DrawingRunCommand =
   | (DrawingRunCommandBase & { type: "accept_input"; receiptIds: readonly string[]; artifactHash: string })
   | (DrawingRunCommandBase & { type: "begin_analysis"; policyHash: string })
@@ -106,7 +114,7 @@ export type DrawingRunCommand =
   | (DrawingRunCommandBase & { type: "bind_page"; bindingHash: string })
   | (DrawingRunCommandBase & { type: "request_apply"; authorizationHash: string })
   | (DrawingRunCommandBase & { type: "verify_readback"; readbackHash: string })
-  | (DrawingRunCommandBase & { type: "cancel"; reasonCategory: "user" | "timeout" | "lease_lost" })
+  | (DrawingRunCommandBase & { type: "cancel"; reasonCategory: DrawingRunCancelReasonCategory })
   | (DrawingRunCommandBase & { type: "reject"; errorCategory: DrawingRunFailureCategory })
   | (DrawingRunCommandBase & { type: "fail"; errorCategory: DrawingRunFailureCategory })
   | (DrawingRunCommandBase & { type: "conflict"; conflictHash: string });
@@ -127,10 +135,35 @@ export interface PublicDrawingRun {
 export type DrawingRunSnapshot = PublicDrawingRun;
 
 const safeOpaqueIdentifierPattern = /^[A-Za-z0-9._:-]{1,160}$/;
+const mintedDrawingRunIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const sha256Pattern = /^[a-f0-9]{64}$/;
 const utcTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export function isSafeDrawingRunIdentifier(value: unknown): value is string {
   return typeof value === "string" && safeOpaqueIdentifierPattern.test(value);
+}
+
+export function isDrawingRunId(value: unknown): value is string {
+  return typeof value === "string" && mintedDrawingRunIdPattern.test(value);
+}
+
+export function isDrawingRunArtifactHash(value: unknown): value is string {
+  return typeof value === "string" && sha256Pattern.test(value);
+}
+
+export function isDrawingIntent(value: unknown): value is DrawingIntent {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<Record<keyof DrawingIntent, unknown>>;
+  if (typeof candidate.action !== "string" || !(drawingIntentActions as readonly string[]).includes(candidate.action)) return false;
+  if (typeof candidate.requestedDetail !== "string" || !(drawingIntentDetailLevels as readonly string[]).includes(candidate.requestedDetail)) return false;
+  if (typeof candidate.target !== "string" || !(drawingIntentTargets as readonly string[]).includes(candidate.target)) return false;
+  if (!Array.isArray(candidate.sourceKinds) || candidate.sourceKinds.length === 0) return false;
+  if (candidate.sourceKinds.some((kind) => typeof kind !== "string" || !(drawingIntentSourceKinds as readonly string[]).includes(kind))) return false;
+  return new Set(candidate.sourceKinds).size === candidate.sourceKinds.length;
+}
+
+export function isDrawingRunCancelReasonCategory(value: unknown): value is DrawingRunCancelReasonCategory {
+  return typeof value === "string" && (drawingRunCancelReasonCategories as readonly string[]).includes(value);
 }
 
 export function isDrawingRunStatus(value: unknown): value is DrawingRunStatus {
@@ -162,7 +195,7 @@ export function createDrawingRun(input: {
   intent: DrawingIntent;
   now: string;
 }): DrawingRun {
-  if (!isSafeDrawingRunIdentifier(input.runId) || !isSafeDrawingRunIdentifier(input.ownerId) || !isSafeDrawingRunIdentifier(input.deviceId) || !isDrawingRunTimestamp(input.now)) {
+  if (!isDrawingRunId(input.runId) || !isSafeDrawingRunIdentifier(input.ownerId) || !isSafeDrawingRunIdentifier(input.deviceId) || !isDrawingIntent(input.intent) || !isDrawingRunTimestamp(input.now)) {
     failDrawingRun("validation");
   }
 

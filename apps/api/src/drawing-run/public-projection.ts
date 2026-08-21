@@ -1,7 +1,13 @@
-import { type DrawingRun, type DrawingRunCommand, type PublicDrawingRun, isDrawingRunStatus, isSafeDrawingRunIdentifier } from "./contracts.js";
+import {
+  type DrawingRun,
+  type DrawingRunCommand,
+  type PublicDrawingRun,
+  isDrawingRunArtifactHash,
+  isDrawingRunId,
+  isDrawingRunStatus,
+} from "./contracts.js";
 import { failDrawingRun } from "./errors.js";
 
-const hashPattern = /^[a-f0-9]{64}$/;
 const publicClarificationPrompt = "A clarification is required before continuing.";
 
 const allowedActionsByStatus: Readonly<Record<DrawingRun["status"], readonly DrawingRunCommand["type"][]>> = {
@@ -25,16 +31,24 @@ const allowedActionsByStatus: Readonly<Record<DrawingRun["status"], readonly Dra
 };
 
 export function projectPublicDrawingRun(state: DrawingRun): PublicDrawingRun {
-  if (!isSafeDrawingRunIdentifier(state.runId) || !isDrawingRunStatus(state.status) || !Number.isSafeInteger(state.revision) || state.revision < 0) {
+  if (typeof state !== "object" || state === null
+    || !isDrawingRunId(state.runId)
+    || !isDrawingRunStatus(state.status)
+    || !Number.isSafeInteger(state.revision)
+    || state.revision < 0) {
     failDrawingRun("validation");
   }
 
-  const clarification = state.clarification !== null && hashPattern.test(state.clarification.hash)
-    ? { id: `clarification:${state.clarification.hash}`, prompt: publicClarificationPrompt }
-    : null;
-  const preview = state.preview !== null && hashPattern.test(state.preview.hash)
-    ? { artifactId: `preview:${state.preview.hash}`, hash: state.preview.hash }
-    : null;
+  let clarification: PublicDrawingRun["clarification"] = null;
+  if (state.clarification !== null) {
+    if (typeof state.clarification !== "object" || !isDrawingRunArtifactHash(state.clarification.hash)) failDrawingRun("validation");
+    clarification = { id: `clarification:${state.clarification.hash}`, prompt: publicClarificationPrompt };
+  }
+  let preview: PublicDrawingRun["preview"] = null;
+  if (state.preview !== null) {
+    if (typeof state.preview !== "object" || !isDrawingRunArtifactHash(state.preview.hash)) failDrawingRun("validation");
+    preview = { artifactId: `preview:${state.preview.hash}`, hash: state.preview.hash };
+  }
 
   return {
     runId: state.runId,

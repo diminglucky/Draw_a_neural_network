@@ -19,8 +19,10 @@ describe("public DrawingRun projection", () => {
     } as const;
     const base = createDrawingRun(input);
 
-    expect(() => createDrawingRun({ ...input, runId: "C:\\private\\model.py" })).toThrow(DrawingRunError);
-    expect(() => projectPublicDrawingRun({ ...base, runId: "C:\\private\\model.py" })).toThrow(DrawingRunError);
+    for (const unsafeRunId of ["C:\\private\\model.py", "C:private", "\\\\server\\share", "../run-1", "..", "run/one"]) {
+      expect(() => createDrawingRun({ ...input, runId: unsafeRunId })).toThrow(DrawingRunError);
+      expect(() => projectPublicDrawingRun({ ...base, runId: unsafeRunId })).toThrow(DrawingRunError);
+    }
   });
 
   it("does not expose the removed apply-confirmation state as a public action surface", () => {
@@ -124,5 +126,35 @@ describe("public DrawingRun projection", () => {
     });
     expect(JSON.stringify(projected)).not.toContain("C:\\private");
     expect(JSON.stringify(projected)).not.toContain("SecretModel");
+  });
+
+  it("rejects coercible non-string clarification and preview hashes", () => {
+    const base = createDrawingRun({
+      runId: "run-1",
+      ownerId: "owner-1",
+      deviceId: "device-1",
+      intent: {
+        action: "create_figure",
+        requestedDetail: "architecture",
+        target: "browser_preview",
+        sourceKinds: ["architecture_description"],
+      },
+      now: "2026-08-21T00:00:00.000Z",
+    });
+    const coercibleHash = {
+      secret: "C:\\private\\model.py",
+      toString: () => "a".repeat(64),
+    } as unknown as string;
+
+    expect(() => projectPublicDrawingRun({
+      ...base,
+      status: "awaiting_clarification",
+      clarification: { id: "clarification:unsafe", prompt: "secret", hash: coercibleHash },
+    })).toThrow(DrawingRunError);
+    expect(() => projectPublicDrawingRun({
+      ...base,
+      status: "preview_ready",
+      preview: { artifactId: "preview:unsafe", hash: coercibleHash },
+    })).toThrow(DrawingRunError);
   });
 });
