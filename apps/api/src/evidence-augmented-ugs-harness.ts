@@ -3,14 +3,14 @@ import { compareCodeUnits } from "./stable-string-order.js";
 import { parseUniversalGraphSpec, type UniversalEvidence, type UniversalGraphSpec } from "./universal-graph-spec.js";
 import type { BoundedInterpretationRequest, BoundedPublicEvidence, InterpreterProposal } from "./architecture-interpretation-contract.js";
 
-const identifier = /^[A-Za-z][A-Za-z0-9._:-]{0,127}$/;
+const identifier = /^(?=.{1,128}$)(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[A-Za-z][A-Za-z0-9_-]{1,63}(?::[A-Za-z0-9_-]{1,63}){1,7})$/;
 const digest = /^[a-f0-9]{64}$/i;
 const safeText = /^[^\u0000-\u001f]{1,240}$/;
 const forbiddenControlText = /\b(?:provider|renderer|native|worker|com|visio|command|script|execution|snapshot)\b/i;
 const filesystemPath = /[\\/]/;
-const sourceFileName = /\b[A-Za-z0-9_-]+\.(?:py|pyi|js|mjs|cjs|jsx|ts|mts|cts|tsx|cs|csproj|java|kt|kts|go|rs|c|cc|cpp|cxx|h|hpp|json|ya?ml|toml|ini|cfg|conf|sh|ps1|bat|cmd|exe|dll|so|dylib|vsdx|svg|png|jpe?g|pdf)\b/i;
-const sourceLikeText = /(?:\b(?:async\s+)?(?:class|def|function|interface|struct|enum|namespace|module|import|export|from|return|throw|try|catch|finally|if|else|for|while|switch|case|const|let|var|using|package|public|private|protected|static|void|new|func|fn|sub)\b|\b(?:print|console\.log|system\.console\.writeline|write-host|invoke-expression|start-process|echo)\s*(?:\(|\b)|\bself(?:\.[A-Za-z_]\w*)+\s*=|(?:^|[;\r\n])\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*=(?!=|>))/i;
-const publicEvidenceLocator = /^[A-Za-z][A-Za-z0-9_-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9_-]{0,127}){0,7}$/;
+const sourceFileName = /(?:\b[A-Za-z0-9_-]+\.(?:py|pyi|js|mjs|cjs|jsx|ts|mts|cts|tsx|cs|csproj|java|kt|kts|go|rs|c|cc|cpp|cxx|h|hpp|json|ya?ml|toml|ini|cfg|conf|sh|ps1|bat|cmd|exe|dll|so|dylib|vsdx|svg|png|jpe?g|pdf)\b|\b(?:dockerfile|makefile|gemfile|rakefile|procfile)\b)/i;
+const sourceLikeText = /(?:\b(?:async\s+)?(?:class|def|function|interface|struct|enum|namespace|module|import|export|from|return|throw|try|catch|finally|if|else|for|while|switch|case|const|let|var|using|package|public|private|protected|static|void|new|func|fn|sub|lambda)\b|\b(?:print|console\.log|system\.console\.writeline|write-host|invoke-expression|start-process|echo)\s*(?:\(|\b)|\bself(?:\.[A-Za-z_]\w*)+\s*=|(?:^|[;\r\n])\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*=(?!=|>))/i;
+const publicEvidenceLocator = /^[A-Za-z][A-Za-z0-9_-]{1,63}(?::[A-Za-z0-9][A-Za-z0-9_-]{0,127}){0,7}$/;
 const knownOperations = new Set([
   "conv2d", "normalization", "activation", "pool", "dense", "flatten", "identity_projection",
   "token_projection", "encoder_stage", "decoder_stage", "self_attention", "cross_attention",

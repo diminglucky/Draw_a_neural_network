@@ -185,7 +185,7 @@ describe("evidence-augmented UGS interpreter", () => {
     expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/locator|invalid/i);
   });
 
-  it.each(["/model.py", "models/model.py", "models\\model.py", "model.py"])('rejects a root, one-directory, or bare filesystem locator: %s', (locator) => {
+  it.each(["/model.py", "models/model.py", "models\\model.py", "model.py", "C:Windows"])('rejects a root, one-directory, bare, or drive-relative filesystem locator: %s', (locator) => {
     const unsafeRequest = { ...request(), evidence: [{ ...request().evidence[0]!, locator }] };
 
     expect(() => interpretEvidenceAugmentedInput(unsafeRequest, customModuleProposal())).toThrow(/locator|invalid/i);
@@ -200,6 +200,8 @@ describe("evidence-augmented UGS interpreter", () => {
 
   it.each([
     ["node label", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "print('unsafe')" }, ...customModuleProposal().nodes.slice(1)] })],
+    ["lambda source", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "lambda x: x" }, ...customModuleProposal().nodes.slice(1)] })],
+    ["bare source filename", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, label: "Dockerfile" }, ...customModuleProposal().nodes.slice(1)] })],
     ["node operation", () => ({ ...customModuleProposal(), nodes: customModuleProposal().nodes.map((item) => item.nodeId === "spectral" ? { ...item, operation: "const unsafe = 1;" } : item) })],
     ["semantic hint", () => ({ ...customModuleProposal(), nodes: customModuleProposal().nodes.map((item) => item.nodeId === "spectral" ? { ...item, semanticHints: ["function unsafe() {}"] } : item) })],
     ["string attribute", () => ({ ...customModuleProposal(), nodes: customModuleProposal().nodes.map((item) => item.nodeId === "spectral" ? { ...item, attributes: { description: "public void Draw() {}" } } : item) })],
@@ -208,6 +210,33 @@ describe("evidence-augmented UGS interpreter", () => {
     ["port semantic type", () => ({ ...customModuleProposal(), ports: [{ ...customModuleProposal().ports[0]!, semanticType: "IMPORT module" }, ...customModuleProposal().ports.slice(1)] })],
   ])("rejects source-like payload in %s", (_label, proposal) => {
     expect(() => interpretEvidenceAugmentedInput(request(), proposal())).toThrow(/invalid/i);
+  });
+
+  it.each([
+    ["request ID", () => ({ ...request(), requestId: "model.py" }), /requestId is invalid/i],
+    ["evidence ID", () => ({ ...request(), evidence: [{ ...request().evidence[0]!, evidenceId: "model.py" }] }), /evidence\[0\]\.evidenceId is invalid/i],
+    ["source ID", () => ({ ...request(), evidence: [{ ...request().evidence[0]!, sourceId: "model.py" }] }), /evidence\[0\]\.sourceId is invalid/i],
+  ])("rejects a source-like public identifier in %s", (_label, unsafeRequest, expectedError) => {
+    expect(() => interpretEvidenceAugmentedInput(unsafeRequest(), customModuleProposal())).toThrow(expectedError);
+  });
+
+  it.each([
+    ["request ID", () => ({ ...request(), requestId: "C:Windows" }), /requestId is invalid/i],
+    ["source ID", () => ({ ...request(), evidence: [{ ...request().evidence[0]!, sourceId: "C:Windows" }] }), /evidence\[0\]\.sourceId is invalid/i],
+    ["node ID", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, nodeId: "C:Windows" }, ...customModuleProposal().nodes.slice(1)] }), /nodes\[0\]\.nodeId is invalid/i],
+    ["port ID", () => ({ ...customModuleProposal(), ports: [{ ...customModuleProposal().ports[0]!, portId: "C:Windows" }, ...customModuleProposal().ports.slice(1)] }), /ports\[0\]\.portId is invalid/i],
+  ])("rejects a drive-relative public identifier in %s", (_label, unsafeValue, expectedError) => {
+    const input = typeof unsafeValue === "function" ? unsafeValue() : unsafeValue;
+    expect(() => "nodes" in input ? interpretEvidenceAugmentedInput(request(), input) : interpretEvidenceAugmentedInput(input, customModuleProposal())).toThrow(expectedError);
+  });
+
+  it.each([
+    ["node ID", () => ({ ...customModuleProposal(), nodes: [{ ...customModuleProposal().nodes[0]!, nodeId: "model.py" }, ...customModuleProposal().nodes.slice(1)] }), /nodes\[0\]\.nodeId is invalid/i],
+    ["port ID", () => ({ ...customModuleProposal(), ports: [{ ...customModuleProposal().ports[0]!, portId: "model.py" }, ...customModuleProposal().ports.slice(1)] }), /ports\[0\]\.portId is invalid/i],
+    ["edge ID", () => ({ ...customModuleProposal(), edges: [{ ...customModuleProposal().edges[0]!, edgeId: "model.py" }, ...customModuleProposal().edges.slice(1)] }), /edges\[0\]\.edgeId is invalid/i],
+    ["unresolved ID", () => ({ ...customModuleProposal(), unresolved: [{ id: "model.py", scope: "topology" as const, severity: "blocking" as const, evidenceIds: ["e-description"] }] }), /unresolved\[0\]\.id is invalid/i],
+  ])("rejects a source-like proposal identifier in %s", (_label, proposal, expectedError) => {
+    expect(() => interpretEvidenceAugmentedInput(request(), proposal())).toThrow(expectedError);
   });
 
   it("rejects an unbounded request before it reaches an interpreter", async () => {
