@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createDrawingRun, type DrawingRunCommand, type DrawingRunTransition } from "../../src/drawing-run/contracts.js";
+import {
+  createDrawingRun,
+  type DrawingRun,
+  type DrawingRunCommand,
+  type DrawingRunTransition,
+  type DrawingRunTrustedScope,
+} from "../../src/drawing-run/contracts.js";
 import { DrawingRunError } from "../../src/drawing-run/errors.js";
-import { reduceDrawingRun } from "../../src/drawing-run/reducer.js";
+import { reduceDrawingRun as reduceDrawingRunWithScope } from "../../src/drawing-run/reducer.js";
 
 const hash = (value: string) => value.repeat(64).slice(0, 64);
 const intent = {
@@ -10,6 +16,20 @@ const intent = {
   target: "browser_preview",
   sourceKinds: ["architecture_description"],
 } as const;
+
+const trustedScope: DrawingRunTrustedScope = {
+  runId: "run-1",
+  ownerId: "owner-1",
+  deviceId: "device-1",
+};
+
+function reduceDrawingRun(
+  state: DrawingRun,
+  drawingCommand: DrawingRunCommand,
+  scope: DrawingRunTrustedScope = trustedScope,
+): DrawingRunTransition {
+  return reduceDrawingRunWithScope(state, drawingCommand, scope);
+}
 
 function createRun() {
   return createDrawingRun({
@@ -92,6 +112,22 @@ describe("DrawingRun reducer", () => {
 
     expect(() => reduceDrawingRun(state, foreign)).toThrow(DrawingRunError);
     expect(() => reduceDrawingRun(state, foreign)).toThrow(/device/i);
+  });
+
+  it("rejects a persisted state whose mutable identity was rebound away from the trusted scope", () => {
+    const accepted = acceptedTransition(reduceDrawingRun(
+      createRun(),
+      command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") }),
+    ));
+    const rebound = JSON.parse(JSON.stringify(accepted.next));
+    rebound.ownerId = "owner-2";
+    rebound.deviceId = "device-2";
+
+    expect(() => reduceDrawingRun(
+      rebound,
+      command("begin_analysis", 1, { policyHash: hash("b") }),
+      trustedScope,
+    )).toThrow(/owner|device/i);
   });
 
   it("rejects a stale clarification answer", () => {
@@ -205,6 +241,24 @@ describe("DrawingRun reducer", () => {
     expect(JSON.stringify(initial)).not.toContain("C:\\private\\model.py");
   });
 
+  it("snapshot-reads command fields once so accessor changes cannot cross the hash boundary", () => {
+    let reads = 0;
+    const malformed = command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") }) as DrawingRunCommand & Record<string, unknown>;
+    Object.defineProperty(malformed, "artifactHash", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? hash("a") : { secret: "C:\\private\\model.py" };
+      },
+    });
+
+    const accepted = acceptedTransition(reduceDrawingRun(createRun(), malformed));
+
+    expect(reads).toBe(1);
+    expect(accepted.next.artifactHashes).toEqual([hash("a")]);
+    expect(JSON.stringify(accepted)).not.toContain("C:\\private\\model.py");
+  });
+
   it("rejects an invalid type-erased cancellation reason before advancing state", () => {
     const initial = createRun();
     const malformed = command("cancel", 0, { reasonCategory: "C:\\private\\reason.txt" as never });
@@ -247,5 +301,37 @@ describe("DrawingRun reducer", () => {
     expect(Object.isFrozen(replay.original.event)).toBe(true);
     expect(Object.isFrozen(replay.original.event.artifactHashes)).toBe(true);
     expect(Object.isFrozen(replay.original.snapshot)).toBe(true);
+  });
+
+  it.each([
+    ["receipt evidence", (state: any) => { state.privateReceiptIds = []; }],
+    ["input artifact", (state: any) => { state.artifactHashes = []; state.idempotencyRecords[0].response.event.artifactHashes = []; }],
+    ["receipt fingerprint", (state: any) => { state.idempotencyRecords[0].fingerprint = state.idempotencyRecords[0].fingerprint.replace("receipt-1", "receipt-2"); }],
+  ])("rejects a persisted accepted-input state missing or contradicting its %s", (_label, tamper) => {
+    const accepted = acceptedTransition(reduceDrawingRun(
+      createRun(),
+      command("accept_input", 0, { receiptIds: ["receipt-1"], artifactHash: hash("a") }),
+    ));
+    const persisted = JSON.parse(JSON.stringify(accepted.next));
+    tamper(persisted);
+
+    expect(() => reduceDrawingRun(
+      persisted,
+      command("begin_analysis", 1, { policyHash: hash("b") }),
+    )).toThrow(DrawingRunError);
+  });
+
+  it("binds PVP composition to the exact UGS hash formalized by the run", () => {
+    const candidate = advanceToCandidate();
+    const formal = acceptedTransition(reduceDrawingRun(
+      candidate,
+      command("formalize_ugs", 3, { ugsHash: hash("d") }),
+    ));
+
+    expect(formal.next.formalUgsHash).toBe(hash("d"));
+    expect(() => reduceDrawingRun(
+      formal.next,
+      command("compose_pvp", 4, { ugsHash: hash("e") }),
+    )).toThrow(DrawingRunError);
   });
 });

@@ -1,12 +1,10 @@
 import {
   type DrawingRun,
   type DrawingRunCommand,
+  type DrawingRunTrustedScope,
   type PublicDrawingRun,
-  isDrawingRunArtifactHash,
-  isDrawingRunId,
-  isDrawingRunStatus,
 } from "./contracts.js";
-import { failDrawingRun } from "./errors.js";
+import { reconstructDrawingRunState } from "./reducer.js";
 
 const publicClarificationPrompt = "A clarification is required before continuing.";
 
@@ -30,31 +28,23 @@ const allowedActionsByStatus: Readonly<Record<DrawingRun["status"], readonly Dra
   conflicted: [],
 };
 
-export function projectPublicDrawingRun(state: DrawingRun): PublicDrawingRun {
-  if (typeof state !== "object" || state === null
-    || !isDrawingRunId(state.runId)
-    || !isDrawingRunStatus(state.status)
-    || !Number.isSafeInteger(state.revision)
-    || state.revision < 0) {
-    failDrawingRun("validation");
-  }
+export function projectPublicDrawingRun(state: DrawingRun, trustedScope: DrawingRunTrustedScope): PublicDrawingRun {
+  const safeState = reconstructDrawingRunState(state, trustedScope);
 
   let clarification: PublicDrawingRun["clarification"] = null;
-  if (state.clarification !== null) {
-    if (typeof state.clarification !== "object" || !isDrawingRunArtifactHash(state.clarification.hash)) failDrawingRun("validation");
-    clarification = { id: `clarification:${state.clarification.hash}`, prompt: publicClarificationPrompt };
+  if (safeState.clarification !== null) {
+    clarification = { id: `clarification:${safeState.clarification.hash}`, prompt: publicClarificationPrompt };
   }
   let preview: PublicDrawingRun["preview"] = null;
-  if (state.preview !== null) {
-    if (typeof state.preview !== "object" || !isDrawingRunArtifactHash(state.preview.hash)) failDrawingRun("validation");
-    preview = { artifactId: `preview:${state.preview.hash}`, hash: state.preview.hash };
+  if (safeState.preview !== null) {
+    preview = { artifactId: `preview:${safeState.preview.hash}`, hash: safeState.preview.hash };
   }
 
   return {
-    runId: state.runId,
-    revision: state.revision,
-    status: state.status,
-    allowedActions: [...allowedActionsByStatus[state.status]],
+    runId: safeState.runId,
+    revision: safeState.revision,
+    status: safeState.status,
+    allowedActions: [...allowedActionsByStatus[safeState.status]],
     clarification,
     preview,
   };

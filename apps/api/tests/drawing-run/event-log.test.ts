@@ -100,4 +100,43 @@ describe("DrawingRun event log", () => {
     expect(Object.isFrozen(history[0])).toBe(true);
     expect(Object.isFrozen(history[0].artifactHashes)).toBe(true);
   });
+
+  it("snapshot-reads event fields once so accessor changes cannot cross the hash boundary", () => {
+    let reads = 0;
+    const accessorEvent = { ...event } as DrawingRunEvent;
+    Object.defineProperty(accessorEvent, "artifactHashes", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? ["a".repeat(64)] : [{ secret: "C:\\private\\model.py" }];
+      },
+    });
+
+    const history = appendDrawingRunEvent([], accessorEvent);
+
+    expect(reads).toBe(1);
+    expect(history[0].artifactHashes).toEqual(["a".repeat(64)]);
+    expect(JSON.stringify(history)).not.toContain("C:\\private\\model.py");
+  });
+
+  it.each([
+    ["accepted input without an artifact", { ...event, artifactHashes: [] }],
+    ["cancelled with a new artifact", { ...event, status: "cancelled", action: "failed", errorCategory: "cancelled" }],
+    ["failed with cancelled category", { ...event, status: "failed", action: "failed", errorCategory: "cancelled", artifactHashes: [] }],
+    ["rejected with conflict category", { ...event, status: "rejected", action: "failed", errorCategory: "conflict", artifactHashes: [] }],
+    ["conflicted without one conflict artifact", { ...event, status: "conflicted", action: "failed", errorCategory: "conflict", artifactHashes: [] }],
+  ] as const)("rejects an invalid terminal or artifact-delta tuple: %s", (_label, malformed) => {
+    expect(() => appendDrawingRunEvent([], malformed as DrawingRunEvent)).toThrow(/event/i);
+  });
+
+  it("accepts a conflict only when it contributes exactly one new conflict artifact", () => {
+    const conflicted = {
+      ...event,
+      status: "conflicted",
+      action: "failed",
+      errorCategory: "conflict",
+    } as const;
+
+    expect(appendDrawingRunEvent([], conflicted)).toEqual([conflicted]);
+  });
 });

@@ -30,7 +30,7 @@ export const drawingRunEventErrorCategories = ["none", "validation", "provider_u
 
 export type DrawingRunEventErrorCategory = typeof drawingRunEventErrorCategories[number];
 
-export type DrawingRunFailureCategory = Exclude<DrawingRunEventErrorCategory, "none">;
+export type DrawingRunFailureCategory = Exclude<DrawingRunEventErrorCategory, "none" | "conflict" | "cancelled">;
 
 export interface DrawingRunEvent {
   eventId: string;
@@ -81,11 +81,18 @@ export interface DrawingRun {
   intent: DrawingIntent;
   artifactHashes: readonly string[];
   privateReceiptIds: readonly string[];
+  formalUgsHash: string | null;
   clarification: InternalClarification | null;
   preview: InternalPreview | null;
   idempotencyRecords: readonly DrawingRunIdempotencyRecord[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface DrawingRunTrustedScope {
+  runId: string;
+  ownerId: string;
+  deviceId: string;
 }
 
 export interface DrawingRunCommandBase {
@@ -154,12 +161,18 @@ export function isDrawingRunArtifactHash(value: unknown): value is string {
 export function isDrawingIntent(value: unknown): value is DrawingIntent {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<Record<keyof DrawingIntent, unknown>>;
-  if (typeof candidate.action !== "string" || !(drawingIntentActions as readonly string[]).includes(candidate.action)) return false;
-  if (typeof candidate.requestedDetail !== "string" || !(drawingIntentDetailLevels as readonly string[]).includes(candidate.requestedDetail)) return false;
-  if (typeof candidate.target !== "string" || !(drawingIntentTargets as readonly string[]).includes(candidate.target)) return false;
-  if (!Array.isArray(candidate.sourceKinds) || candidate.sourceKinds.length === 0) return false;
-  if (candidate.sourceKinds.some((kind) => typeof kind !== "string" || !(drawingIntentSourceKinds as readonly string[]).includes(kind))) return false;
-  return new Set(candidate.sourceKinds).size === candidate.sourceKinds.length;
+  const action = candidate.action;
+  const requestedDetail = candidate.requestedDetail;
+  const target = candidate.target;
+  const rawSourceKinds = candidate.sourceKinds;
+  if (typeof action !== "string" || !(drawingIntentActions as readonly string[]).includes(action)) return false;
+  if (typeof requestedDetail !== "string" || !(drawingIntentDetailLevels as readonly string[]).includes(requestedDetail)) return false;
+  if (typeof target !== "string" || !(drawingIntentTargets as readonly string[]).includes(target)) return false;
+  if (!Array.isArray(rawSourceKinds)) return false;
+  const sourceKinds = Array.from(rawSourceKinds as readonly unknown[]);
+  if (sourceKinds.length === 0) return false;
+  if (sourceKinds.some((kind) => typeof kind !== "string" || !(drawingIntentSourceKinds as readonly string[]).includes(kind))) return false;
+  return new Set(sourceKinds).size === sourceKinds.length;
 }
 
 export function isDrawingRunCancelReasonCategory(value: unknown): value is DrawingRunCancelReasonCategory {
@@ -179,7 +192,7 @@ export function isDrawingRunEventErrorCategory(value: unknown): value is Drawing
 }
 
 export function isDrawingRunFailureCategory(value: unknown): value is DrawingRunFailureCategory {
-  return isDrawingRunEventErrorCategory(value) && value !== "none";
+  return isDrawingRunEventErrorCategory(value) && value !== "none" && value !== "conflict" && value !== "cancelled";
 }
 
 export function isDrawingRunTimestamp(value: unknown): value is string {
@@ -195,29 +208,60 @@ export function createDrawingRun(input: {
   intent: DrawingIntent;
   now: string;
 }): DrawingRun {
-  if (!isDrawingRunId(input.runId) || !isSafeDrawingRunIdentifier(input.ownerId) || !isSafeDrawingRunIdentifier(input.deviceId) || !isDrawingIntent(input.intent) || !isDrawingRunTimestamp(input.now)) {
+  if (typeof input !== "object" || input === null) failDrawingRun("validation");
+  const candidate = input as Record<string, unknown>;
+  const runId = candidate.runId;
+  const ownerId = candidate.ownerId;
+  const deviceId = candidate.deviceId;
+  const now = candidate.now;
+  const rawIntent = candidate.intent;
+  if (!isDrawingRunId(runId) || !isSafeDrawingRunIdentifier(ownerId) || !isSafeDrawingRunIdentifier(deviceId) || !isDrawingRunTimestamp(now)) {
     failDrawingRun("validation");
   }
+  const intent = copyDrawingIntent(rawIntent);
 
   return {
     version: DRAWING_RUN_CONTRACT_VERSION,
-    runId: input.runId,
-    ownerId: input.ownerId,
-    deviceId: input.deviceId,
+    runId,
+    ownerId,
+    deviceId,
     status: "received",
     revision: 0,
-    intent: {
-      action: input.intent.action,
-      requestedDetail: input.intent.requestedDetail,
-      target: input.intent.target,
-      sourceKinds: [...input.intent.sourceKinds],
-    },
+    intent,
     artifactHashes: [],
     privateReceiptIds: [],
+    formalUgsHash: null,
     clarification: null,
     preview: null,
     idempotencyRecords: [],
-    createdAt: input.now,
-    updatedAt: input.now,
+    createdAt: now,
+    updatedAt: now,
   };
+}
+
+function copyDrawingIntent(value: unknown): DrawingIntent {
+  if (typeof value !== "object" || value === null) failDrawingRun("validation");
+  const candidate = value as Record<string, unknown>;
+  const action = candidate.action;
+  const requestedDetail = candidate.requestedDetail;
+  const target = candidate.target;
+  const rawSourceKinds = candidate.sourceKinds;
+  if (typeof action !== "string" || !(drawingIntentActions as readonly string[]).includes(action)
+    || typeof requestedDetail !== "string" || !(drawingIntentDetailLevels as readonly string[]).includes(requestedDetail)
+    || typeof target !== "string" || !(drawingIntentTargets as readonly string[]).includes(target)
+    || !Array.isArray(rawSourceKinds)) {
+    failDrawingRun("validation");
+  }
+  const sourceKinds = Array.from(rawSourceKinds as readonly unknown[]);
+  if (sourceKinds.length === 0
+    || sourceKinds.some((kind) => typeof kind !== "string" || !(drawingIntentSourceKinds as readonly string[]).includes(kind))
+    || new Set(sourceKinds).size !== sourceKinds.length) {
+    failDrawingRun("validation");
+  }
+  return Object.freeze({
+    action: action as DrawingIntent["action"],
+    requestedDetail: requestedDetail as DrawingIntent["requestedDetail"],
+    target: target as DrawingIntent["target"],
+    sourceKinds: Object.freeze(sourceKinds as DrawingIntent["sourceKinds"]),
+  });
 }
