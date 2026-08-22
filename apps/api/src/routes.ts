@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ApiErrorCode, FoundationError, type FigureDraft, type FigureDraftRevision, type User } from "./domain.js";
 import { AdminService } from "./admin-service.js";
@@ -14,16 +14,23 @@ import type { AgentTaskIntent } from "./agent-intent.js";
 import { parseEvidenceBundle, publicEvidenceSummary, type EvidenceBundle, type EvidenceKind } from "./evidence-bundle.js";
 import { FigureDraftService, type FigureDraftConfirmation } from "./figure-draft-service.js";
 import { FigureDraftPreviewService } from "./figure-draft-preview-service.js";
+import { parseFigureDraftRevisionPayload } from "./figure-draft-payload.js";
+import { PublicationVisualPreviewService } from "./publication-visual-preview-service.js";
+import { AgentVisioExecutionSnapshotService } from "./agent-visio-execution-snapshot.js";
 import { UniversalFigureExportService } from "./figure-export-service.js";
 import { FigureAnalysisService } from "./figure-analysis-service.js";
 import { parsePyTorchSourcePack, type SourcePack } from "./source-pack.js";
 import { publicFigureAnalysis, type FigureAnalysisRecord } from "./figure-analysis.js";
+import { FigureAnalysisPreviewServiceImpl, type FigureAnalysisPreviewResponse } from "./figure-analysis-preview-service.js";
+import { compileUniversalInputToPublicationPreview, type LegacyUniversalPreviewInput } from "./universal-input-compilation-service.js";
+import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_ATTACHMENTS = 6;
 const MAX_CODE_CHARACTERS = 200_000;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_UNIVERSAL_PREVIEW_SOURCE_BYTES = 200_000;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 const MAX_PROVIDER_API_KEY_LENGTH = 512;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
@@ -91,11 +98,13 @@ interface RouteOptions {
   agentService?: AgentServiceContract;
   figureDraftService: FigureDraftService;
   figureDraftPreviewService: FigureDraftPreviewService;
+  agentVisioExecutionSnapshotService: AgentVisioExecutionSnapshotService;
   visioExecutor: VisioExecutor;
   visioJobRunner: VisioJobRunner;
   universalFigureExportService?: UniversalFigureExportService;
   universalFigureExportRunner?: { submit(jobId: string): void | Promise<void>; cancel?(jobId: string): Promise<unknown> };
   figureAnalysisService: FigureAnalysisService;
+  figureAnalysisPreviewService: FigureAnalysisPreviewServiceImpl;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -167,6 +176,117 @@ function figureAnalysisVersion(request: FastifyRequest): void {
   }
 }
 
+function universalPreviewVersion(request: FastifyRequest): void {
+  if (request.headers["accept-figure-version"] !== "4") {
+    throw validationError("Accept-Figure-Version: 4 is required for universal figure preview", {
+      field: "Accept-Figure-Version",
+      reason: "unsupported_version",
+      supported: [4],
+    });
+  }
+}
+
+function parseUniversalPreviewBody(request: FastifyRequest): {
+  input: LegacyUniversalPreviewInput;
+  detail: "overview" | "architecture" | "operator_detail";
+} {
+  const input = body(request);
+  assertOnlyKeys(input, ["input", "detail"], "universal figure preview");
+  const detail = input.detail === undefined ? "architecture" : input.detail;
+  if (detail !== "overview" && detail !== "architecture" && detail !== "operator_detail") {
+    throw validationError("detail is invalid", { field: "detail", reason: "invalid_value" });
+  }
+
+  const source = objectField(input.input, "input");
+  const kind = requiredStringField(source.kind, "input.kind");
+  if (kind === "typed-prompt") {
+    assertOnlyKeys(source, ["kind", "sourceId", "prompt", "revision"], "input");
+    const sourceId = requiredIdentifierField(source.sourceId, "input.sourceId");
+    const prompt = boundedRawSourceField(source.prompt, "input.prompt");
+    const revisionValue = source.revision;
+    if (revisionValue !== undefined && (typeof revisionValue !== "number" || !Number.isSafeInteger(revisionValue) || revisionValue < 1)) {
+      throw validationError("input.revision must be a positive integer", { field: "input.revision", reason: "invalid_value" });
+    }
+    const revision = revisionValue as number | undefined;
+    return { input: { kind, sourceId, prompt, ...(revision === undefined ? {} : { revision }) }, detail };
+  }
+
+  if (kind === "static-pytorch") {
+    assertOnlyKeys(source, ["kind", "sourceId", "sourceSha256", "code"], "input");
+    const sourceId = requiredIdentifierField(source.sourceId, "input.sourceId");
+    const sourceSha256 = requiredSha256Field(source.sourceSha256, "input.sourceSha256");
+    const code = boundedRawSourceField(source.code, "input.code");
+    const actualSha256 = createHash("sha256").update(code, "utf8").digest("hex");
+    if (actualSha256 !== sourceSha256) {
+      throw validationError("input.sourceSha256 does not match input.code", { field: "input.sourceSha256", reason: "digest_mismatch" });
+    }
+    return { input: { kind, sourceId, sourceSha256, code }, detail };
+  }
+
+  throw validationError("input.kind is not supported", { field: "input.kind", reason: "unsupported_value" });
+}
+
+function universalPreviewUpdateIdentity(
+  serverSecret: string,
+  userId: string,
+  deviceId: string,
+  input: LegacyUniversalPreviewInput,
+  detail: "overview" | "architecture" | "operator_detail",
+) {
+  const fingerprint = input.kind === "typed-prompt"
+    ? { kind: input.kind, sourceId: input.sourceId, sourceHash: createHash("sha256").update(input.prompt, "utf8").digest("hex"), revision: input.revision ?? 1, detail }
+    : { kind: input.kind, sourceId: input.sourceId, sourceHash: input.sourceSha256, detail };
+  const key = universalPreviewOpaqueKey(serverSecret, "update-identity", { userId, deviceId, ...fingerprint });
+  return {
+    ownerId: userId,
+    deviceId,
+    workflowId: `universal-preview-${key}`,
+    documentId: `preview-${key}`,
+    pageId: "pvp-preview",
+    expectedRevision: input.kind === "typed-prompt" ? input.revision ?? 1 : 1,
+  };
+}
+
+function serverBoundUniversalPreviewInput(serverSecret: string, userId: string, deviceId: string, input: LegacyUniversalPreviewInput): LegacyUniversalPreviewInput {
+  const sourceHash = input.kind === "typed-prompt"
+    ? createHash("sha256").update(input.prompt, "utf8").digest("hex")
+    : input.sourceSha256;
+  const sourceId = `preview-source-${universalPreviewOpaqueKey(serverSecret, "compile-source", { userId, deviceId, kind: input.kind, sourceId: input.sourceId, sourceHash })}`;
+  return input.kind === "typed-prompt"
+    ? { ...input, sourceId }
+    : { ...input, sourceId };
+}
+
+function universalPreviewOpaqueKey(serverSecret: string, domain: string, value: Record<string, unknown>): string {
+  return createHmac("sha256", serverSecret).update(`${domain}\n${JSON.stringify(value)}`, "utf8").digest("hex").slice(0, 48);
+}
+
+async function auditUniversalPreview(
+  store: FoundationStore,
+  userId: string,
+  inputKind: LegacyUniversalPreviewInput["kind"],
+  preview: PublicationVisualPlanPreview,
+): Promise<void> {
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId: userId,
+    action: "universal-figure.preview.read",
+    targetType: "universal-figure-preview",
+    targetId: preview.plan.identity.canonicalHash,
+    reason: null,
+    metadata: {
+      version: 4,
+      inputKind,
+      kind: preview.kind,
+      exportEligible: preview.exportEligible,
+      planId: preview.plan.identity.planId,
+      planHash: preview.plan.identity.canonicalHash,
+    },
+    createdAt: new Date().toISOString(),
+  });
+}
+
 function parseFigureAnalysisBody(request: FastifyRequest): Record<string, unknown> {
   const input = body(request);
   const allowed = new Set(["source"]);
@@ -213,6 +333,45 @@ async function auditFigureAnalysis(
       unresolvedCount: record.unresolved.length,
       duplicate,
     },
+    createdAt: new Date().toISOString(),
+  });
+}
+
+async function auditFigureAnalysisPreview(
+  store: FoundationStore,
+  userId: string,
+  preview: FigureAnalysisPreviewResponse,
+): Promise<void> {
+  const metadata = preview.kind === "candidate_structure"
+    ? {
+      analysisId: preview.analysis.id,
+      kind: preview.kind,
+      capabilityVersion: preview.analysis.capabilityVersion,
+      version: preview.version,
+      confirmedNodeCount: preview.confirmedNodeIds.length,
+      componentCount: 0,
+      connectionCount: 0,
+      qaStatus: null,
+    }
+    : {
+      analysisId: preview.analysis.id,
+      kind: preview.kind,
+      capabilityVersion: preview.analysis.capabilityVersion,
+      version: preview.version,
+      confirmedNodeCount: 0,
+      componentCount: preview.publicationPlan.components.length,
+      connectionCount: preview.publicationPlan.connections.length,
+      qaStatus: preview.visualQa.status,
+    };
+  await store.createAuditRecord({
+    id: randomUUID(),
+    actorType: "user",
+    actorId: userId,
+    action: "figure.analysis.preview.read",
+    targetType: "figure-analysis",
+    targetId: preview.analysis.id,
+    reason: null,
+    metadata,
     createdAt: new Date().toISOString(),
   });
 }
@@ -779,6 +938,43 @@ function requiredStringField(value: unknown, field: string): string {
   return value;
 }
 
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], field: string): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw validationError(`${field} contains an unsupported field`, { field: `${field}.${key}`, reason: "forbidden" });
+    }
+  }
+}
+
+function requiredIdentifierField(value: unknown, field: string): string {
+  const identifier = requiredStringField(value, field);
+  if (!safeIdentifier(identifier)) {
+    throw validationError(`${field} must be a safe identifier`, { field, reason: "invalid_value" });
+  }
+  return identifier;
+}
+
+function boundedRawSourceField(value: unknown, field: string): string {
+  const source = requiredStringField(value, field);
+  const bytes = Buffer.byteLength(source, "utf8");
+  if (bytes === 0 || bytes > MAX_UNIVERSAL_PREVIEW_SOURCE_BYTES || source.includes("\0")) {
+    throw validationError(`${field} is outside the allowed source bounds`, {
+      field,
+      reason: "invalid_value",
+      maxBytes: MAX_UNIVERSAL_PREVIEW_SOURCE_BYTES,
+    });
+  }
+  return source;
+}
+
+function requiredSha256Field(value: unknown, field: string): string {
+  const digest = requiredStringField(value, field).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw validationError(`${field} must be a SHA-256 digest`, { field, reason: "invalid_value" });
+  }
+  return digest;
+}
+
 function optionalStringField(value: unknown, field: string): string | undefined {
   if (value == null) return undefined;
   return requiredStringField(value, field);
@@ -881,6 +1077,28 @@ function parseAgentBody(request: FastifyRequest): { conversationId: string; hash
 export function registerRoutes(app: FastifyInstance, options: RouteOptions): void {
   app.get("/health", async () => ({ status: "ok" }));
 
+  app.post("/api/universal-figure-previews", async (request, reply) => {
+    universalPreviewVersion(request);
+    const access = await requireUser(request, options);
+    const parsed = parseUniversalPreviewBody(request);
+    let compiled;
+    try {
+      compiled = compileUniversalInputToPublicationPreview(serverBoundUniversalPreviewInput(options.sessionSecret, access.user.id, access.device.id, parsed.input), {
+        detail: parsed.detail,
+        updateIdentity: universalPreviewUpdateIdentity(options.sessionSecret, access.user.id, access.device.id, parsed.input, parsed.detail),
+      });
+    } catch {
+      throw validationError("Universal figure preview input is invalid", {
+        field: "input",
+        reason: "invalid",
+      });
+    }
+    const preview = projectPublicationVisualPlanPreview(compiled);
+    await auditUniversalPreview(options.store, access.user.id, parsed.input.kind, preview);
+    reply.header("Figure-Version", "4");
+    return reply.send(preview);
+  });
+
   app.post("/api/figure-analyses", async (request, reply) => {
     figureAnalysisVersion(request);
     const access = await requireUser(request, options);
@@ -929,6 +1147,19 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     if (!analysis) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure analysis was not found", 404);
     reply.header("Figure-Version", "3");
     return reply.send(publicFigureAnalysis(analysis));
+  });
+
+  app.get("/api/figure-analyses/:analysisId/preview", async (request, reply) => {
+    figureAnalysisVersion(request);
+    const access = await requireUser(request, options);
+    const params = request.params as { analysisId?: string };
+    if (!params.analysisId || !safeIdentifier(params.analysisId)) {
+      throw validationError("Figure analysis id is invalid", { field: "analysisId", reason: "invalid" });
+    }
+    const preview = await options.figureAnalysisPreviewService.preview(access.user.id, params.analysisId);
+    await auditFigureAnalysisPreview(options.store, access.user.id, preview);
+    reply.header("Figure-Version", "3");
+    return reply.send(preview);
   });
 
   app.post("/api/auth/register", async (request, reply) => {
@@ -1028,6 +1259,84 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const preview = await options.figureDraftPreviewService.compile(access.user.id, draftId);
     await auditFigureDraftPreview(options.store, access.user.id, draftId, preview);
     return preview;
+  });
+
+  app.get("/api/figure-drafts/:draftId/revisions/:revision/publication-preview", async (request) => {
+    const access = await requireUser(request, options);
+    universalFigureVersion(request);
+    const { draftId, revision: revisionParam } = request.params as { draftId: string; revision: string };
+    const revisionNumber = Number(revisionParam);
+    if (!Number.isSafeInteger(revisionNumber) || revisionNumber < 1) {
+      throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft revision was not found", 404);
+    }
+    const snapshot = await options.figureDraftService.getRevision(access.user.id, draftId, revisionNumber);
+    if (!snapshot) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Figure draft revision was not found", 404);
+    const payload = parseFigureDraftRevisionPayload(snapshot.revision.payload, { statusCode: 500 });
+    if (!payload.universalGraphSpec) {
+      throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Figure draft revision cannot generate a publication preview", 409, {
+        reason: "universal_graph_spec_missing",
+      });
+    }
+    const blockingQuestion = payload.blockingQuestions[0];
+    if (snapshot.revision.status === "needs_confirmation" || blockingQuestion) {
+      if (snapshot.revision.status !== "needs_confirmation" || !blockingQuestion) {
+        throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Figure draft revision clarification state is invalid", 500);
+      }
+      await options.store.createAuditRecord({
+        id: randomUUID(),
+        actorType: "user",
+        actorId: access.user.id,
+        action: "figure-draft.publication-preview.read",
+        targetType: "figure-draft",
+        targetId: draftId,
+        reason: null,
+        metadata: { draftId, revision: revisionNumber, kind: "clarification" },
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        kind: "clarification" as const,
+        draft: { id: snapshot.draft.id, revision: snapshot.revision.revision },
+        question: blockingQuestion,
+        affectedRegionIds: [],
+        evidenceIds: [],
+      };
+    }
+    const preview = new PublicationVisualPreviewService().preview({
+      ugs: payload.universalGraphSpec,
+      detail: "architecture",
+      updateIdentity: {
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        workflowId: `draft:${draftId}`,
+        documentId: `preview:${draftId}`,
+        pageId: "publication-preview",
+        expectedRevision: revisionNumber,
+      },
+    });
+    await options.store.createAuditRecord({
+      id: randomUUID(),
+      actorType: "user",
+      actorId: access.user.id,
+      action: "figure-draft.publication-preview.read",
+      targetType: "figure-draft",
+      targetId: draftId,
+      reason: null,
+      metadata: {
+        draftId,
+        revision: revisionNumber,
+        kind: preview.kind,
+        exportEligible: preview.exportEligible,
+        planId: preview.pvp.identity.planId,
+        planHash: preview.pvp.identity.canonicalHash,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    return {
+      kind: preview.kind,
+      exportEligible: preview.exportEligible,
+      draft: { id: snapshot.draft.id, revision: snapshot.revision.revision },
+      pvp: preview.pvp,
+    };
   });
 
   app.get("/api/figure-drafts/:draftId/revisions/:revision", async (request) => {
@@ -1167,6 +1476,75 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     return reply.code(202).send({ ...job, pollUrl: `/api/jobs/${job.id}` });
   };
   app.post("/api/legacy/visio-exports", legacyVisioExportHandler);
+
+  app.post("/api/figure-drafts/:draftId/revisions/:revision/visio-exports", async (request, reply) => {
+    const access = await requireUser(request, options);
+    const input = body(request);
+    if (Object.keys(input).length !== 0) {
+      throw validationError("Agent Visio export body must not contain drawing or Worker fields", {
+        field: "body",
+        reason: "server_bound_snapshot_required",
+      });
+    }
+    const draftId = (request.params as { draftId: string }).draftId;
+    const revision = Number((request.params as { revision: string }).revision);
+    if (!Number.isSafeInteger(revision) || revision <= 0) {
+      throw validationError("Figure draft revision is invalid", { field: "revision", reason: "invalid" });
+    }
+    const health = await options.visioExecutor.healthCheck();
+    if (!health.connected) {
+      throw new FoundationError(health.reason === ApiErrorCode.VISIO_EXECUTION_FAILED ? ApiErrorCode.VISIO_EXECUTION_FAILED : ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED, "Visio Worker is not configured or unavailable", 503, { reason: health.reason });
+    }
+    const snapshot = await options.agentVisioExecutionSnapshotService.create({
+      owner: { tenantId: "synapse-local", userId: access.user.id },
+      draftId,
+      revision,
+    });
+    const key = idempotencyKey(request);
+    const requestHash = visioRequestHash({ snapshotId: snapshot.snapshotId, planDigest: snapshot.planDigest });
+    const created = await options.jobService.createVisioIdempotent({
+      userId: access.user.id,
+      deviceId: access.device.id,
+      input: {
+        agentVisioExecutionSnapshotId: snapshot.snapshotId,
+        planDigest: snapshot.planDigest,
+        draftId: snapshot.draftId,
+        revision: snapshot.revision,
+        requestHash,
+      },
+      idempotencyKey: key,
+      requestHash,
+    });
+    if (created.duplicate) {
+      if (!created.requestHashMatches) {
+        throw new FoundationError(ApiErrorCode.VISIO_IDEMPOTENCY_KEY_REUSED, "Idempotency-Key has already been used for a different Agent Visio revision", 409, {
+          requestHashMatches: false,
+          jobId: created.job.id,
+        });
+      }
+      return reply.code(200).send({
+        id: created.job.id,
+        type: created.job.type,
+        status: created.job.status,
+        draftId: snapshot.draftId,
+        revision: snapshot.revision,
+        snapshotId: snapshot.snapshotId,
+        planDigest: snapshot.planDigest,
+        pollUrl: `/api/jobs/${created.job.id}`,
+      });
+    }
+    options.visioJobRunner.submit(created.job.id);
+    return reply.code(202).send({
+      id: created.job.id,
+      type: created.job.type,
+      status: created.job.status,
+      draftId: snapshot.draftId,
+      revision: snapshot.revision,
+      snapshotId: snapshot.snapshotId,
+      planDigest: snapshot.planDigest,
+      pollUrl: `/api/jobs/${created.job.id}`,
+    });
+  });
 
   app.get("/api/jobs/:id", async (request) => {
     const access = await requireUser(request, options);

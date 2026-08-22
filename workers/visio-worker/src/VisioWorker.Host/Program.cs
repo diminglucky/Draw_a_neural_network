@@ -1,18 +1,36 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Text;
 
 namespace VisioWorker.Host;
 
+public static class WorkerStandardStreams
+{
+    private static readonly Encoding JsonLinesEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    public static void Configure(
+        Action<Encoding> setInputEncoding,
+        Action<Encoding> setOutputEncoding,
+        Action<TextWriter> setErrorWriter,
+        Func<Stream> openStandardError)
+    {
+        ArgumentNullException.ThrowIfNull(setInputEncoding);
+        ArgumentNullException.ThrowIfNull(setOutputEncoding);
+        ArgumentNullException.ThrowIfNull(setErrorWriter);
+        ArgumentNullException.ThrowIfNull(openStandardError);
+        setInputEncoding(JsonLinesEncoding);
+        setOutputEncoding(JsonLinesEncoding);
+        setErrorWriter(new StreamWriter(openStandardError(), JsonLinesEncoding) { AutoFlush = true });
+    }
+}
+
 internal static class Program
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
     public static async Task<int> Main(string[] args)
     {
+        WorkerStandardStreams.Configure(
+            encoding => Console.InputEncoding = encoding,
+            encoding => Console.OutputEncoding = encoding,
+            writer => Console.SetError(writer),
+            Console.OpenStandardError);
         var mode = ReadOption(args, "--mode") ?? "mock";
         var outputRoot = ReadOption(args, "--output-root");
         if (string.IsNullOrWhiteSpace(outputRoot))
@@ -21,45 +39,13 @@ internal static class Program
             return 2;
         }
 
-        var line = await Console.In.ReadLineAsync().ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(line))
+        return await WorkerHostLoop.RunAsync(Console.In, Console.Out, new WorkerHostLineProcessorOptions
         {
-            await Console.Error.WriteLineAsync("one JSON request line is required");
-            return 2;
-        }
-        line = line.TrimStart('\uFEFF');
-
-        WorkerResponse response;
-        try
-        {
-            var request = JsonSerializer.Deserialize<WorkerRequest>(line, JsonOptions)
-                ?? throw new InvalidOperationException("request JSON was empty");
-            if (!request.Mode.Equals(mode, StringComparison.OrdinalIgnoreCase))
-            {
-                request = new WorkerRequest
-                {
-                    ProtocolVersion = request.ProtocolVersion,
-                    RequestId = request.RequestId,
-                    JobId = request.JobId,
-                    Mode = mode,
-                    OutputPath = request.OutputPath,
-                    Diagram = request.Diagram,
-                };
-            }
-            response = await new WorkerRequestProcessor(
-                outputRoot,
-                visible: HasFlag(args, "--visible"),
-                attachToRunning: HasFlag(args, "--attach-to-running")
-            ).ProcessAsync(request).ConfigureAwait(false);
-        }
-        catch (Exception error)
-        {
-            response = new WorkerResponse { Error = new WorkerError { Code = "VISIO_WORKER_PROTOCOL_ERROR", Message = error.Message } };
-        }
-
-        await Console.Out.WriteLineAsync(JsonSerializer.Serialize(response, JsonOptions)).ConfigureAwait(false);
-        await Console.Out.FlushAsync().ConfigureAwait(false);
-        return response.Status == "succeeded" ? 0 : 1;
+            OutputRoot = outputRoot,
+            Mode = mode,
+            Visible = HasFlag(args, "--visible"),
+            AttachToRunning = HasFlag(args, "--attach-to-running"),
+        }).ConfigureAwait(false);
     }
 
     private static bool HasFlag(string[] args, string name) => args.Any(argument => string.Equals(argument, name, StringComparison.OrdinalIgnoreCase));

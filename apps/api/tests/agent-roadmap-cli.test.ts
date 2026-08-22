@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = resolve(process.cwd());
 const cli = resolve(root, "scripts", "agent-roadmap-cli.mjs");
+const programStatePath = resolve(root, "docs", "agent-program-state.json");
 
 function run(...args: string[]): string {
   return execFileSync(process.execPath, [cli, ...args], { cwd: root, encoding: "utf8" });
@@ -17,9 +19,9 @@ describe("agent roadmap CLI", () => {
       git: { branch: string; ahead: number; behind: number };
       strictFailures: string[];
     };
-    expect(status.currentFocus.id).toBe("M2.4");
-    expect(status.executableNodes).toHaveLength(1);
-    expect(status.executableNodes[0]).toMatchObject({ id: "M2.4", title: "Owner-scoped v3 preview route", status: "planned" });
+    expect(status.currentFocus.id).toBe("M2.12");
+    expect(status.currentFocus).toMatchObject({ status: "active" });
+    expect(status.executableNodes.map((node) => node.id)).toEqual([]);
     expect(status.git).toMatchObject({ branch: "agent", behind: 0 });
     expect(status.strictFailures).toEqual(status.git.ahead > 0 ? ["branch diverges from upstream"] : []);
     expect(JSON.stringify(status)).not.toMatch(/[A-Za-z]:\\/);
@@ -30,4 +32,33 @@ describe("agent roadmap CLI", () => {
     expect(run("verify", "--ci")).toBe("");
     expect(run("status")).toContain("Roadmap parity: ok");
   }, 15_000);
+
+  it("activates Core Drawing V1 interpretation only after its three reviewed foundation nodes are accepted", () => {
+    const state = JSON.parse(readFileSync(programStatePath, "utf8")) as {
+      currentFocus: string;
+      nodes: Array<{ id: string; title: string; status: string; dependsOn: string[]; acceptance: unknown[]; nextAction: string }>;
+    };
+
+    expect(state.currentFocus).toBe("M2.12");
+    for (const id of ["M2.8", "M2.10", "M2.11"]) {
+      expect(state.nodes.find((node) => node.id === id)).toMatchObject({ status: "accepted" });
+    }
+    const interpretation = state.nodes.find((node) => node.id === "M2.12");
+    expect(interpretation).toMatchObject({
+      title: "Evidence-augmented architecture interpretation",
+      status: "active",
+      dependsOn: ["M2.8", "M2.10", "M2.11"],
+    });
+    expect(interpretation?.acceptance).toHaveLength(3);
+    expect(interpretation?.nextAction).toMatch(/bounded interpreter.*Harness/i);
+
+    const visualGrammar = state.nodes.find((node) => node.id === "M2.13");
+    expect(visualGrammar).toMatchObject({
+      title: "Publication visual grammar and acceptance corpus",
+      status: "planned",
+      dependsOn: ["M2.12"],
+    });
+    expect(visualGrammar?.acceptance).toHaveLength(1);
+    expect(visualGrammar?.nextAction).toMatch(/M2\.12/i);
+  });
 });

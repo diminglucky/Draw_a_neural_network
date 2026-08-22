@@ -1,4 +1,4 @@
-import type { StructuralFact } from "./evidence-graph.js";
+import { parseEvidenceGraph, type EvidenceRef, type StructuralFact } from "./evidence-graph.js";
 import type { ArchitectureIRv3 } from "./network-ir-v3.js";
 import { parseArchitectureIRv3 } from "./network-ir-v3.js";
 import type { StaticPyTorchAnalysis } from "./static-pytorch-source-analyzer.js";
@@ -10,10 +10,11 @@ export function compileStaticPyTorchToArchitectureIR(
   options?: { renderReady?: boolean },
 ): ArchitectureIRv3 {
   const renderReady = options?.renderReady ?? false;
-  const blocking = analysis.unresolved.find((item) => item.severity === "blocking");
-  if (blocking) {
-    if (renderReady) throw new Error(`Cannot compile static PyTorch analysis with blocking unresolved item: ${blocking.code}: ${blocking.message}`);
-    return compileCandidate(analysis, [candidateQuestion(blocking.code, blocking.message, blocking.locator)]);
+  const blocking = analysis.unresolved.filter((item) => item.severity === "blocking");
+  if (blocking.length > 0) {
+    const firstBlocking = blocking[0]!;
+    if (renderReady) throw new Error(`Cannot compile static PyTorch analysis with blocking unresolved item: ${firstBlocking.code}: ${firstBlocking.message}`);
+    return compileCandidate(analysis, blocking.map(candidateQuestion));
   }
 
   const declarations = new Map(analysis.modules.map((module) => [module.id, module]));
@@ -27,11 +28,11 @@ export function compileStaticPyTorchToArchitectureIR(
   if (new Set(calledModuleIds).size !== calledModuleIds.length) {
     if (renderReady) throw new Error("Cannot compile repeated module calls without guessing reuse semantics");
     const repeated = calledModuleIds.find((moduleId, index) => calledModuleIds.indexOf(moduleId) !== index) ?? "module";
-    return compileCandidate(analysis, [candidateQuestion("module-reuse", `Module ${repeated} is called more than once; confirm whether it is reused or expanded.`, analysis.calls.find((call) => call.moduleId === repeated)?.locator ?? firstLocator(analysis))]);
+    return compileCandidate(analysis, [candidateQuestionFor(analysis, "module-reuse", `Module ${repeated} is called more than once; confirm whether it is reused or expanded.`, analysis.calls.find((call) => call.moduleId === repeated)?.locator ?? firstLocator(analysis))]);
   }
   if (calledModuleIds.length === 0) {
     if (renderReady) throw new Error("Cannot compile static PyTorch analysis without a supported forward call");
-    return compileCandidate(analysis, [candidateQuestion("unsupported-forward", "No supported static forward call was identified; confirm the forward path.", firstLocator(analysis))]);
+    return compileCandidate(analysis, [candidateQuestionFor(analysis, "unsupported-forward", "No supported static forward call was identified; confirm the forward path.", firstLocator(analysis))]);
   }
 
   const inputId = terminalId(analysis, "input");
@@ -74,7 +75,7 @@ export function compileStaticPyTorchToArchitectureIR(
       };
     }),
     processes: [],
-    evidenceIndex: {},
+    evidenceIndex: evidenceIndexFor(analysis),
     unresolved: [],
   };
 
@@ -88,14 +89,37 @@ function compileCandidate(analysis: StaticPyTorchAnalysis, questions: Unresolved
   const nodeEvidence = (nodeId: string) => analysis.evidence.facts
     .filter((fact) => fact.subject.kind === "node" && fact.subject.nodeId === nodeId && fact.status === "accepted")
     .map((fact) => fact.id);
-  const unresolved = questions.map((question, index) => ({
-    id: `candidate-${index + 1}-${question.code}`,
-    severity: "blocking" as const,
-    conflictKey: question.code,
-    candidateValues: [],
-    evidenceFactIds: [],
-    dependencyQuestionIds: [],
-  }));
+  const evidenceIndex = evidenceIndexFor(analysis);
+  const candidateFacts: StructuralFact[] = [];
+  const unresolved = questions.map((question, index) => {
+    const evidenceFactId = `candidate-evidence-${index + 1}`;
+    if (question.evidenceRefs.length > 0) {
+      evidenceIndex[evidenceFactId] = structuredClone(question.evidenceRefs);
+      candidateFacts.push({
+        id: evidenceFactId,
+        kind: "style_hint",
+        subject: { kind: "figure", figureId: `candidate:${index + 1}` },
+        payload: { kind: "style_hint", token: "deemphasize" },
+        evidenceRefs: structuredClone(question.evidenceRefs),
+        extractionConfidence: 1,
+        decisionConfidence: 1,
+        sourceRole: "code",
+        scope: "style",
+        status: "candidate",
+        analyzer: { id: "static-pytorch-source-analyzer", version: "1", policy: "static" },
+        conflictGroupId: null,
+        conflictKey: "candidate-topology",
+      });
+    }
+    return {
+      id: `candidate-${index + 1}-${question.code}`,
+      severity: "blocking" as const,
+      conflictKey: question.code,
+      candidateValues: [],
+      evidenceFactIds: question.evidenceRefs.length > 0 ? [evidenceFactId] : [],
+      dependencyQuestionIds: [],
+    };
+  });
   const ir: ArchitectureIRv3 = {
     version: 3,
     graphId: `pytorch:${analysis.sourceId}`,
@@ -116,20 +140,37 @@ function compileCandidate(analysis: StaticPyTorchAnalysis, questions: Unresolved
     ],
     edges: [],
     processes: [],
-    evidenceIndex: {},
+    evidenceIndex,
     unresolved,
   };
-  return parseArchitectureIRv3(ir, analysis.evidence, { renderReady: false });
+  return parseArchitectureIRv3(ir, parseEvidenceGraph({
+    ...analysis.evidence,
+    facts: [...analysis.evidence.facts, ...candidateFacts],
+  }), { renderReady: false });
 }
 
 interface UnresolvedQuestionInput {
   code: string;
   message: string;
   locator: StaticPyTorchAnalysis["unresolved"][number]["locator"];
+  evidenceRefs: EvidenceRef[];
 }
 
-function candidateQuestion(code: string, message: string, locator: UnresolvedQuestionInput["locator"]): UnresolvedQuestionInput {
-  return { code, message, locator };
+function candidateQuestion(unresolved: StaticPyTorchAnalysis["unresolved"][number]): UnresolvedQuestionInput {
+  return { code: unresolved.code, message: unresolved.message, locator: unresolved.locator, evidenceRefs: unresolved.evidenceRefs };
+}
+
+function candidateQuestionFor(analysis: StaticPyTorchAnalysis, code: string, message: string, locator: UnresolvedQuestionInput["locator"]): UnresolvedQuestionInput {
+  const matching = analysis.unresolved.find((item) => item.code === code);
+  return matching ? candidateQuestion(matching) : { code, message, locator, evidenceRefs: [] };
+}
+
+function evidenceIndexFor(analysis: StaticPyTorchAnalysis): ArchitectureIRv3["evidenceIndex"] {
+  return Object.fromEntries(
+    analysis.evidence.facts
+      .filter((fact) => fact.status === "accepted" && fact.evidenceRefs.length > 0)
+      .map((fact) => [fact.id, structuredClone(fact.evidenceRefs)]),
+  );
 }
 
 function firstLocator(analysis: StaticPyTorchAnalysis): UnresolvedQuestionInput["locator"] {

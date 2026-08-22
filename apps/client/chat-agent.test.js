@@ -10,6 +10,7 @@ import {
   escapeHtml,
   exportDiagramToVisio,
   getFigureDraftPreview,
+  getPublicationVisualPreview,
   getVisioExportJob,
   isAgentAuthorized,
   isVisioJobCancellable,
@@ -21,6 +22,33 @@ import {
   validateMessage,
   waitForVisioExport,
 } from "../../chat-agent.js";
+
+function publicationVisualResponse(kind = "formal", qaStatus = "pending") {
+  const candidate = kind === "candidate";
+  return {
+    kind,
+    exportEligible: !candidate && qaStatus === "passed",
+    draft: { id: "draft-pvp", revision: 7 },
+    pvp: {
+      identity: { schemaVersion: 1, planId: "pvp:chat", canonicalHash: "b".repeat(64) },
+      eligibility: { kind, formalReasons: candidate ? [] : ["topology-complete"], blockingReasons: candidate ? ["topology-candidate"] : [], qaStatus },
+      lineage: {},
+      coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: { x: 0, y: 0, width: 600, height: 300 }, safeMargins: { x: 25, y: 25, width: 550, height: 250 } },
+      regions: [], primitiveGroups: [],
+      primitives: [
+        { primitiveId: "primitive:input", componentId: "input", kind: "Input", regionId: "region:main", bounds: { x: 50, y: 100, width: 100, height: 80 }, zIndex: 1, styleTokenIds: [], label: "Input" },
+        { primitiveId: "primitive:output", componentId: "output", kind: "Output", regionId: "region:main", bounds: { x: 400, y: 100, width: 100, height: 80 }, zIndex: 1, styleTokenIds: [], label: "Output" },
+      ],
+      ports: [
+        { portId: "port:in", primitiveId: "primitive:input", role: "output", anchor: { side: "right", offset: 500 }, order: 0, semanticPortId: "input:out" },
+        { portId: "port:out", primitiveId: "primitive:output", role: "input", anchor: { side: "left", offset: 500 }, order: 0, semanticPortId: "output:in" },
+      ],
+      connectors: [{ connectorId: "connector:flow", sourcePortId: "port:in", targetPortId: "port:out", relation: "data", route: [{ x: 150, y: 140 }, { x: 275, y: 140 }, { x: 275, y: 140 }, { x: 400, y: 140 }], styleTokenIds: [], zIndex: 0 }],
+      annotations: [], legend: {}, styleTokens: {}, profileApplications: [], sourceMappings: [],
+      rendererRequirements: { protocolVersion: "pvp-renderer-1", requiredCapabilities: ["native-text", "orthogonal-route", "shape-data"], optionalCapabilities: [] }, updateIdentity: {},
+    },
+  };
+}
 
 describe("Agent Chat client contracts", () => {
   it("accepts supported code and image attachments and rejects unsupported types", () => {
@@ -248,5 +276,29 @@ describe("Agent Chat client contracts", () => {
     expect(preview.grammar.id).toBe("cnn-classifier");
     expect(renderFigureDraftCard({ id: "draft-1", status: "needs_confirmation", currentRevision: 1 })).not.toContain("data-agent-figure-preview");
     expect(renderFigureDraftCard({ id: "draft-1", status: "ready_for_preview", currentRevision: 1 })).toContain("data-agent-figure-preview");
+  });
+
+  it("fetches a revision-bound publication visual preview with only the v3 bearer headers", async () => {
+    let request;
+    const preview = await getPublicationVisualPreview("draft/one", 7, {
+      apiBase: "http://127.0.0.1:4180",
+      token: "bearer-token",
+      fetchImpl: async (url, init) => {
+        request = { url, init };
+        return { ok: true, status: 200, async json() { return publicationVisualResponse(); } };
+      },
+    });
+
+    expect(request).toEqual({
+      url: "http://127.0.0.1:4180/api/figure-drafts/draft%2Fone/revisions/7/publication-preview",
+      init: { method: "GET", headers: { Authorization: "Bearer bearer-token", "Accept-Figure-Version": "3" }, signal: undefined },
+    });
+    expect(preview.kind).toBe("formal");
+    await expect(getPublicationVisualPreview("draft", 0, { token: "bearer-token", fetchImpl: async () => null })).rejects.toThrow(/revision/i);
+    await expect(getPublicationVisualPreview("draft", 1, { token: "bearer-token", fetchImpl: async () => ({ ok: true, status: 200, async json() { return { kind: "formal", locator: "C:/private/model.py" }; } }) })).rejects.toThrow(/PVP|preview/i);
+    const card = renderFigureDraftCard({ id: "draft-1", status: "ready_for_preview", currentRevision: 7 });
+    expect(card).toContain("data-agent-pvp-preview");
+    expect(card).toContain("data-agent-pvp-preview-panel");
+    expect(card).not.toMatch(/snapshot|worker|com|export/i);
   });
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { FigureAnalysisService } from "../src/figure-analysis-service.js";
 import type { SourcePack } from "../src/source-pack.js";
@@ -9,7 +10,7 @@ function source(code: string, sourceId = "source-1"): SourcePack {
     name: "model.py",
     kind: "pytorch-source",
     mimeType: "text/x-python",
-    sourceSha256: "a".repeat(64),
+    sourceSha256: createHash("sha256").update(code, "utf8").digest("hex"),
     code,
     bytes: Buffer.byteLength(code, "utf8"),
   };

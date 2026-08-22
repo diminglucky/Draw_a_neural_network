@@ -62,6 +62,41 @@ describe("FigureDraftService", () => {
     expect((created.revision.payload as { readyForVisio: boolean }).readyForVisio).toBe(false);
   });
 
+  it("persists a validated universal graph spec derived only from the canonical revision IR", async () => {
+    const { FigureDraftService } = await loadServiceModule();
+    const service = new FigureDraftService({
+      store: new InMemoryFoundationStore(),
+      createDraftId: () => "draft-ugs",
+      now: () => "2026-08-14T08:00:00.000Z",
+    });
+
+    const created = await service.createFromAnalysis("user-1", "conversation-1", analysis());
+    const payload = created.revision.payload as typeof created.revision.payload & { universalGraphSpec?: unknown };
+
+    expect(payload.universalGraphSpec).toMatchObject({ version: 1, graphId: "figure-1", revision: 1 });
+    expect(JSON.stringify(payload.universalGraphSpec)).not.toMatch(/(?:[A-Za-z]:[\\/]|\\\\|\/)/);
+    expect(payload.universalGraphSpec).toMatchObject({
+      evidence: [{
+        evidenceId: "fact-merge",
+        sourceId: "architecture-v3",
+        locator: "architecture-v3:fact-merge",
+      }],
+    });
+  });
+
+  it("rejects a persisted UGS whose evidence locator could disclose a source path", async () => {
+    const { parseFigureDraftRevisionPayload } = await import("../src/figure-draft-payload.js");
+    const { adaptCanonicalNetworkIRv2 } = await import("../src/network-ir-v2-to-v3.js");
+    const { projectArchitectureIrV3ToUniversalGraphSpec } = await import("../src/universal-graph-spec-adapter.js");
+    const { status: _status, ...payload } = analysis();
+    const universalGraphSpec = structuredClone(projectArchitectureIrV3ToUniversalGraphSpec(
+      adaptCanonicalNetworkIRv2(payload.canonicalNetworkIR),
+    ));
+    universalGraphSpec.evidence[0]!.locator = "C:\\private\\model.py";
+
+    expect(() => parseFigureDraftRevisionPayload({ ...payload, universalGraphSpec })).toThrow(/invalid or contains forbidden/i);
+  });
+
   it("resolves the single permitted candidate by appending revision 2 while revision 1 remains byte-equivalent", async () => {
     const { FigureDraftService } = await loadServiceModule();
     const store = new InMemoryFoundationStore();
@@ -82,6 +117,24 @@ describe("FigureDraftService", () => {
     ]);
     expect(confirmed.revision?.payload).not.toHaveProperty("status");
     expect(JSON.stringify((await store.getFigureDraftRevision("user-1", "draft-1", 1))?.payload)).toBe(before);
+  });
+
+  it("reads one owner-scoped historical revision without replacing the current draft revision", async () => {
+    const { FigureDraftService } = await loadServiceModule();
+    const store = new InMemoryFoundationStore();
+    const service = new FigureDraftService({
+      store,
+      createDraftId: () => "draft-history",
+      now: () => "2026-08-14T08:00:00.000Z",
+    });
+    await service.createFromAnalysis("user-1", "conversation-1", analysis());
+    await service.confirm("user-1", "draft-history", 1, { questionId: "merge-kind", value: "add" });
+
+    await expect(service.getRevision("user-1", "draft-history", 1)).resolves.toMatchObject({
+      draft: { currentRevision: 2 },
+      revision: { revision: 1, status: "needs_confirmation" },
+    });
+    await expect(service.getRevision("user-2", "draft-history", 1)).resolves.toBeNull();
   });
 
   it("persists different safe confirmation records for add and concat", async () => {

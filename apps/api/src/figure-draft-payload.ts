@@ -9,6 +9,7 @@ import {
   type EvidenceKind,
 } from "./evidence-bundle.js";
 import { parseCanonicalNetworkIR, type CanonicalNetworkIR } from "./network-ir-v2.js";
+import { parseUniversalGraphSpec, type UniversalGraphSpec } from "./universal-graph-spec.js";
 
 export interface FigureDraftBlockingQuestion {
   id: string;
@@ -25,6 +26,7 @@ export interface FigureDraftRevisionPayload {
   taskIntent: AgentTaskIntent;
   evidence: ReturnType<typeof publicEvidenceSummary>;
   canonicalNetworkIR: CanonicalNetworkIR;
+  universalGraphSpec?: UniversalGraphSpec;
   blockingQuestions: FigureDraftBlockingQuestion[];
   resolvedConfirmations: FigureDraftResolvedConfirmation[];
   warnings: string[];
@@ -91,6 +93,7 @@ const payloadSchema = z.object({
   taskIntent: taskIntentSchema,
   evidence: z.array(publicEvidenceSchema).max(256),
   canonicalNetworkIR: z.unknown(),
+  universalGraphSpec: z.unknown().optional(),
   blockingQuestions: z.array(blockingQuestionSchema).max(1),
   resolvedConfirmations: z.array(resolvedConfirmationSchema).max(1).default([]),
   warnings: z.array(boundedText(512)).max(128),
@@ -151,15 +154,18 @@ export function parseFigureDraftRevisionPayload(
 ): FigureDraftRevisionPayload {
   const statusCode = options.statusCode ?? 400;
   try {
-    assertNoForbiddenContent(input);
+    assertNoForbiddenContent(input, { allowUgsEvidenceLocator: true });
     const parsed = payloadSchema.parse(input);
     const evidenceBundle = publicEvidenceBundle(parsed.evidence);
     const evidence = publicEvidenceSummary(evidenceBundle);
     const canonicalNetworkIR = parseCanonicalNetworkIR(parsed.canonicalNetworkIR, evidenceBundle);
+    const universalGraphSpec = parsed.universalGraphSpec === undefined ? undefined : parseUniversalGraphSpec(parsed.universalGraphSpec);
+    if (universalGraphSpec) assertSafePersistedUgsLocators(universalGraphSpec);
     return {
       taskIntent: parsed.taskIntent as AgentTaskIntent,
       evidence,
       canonicalNetworkIR,
+      ...(universalGraphSpec ? { universalGraphSpec } : {}),
       blockingQuestions: parsed.blockingQuestions,
       resolvedConfirmations: parsed.resolvedConfirmations,
       warnings: parsed.warnings,
@@ -230,11 +236,11 @@ function publicEvidenceBundle(evidence: Array<{
   return parseEvidenceBundle({ version: 1, sources: [...sources.values()], facts, unresolved: [] });
 }
 
-function assertNoForbiddenContent(input: unknown): void {
+function assertNoForbiddenContent(input: unknown, options: { allowUgsEvidenceLocator?: boolean } = {}): void {
   const seen = new WeakSet<object>();
   let visited = 0;
   let totalStringLength = 0;
-  const visit = (value: unknown): void => {
+  const visit = (value: unknown, path: Array<string | number> = []): void => {
     visited += 1;
     if (visited > 20_000) throw new Error("payload is too large");
     if (typeof value === "string") {
@@ -249,16 +255,34 @@ function assertNoForbiddenContent(input: unknown): void {
     if (seen.has(value)) throw new Error("payload must be acyclic");
     seen.add(value);
     if (Array.isArray(value)) {
-      for (const item of value) visit(item);
+      for (const [index, item] of value.entries()) visit(item, [...path, index]);
       return;
     }
     for (const [key, item] of Object.entries(value)) {
       const normalizedKey = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
-      if (forbiddenKeys.has(normalizedKey)) throw new Error("payload contains a forbidden field");
-      visit(item);
+      if (forbiddenKeys.has(normalizedKey) && !isAllowedUgsEvidenceLocator(key, path, options)) {
+        throw new Error("payload contains a forbidden field");
+      }
+      visit(item, [...path, key]);
     }
   };
   visit(input);
+}
+
+function isAllowedUgsEvidenceLocator(key: string, path: Array<string | number>, options: { allowUgsEvidenceLocator?: boolean }): boolean {
+  return options.allowUgsEvidenceLocator === true
+    && key === "locator"
+    && path.length === 3
+    && path[0] === "universalGraphSpec"
+    && path[1] === "evidence"
+    && typeof path[2] === "number";
+}
+
+function assertSafePersistedUgsLocators(ugs: UniversalGraphSpec): void {
+  const opaqueLocator = /^[A-Za-z][A-Za-z0-9._:-]{0,239}$/;
+  if (ugs.evidence.some((evidence) => !opaqueLocator.test(evidence.locator))) {
+    throw new Error("universal graph evidence locator must be an opaque identifier");
+  }
 }
 
 function invalidPayload(statusCode: number): FoundationError {

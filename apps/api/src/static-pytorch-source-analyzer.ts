@@ -31,6 +31,7 @@ export interface StaticPyTorchAnalysis {
 }
 
 const declarationPattern = /^\s*self\.([A-Za-z][A-Za-z0-9_]*)\s*=\s*nn\.([A-Za-z][A-Za-z0-9_]*)\([^\r\n]*\)\s*(?:#.*)?$/;
+const initializerPattern = /^(\s*)def\s+__init__\s*\([^\r\n]*\)\s*:\s*(.*)$/;
 const forwardPattern = /^(\s*)def\s+forward\s*\(([^\r\n]*)\)\s*:\s*(.*)$/;
 const assignmentCallPattern = /^\s*([A-Za-z][A-Za-z0-9_]*)\s*=\s*self\.([A-Za-z][A-Za-z0-9_]*)\(([A-Za-z][A-Za-z0-9_]*)\)\s*(?:#.*)?$/;
 const returnCallPattern = /^\s*return\s+self\.([A-Za-z][A-Za-z0-9_]*)\(([A-Za-z][A-Za-z0-9_]*)\)\s*(?:#.*)?$/;
@@ -110,6 +111,9 @@ function codeWithoutCommentsOrQuotedLiterals(line: string): string {
 }
 
 export function analyzeStaticPyTorchSource(input: { sourceId: string; sourceSha256: string; code: string }): StaticPyTorchAnalysis {
+  if (createHash("sha256").update(input.code, "utf8").digest("hex") !== input.sourceSha256.toLowerCase()) {
+    throw new Error("Static PyTorch source digest does not match submitted bytes");
+  }
   const lines = input.code.split(/\r?\n/);
   const modules: DeclaredModuleObservation[] = [];
   const calls: ForwardCallObservation[] = [];
@@ -124,11 +128,42 @@ export function analyzeStaticPyTorchSource(input: { sourceId: string; sourceSha2
   let forwardSourceLine: string | null = null;
   let lastForwardBodyLocator: EvidenceLocator | null = null;
   let lastForwardBodyLine: string | null = null;
+  let initializerIndentation: number | null = null;
+  let initializerControlIndentations: number[] = [];
 
   for (const [index, line] of lines.entries()) {
     const lineNumber = index + 1;
+    if (initializerIndentation != null && line.trim() && indentation(line) <= initializerIndentation) {
+      initializerIndentation = null;
+      initializerControlIndentations = [];
+    }
+    const initializer = line.match(initializerPattern);
+    if (initializer) {
+      initializerIndentation = initializer[1].length;
+      initializerControlIndentations = [];
+    } else if (initializerIndentation != null && line.trim() && !line.trimStart().startsWith("#")) {
+      const currentIndentation = indentation(line);
+      const previousControlIndentations = initializerControlIndentations;
+      initializerControlIndentations = initializerControlIndentations.filter((controlIndentation) => currentIndentation > controlIndentation);
+      const statement = line.trimStart();
+      if (currentIndentation > initializerIndentation && /^(?:if|for|while|try|with|match)\b/.test(statement)) {
+        initializerControlIndentations.push(currentIndentation);
+      } else if (currentIndentation > initializerIndentation && /^(?:elif|else|except|finally)\b/.test(statement) && previousControlIndentations.includes(currentIndentation)) {
+        initializerControlIndentations.push(currentIndentation);
+      }
+    }
     const declaration = line.match(declarationPattern);
     if (declaration) {
+      if (initializerIndentation == null || initializerControlIndentations.length > 0) {
+        addUnresolved(
+          input,
+          unresolved,
+          "conditional-module-declaration",
+          line,
+          codeLocator(line, lineNumber),
+          `Module ${declaration[1]} is not declared on an unconditional __init__ path.`,
+        );
+      }
       if (modules.some((module) => module.id === declaration[1])) {
         addUnresolved(input, unresolved, "module-redeclaration", line, codeLocator(line, lineNumber), `Module ${declaration[1]} is declared more than once; confirm which constructor is authoritative.`);
       }

@@ -1,11 +1,15 @@
 import type { ArchitectureIRv3, ArchitectureIRNode } from "../../src/network-ir-v3.js";
-import type { PortSemanticType, TensorRepresentation } from "../../src/evidence-graph.js";
+import type { EvidenceRef, PortSemanticType, TensorRepresentation } from "../../src/evidence-graph.js";
 
 type NodeInput = Pick<ArchitectureIRNode, "id" | "kind" | "semanticRole" | "inputPorts" | "outputPorts" | "evidenceIds"> & Partial<Pick<ArchitectureIRNode, "repeat">>;
 
 const port = (id: string, semanticType: PortSemanticType, representation: TensorRepresentation) => ({ id, representation, semanticType });
 
 function ir(graphId: string, nodes: NodeInput[], edges: ArchitectureIRv3["edges"]): ArchitectureIRv3 {
+  const evidenceIds = new Set([
+    ...nodes.flatMap((node) => node.evidenceIds),
+    ...edges.flatMap((edge) => edge.evidenceIds),
+  ]);
   return {
     version: 3,
     graphId,
@@ -15,8 +19,17 @@ function ir(graphId: string, nodes: NodeInput[], edges: ArchitectureIRv3["edges"
     nodes: nodes as ArchitectureIRv3["nodes"],
     edges,
     processes: [],
-    evidenceIndex: {},
+    evidenceIndex: Object.fromEntries([...evidenceIds].sort().map((id) => [id, [fixtureEvidence(id)]])),
     unresolved: [],
+  };
+}
+
+function fixtureEvidence(id: string): EvidenceRef {
+  return {
+    sourceId: "fixture-source",
+    sourceSha256: "0".repeat(64),
+    locator: { kind: "code", startLine: 1, startColumn: 1, endLine: 1, endColumn: 1 },
+    excerptDigest: "0".repeat(64),
   };
 }
 

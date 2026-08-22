@@ -2,6 +2,7 @@ import { projectCanvasSnapshot } from "./canvas-actions.js";
 import { resolveFoundationApiBase } from "./apps/client/api-base.js";
 import { clearProviderApiKey, maskProviderApiKey, readProviderApiKey, saveProviderApiKey } from "./apps/client/provider-key.js";
 import { previewSummary, renderPublicationFigurePreview } from "./publication-figure-preview.js";
+import { assertPublicationVisualPreview, publicationVisualPreviewSummary, renderPublicationVisualClarification, renderPublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
 
 export const AGENT_LIMITS = Object.freeze({
   messageChars: 12000,
@@ -119,11 +120,39 @@ export async function getFigureDraftPreview(draftId, options = {}) {
   return body;
 }
 
+export async function getPublicationVisualPreview(draftId, revision, options = {}) {
+  const id = String(draftId ?? "").trim();
+  const revisionNumber = Number(revision);
+  const token = String(options.token ?? "").trim();
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  if (!id) throw new Error("Figure Draft id is required");
+  if (!Number.isSafeInteger(revisionNumber) || revisionNumber < 1) throw new Error("Figure Draft revision is invalid");
+  if (!token) throw new Error("在线授权后才能预览通用结构图");
+  if (typeof fetchImpl !== "function") throw new Error("当前环境不支持网络请求");
+  const apiBase = options.apiBase || resolveFoundationApiBase(options);
+  const response = await fetchImpl(`${apiBase}/api/figure-drafts/${encodeURIComponent(id)}/revisions/${revisionNumber}/publication-preview`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}`, "Accept-Figure-Version": "3" },
+    signal: options.signal,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error?.message || `通用结构预览失败 (${response.status})`);
+  try {
+    assertPublicationVisualPreview(body);
+  } catch {
+    throw new Error("PVP 预览服务返回了无效结果");
+  }
+  return body;
+}
+
 export function renderFigureDraftCard(draft) {
   if (!draft || typeof draft !== "object" || !String(draft.id ?? "").trim()) return "";
   const ready = draft.status === "ready_for_preview";
+  const revision = Number(draft.currentRevision);
+  const pvpReady = ready && Number.isSafeInteger(revision) && revision > 0;
   const status = ready ? "可预览" : draft.status === "needs_confirmation" ? "需要确认" : "分析中";
-  return `<section class="publication-figure-card" data-agent-figure-draft="${escapeHtml(draft.id)}"><div class="publication-figure-card__meta"><strong>Publication Figure Draft</strong><span>${escapeHtml(status)} · Revision ${escapeHtml(draft.currentRevision ?? "-")}</span></div>${ready ? '<button type="button" class="ghost-button" data-agent-figure-preview>预览论文图</button><div class="publication-figure-card__preview" data-agent-figure-preview-panel hidden></div>' : '<p class="agent-chat-muted">结构确认完成后可生成论文图预览。</p>'}</section>`;
+  const pvpPreview = pvpReady ? `<button type="button" class="ghost-button" data-agent-pvp-preview>预览通用结构图</button><div class="publication-figure-card__preview" data-agent-pvp-preview-panel hidden></div>` : "";
+  return `<section class="publication-figure-card" data-agent-figure-draft="${escapeHtml(draft.id)}"${pvpReady ? ` data-agent-figure-revision="${revision}"` : ""}><div class="publication-figure-card__meta"><strong>Publication Figure Draft</strong><span>${escapeHtml(status)} · Revision ${escapeHtml(draft.currentRevision ?? "-")}</span></div>${ready ? `<div class="publication-figure-card__actions"><button type="button" class="ghost-button" data-agent-figure-preview>预览论文图</button>${pvpPreview}</div><div class="publication-figure-card__preview" data-agent-figure-preview-panel hidden></div>` : '<p class="agent-chat-muted">结构确认完成后可生成论文图预览。</p>'}</section>`;
 }
 
 const VISIO_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "expired"]);
@@ -391,6 +420,33 @@ function mountAgentChat() {
           panel.hidden = false;
         } catch (error) {
           setError(error instanceof Error ? error.message : "论文图预览失败");
+        } finally {
+          busy = false;
+          button.disabled = false;
+          refreshLock();
+        }
+      });
+      resultNode.querySelector("[data-agent-pvp-preview]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        const card = button?.closest?.("[data-agent-figure-draft]");
+        const panel = card?.querySelector?.("[data-agent-pvp-preview-panel]");
+        const revision = Number(card?.dataset?.agentFigureRevision);
+        if (!(button instanceof HTMLButtonElement) || !panel || !Number.isSafeInteger(revision) || revision < 1 || busy) return;
+        busy = true;
+        button.disabled = true;
+        refreshLock();
+        try {
+          const preview = await getPublicationVisualPreview(card.dataset.agentFigureDraft, revision, { token: readToken() });
+          if (preview.kind === "clarification") {
+            panel.innerHTML = renderPublicationVisualClarification(preview);
+          } else {
+            const summary = publicationVisualPreviewSummary(preview);
+            const status = summary.kind === "candidate" ? "候选预览（不可导出）" : "正式结构预览";
+            panel.innerHTML = `<div class="publication-figure-card__summary"><span>${escapeHtml(status)}</span><span>Revision ${escapeHtml(summary.revision)}</span></div>${renderPublicationVisualPlanPreview(preview)}`;
+          }
+          panel.hidden = false;
+        } catch (error) {
+          setError(error instanceof Error ? error.message : "通用结构预览失败");
         } finally {
           busy = false;
           button.disabled = false;

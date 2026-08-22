@@ -210,6 +210,23 @@ describe("agent roadmap ledger", () => {
     });
   });
 
+  it("permits a planned node with recorded evidence to reconcile directly into awaiting acceptance", () => {
+    const state = validState();
+    const node = state.nodes[1];
+    node.status = "awaiting_acceptance";
+    node.previousStatus = "planned";
+    node.evidence = [{
+      kind: "test",
+      satisfies: ["M2.1.contract"],
+      ref: "docs/evidence/accepted.md",
+      summary: "Focused contract tests passed.",
+      verifiedAt: "2026-08-17T00:00:00.000Z",
+      commit: COMMIT,
+    }];
+
+    expect(() => validateProgramState(state, fixtures())).not.toThrow();
+  });
+
   it("permits a null previous status only for fixed schema-v1 bootstrap baseline nodes", () => {
     expectInvalid((state) => {
       state.nodes[0].previousStatus = null;

@@ -1,15 +1,15 @@
 # Universal Neural Figure Agent Roadmap
 
 Branch: `agent`
-Updated: `2026-08-17T13:44:49.000Z`
-Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md](./superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md)
+Updated: `2026-08-21T17:36:00.000Z`
+Architecture: [docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md](./superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md)
 
 ## Current Focus
 
-- M2.4: Owner-scoped v3 preview route
-- Status: planned
-- Outcome: Owners can inspect safe previews and candidate structures never compile.
-- Next action: Write the owner-scoped v3 preview route implementation plan.
+- M2.12: Evidence-augmented architecture interpretation
+- Status: active
+- Outcome: After accepted DrawingRun and Coordinator predecessors, private receipts and verified evidence support redacted Provider-local proposals while the Harness alone mints public evidence and canonical graph identities or returns deterministic clarification without source execution or native authority.
+- Next action: Replace the free-text compatibility prototype with receipt-bound Harness rekeying only after master-plan Phase 0 through Phase 2 prerequisites and Task 0 migration inventory are accepted. Do not add Provider, renderer, Worker, or Visio authority.
 
 ## Milestones
 
@@ -23,7 +23,7 @@ Architecture: [docs/superpowers/specs/2026-08-17-universal-compiler-repair-and-m
 
 ## Executable Nodes
 
-- M2.4: Owner-scoped v3 preview route
+- None
 
 ## Open Blockers
 
