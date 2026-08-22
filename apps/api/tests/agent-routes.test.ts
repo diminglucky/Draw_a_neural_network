@@ -890,4 +890,39 @@ describe("agent chat routes", () => {
     });
     expect(duplicate).toMatchObject({ duplicate: true, reservation: { state: "failed", consumed: 1 } });
   });
+
+  it("exposes an owner-scoped Drawing Run state and controlled cancellation", async () => {
+    const { app, headers } = await createAuthorizedApp();
+    apps.add(app);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/drawing-runs",
+      headers: { ...headers, "idempotency-key": "drawing-run-start-1" },
+      payload: {
+        intent: {
+          action: "create_figure",
+          requestedDetail: "overview",
+          target: "browser_preview",
+          sourceKinds: ["typed_text"],
+        },
+      },
+    });
+    expect(start.statusCode).toBe(201);
+    expect(start.json()).toMatchObject({ status: "received", revision: 0, allowedActions: ["accept_input", "cancel"] });
+    expect(start.json()).not.toHaveProperty("privateReceiptIds");
+
+    const runId = start.json().runId as string;
+    const read = await app.inject({ method: "GET", url: `/api/drawing-runs/${runId}`, headers });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual(start.json());
+
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${runId}/cancel`,
+      headers: { ...headers, "idempotency-key": "drawing-run-cancel-1" },
+      payload: { expectedRevision: 0 },
+    });
+    expect(cancel.statusCode).toBe(200);
+    expect(cancel.json()).toMatchObject({ status: "cancelled", revision: 1, allowedActions: [] });
+  });
 });

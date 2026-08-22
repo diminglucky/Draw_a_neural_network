@@ -25,6 +25,7 @@ import {
   InMemoryAgentVisioExecutionSnapshotStore,
   type AgentVisioExecutionSnapshotStore,
 } from "./agent-visio-execution-snapshot.js";
+import { InMemoryDrawingRunCoordinator, type DrawingRunCoordinator } from "./drawing-run/coordinator.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -43,6 +44,7 @@ export interface BuildAppOptions {
   universalFigureExportRunner?: UniversalFigureExportRunnerContract;
   figureAnalysisService?: FigureAnalysisService;
   figureAnalysisPreviewService?: FigureAnalysisPreviewServiceImpl;
+  drawingRunCoordinator?: DrawingRunCoordinator;
 }
 
 export interface UniversalFigureExportRunnerContract {
@@ -92,6 +94,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   const figureAnalysisService = options.figureAnalysisService ?? new FigureAnalysisService({ store });
   const figureAnalysisPreviewService = options.figureAnalysisPreviewService ?? new FigureAnalysisPreviewServiceImpl({ store });
+  const drawingRunCoordinator = options.drawingRunCoordinator ?? new InMemoryDrawingRunCoordinator();
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
@@ -111,6 +114,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     universalFigureExportRunner: options.universalFigureExportRunner,
     figureAnalysisService,
     figureAnalysisPreviewService,
+    drawingRunCoordinator,
   });
   app.addHook("onReady", async () => {
     await visioJobRunner.recoverJobs();
