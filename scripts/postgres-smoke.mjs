@@ -13,6 +13,7 @@ const visioJobIdempotencyMigration = readFileSync(resolve(process.cwd(), "apps/a
 const figureDraftMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/006_figure_drafts.sql"), "utf8");
 const universalFigureExportJobsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/007_universal_figure_export_jobs.sql"), "utf8");
 const universalFigureStateMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/008_universal_figure_state.sql"), "utf8");
+const drawingRunsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/010_drawing_runs.sql"), "utf8");
 const userId = `smoke-${randomUUID()}`;
 const email = `${userId}@example.com`;
 const deviceOneId = `device-${randomUUID()}`;
@@ -21,6 +22,8 @@ const sessionOneId = `session-${randomUUID()}`;
 const sessionTwoId = `session-${randomUUID()}`;
 const challengeId = `challenge-${randomUUID()}`;
 const expiredChallengeId = `challenge-${randomUUID()}`;
+const drawingRunId = `run-${randomUUID()}`;
+const drawingRunEventId = `${drawingRunId}:1:received`;
 
 async function connect() {
   const client = new Client({ connectionString: databaseUrl });
@@ -42,6 +45,7 @@ try {
   await first.query(figureDraftMigration);
   await first.query(universalFigureExportJobsMigration);
   await first.query(universalFigureStateMigration);
+  await first.query(drawingRunsMigration);
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,
@@ -195,6 +199,27 @@ try {
   );
   if (usageReadback.rowCount !== 1 || Number(usageReadback.rows[0].consumed) !== 1 || usageReadback.rows[0].state !== "failed") {
     throw new Error("PostgreSQL Agent usage persistence readback failed");
+  }
+  await first.query(
+    `INSERT INTO drawing_runs
+      (run_id, owner_id, device_id, status, revision, intent, artifact_hashes, private_receipt_ids, start_idempotency_key, start_request_hash, error_category, created_at, updated_at)
+     VALUES ($1, $2, $3, 'received', 0, '{"action":"create_figure","requestedDetail":"overview","target":"browser_preview","sourceKinds":["typed_text"]}'::jsonb, '[]'::jsonb, '[]'::jsonb, $4, $5, 'none', NOW(), NOW())`,
+    [drawingRunId, userId, deviceOneId, `start-${drawingRunId}`, "0".repeat(64)],
+  );
+  await first.query(
+    `INSERT INTO drawing_run_events
+      (owner_id, run_id, event_id, revision, status, action, artifact_hashes, error_category, idempotency_key, occurred_at)
+     VALUES ($1, $2, $3, 1, 'cancelled', 'failed', '[]'::jsonb, 'cancelled', $4, NOW())`,
+    [userId, drawingRunId, drawingRunEventId, `smoke-${drawingRunId}`],
+  );
+  const drawingRunReadback = await second.query(
+    `SELECT r.status, r.revision, COUNT(e.event_id)::int AS event_count
+     FROM drawing_runs r LEFT JOIN drawing_run_events e ON e.owner_id = r.owner_id AND e.run_id = r.run_id
+     WHERE r.owner_id = $1 AND r.run_id = $2 GROUP BY r.status, r.revision`,
+    [userId, drawingRunId],
+  );
+  if (drawingRunReadback.rowCount !== 1 || drawingRunReadback.rows[0].status !== "received" || Number(drawingRunReadback.rows[0].event_count) !== 1) {
+    throw new Error("PostgreSQL Drawing Run persistence readback failed");
   }
   await second.end();
   second = null;

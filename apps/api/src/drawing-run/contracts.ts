@@ -55,6 +55,8 @@ export interface DrawingRun {
   intent: DrawingIntent;
   artifactHashes: string[];
   privateReceiptIds: string[];
+  startIdempotencyKey?: string;
+  startRequestHash?: string;
   createdAt: string;
   updatedAt: string;
   clarification: DrawingClarification | null;
@@ -111,6 +113,7 @@ export interface DrawingRunEvent {
   artifactHashes: string[];
   errorCategory: DrawingRunErrorCategory;
   occurredAt: string;
+  requestHash?: string;
 }
 
 export interface DrawingRunTransition {
@@ -165,6 +168,8 @@ export function createDrawingRun(input: {
   deviceId: string;
   intent: DrawingIntent;
   now: string;
+  startIdempotencyKey?: string;
+  startRequestHash?: string;
 }): DrawingRun {
   return {
     runId: input.runId,
@@ -175,6 +180,8 @@ export function createDrawingRun(input: {
     intent: structuredClone(input.intent),
     artifactHashes: [],
     privateReceiptIds: [],
+    startIdempotencyKey: input.startIdempotencyKey ?? `start:${input.runId}`,
+    startRequestHash: input.startRequestHash ?? "0".repeat(64),
     createdAt: input.now,
     updatedAt: input.now,
     clarification: null,

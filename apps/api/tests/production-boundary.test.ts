@@ -62,6 +62,17 @@ describe("production persistence boundary", () => {
     expect(sql).toContain("PRIMARY KEY (tenant_id, user_id, device_id, idempotency_key)");
   });
 
+  it("contains durable Drawing Run state, CAS revision, and append-only event records", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/010_drawing_runs.sql"), "utf8");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_runs");
+    expect(sql).toContain("PRIMARY KEY (owner_id, run_id)");
+    expect(sql).toContain("drawing_runs_start_idempotency_idx");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_run_events");
+    expect(sql).toContain("UNIQUE (owner_id, run_id, idempotency_key)");
+    expect(sql).toContain("FOREIGN KEY (owner_id, run_id)");
+    expect(sql).toContain("revision INTEGER NOT NULL");
+  });
+
   it("rejects memory storage in production", () => {
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: "production-secret-production-secret", STORAGE_DRIVER: "memory" })).toThrow(/development-only/);
   });

@@ -48,6 +48,11 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
   async start(input: StartDrawingRunInput): Promise<DrawingRunSnapshot> {
     const startKey = `${input.ownerId}:${input.deviceId}:${input.idempotencyKey}`;
     const requestHash = digest(input);
+    const persisted = await this.store.getByStartIdempotency(input.ownerId, input.deviceId, input.idempotencyKey);
+    if (persisted) {
+      if (persisted.startRequestHash !== requestHash) throw new DrawingRunError("DRAWING_RUN_IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different start command");
+      return projectPublicDrawingRun(persisted);
+    }
     const existing = this.startIdempotency.get(startKey);
     if (existing) {
       if (existing.requestHash !== requestHash) {
@@ -57,7 +62,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
       return projectPublicDrawingRun(replay);
     }
     const runId = this.createRunId();
-    const run = createDrawingRun({ ...input, runId, now: this.now() });
+    const run = createDrawingRun({ ...input, runId, now: this.now(), startIdempotencyKey: input.idempotencyKey, startRequestHash: requestHash });
     await this.store.create(run);
     this.startIdempotency.set(startKey, { requestHash, runId });
     return projectPublicDrawingRun(run);
@@ -109,7 +114,15 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
       const replay = await this.requireRun(command.ownerId, command.runId);
       return projectPublicDrawingRun(replay);
     }
+    const persistedEvent = await this.store.getEvent(command.ownerId, command.runId, command.idempotencyKey);
+    if (persistedEvent) {
+      if (persistedEvent.requestHash !== requestHash) throw new DrawingRunError("DRAWING_RUN_IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different command");
+      const replay = await this.requireRun(command.ownerId, command.runId);
+      this.idempotency.record(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash, persistedEvent.revision);
+      return projectPublicDrawingRun(replay);
+    }
     const transition: DrawingRunTransition = reduceDrawingRun(run, command);
+    transition.event.requestHash = requestHash;
     const result = await this.store.compareAndSet({
       ownerId: command.ownerId,
       runId: command.runId,

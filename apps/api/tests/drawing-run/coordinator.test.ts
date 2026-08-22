@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryDrawingRunCoordinator } from "../../src/drawing-run/coordinator.js";
 import { DrawingRunError } from "../../src/drawing-run/errors.js";
+import { InMemoryFoundationStore } from "../../src/store.js";
+import { FoundationDrawingRunStoreAdapter } from "../../src/drawing-run/store.js";
 
 const intent = {
   action: "create_figure" as const,
@@ -25,5 +27,14 @@ describe("Drawing Run coordinator", () => {
     await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-1", intent });
     await expect(coordinator.get("owner-2", "run-1")).resolves.toBeNull();
     await expect(coordinator.cancel({ ownerId: "owner-1", deviceId: "foreign", runId: "run-1", expectedRevision: 0, idempotencyKey: "cancel-1" })).rejects.toBeInstanceOf(DrawingRunError);
+  });
+
+  it("restores start idempotency from the shared durable store", async () => {
+    const foundation = new InMemoryFoundationStore();
+    const first = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(foundation), createRunId: () => "run-1" });
+    const input = { ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-1", intent };
+    const started = await first.start(input);
+    const second = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(foundation), createRunId: () => "run-2" });
+    await expect(second.start(input)).resolves.toEqual(started);
   });
 });

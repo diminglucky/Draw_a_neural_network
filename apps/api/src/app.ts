@@ -26,6 +26,7 @@ import {
   type AgentVisioExecutionSnapshotStore,
 } from "./agent-visio-execution-snapshot.js";
 import { InMemoryDrawingRunCoordinator, type DrawingRunCoordinator } from "./drawing-run/coordinator.js";
+import { FoundationDrawingRunStoreAdapter } from "./drawing-run/store.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -94,7 +95,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   const figureAnalysisService = options.figureAnalysisService ?? new FigureAnalysisService({ store });
   const figureAnalysisPreviewService = options.figureAnalysisPreviewService ?? new FigureAnalysisPreviewServiceImpl({ store });
-  const drawingRunCoordinator = options.drawingRunCoordinator ?? new InMemoryDrawingRunCoordinator();
+  const drawingRunCoordinator = options.drawingRunCoordinator ?? new InMemoryDrawingRunCoordinator({
+    store: new FoundationDrawingRunStoreAdapter(store),
+  });
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
