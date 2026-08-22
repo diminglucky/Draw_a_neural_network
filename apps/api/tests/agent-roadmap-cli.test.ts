@@ -50,7 +50,7 @@ describe("agent roadmap CLI", () => {
       dependsOn: ["M2.8", "M2.10", "M2.11"],
     });
     expect(interpretation?.acceptance).toHaveLength(3);
-    expect(interpretation?.nextAction).toMatch(/bounded interpreter.*Harness/i);
+    expect(interpretation?.nextAction).toMatch(/receipt-bound Harness rekeying/i);
 
     const visualGrammar = state.nodes.find((node) => node.id === "M2.13");
     expect(visualGrammar).toMatchObject({
