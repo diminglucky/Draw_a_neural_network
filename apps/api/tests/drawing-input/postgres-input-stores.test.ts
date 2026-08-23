@@ -15,7 +15,7 @@ class FakeInputArtifactPool implements PoolLike {
   async query(text: string, values: readonly unknown[] = []): Promise<QueryResult<any>> {
     if (text.includes("INSERT INTO drawing_evidence_packs")) {
       const key = `${values[0]}:${values[1]}`;
-      if (!this.packs.has(key)) this.packs.set(key, JSON.parse(String(values[2])) as EvidencePack);
+      if (!this.packs.has(key)) this.packs.set(key, reorderJsonKeys(JSON.parse(String(values[2])) as EvidencePack));
       return { rows: [], rowCount: 1 };
     }
     if (text.includes("SELECT pack FROM drawing_evidence_packs")) {
@@ -33,6 +33,14 @@ class FakeInputArtifactPool implements PoolLike {
     }
     throw new Error(`Unexpected SQL: ${text}`);
   }
+}
+
+function reorderJsonKeys<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(reorderJsonKeys) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, reorderJsonKeys(child)])) as T;
+  }
+  return value;
 }
 
 function pack(): EvidencePack {

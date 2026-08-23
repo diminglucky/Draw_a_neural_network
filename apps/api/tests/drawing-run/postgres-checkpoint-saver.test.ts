@@ -5,6 +5,7 @@ import {
   PostgresDrawingWorkflowCheckpointSaver,
 } from "../../src/drawing-run/postgres-checkpoint-saver.js";
 import { createDrawingRunLangGraph, deriveDrawingWorkflowThreadId, runDrawingRunLangGraph } from "../../src/drawing-run/langgraph-workflow.js";
+import type { DrawingWorkflowPendingWriteRecord, DrawingWorkflowCheckpointRecord } from "../../src/drawing-run/postgres-checkpoint-saver.js";
 
 const identity = { ownerId: "owner-1", deviceId: "device-1", runId: "run-1", revision: 3 };
 const threadId = deriveDrawingWorkflowThreadId(identity);
@@ -22,6 +23,18 @@ function checkpoint(overrides: Record<string, unknown> = {}): Checkpoint {
   };
 }
 
+class DelayedCheckpointStore extends InMemoryDrawingWorkflowCheckpointStore {
+  async putCheckpoint(record: DrawingWorkflowCheckpointRecord): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await super.putCheckpoint(record);
+  }
+
+  async putWrite(record: DrawingWorkflowPendingWriteRecord): Promise<void> {
+    if (!(await this.getCheckpoint(record.identity, record.checkpointNamespace, record.checkpointId))) throw new Error("write arrived before checkpoint");
+    await super.putWrite(record);
+  }
+}
+
 describe("durable LangGraph checkpoint boundary", () => {
   it("restores a scoped checkpoint and pending writes through a new saver instance", async () => {
     const store = new InMemoryDrawingWorkflowCheckpointStore();
@@ -33,6 +46,13 @@ describe("durable LangGraph checkpoint boundary", () => {
     const restored = await second.getTuple({ configurable: { ...config.configurable, checkpoint_id: "checkpoint-1" } });
     expect(restored?.checkpoint.channel_values.phase).toBe("received");
     expect(restored?.pendingWrites).toEqual([["task-1", "safeChannel", { hash: "a".repeat(64) }]]);
+  });
+
+  it("fences concurrent checkpoint writes behind their parent checkpoint", async () => {
+    const saver = new PostgresDrawingWorkflowCheckpointSaver(new DelayedCheckpointStore());
+    const put = saver.put(config, checkpoint(), metadata, {});
+    const writes = saver.putWrites({ configurable: { ...config.configurable, checkpoint_id: "checkpoint-1" } }, [["safeChannel", { hash: "a".repeat(64) }]], "task-1");
+    await expect(Promise.all([put, writes])).resolves.toBeDefined();
   });
 
   it("rejects a checkpoint config whose identity is not bound to its thread", async () => {

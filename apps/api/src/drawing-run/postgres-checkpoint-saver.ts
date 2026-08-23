@@ -177,6 +177,8 @@ export class PostgresDrawingWorkflowCheckpointStore implements DrawingWorkflowCh
 }
 
 export class PostgresDrawingWorkflowCheckpointSaver extends BaseCheckpointSaver {
+  private readonly pendingCheckpointWrites = new Map<string, Promise<void>>();
+
   constructor(private readonly store: DrawingWorkflowCheckpointStore, serde?: ConstructorParameters<typeof BaseCheckpointSaver>[0]) {
     super(serde);
   }
@@ -223,22 +225,14 @@ export class PostgresDrawingWorkflowCheckpointSaver extends BaseCheckpointSaver 
   async put(config: RunnableConfig, checkpoint: Checkpoint, metadata: CheckpointMetadata, _newVersions: Record<string, string | number>): Promise<RunnableConfig> {
     const scope = scopedConfig(config);
     validateCheckpoint(scope.identity, checkpoint, metadata);
-    const [checkpointType, checkpointData] = await this.serde.dumpsTyped(checkpoint);
-    const [metadataType, metadataData] = await this.serde.dumpsTyped(metadata);
-    enforceSize(checkpointData, MAX_CHECKPOINT_BYTES, "checkpoint");
-    enforceSize(metadataData, MAX_METADATA_BYTES, "checkpoint metadata");
-    await this.store.putCheckpoint({
-      identity: scope.identity,
-      threadId: scope.threadId,
-      checkpointNamespace: scope.checkpointNamespace,
-      checkpointId: checkpoint.id,
-      parentCheckpointId: config.configurable?.checkpoint_id ? String(config.configurable.checkpoint_id) : null,
-      checkpointType,
-      checkpointData,
-      metadataType,
-      metadataData,
-      createdAt: checkpoint.ts,
-    });
+    const key = checkpointKey(scope, checkpoint.id);
+    const operation = this.persistCheckpoint(scope, config, checkpoint, metadata);
+    this.pendingCheckpointWrites.set(key, operation);
+    try {
+      await operation;
+    } finally {
+      if (this.pendingCheckpointWrites.get(key) === operation) this.pendingCheckpointWrites.delete(key);
+    }
     return checkpointConfig(scope, checkpoint.id);
   }
 
@@ -247,6 +241,7 @@ export class PostgresDrawingWorkflowCheckpointSaver extends BaseCheckpointSaver 
     const checkpointId = config.configurable?.checkpoint_id;
     if (!checkpointId) throw new Error("Checkpoint writes require checkpoint_id");
     if (!IDENTIFIER.test(taskId)) throw new Error("Checkpoint task_id is invalid");
+    await this.pendingCheckpointWrites.get(checkpointKey(scope, String(checkpointId)));
     for (let index = 0; index < writes.length; index += 1) {
       const [channel, value] = writes[index]!;
       const [valueType, valueData] = await this.serde.dumpsTyped(value);
@@ -266,6 +261,25 @@ export class PostgresDrawingWorkflowCheckpointSaver extends BaseCheckpointSaver 
     }
   }
 
+  private async persistCheckpoint(scope: ScopedConfig, config: RunnableConfig, checkpoint: Checkpoint, metadata: CheckpointMetadata): Promise<void> {
+    const [checkpointType, checkpointData] = await this.serde.dumpsTyped(checkpoint);
+    const [metadataType, metadataData] = await this.serde.dumpsTyped(metadata);
+    enforceSize(checkpointData, MAX_CHECKPOINT_BYTES, "checkpoint");
+    enforceSize(metadataData, MAX_METADATA_BYTES, "checkpoint metadata");
+    await this.store.putCheckpoint({
+      identity: scope.identity,
+      threadId: scope.threadId,
+      checkpointNamespace: scope.checkpointNamespace,
+      checkpointId: checkpoint.id,
+      parentCheckpointId: config.configurable?.checkpoint_id ? String(config.configurable.checkpoint_id) : null,
+      checkpointType,
+      checkpointData,
+      metadataType,
+      metadataData,
+      createdAt: checkpoint.ts,
+    });
+  }
+
   async deleteThread(threadId: string): Promise<void> {
     if (!IDENTIFIER.test(threadId)) throw new Error("Checkpoint thread_id is invalid");
     throw new Error("Deleting checkpoints requires owner/device/run/revision scope");
@@ -276,6 +290,11 @@ interface ScopedConfig {
   identity: DrawingWorkflowCheckpointIdentity;
   threadId: string;
   checkpointNamespace: string;
+}
+
+function checkpointKey(scope: ScopedConfig, checkpointId: string): string {
+  const identity = scope.identity;
+  return `${identity.ownerId}\u0000${identity.deviceId}\u0000${identity.runId}\u0000${identity.revision}\u0000${scope.checkpointNamespace}\u0000${checkpointId}`;
 }
 
 function scopedConfig(config: RunnableConfig): ScopedConfig {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { StaticPyTorchAnalysis } from "../static-pytorch-source-analyzer.js";
 import { compareCodeUnits } from "../stable-string-order.js";
+import { canonicalJson } from "../analysis-plan-snapshot.js";
 
 export type EvidenceSourceKind = "static_analysis" | "typed_declaration" | "architecture_fact" | "sketch_observation";
 export type EvidenceLocatorKind = "section" | "fact" | "observation" | "derived";
@@ -85,7 +86,7 @@ export function createEvidencePack(input: { facts: readonly EvidenceFactInput[];
   }));
   const unresolved = (input.unresolved ?? []).map(validateUnresolved).sort((left, right) => compareCodeUnits(JSON.stringify(left), JSON.stringify(right)));
   const packBody = { version: 1 as const, facts: evidence, unresolved };
-  return { ...packBody, hash: createHash("sha256").update(JSON.stringify(packBody), "utf8").digest("hex") };
+  return { ...packBody, hash: createHash("sha256").update(canonicalJson(packBody), "utf8").digest("hex") };
 }
 
 export function publicEvidencePack(value: EvidencePack): { version: 1; hash: string; evidence: PublicEvidenceReference[]; blockingCount: number } {
@@ -152,7 +153,7 @@ export function assertEvidencePack(value: EvidencePack): EvidencePack {
     return fact;
   });
   const body = { version: 1 as const, facts, unresolved: value.unresolved.map(validateUnresolved) };
-  const hash = createHash("sha256").update(JSON.stringify(body), "utf8").digest("hex");
+  const hash = createHash("sha256").update(canonicalJson(body), "utf8").digest("hex");
   if (hash !== value.hash) throw new Error("EvidencePack hash does not match its contents");
   const canonical = createEvidencePack({
     facts: facts.map((fact) => ({
@@ -167,7 +168,7 @@ export function assertEvidencePack(value: EvidencePack): EvidencePack {
     })),
     unresolved: body.unresolved,
   });
-  if (JSON.stringify(canonical.facts) !== JSON.stringify(facts) || JSON.stringify(canonical.unresolved) !== JSON.stringify(body.unresolved) || canonical.hash !== value.hash) throw new Error("EvidencePack is not canonically ordered or deduplicated");
+  if (canonicalJson(canonical.facts) !== canonicalJson(facts) || canonicalJson(canonical.unresolved) !== canonicalJson(body.unresolved) || canonical.hash !== value.hash) throw new Error("EvidencePack is not canonically ordered or deduplicated");
   return value;
 }
 
