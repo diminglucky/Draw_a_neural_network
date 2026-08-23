@@ -217,6 +217,30 @@ describe("receipt-bound Structural Harness", () => {
     const invalidMergeResult = assessInterpreterProposal({ evidencePack: invalidMergePack, proposal: invalidMergeProposal });
     expect(invalidMergeResult).toMatchObject({ kind: "rejected", errorCategory: "validation", reasonCode: "merge_arity" });
   });
+
+  it("does not use feedback-only paths to prove input/output reachability", () => {
+    const pack = topologyEvidencePack("merge", "Add");
+    const base = createDeterministicLocalProposal(pack)!;
+    const proposal = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        { localRef: "feedback-only", kind: "operator" as const, displayLabel: "feedback-only", inputLocalRefs: ["feedback-only:in"], outputLocalRefs: ["feedback-only:out"], evidenceRefs: ["fact:f:2"] },
+      ],
+      ports: [
+        ...base.ports,
+        { localRef: "feedback-only:in", nodeLocalRef: "feedback-only", direction: "input" as const, displayLabel: null, evidenceRefs: ["fact:f:2"] },
+        { localRef: "feedback-only:out", nodeLocalRef: "feedback-only", direction: "output" as const, displayLabel: null, evidenceRefs: ["fact:f:2"] },
+      ],
+      edges: [
+        ...base.edges.filter((edge) => edge.targetPortLocalRef !== "output:in"),
+        { localRef: "merge-feedback-only", sourcePortLocalRef: "merge:out", targetPortLocalRef: "feedback-only:in", relation: "feedback" as const, evidenceRefs: ["fact:f:4"] },
+        { localRef: "feedback-only-output", sourcePortLocalRef: "feedback-only:out", targetPortLocalRef: "output:in", relation: "data" as const, evidenceRefs: ["fact:f:5"] },
+      ],
+    };
+    const result = assessInterpreterProposal({ evidencePack: pack, proposal });
+    expect(result).toMatchObject({ kind: "rejected", errorCategory: "validation", reasonCode: "unreachable_node" });
+  });
 });
 
 function topologyEvidencePack(mergeRelation: "data" | "merge", operation: "Add" | "Concat", disconnected = false, singleMergeEdge = false): EvidencePack {

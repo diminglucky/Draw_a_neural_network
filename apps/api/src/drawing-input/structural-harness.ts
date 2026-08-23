@@ -695,6 +695,8 @@ function walkNodes(starts: readonly string[], relations: Map<string, Interpreter
   while (pending.length > 0) {
     const current = pending.shift()!;
     for (const edge of relations.get(current) ?? []) {
+      // Feedback is preserved as a relation, but cannot establish the primary input/output path.
+      if (edge.relation === "feedback") continue;
       const portRef = direction === "forward" ? edge.targetPortLocalRef : edge.sourcePortLocalRef;
       const next = ports.get(portRef)!.nodeLocalRef;
       if (!visited.has(next)) { visited.add(next); pending.push(next); }
