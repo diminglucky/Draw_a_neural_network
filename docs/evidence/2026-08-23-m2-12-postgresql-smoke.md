@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-23
 **Branch:** `agent`
-**Implementation commit:** `162dfa7a23265e5ceea799d87c596a92cce40d51`
+**Implementation commit:** the commit containing this evidence record
 **Scope:** local PostgreSQL adapter smoke only; this is not M2.12 acceptance.
 
 ## Command
@@ -22,9 +22,20 @@ The smoke ran against a real temporary PostgreSQL 18 container using the locally
 - owner-scoped EvidencePack, local proposal, and drawing artifact persistence/readback from a second connection;
 - hash and owner-bound checks exercised by the smoke script.
 
+The separate checkpoint smoke command also passed against the same real PostgreSQL service:
+
+```powershell
+npm run api:smoke:postgres:checkpoint
+```
+
+It verified:
+
+- checkpoint and pending-write round-trip through a second PostgreSQL connection;
+- owner/device/run isolation and revision isolation;
+- latest-checkpoint lookup and scoped deletion without crossing another run or revision.
+
 ## Not Proven
 
-- PostgreSQL LangGraph checkpoint saver round-trip or checkpoint restart recovery;
 - API process restart recovery against the database;
 - Redis durability or production service configuration;
 - live Provider behavior;
