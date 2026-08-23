@@ -129,6 +129,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const drawingRunCoordinator = options.drawingRunCoordinator ?? new InMemoryDrawingRunCoordinator({
     store: new FoundationDrawingRunStoreAdapter(store),
     workflow: drawingWorkflow,
+    leaseCoordinator: options.leaseCoordinator,
   });
   const privateReceiptStore = options.privateReceiptStore ?? new InMemoryPrivateReceiptStore();
   const app = Fastify({ logger: false });

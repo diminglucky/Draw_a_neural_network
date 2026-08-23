@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { MemorySaver } from "@langchain/langgraph";
 import { InMemoryDrawingRunCoordinator } from "../../src/drawing-run/coordinator.js";
-import { DrawingRunError } from "../../src/drawing-run/errors.js";
+import { DrawingRunError, DrawingWorkflowError } from "../../src/drawing-run/errors.js";
 import { InMemoryFoundationStore } from "../../src/store.js";
 import { FoundationDrawingRunStoreAdapter } from "../../src/drawing-run/store.js";
 import type { DrawingWorkflowRunner } from "../../src/drawing-run/langgraph-workflow.js";
@@ -10,6 +10,7 @@ import { InMemoryPrivateReceiptStore, receiptBatchHash } from "../../src/drawing
 import { InMemoryEvidencePackStore, createReceiptBoundDrawingWorkflow } from "../../src/drawing-input/intent.js";
 import { InMemoryDrawingArtifactStore } from "../../src/drawing-input/drawing-artifacts.js";
 import { createPublicationDrawingWorkflowComposer } from "../../src/drawing-run/publication-composer.js";
+import { InMemoryLeaseCoordinator } from "../../src/lease-coordinator.js";
 
 const intent = {
   action: "create_figure" as const,
@@ -102,6 +103,30 @@ describe("Drawing Run coordinator", () => {
     await expect(coordinator.cancel({ ownerId: "owner-1", deviceId: "foreign", runId: "run-1", expectedRevision: 0, idempotencyKey: "cancel-1" })).rejects.toBeInstanceOf(DrawingRunError);
   });
 
+  it("commits a concurrent command and its event exactly once", async () => {
+    const foundation = new InMemoryFoundationStore();
+    const coordinator = new InMemoryDrawingRunCoordinator({
+      store: new FoundationDrawingRunStoreAdapter(foundation),
+      createRunId: () => "run-atomic-transition",
+    });
+    const started = await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-atomic", intent });
+    const command = {
+      ownerId: "owner-1",
+      deviceId: "device-1",
+      runId: started.runId,
+      expectedRevision: 0,
+      idempotencyKey: "accept-atomic",
+      type: "accept_input" as const,
+      receiptIds: ["receipt-1"],
+      artifactHash: "a".repeat(64),
+    };
+
+    const results = await Promise.all([coordinator.dispatch(command), coordinator.dispatch(command)]);
+    expect(results[0]).toMatchObject({ status: "input_accepted", revision: 1 });
+    expect(results[1]).toEqual(results[0]);
+    await expect(coordinator.listEvents("owner-1", started.runId)).resolves.toMatchObject([{ revision: 1, action: "received" }]);
+  });
+
   it("restores start idempotency from the shared durable store", async () => {
     const foundation = new InMemoryFoundationStore();
     const first = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(foundation), createRunId: () => "run-1" });
@@ -143,6 +168,79 @@ describe("Drawing Run coordinator", () => {
     const second = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(foundation), workflow });
     await Promise.all([second.recover(), second.recover()]);
     expect(calls).toBe(1);
+  });
+
+  it("uses a shared lease to fence recovery across coordinator instances", async () => {
+    const foundation = new InMemoryFoundationStore();
+    const first = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(foundation), createRunId: () => "run-shared-lease" });
+    const started = await first.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-shared-lease", intent });
+    await first.acceptInput({ ownerId: "owner-1", deviceId: "device-1", runId: started.runId, expectedRevision: 0, idempotencyKey: "accept-shared-lease", receiptIds: ["receipt-1"], artifactHash: "a".repeat(64) });
+
+    let calls = 0;
+    const workflow: DrawingWorkflowRunner = {
+      run: async (workflowInput) => {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return {
+          runId: workflowInput.runId,
+          ownerId: workflowInput.ownerId,
+          deviceId: workflowInput.deviceId,
+          revision: workflowInput.revision,
+          phase: "awaiting_input",
+          artifactHashes: workflowInput.artifactHashes,
+          evidencePackHash: null,
+          needsInterpreter: false,
+          proposalHash: null,
+          assessment: null,
+          pvpHash: null,
+          qaHash: null,
+          pauseReason: "input_required",
+        };
+      },
+    };
+    const sharedLease = new InMemoryLeaseCoordinator();
+    const second = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(foundation), workflow, leaseCoordinator: sharedLease, instanceId: "coordinator-2" });
+    const third = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(foundation), workflow, leaseCoordinator: sharedLease, instanceId: "coordinator-3" });
+
+    await Promise.all([second.recover(), third.recover()]);
+    expect(calls).toBe(1);
+  });
+
+  it("records provider timeout separately from validation failures", async () => {
+    const workflow: DrawingWorkflowRunner = {
+      run: async (workflowInput) => {
+        if (workflowInput.artifactHashes.length === 0) {
+          return {
+            runId: workflowInput.runId,
+            ownerId: workflowInput.ownerId,
+            deviceId: workflowInput.deviceId,
+            revision: workflowInput.revision,
+            phase: "awaiting_input",
+            artifactHashes: [],
+            evidencePackHash: null,
+            needsInterpreter: false,
+            proposalHash: null,
+            assessment: null,
+            pvpHash: null,
+            qaHash: null,
+            pauseReason: "input_required",
+          };
+        }
+        throw new DrawingWorkflowError("provider_timeout", "provider deadline exceeded");
+      },
+    };
+    const coordinator = new InMemoryDrawingRunCoordinator({ createRunId: () => "run-provider-timeout", workflow });
+    const started = await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-provider-timeout", intent });
+    await coordinator.acceptInput({ ownerId: "owner-1", deviceId: "device-1", runId: started.runId, expectedRevision: 0, idempotencyKey: "accept-provider-timeout", receiptIds: ["receipt-1"], artifactHash: "a".repeat(64) });
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const current = await coordinator.get("owner-1", started.runId);
+      if (current?.status === "failed") {
+        expect(current.errorCategory).toBe("provider_timeout");
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Drawing Run did not fail");
   });
 
   it("does not rerun the structure workflow after preview publication", async () => {

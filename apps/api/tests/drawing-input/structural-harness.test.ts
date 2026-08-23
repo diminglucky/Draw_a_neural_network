@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createEvidencePack, type EvidencePack } from "../../src/drawing-input/evidence-pack.js";
 import { assessInterpreterProposal, createDeterministicLocalProposal, createStoredArchitectureInterpreter, InMemoryLocalProposalStore, ReceiptBoundStructuralHarness, type InterpreterLocalProposal } from "../../src/drawing-input/structural-harness.js";
 import { InMemoryEvidencePackStore } from "../../src/drawing-input/intent.js";
+import { DrawingWorkflowError } from "../../src/drawing-run/errors.js";
 
 function evidencePack(overrides: { secondConfidence?: number; blocking?: boolean } = {}): EvidencePack {
   const facts = [
@@ -166,6 +167,15 @@ describe("receipt-bound Structural Harness", () => {
     const corruptStore = { put: async () => {}, get: async () => proposal(true) };
     const assessment = await new ReceiptBoundStructuralHarness(packs, corruptStore).assess({ runId: "run-1", ownerId: "owner-1", deviceId: "device-1", revision: 0, evidencePackHash: pack.hash, proposalHash: interpreted.proposalHash });
     expect(assessment).toEqual({ kind: "rejected", errorCategory: "provider_invalid" });
+  });
+
+  it("classifies Provider timeout and availability failures at the workflow boundary", async () => {
+    const timeout = createStoredArchitectureInterpreter({ propose: async () => { throw Object.assign(new Error("deadline exceeded"), { code: "ETIMEDOUT" }); } }, new InMemoryLocalProposalStore());
+    await expect(timeout.interpret({ version: 1, allowedPurpose: "architecture_interpretation", facts: [], maxCharacters: 1000 }, { ownerId: "owner-1", deviceId: "device-1", runId: "run-1", revision: 0 })).rejects.toMatchObject({ category: "provider_timeout" });
+
+    const unavailable = createStoredArchitectureInterpreter({ propose: async () => { throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }); } }, new InMemoryLocalProposalStore());
+    await expect(unavailable.interpret({ version: 1, allowedPurpose: "architecture_interpretation", facts: [], maxCharacters: 1000 }, { ownerId: "owner-1", deviceId: "device-1", runId: "run-1", revision: 0 })).rejects.toBeInstanceOf(DrawingWorkflowError);
+    await expect(unavailable.interpret({ version: 1, allowedPurpose: "architecture_interpretation", facts: [], maxCharacters: 1000 }, { ownerId: "owner-1", deviceId: "device-1", runId: "run-1", revision: 0 })).rejects.toMatchObject({ category: "provider_unavailable" });
   });
 
   it("preserves verified branch, merge, and Add semantics in the deterministic local lane", () => {

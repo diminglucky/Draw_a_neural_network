@@ -1,5 +1,22 @@
-import type { DrawingRun, DrawingRunEvent } from "./contracts.js";
+import type { DrawingRun, DrawingRunEvent, DrawingRunTransition } from "./contracts.js";
 import type { FoundationStore } from "../store.js";
+
+export type DrawingRunCommitResult = "updated" | "conflict" | "replayed";
+
+export function assertDrawingRunTransition(input: {
+  ownerId: string;
+  runId: string;
+  expectedRevision: number;
+  transition: DrawingRunTransition;
+  idempotencyKey: string;
+}): void {
+  const { next, event } = input.transition;
+  if (next.ownerId !== input.ownerId || next.runId !== input.runId || !next.deviceId) throw new Error("Drawing Run transition identity is invalid");
+  if (next.revision !== input.expectedRevision + 1 || event.runId !== input.runId || event.revision !== next.revision || event.status !== next.status || event.errorCategory !== next.errorCategory || event.artifactHashes.length !== next.artifactHashes.length || event.artifactHashes.some((hash, index) => hash !== next.artifactHashes[index])) {
+    throw new Error("Drawing Run transition revision is invalid");
+  }
+  if (!input.idempotencyKey.trim()) throw new Error("Drawing Run transition idempotency key is required");
+}
 
 export interface DrawingRunStore {
   create(run: DrawingRun): Promise<void>;
@@ -13,6 +30,13 @@ export interface DrawingRunStore {
     expectedRevision: number;
     next: DrawingRun;
   }): Promise<"updated" | "conflict">;
+  commitTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult>;
   appendEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent>;
   getEvent(ownerId: string, runId: string, idempotencyKey: string): Promise<DrawingRunEvent | null>;
   listEvents(ownerId: string, runId: string): Promise<DrawingRunEvent[]>;
@@ -58,8 +82,37 @@ export class InMemoryDrawingRunStore implements DrawingRunStore {
   }): Promise<"updated" | "conflict"> {
     const key = this.key(input.ownerId, input.runId);
     const current = this.runs.get(key);
-    if (!current || current.revision !== input.expectedRevision) return "conflict";
+    if (!current || current.revision !== input.expectedRevision || current.deviceId !== input.next.deviceId) return "conflict";
     this.runs.set(key, structuredClone(input.next));
+    return "updated";
+  }
+
+  async commitTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult> {
+    assertDrawingRunTransition(input);
+    const eventKey = `${input.ownerId}:${input.runId}:${input.idempotencyKey}`;
+    const existing = this.eventKeys.get(eventKey);
+    if (existing) {
+      if (existing.requestHash && input.transition.event.requestHash && existing.requestHash !== input.transition.event.requestHash) {
+        throw new Error("Idempotency key was reused for a different Drawing Run command");
+      }
+      return "replayed";
+    }
+    const key = this.key(input.ownerId, input.runId);
+    const current = this.runs.get(key);
+    if (!current || current.revision !== input.expectedRevision || current.deviceId !== input.transition.next.deviceId) return "conflict";
+    const storedEvent = structuredClone(input.transition.event);
+    const eventsKey = `${input.ownerId}:${input.runId}`;
+    const events = this.events.get(eventsKey) ?? [];
+    this.runs.set(key, structuredClone(input.transition.next));
+    events.push(storedEvent);
+    this.events.set(eventsKey, events);
+    this.eventKeys.set(eventKey, storedEvent);
     return "updated";
   }
 
@@ -124,6 +177,17 @@ export class FoundationDrawingRunStoreAdapter implements DrawingRunStore {
     next: DrawingRun;
   }): Promise<"updated" | "conflict"> {
     return this.foundation.compareAndSetDrawingRun(input);
+  }
+
+  commitTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult> {
+    assertDrawingRunTransition(input);
+    return this.foundation.commitDrawingRunTransition(input);
   }
 
   appendEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {

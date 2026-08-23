@@ -23,7 +23,8 @@ import {
   parseFigureDraftRevisionPayload,
   type FigureDraftRevisionPayload,
 } from "./figure-draft-payload.js";
-import type { DrawingRun, DrawingRunEvent } from "./drawing-run/contracts.js";
+import type { DrawingRun, DrawingRunEvent, DrawingRunTransition } from "./drawing-run/contracts.js";
+import type { DrawingRunCommitResult } from "./drawing-run/store.js";
 import { InMemoryDrawingRunStore } from "./drawing-run/store.js";
 
 export interface FoundationStore {
@@ -78,6 +79,13 @@ export interface FoundationStore {
   listDrawingRunsForRecovery(): Promise<DrawingRun[]>;
   getDrawingRunByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null>;
   compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict">;
+  commitDrawingRunTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult>;
   appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent>;
   getDrawingRunEvent(ownerId: string, runId: string, idempotencyKey: string): Promise<DrawingRunEvent | null>;
   listDrawingRunEvents(ownerId: string, runId: string): Promise<DrawingRunEvent[]>;
@@ -124,6 +132,16 @@ export class InMemoryFoundationStore implements FoundationStore {
 
   compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict"> {
     return this.drawingRunStore.compareAndSet(input);
+  }
+
+  commitDrawingRunTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult> {
+    return this.drawingRunStore.commitTransition(input);
   }
 
   appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {

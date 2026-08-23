@@ -24,7 +24,8 @@ import {
   type FigureDraftRevisionPayload,
 } from "./figure-draft-payload.js";
 import type { FoundationStore } from "./store.js";
-import type { DrawingRun, DrawingRunEvent, DrawingRunStatus } from "./drawing-run/contracts.js";
+import type { DrawingRun, DrawingRunEvent, DrawingRunStatus, DrawingRunTransition } from "./drawing-run/contracts.js";
+import { assertDrawingRunTransition, type DrawingRunCommitResult } from "./drawing-run/store.js";
 
 export interface QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> {
   rows: Row[];
@@ -1016,6 +1017,82 @@ export class PostgresFoundationStore implements FoundationStore {
       ],
     );
     return result.rowCount === 1 ? "updated" : "conflict";
+  }
+
+  async commitDrawingRunTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult> {
+    assertDrawingRunTransition(input);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query(
+        "SELECT * FROM drawing_run_events WHERE owner_id = $1 AND run_id = $2 AND idempotency_key = $3",
+        [input.ownerId, input.runId, input.idempotencyKey],
+      );
+      const existingEvent = existing.rows[0] ? mapDrawingRunEvent(existing.rows[0]) : null;
+      if (existingEvent) {
+        if (existingEvent.requestHash && input.transition.event.requestHash && existingEvent.requestHash !== input.transition.event.requestHash) {
+          throw new Error("Idempotency key was reused for a different Drawing Run command");
+        }
+        await client.query("COMMIT");
+        client.release();
+        return "replayed";
+      }
+
+      const run = input.transition.next;
+      const updated = await client.query(
+        `UPDATE drawing_runs
+         SET status = $5, revision = $6, intent = $7, artifact_hashes = $8, private_receipt_ids = $9,
+             clarification = $10, preview = $11, error_category = $12, updated_at = $13
+         WHERE owner_id = $1 AND run_id = $2 AND revision = $3 AND device_id = $4
+         RETURNING run_id`,
+        [
+          input.ownerId, input.runId, input.expectedRevision, run.deviceId, run.status, run.revision,
+          JSON.stringify(run.intent), JSON.stringify(run.artifactHashes), JSON.stringify(run.privateReceiptIds),
+          run.clarification ? JSON.stringify(run.clarification) : null,
+          run.preview ? JSON.stringify(run.preview) : null,
+          run.errorCategory, run.updatedAt,
+        ],
+      );
+      if (updated.rowCount !== 1) {
+        const replay = await client.query(
+          "SELECT * FROM drawing_run_events WHERE owner_id = $1 AND run_id = $2 AND idempotency_key = $3",
+          [input.ownerId, input.runId, input.idempotencyKey],
+        );
+        await client.query("COMMIT");
+        client.release();
+        if (replay.rows[0]) {
+          const replayedEvent = mapDrawingRunEvent(replay.rows[0]);
+          if (replayedEvent.requestHash && input.transition.event.requestHash && replayedEvent.requestHash !== input.transition.event.requestHash) {
+            throw new Error("Idempotency key was reused for a different Drawing Run command");
+          }
+          return "replayed";
+        }
+        return "conflict";
+      }
+
+      await client.query(
+        `INSERT INTO drawing_run_events
+         (owner_id, run_id, event_id, revision, status, action, artifact_hashes, error_category, idempotency_key, request_hash, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          input.ownerId, input.runId, input.transition.event.eventId, input.transition.event.revision,
+          input.transition.event.status, input.transition.event.action, JSON.stringify(input.transition.event.artifactHashes),
+          input.transition.event.errorCategory, input.idempotencyKey, input.transition.event.requestHash ?? null,
+          input.transition.event.occurredAt,
+        ],
+      );
+      await client.query("COMMIT");
+      client.release();
+      return "updated";
+    } catch (error) {
+      return failFigureDraftTransaction(client, error);
+    }
   }
 
   async appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {

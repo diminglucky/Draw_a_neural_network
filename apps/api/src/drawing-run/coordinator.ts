@@ -15,12 +15,13 @@ import {
   type ResumeDrawingRunInput,
   type StartDrawingRunInput,
 } from "./contracts.js";
-import { DrawingRunError } from "./errors.js";
+import { classifyDrawingWorkflowFailure, DrawingRunError } from "./errors.js";
 import { DrawingRunIdempotency } from "./idempotency.js";
 import { projectPublicDrawingRun, projectPublicDrawingRunEvent } from "./public-projection.js";
 import { reduceDrawingRun } from "./reducer.js";
 import { InMemoryDrawingRunStore, type DrawingRunStore } from "./store.js";
 import type { DrawingWorkflowRunner } from "./langgraph-workflow.js";
+import { InMemoryLeaseCoordinator, type LeaseCoordinator } from "../lease-coordinator.js";
 
 export interface DrawingRunCoordinator {
   start(input: StartDrawingRunInput): Promise<DrawingRunSnapshot>;
@@ -44,17 +45,27 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
   private readonly createRunId: () => string;
   private readonly workflow?: DrawingWorkflowRunner;
   private readonly inFlight = new Set<string>();
+  private readonly leaseCoordinator: LeaseCoordinator;
+  private readonly leaseSeconds: number;
+  private readonly instanceId: string;
 
   constructor(options: {
     store?: DrawingRunStore;
     now?: () => string;
     createRunId?: () => string;
     workflow?: DrawingWorkflowRunner;
+    leaseCoordinator?: LeaseCoordinator;
+    leaseSeconds?: number;
+    instanceId?: string;
   } = {}) {
     this.store = options.store ?? new InMemoryDrawingRunStore();
     this.now = options.now ?? (() => new Date().toISOString());
     this.createRunId = options.createRunId ?? (() => `run-${randomUUID()}`);
     this.workflow = options.workflow;
+    this.leaseCoordinator = options.leaseCoordinator ?? new InMemoryLeaseCoordinator();
+    this.leaseSeconds = options.leaseSeconds ?? 60;
+    if (!Number.isFinite(this.leaseSeconds) || this.leaseSeconds <= 0) throw new Error("Drawing Run lease duration must be positive");
+    this.instanceId = options.instanceId ?? `coordinator-${randomUUID()}`;
   }
 
   async start(input: StartDrawingRunInput): Promise<DrawingRunSnapshot> {
@@ -134,14 +145,53 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     const key = `${run.ownerId}\u0000${run.deviceId}\u0000${run.runId}\u0000${run.revision}`;
     if (this.inFlight.has(key)) return;
     this.inFlight.add(key);
+    const leaseKey = `drawing-run:${run.ownerId}:${run.deviceId}:${run.runId}:${run.revision}`;
+    const leaseOwner = `${this.instanceId}:${key}`;
+    let lease: { fencingToken: number } | null = null;
+    let leaseLost = false;
+    let renewPromise: Promise<boolean> | null = null;
+    const renewLease = async (): Promise<boolean> => {
+      if (!lease || leaseLost) return false;
+      if (renewPromise) return renewPromise;
+      const request = (async () => {
+        try {
+          const result = await this.leaseCoordinator.renew(leaseKey, leaseOwner, lease.fencingToken, this.leaseSeconds);
+          if (!result.acquired || result.fencingToken !== lease.fencingToken) leaseLost = true;
+        } catch {
+          leaseLost = true;
+        }
+        return !leaseLost;
+      })();
+      renewPromise = request.finally(() => { renewPromise = null; });
+      return renewPromise;
+    };
+    const renewIntervalMs = Math.max(1_000, Math.floor(this.leaseSeconds * 1_000 / 3));
+    let renewInterval: ReturnType<typeof setInterval> | undefined;
     try {
-      await this.dispatchWorkflow(run);
+      let claimed;
+      try {
+        claimed = await this.leaseCoordinator.claim(leaseKey, leaseOwner, this.leaseSeconds);
+      } catch {
+        return;
+      }
+      if (!claimed.acquired || claimed.fencingToken === null) return;
+      lease = { fencingToken: claimed.fencingToken };
+      renewInterval = setInterval(() => { void renewLease(); }, renewIntervalMs);
+      await this.dispatchWorkflow(run, renewLease);
     } finally {
+      if (renewInterval) clearInterval(renewInterval);
+      if (lease) {
+        try {
+          await this.leaseCoordinator.release(leaseKey, leaseOwner, lease.fencingToken);
+        } catch {
+          // Losing release must not turn a completed workflow into an unhandled rejection.
+        }
+      }
       this.inFlight.delete(key);
     }
   }
 
-  private async dispatchWorkflow(run: DrawingRun): Promise<void> {
+  private async dispatchWorkflow(run: DrawingRun, leaseHeld: () => Promise<boolean>): Promise<void> {
     if (run.status === "awaiting_clarification") return;
     const expectedRevision = run.revision;
     try {
@@ -154,10 +204,12 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
         artifactHashes: run.artifactHashes,
         clarificationAnswerHash,
       });
+      if (!(await leaseHeld())) return;
       const current = await this.store.get(run.ownerId, run.runId);
       if (!current || current.revision !== expectedRevision || current.status === "cancelled") return;
       await this.applyWorkflowResult(current, result);
-    } catch {
+    } catch (error) {
+      if (!(await leaseHeld())) return;
       const current = await this.store.get(run.ownerId, run.runId);
       if (!current || current.revision !== expectedRevision || current.status === "cancelled") return;
       await this.dispatch({
@@ -167,7 +219,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
         expectedRevision,
         idempotencyKey: `workflow-failure:${expectedRevision}`,
         type: "fail",
-        errorCategory: "validation",
+        errorCategory: classifyDrawingWorkflowFailure(error),
       });
     }
   }
@@ -268,15 +320,19 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     }
     const transition: DrawingRunTransition = reduceDrawingRun(run, command);
     transition.event.requestHash = requestHash;
-    const result = await this.store.compareAndSet({
+    const result = await this.store.commitTransition({
       ownerId: command.ownerId,
       runId: command.runId,
       expectedRevision: command.expectedRevision,
-      next: transition.next,
+      transition,
+      idempotencyKey: command.idempotencyKey,
     });
     if (result === "conflict") throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run changed concurrently");
-    await this.store.appendEvent(command.ownerId, transition.event, command.idempotencyKey);
     this.idempotency.record(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash, transition.next.revision);
+    if (result === "replayed") {
+      const replay = await this.requireRun(command.ownerId, command.runId);
+      return projectPublicDrawingRun(replay);
+    }
     if (this.workflow && isWorkflowResumable(transition.next.status)) {
       void this.scheduleWorkflow(transition.next);
     }

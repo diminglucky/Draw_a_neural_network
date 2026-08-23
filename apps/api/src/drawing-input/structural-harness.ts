@@ -6,6 +6,7 @@ import type { ProviderContextPayload } from "./provider-context.js";
 import type { DrawingWorkflowHarness, DrawingWorkflowInterpreter } from "../drawing-run/langgraph-workflow.js";
 import { DRAWING_CLARIFICATION_CONFIRMATION_HASH } from "../drawing-run/contracts.js";
 import { digestDrawingArtifact, type DrawingArtifactStore } from "./drawing-artifacts.js";
+import { DrawingWorkflowError, classifyProviderFailure } from "../drawing-run/errors.js";
 
 export type LocalNodeKind = "input" | "output" | "operator" | "module";
 export type LocalEdgeRelation = "data" | "skip" | "merge" | "condition" | "feedback";
@@ -92,7 +93,12 @@ export function createStoredArchitectureInterpreter(provider: LocalProposalProvi
   return {
     async interpret(input: ProviderContextPayload, scope): Promise<{ proposalHash: string }> {
       if (!scope) throw new Error("Stored architecture interpretation requires owner scope");
-      const proposal = await provider.propose(input);
+      let proposal: unknown;
+      try {
+        proposal = await provider.propose(input);
+      } catch (error) {
+        throw new DrawingWorkflowError(classifyProviderFailure(error), "Architecture Provider request failed", error);
+      }
       const proposalHash = digestLocalProposal(proposal);
       await proposals.put(scope.ownerId, proposalHash, proposal);
       return { proposalHash };
