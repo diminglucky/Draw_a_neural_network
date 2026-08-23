@@ -1192,6 +1192,11 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     }
   });
 
+  app.get("/api/drawing-runs", async (request) => {
+    const access = await requireUser(request, options);
+    return { runs: await options.drawingRunCoordinator.list(access.user.id) };
+  });
+
   app.get("/api/drawing-runs/:runId", async (request) => {
     const access = await requireUser(request, options);
     const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");

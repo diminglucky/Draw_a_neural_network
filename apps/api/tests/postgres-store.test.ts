@@ -704,4 +704,37 @@ describe("PostgresFoundationStore", () => {
     expect(read?.text).toMatch(/FROM figure_analyses/);
     expect(read?.values).toEqual(["user-1", "analysis-1"]);
   });
+
+  it("binds Drawing Run event insertion and idempotent readback to the owner", async () => {
+    const eventRow = {
+      owner_id: "owner-1",
+      run_id: "run-shared",
+      event_id: "run-shared:1:cancel",
+      revision: 1,
+      status: "cancelled",
+      action: "failed",
+      artifact_hashes: [],
+      error_category: "cancelled",
+      idempotency_key: "cancel-1",
+      request_hash: "a".repeat(64),
+      occurred_at: "2026-08-23T00:00:00.000Z",
+    };
+    const { pool, calls } = fakePool({ rows: [eventRow], rowCount: 1 });
+    const store = new PostgresFoundationStore(pool);
+    const event = {
+      eventId: eventRow.event_id,
+      runId: eventRow.run_id,
+      revision: eventRow.revision,
+      status: eventRow.status as "cancelled",
+      action: eventRow.action as "failed",
+      artifactHashes: [],
+      errorCategory: eventRow.error_category as "cancelled",
+      occurredAt: eventRow.occurred_at,
+      requestHash: eventRow.request_hash,
+    };
+
+    await expect(store.appendDrawingRunEvent("owner-1", event, "cancel-1")).resolves.toMatchObject(event);
+    expect(calls[0]?.text).toContain("WHERE owner_id = $11 AND run_id = $1");
+    expect(calls[0]?.values.at(-1)).toBe("owner-1");
+  });
 });

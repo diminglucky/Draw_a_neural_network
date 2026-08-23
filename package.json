@@ -8,6 +8,7 @@
     "api:check": "tsx scripts/check-foundation.mjs",
     "api:smoke:postgres": "node scripts/postgres-smoke.mjs",
     "api:smoke:postgres:checkpoint": "tsx scripts/postgres-checkpoint-smoke.ts",
+    "api:smoke:postgres:restart": "tsx scripts/postgres-restart-smoke.ts",
     "api:smoke:redis": "tsx scripts/redis-smoke.mjs",
     "api:smoke:admin:durable": "tsx scripts/durable-admin-control-plane-smoke.mjs",
     "agent:status": "node scripts/agent-roadmap-cli.mjs status",

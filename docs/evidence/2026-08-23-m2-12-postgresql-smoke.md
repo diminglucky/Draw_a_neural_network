@@ -34,9 +34,17 @@ It verified:
 - owner/device/run isolation and revision isolation;
 - latest-checkpoint lookup and scoped deletion without crossing another run or revision.
 
+The replacement-process smoke also passed:
+
+```powershell
+npm run api:smoke:postgres:restart
+```
+
+It started two separate Node API processes against the same PostgreSQL database. Both recovered the same non-terminal Drawing Run and reused its durable LangGraph checkpoint state. This is local API process evidence, not production deployment or Redis evidence.
+
 ## Not Proven
 
-- API process restart recovery against the database;
+- production deployment restart and rollback recovery;
 - Redis durability or production service configuration;
 - live Provider behavior;
 - Windows/Visio creation, save, reopen, native readback, or visual acceptance;

@@ -74,10 +74,11 @@ export interface FoundationStore {
   getFigureAnalysis(userId: string, id: string): Promise<FigureAnalysisRecord | null>;
   createDrawingRun(run: DrawingRun): Promise<void>;
   getDrawingRun(ownerId: string, runId: string): Promise<DrawingRun | null>;
+  listDrawingRuns(ownerId: string): Promise<DrawingRun[]>;
   listDrawingRunsForRecovery(): Promise<DrawingRun[]>;
   getDrawingRunByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null>;
   compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict">;
-  appendDrawingRunEvent(event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent>;
+  appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent>;
   getDrawingRunEvent(ownerId: string, runId: string, idempotencyKey: string): Promise<DrawingRunEvent | null>;
   listDrawingRunEvents(ownerId: string, runId: string): Promise<DrawingRunEvent[]>;
 }
@@ -109,6 +110,10 @@ export class InMemoryFoundationStore implements FoundationStore {
     return this.drawingRunStore.get(ownerId, runId);
   }
 
+  listDrawingRuns(ownerId: string): Promise<DrawingRun[]> {
+    return this.drawingRunStore.list(ownerId);
+  }
+
   listDrawingRunsForRecovery(): Promise<DrawingRun[]> {
     return this.drawingRunStore.listForRecovery();
   }
@@ -121,8 +126,8 @@ export class InMemoryFoundationStore implements FoundationStore {
     return this.drawingRunStore.compareAndSet(input);
   }
 
-  appendDrawingRunEvent(event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {
-    return this.drawingRunStore.appendEvent(event, idempotencyKey);
+  appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {
+    return this.drawingRunStore.appendEvent(ownerId, event, idempotencyKey);
   }
 
   getDrawingRunEvent(ownerId: string, runId: string, idempotencyKey: string): Promise<DrawingRunEvent | null> {

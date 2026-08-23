@@ -31,6 +31,7 @@ export interface DrawingRunCoordinator {
   cancel(input: CancelDrawingRunInput): Promise<DrawingRunSnapshot>;
   recover(): Promise<void>;
   get(ownerId: string, runId: string): Promise<DrawingRunSnapshot | null>;
+  list(ownerId: string): Promise<DrawingRunSnapshot[]>;
 }
 
 export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
@@ -237,6 +238,10 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     return run ? projectPublicDrawingRun(run) : null;
   }
 
+  async list(ownerId: string): Promise<DrawingRunSnapshot[]> {
+    return (await this.store.list(ownerId)).map(projectPublicDrawingRun);
+  }
+
   async dispatch(command: DrawingRunCommand): Promise<DrawingRunSnapshot> {
     const run = await this.requireRun(command.ownerId, command.runId);
     assertDevice(run, command.deviceId);
@@ -262,7 +267,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
       next: transition.next,
     });
     if (result === "conflict") throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run changed concurrently");
-    await this.store.appendEvent(transition.event, command.idempotencyKey);
+    await this.store.appendEvent(command.ownerId, transition.event, command.idempotencyKey);
     this.idempotency.record(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash, transition.next.revision);
     if (this.workflow && isWorkflowResumable(transition.next.status)) {
       void this.scheduleWorkflow(transition.next);

@@ -54,7 +54,7 @@ LangGraph 是 Drawing Run 的编排核心，负责阶段路由、暂停、恢复
 - `buildDefaultApp()` 已将同一 Foundation Pool 上的 receipt、EvidencePack、proposal、UGS/PVP/QA artifact、Drawing Run store 和 PostgreSQL LangGraph checkpoint saver 装配到 receipt-bound workflow；API 启动时会扫描并恢复非终态 Drawing Run，内存模式仍只用于开发/测试，不能作为重启证据。
 - formal composer 已复用 `composeGeneralPublicationGraph`、`compilePublicationVisualPlan` 和确定性 PVP QA；它从 Harness 持久化的 UGS 取回内容，禁止用固定 hash 伪造 preview。
 
-这些是本地契约、单元测试、API 边界和一次真实临时 PostgreSQL smoke 的证据；PostgreSQL smoke 已覆盖迁移、Drawing Run、receipt、EvidencePack/proposal/artifact persistence 与跨连接 readback，但尚未覆盖 checkpoint round-trip、进程重启恢复、Redis 或生产服务验收。真实 Provider，或 Windows/Visio 创建、保存、重开和独立 readback 仍未验收。普通文本和草图仍不能绕过 bounded analyzer/Harness；澄清只有显式确认才会 formalize。
+这些是本地契约、单元测试、API 边界和真实临时 PostgreSQL smoke 的证据；PostgreSQL smoke 已覆盖迁移、Drawing Run、receipt、EvidencePack/proposal/artifact persistence、checkpoint round-trip，以及两个替代 API 进程的 checkpoint 恢复与跨连接 readback。该证据仍不等于 Redis 或生产部署验收。真实 Provider，或 Windows/Visio 创建、保存、重开和独立 readback 仍未验收。普通文本和草图仍不能绕过 bounded analyzer/Harness；澄清只有显式确认才会 formalize。
 
 历史 P0 能力仍然有效：authenticated static-linear PyTorch analysis 只支持声明范围内的静态分析，does not execute user Python；[2026-08-17-universal-compiler-repair-and-migration-design.md](superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md) 仅作为已接受兼容基线，不是当前产品方向。
 

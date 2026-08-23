@@ -980,6 +980,16 @@ export class PostgresFoundationStore implements FoundationStore {
     return result.rows[0] ? mapDrawingRun(result.rows[0]) : null;
   }
 
+  async listDrawingRuns(ownerId: string): Promise<DrawingRun[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM drawing_runs
+       WHERE owner_id = $1
+       ORDER BY updated_at DESC, run_id DESC`,
+      [ownerId],
+    );
+    return result.rows.map(mapDrawingRun);
+  }
+
   async listDrawingRunsForRecovery(): Promise<DrawingRun[]> {
     const result = await this.pool.query(
       `SELECT * FROM drawing_runs
@@ -1008,20 +1018,20 @@ export class PostgresFoundationStore implements FoundationStore {
     return result.rowCount === 1 ? "updated" : "conflict";
   }
 
-  async appendDrawingRunEvent(event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {
+  async appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {
     const inserted = await this.pool.query(
       `INSERT INTO drawing_run_events
        (owner_id, run_id, event_id, revision, status, action, artifact_hashes, error_category, idempotency_key, request_hash, occurred_at)
        SELECT owner_id, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-       FROM drawing_runs WHERE run_id = $1
+       FROM drawing_runs WHERE owner_id = $11 AND run_id = $1
        ON CONFLICT (owner_id, run_id, idempotency_key) DO NOTHING
        RETURNING *`,
-      [event.runId, event.eventId, event.revision, event.status, event.action, JSON.stringify(event.artifactHashes), event.errorCategory, idempotencyKey, event.requestHash ?? null, event.occurredAt],
+      [event.runId, event.eventId, event.revision, event.status, event.action, JSON.stringify(event.artifactHashes), event.errorCategory, idempotencyKey, event.requestHash ?? null, event.occurredAt, ownerId],
     );
     if (inserted.rows[0]) return mapDrawingRunEvent(inserted.rows[0]);
     const existing = await this.pool.query(
-      "SELECT * FROM drawing_run_events WHERE run_id = $1 AND idempotency_key = $2",
-      [event.runId, idempotencyKey],
+      "SELECT * FROM drawing_run_events WHERE owner_id = $1 AND run_id = $2 AND idempotency_key = $3",
+      [ownerId, event.runId, idempotencyKey],
     );
     if (!existing.rows[0]) throw new Error("Drawing Run event could not be persisted");
     return mapDrawingRunEvent(existing.rows[0]);
