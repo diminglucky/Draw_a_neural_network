@@ -74,6 +74,7 @@ export interface FoundationStore {
   getFigureAnalysis(userId: string, id: string): Promise<FigureAnalysisRecord | null>;
   createDrawingRun(run: DrawingRun): Promise<void>;
   getDrawingRun(ownerId: string, runId: string): Promise<DrawingRun | null>;
+  listDrawingRunsForRecovery(): Promise<DrawingRun[]>;
   getDrawingRunByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null>;
   compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict">;
   appendDrawingRunEvent(event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent>;
@@ -106,6 +107,10 @@ export class InMemoryFoundationStore implements FoundationStore {
 
   getDrawingRun(ownerId: string, runId: string): Promise<DrawingRun | null> {
     return this.drawingRunStore.get(ownerId, runId);
+  }
+
+  listDrawingRunsForRecovery(): Promise<DrawingRun[]> {
+    return this.drawingRunStore.listForRecovery();
   }
 
   getDrawingRunByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null> {

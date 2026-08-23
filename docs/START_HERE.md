@@ -1,43 +1,63 @@
-# 跨计算机开始
+# 开始这里
 
-## Verified P0.0 capability
+## 当前产品基线
 
-The accepted v3 entry point is authenticated static-linear PyTorch analysis. It accepts a bounded source descriptor, produces evidence-backed Architecture IR v3, and does not execute user Python. Dynamic control flow and unsupported forward structures return a candidate structure with a blocking question; they do not create a preview, PlanSnapshot, export token, Worker job, or Visio output.
+当前产品分支是 `agent`。产品目标不是 M2.4 预览，也不是五个专用 grammar 的模板集合，而是一个以 LangGraph 编排 Drawing Run、以证据和 Structural Harness 控制结构真相的可扩展神经网络绘图 Agent：
 
-The current authoritative design is [2026-08-17-universal-compiler-repair-and-migration-design.md](superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md). P0.0 is deliberately narrower than universal figure generation. Figure Components, publication preview, real Windows/Visio save-close-reopen/readback, Keras/ONNX, image understanding, and GNN remain unaccepted milestones.
-
-当前产品分支是 `agent`。在另一台机器上从仓库根目录开始：
-
-```powershell
-git fetch origin
-git switch agent
-git pull --ff-only
-npm ci
-npm run agent:status
+```text
+input receipt
+  -> LangGraph DrawingRun workflow
+  -> EvidencePack / local proposal
+  -> Structural Harness
+  -> formal UGS 或 clarification / rejection
+  -> GPG / PVP / browser preview
+  -> selected existing Visio page
+  -> sealed update / save / reopen / independent readback
 ```
 
-`docs/agent-program-state.json` 是当前产品状态的唯一账本，`docs/ROADMAP.md` 是由它生成的只读视图。开始实现前先查看 `agent:status` 的 current focus、依赖和 blocker；完成节点后必须更新证据并运行 `npm run agent:verify-roadmap`。
+权威设计是：
 
-先阅读 [通用编译器修复与迁移设计](superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md)，再修改代码或文档；2026-08-14 设计仅作为历史背景，不再作为当前实现依据。
+- [Core Drawing V1](superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md)
+- [Universal Neural Drawing Agent Platform](superpowers/plans/2026-08-21-universal-neural-drawing-agent-platform.md)
+- [M2.12 Receipt-Bound Structural Harness](superpowers/specs/2026-08-21-m2-12-receipt-bound-structural-harness-design.md)
+- [LangGraph Runtime Adoption](superpowers/specs/2026-08-22-langgraph-core-runtime-design.md)
 
-## 当前能力与禁止性声明
+`docs/agent-program-state.json` 是当前路线账本，`docs/ROADMAP.md` 是生成视图。开始工作前运行：
 
-仓库已有认证、Draft、Network IR、确定性 preview、受限 Visio 协议，以及五个专用 grammar。五个 grammar 是针对已验证结构的专用策略，不是任意神经网络的通用支持；不得将五个 grammar 宣称为通用支持。
+```powershell
+git status --short
+git worktree list --porcelain
+npm run agent:status -- --json
+```
 
-静态/协议/mock 测试、源代码实现和真实 Windows/Visio 的创建、保存、关闭、重开与 readback 验收是不同的门。前两者通过时，仍不得宣称已经完成真实 Visio 或顶刊图验收。
+## LangGraph 边界
 
-静态 PyTorch Source Analyzer 的 P0 支持范围仅限于已声明的 `nn.*` 模块、单一 `forward(self, value)` 定义、可证明的单变量线性 `self.<module>(value)` 调用链及显式返回。纯局部字面量注释变量可以忽略；其它未识别语句、分支、Add/Concat、模块复用、重复声明、shape 推断、重复结构、Keras/ONNX，以及图像理解均不受支持，并以带源码定位的阻断性 unresolved 拒绝猜测图结构。
+LangGraph 是 Drawing Run 的编排核心，负责阶段路由、暂停、恢复和节点执行顺序；它不是数据真相、公共 ID 铸造器、UGS/PVP 授权器或 Visio 控制器。
 
-## 当前优先级
+- PostgreSQL/Foundation Store 是 durable run、CAS revision、幂等和事件的权威存储；`011_drawing_workflow_checkpoints.sql` 与 `PostgresDrawingWorkflowCheckpointSaver` 为 LangGraph 提供同一身份边界下的 checkpoint 持久化适配器。
+- LangGraph checkpoint 只保存 owner/device/run/revision 绑定的脱敏工作状态，不能替代 Coordinator 的状态真相。
+- Analyzer、Provider、Harness、Composer 都通过注入的窄接口调用。
+- Provider 只能收到 `ProviderContextPayload`，不能收到 receipt/context/run/owner/device ID、原始输入、路径、凭据或 public UGS ID。
+- 只有 Harness 的 `formal` 结果可以进入 PVP；candidate、clarification、rejected、stale 和 cancelled 不得触发 PVP、Snapshot、Worker、COM 或 Visio。
 
-- P0：静态 PyTorch Source Analyzer、Evidence Graph 与 Architecture IR v3。
-- P1：Figure Component contract、ComposableDagFigureCompiler 与 gold IR/反例。
-- P2：论文版式/style tokens，以及缩放、灰度和人工视觉 benchmark。
-- P3：FigurePlan 到 Visio native Shapes renderer 与真实 Windows/Visio readback 验收。
-- P4：Keras/ONNX、草图真实视觉理解、Graph/Message Passing 等受控扩展。
+当前 LangGraph 垂直切片已实现 workflow 和 Coordinator 续跑适配，但 M2.12 仍未验收；Receipt/EvidencePack、正式 Structural Harness、真实 Provider、当前页 Visio、保存重开和独立 readback 仍是独立门。
 
-不要让新 grammar、GNN/message passing 或新导出表结构越过 P0-P3 的前置门。
+当前 P0 实现进展（不等同于验收）：
+
+- `drawing-input/private-receipt.ts` 已提供严格 kind/MIME/大小/digest/retention 校验、owner-bound receipt batch，以及内存和 PostgreSQL 私有内容存储；receipt 公共响应不含原始内容。`012_private_input_receipts.sql` 已接入 PostgreSQL smoke migration。
+- EvidencePack、owner-scoped Provider-local proposal 和 formal/candidate UGS、PVP、QA 已有内存和 PostgreSQL artifact store；`013_drawing_input_artifacts.sql` 与 `014_drawing_artifacts.sql` 已接入 PostgreSQL smoke migration，读取时重新校验内容 hash。`014` 对历史未带 owner 的 proposal 表只做隔离，不会猜测租户归属。
+- `drawing-input/evidence-pack.ts` 已提供规范化证据、重复/冲突检测、稳定 hash 和不含路径/文件名/摘录的 public evidence projection。
+- `drawing-input/intent.ts` 已提供静态 PyTorch、typed architecture declaration 和 receipt-bound analyzer 适配器；静态 lane 仍不执行用户 Python。
+- Structural Harness 已能从已验证的线性 static-analysis EvidencePack 生成确定性的 local proposal，因此已证明的静态结构不依赖 Provider；typed declaration 的 branch、skip、merge 与封闭的 Add/Concat 事实会保留到 UGS，未证明的多输入合并、冲突语义、断开拓扑和非法 merge arity 只能进入 clarification/rejection。未知结构仍只能走 bounded Provider proposal 或 clarification/rejection。
+- `drawing-input/provider-context.ts` 已提供 Coordinator-owned reference 与有字符预算的 Provider payload factory；LangGraph checkpoint saver 拒绝 receipt ID、原文、Provider payload、路径和 native control 字段。
+- `/api/drawing-runs/:runId/input` 已改为接收并验证编码后的私有 receipt，不再接受客户端伪造的 `artifactHash`。
+- `buildDefaultApp()` 已将同一 Foundation Pool 上的 receipt、EvidencePack、proposal、UGS/PVP/QA artifact、Drawing Run store 和 PostgreSQL LangGraph checkpoint saver 装配到 receipt-bound workflow；API 启动时会扫描并恢复非终态 Drawing Run，内存模式仍只用于开发/测试，不能作为重启证据。
+- formal composer 已复用 `composeGeneralPublicationGraph`、`compilePublicationVisualPlan` 和确定性 PVP QA；它从 Harness 持久化的 UGS 取回内容，禁止用固定 hash 伪造 preview。
+
+这些是本地契约、单元测试和 API 边界证据；真实 PostgreSQL smoke 仍需可用数据库服务才能验收，真实 Provider，或 Windows/Visio 创建、保存、重开和独立 readback 仍未验收。普通文本和草图仍不能绕过 bounded analyzer/Harness；澄清只有显式确认才会 formalize。
+
+历史 P0 能力仍然有效：authenticated static-linear PyTorch analysis 只支持声明范围内的静态分析，does not execute user Python；[2026-08-17-universal-compiler-repair-and-migration-design.md](superpowers/specs/2026-08-17-universal-compiler-repair-and-migration-design.md) 仅作为已接受兼容基线，不是当前产品方向。
 
 ## 工作树纪律
 
-先检查 `git status --short` 和 `git worktree list --porcelain`。保留其他工作树及当前工作树中不属于本任务的改动；不要使用 `git reset --hard`、`git clean`、广泛暂存或覆盖未关联文件。
+修改前保留不属于当前任务的改动和其他工作树。不要使用 `git reset --hard`、`git clean`、广泛暂存或覆盖未关联文件。不得将五个 grammar 宣称为通用支持；它们只能作为已验证结构的 bounded strategy 和回归 fixture。mock、协议和单元测试不能替代真实 Windows/Visio 验收。

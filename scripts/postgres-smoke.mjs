@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
@@ -14,6 +14,10 @@ const figureDraftMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/0
 const universalFigureExportJobsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/007_universal_figure_export_jobs.sql"), "utf8");
 const universalFigureStateMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/008_universal_figure_state.sql"), "utf8");
 const drawingRunsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/010_drawing_runs.sql"), "utf8");
+const drawingWorkflowCheckpointsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/011_drawing_workflow_checkpoints.sql"), "utf8");
+const privateInputReceiptsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/012_private_input_receipts.sql"), "utf8");
+const drawingInputArtifactsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/013_drawing_input_artifacts.sql"), "utf8");
+const drawingArtifactsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/014_drawing_artifacts.sql"), "utf8");
 const userId = `smoke-${randomUUID()}`;
 const email = `${userId}@example.com`;
 const deviceOneId = `device-${randomUUID()}`;
@@ -24,6 +28,48 @@ const challengeId = `challenge-${randomUUID()}`;
 const expiredChallengeId = `challenge-${randomUUID()}`;
 const drawingRunId = `run-${randomUUID()}`;
 const drawingRunEventId = `${drawingRunId}:1:received`;
+const receiptId = `receipt:${randomUUID()}`;
+const ownerRevisionReceiptId = `receipt:${randomUUID()}`;
+const receiptContent = Buffer.from("postgres-receipt-smoke", "utf8");
+const receiptHash = createHash("sha256").update(receiptContent).digest("hex");
+const ownerRevisionContent = Buffer.from("owner-revision-smoke", "utf8");
+const ownerRevisionHash = createHash("sha256").update(ownerRevisionContent).digest("hex");
+const receiptBatchHash = createHash("sha256").update(JSON.stringify([
+  {
+    receiptId,
+    ownerId: userId,
+    contentHandle: `content:${receiptId}`,
+    kind: "typed_text",
+    mimeType: "text/plain",
+    sha256: receiptHash,
+    byteLength: receiptContent.byteLength,
+    retention: "ephemeral",
+  },
+]), "utf8").digest("hex");
+const evidencePackBody = {
+  version: 1,
+  facts: [{
+    localFactRef: "fact:f:1",
+    sourceKind: "architecture_fact",
+    summary: "input declaration",
+    confidence: 1,
+    semanticKey: "node:input",
+    evidence: {
+      evidenceId: "evidence:e:1",
+      sourceKind: "architecture_fact",
+      sourceHash: receiptHash,
+      locatorKind: "section",
+      locatorOrdinal: 1,
+      excerptDigest: receiptHash,
+    },
+  }],
+  unresolved: [],
+};
+const evidencePackHash = createHash("sha256").update(JSON.stringify(evidencePackBody), "utf8").digest("hex");
+const localProposal = { version: 2, nodes: [], ports: [], edges: [], unresolved: [] };
+const localProposalHash = createHash("sha256").update(JSON.stringify(localProposal), "utf8").digest("hex");
+const qaArtifact = { planHash: "0".repeat(64), status: "passed" };
+const qaArtifactHash = createHash("sha256").update(JSON.stringify(qaArtifact), "utf8").digest("hex");
 
 async function connect() {
   const client = new Client({ connectionString: databaseUrl });
@@ -46,6 +92,10 @@ try {
   await first.query(universalFigureExportJobsMigration);
   await first.query(universalFigureStateMigration);
   await first.query(drawingRunsMigration);
+  await first.query(drawingWorkflowCheckpointsMigration);
+  await first.query(privateInputReceiptsMigration);
+  await first.query(drawingInputArtifactsMigration);
+  await first.query(drawingArtifactsMigration);
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,
@@ -212,6 +262,62 @@ try {
      VALUES ($1, $2, $3, 1, 'cancelled', 'failed', '[]'::jsonb, 'cancelled', $4, NOW())`,
     [userId, drawingRunId, drawingRunEventId, `smoke-${drawingRunId}`],
   );
+  await first.query(
+    `INSERT INTO private_input_receipts
+      (owner_id, receipt_id, kind, mime_type, sha256, byte_length, retention, content_handle, content, created_at)
+     VALUES ($1, $2, 'typed_text', 'text/plain', $3, $4, 'ephemeral', $5, $6, NOW()),
+            ($1, $7, 'typed_text', 'text/plain', $8, $9, 'owner_revision', $10, $11, NOW())`,
+    [userId, receiptId, receiptHash, receiptContent.byteLength, `content:${receiptId}`, receiptContent, ownerRevisionReceiptId, ownerRevisionHash, ownerRevisionContent.byteLength, `content:${ownerRevisionReceiptId}`, ownerRevisionContent],
+  );
+  await first.query(
+    `INSERT INTO private_input_receipt_batches (owner_id, batch_hash, created_at)
+     VALUES ($1, $2, NOW())`,
+    [userId, receiptBatchHash],
+  );
+  await first.query(
+    `INSERT INTO private_input_receipt_batch_items (owner_id, batch_hash, ordinal, receipt_id)
+     VALUES ($1, $2, 0, $3)`,
+    [userId, receiptBatchHash, receiptId],
+  );
+  await first.query(
+    `INSERT INTO drawing_evidence_packs (owner_id, evidence_pack_hash, pack, created_at)
+     VALUES ($1, $2, $3::jsonb, NOW())`,
+    [userId, evidencePackHash, JSON.stringify({ ...evidencePackBody, hash: evidencePackHash })],
+  );
+  await first.query(
+    `INSERT INTO drawing_local_proposals (owner_id, proposal_hash, proposal, created_at)
+     VALUES ($1, $2, $3::jsonb, NOW())`,
+    [userId, localProposalHash, JSON.stringify(localProposal)],
+  );
+  await first.query(
+    `INSERT INTO drawing_artifacts (owner_id, artifact_kind, artifact_hash, artifact, created_at)
+     VALUES ($1, 'qa', $2, $3::jsonb, NOW())`,
+    [userId, qaArtifactHash, JSON.stringify(qaArtifact)],
+  );
+  const receiptReadback = await second.query(
+    `SELECT r.receipt_id, r.sha256, r.retention, r.content
+     FROM private_input_receipts r WHERE r.owner_id = $1 ORDER BY r.receipt_id`,
+    [userId],
+  );
+  if (receiptReadback.rowCount !== 2 || receiptReadback.rows.some((row) => !Buffer.isBuffer(row.content))) throw new Error("PostgreSQL private receipt persistence readback failed");
+  const ephemeralReadback = await first.query(
+    `DELETE FROM private_input_receipts WHERE owner_id = $1 AND receipt_id = $2 AND retention = 'ephemeral' RETURNING content`,
+    [userId, receiptId],
+  );
+  if (ephemeralReadback.rowCount !== 1 || !ephemeralReadback.rows[0].content.equals(receiptContent)) throw new Error("PostgreSQL ephemeral receipt deletion failed");
+  const ownerRevisionReadback = await second.query(
+    `SELECT content FROM private_input_receipts WHERE owner_id = $1 AND receipt_id = $2 AND retention = 'owner_revision'`,
+    [userId, ownerRevisionReceiptId],
+  );
+  if (ownerRevisionReadback.rowCount !== 1 || !ownerRevisionReadback.rows[0].content.equals(ownerRevisionContent)) throw new Error("PostgreSQL owner_revision receipt retention failed");
+  await first.query("DELETE FROM private_input_receipts WHERE owner_id = $1 AND receipt_id = $2 AND retention = 'owner_revision'", [userId, ownerRevisionReceiptId]);
+  const artifactReadback = await second.query(
+    `SELECT (SELECT evidence_pack_hash FROM drawing_evidence_packs WHERE owner_id = $1 AND evidence_pack_hash = $2) AS evidence_hash,
+            (SELECT proposal_hash FROM drawing_local_proposals WHERE owner_id = $1 AND proposal_hash = $3) AS proposal_hash,
+            (SELECT artifact_hash FROM drawing_artifacts WHERE owner_id = $1 AND artifact_kind = 'qa' AND artifact_hash = $4) AS drawing_artifact_hash`,
+    [userId, evidencePackHash, localProposalHash, qaArtifactHash],
+  );
+  if (artifactReadback.rowCount !== 1 || artifactReadback.rows[0].evidence_hash !== evidencePackHash || artifactReadback.rows[0].proposal_hash !== localProposalHash || artifactReadback.rows[0].drawing_artifact_hash !== qaArtifactHash) throw new Error("PostgreSQL drawing input artifact readback failed");
   const drawingRunReadback = await second.query(
     `SELECT r.status, r.revision, COUNT(e.event_id)::int AS event_count
      FROM drawing_runs r LEFT JOIN drawing_run_events e ON e.owner_id = r.owner_id AND e.run_id = r.run_id

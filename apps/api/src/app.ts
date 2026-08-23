@@ -27,6 +27,14 @@ import {
 } from "./agent-visio-execution-snapshot.js";
 import { InMemoryDrawingRunCoordinator, type DrawingRunCoordinator } from "./drawing-run/coordinator.js";
 import { FoundationDrawingRunStoreAdapter } from "./drawing-run/store.js";
+import type { DrawingWorkflowRunner } from "./drawing-run/langgraph-workflow.js";
+import { InMemoryPrivateReceiptStore, type PrivateReceiptStore } from "./drawing-input/private-receipt.js";
+import { createReceiptBoundDrawingWorkflow } from "./drawing-input/intent.js";
+import type { EvidencePackStore } from "./drawing-input/intent.js";
+import type { LocalProposalStore } from "./drawing-input/structural-harness.js";
+import { createPublicationDrawingWorkflowComposer } from "./drawing-run/publication-composer.js";
+import type { DrawingArtifactStore } from "./drawing-input/drawing-artifacts.js";
+import type { BaseCheckpointSaver } from "@langchain/langgraph";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -46,6 +54,12 @@ export interface BuildAppOptions {
   figureAnalysisService?: FigureAnalysisService;
   figureAnalysisPreviewService?: FigureAnalysisPreviewServiceImpl;
   drawingRunCoordinator?: DrawingRunCoordinator;
+  drawingWorkflow?: DrawingWorkflowRunner;
+  privateReceiptStore?: PrivateReceiptStore;
+  evidencePackStore?: EvidencePackStore;
+  localProposalStore?: LocalProposalStore;
+  drawingArtifactStore?: DrawingArtifactStore;
+  drawingWorkflowCheckpointer?: BaseCheckpointSaver;
 }
 
 export interface UniversalFigureExportRunnerContract {
@@ -95,9 +109,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   const figureAnalysisService = options.figureAnalysisService ?? new FigureAnalysisService({ store });
   const figureAnalysisPreviewService = options.figureAnalysisPreviewService ?? new FigureAnalysisPreviewServiceImpl({ store });
+  const drawingDependencies = [options.privateReceiptStore, options.evidencePackStore, options.localProposalStore, options.drawingArtifactStore, options.drawingWorkflowCheckpointer];
+  if (drawingDependencies.some(Boolean) && drawingDependencies.some((dependency) => !dependency)) {
+    throw new Error("Drawing workflow dependencies must be injected as one complete set");
+  }
+  if (config.storageDriver !== "memory" && !options.drawingWorkflow && drawingDependencies.some((dependency) => !dependency)) {
+    throw new Error("A durable storage driver requires a durable Drawing workflow");
+  }
+  const drawingWorkflow = options.drawingWorkflow ?? (options.privateReceiptStore && options.evidencePackStore && options.localProposalStore && options.drawingArtifactStore && options.drawingWorkflowCheckpointer
+    ? createReceiptBoundDrawingWorkflow({
+      receipts: options.privateReceiptStore,
+      evidencePacks: options.evidencePackStore,
+      proposals: options.localProposalStore,
+      artifacts: options.drawingArtifactStore,
+      composer: createPublicationDrawingWorkflowComposer(options.drawingArtifactStore),
+      checkpointer: options.drawingWorkflowCheckpointer,
+    })
+    : undefined);
   const drawingRunCoordinator = options.drawingRunCoordinator ?? new InMemoryDrawingRunCoordinator({
     store: new FoundationDrawingRunStoreAdapter(store),
+    workflow: drawingWorkflow,
   });
+  const privateReceiptStore = options.privateReceiptStore ?? new InMemoryPrivateReceiptStore();
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
@@ -118,10 +151,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     figureAnalysisService,
     figureAnalysisPreviewService,
     drawingRunCoordinator,
+    privateReceiptStore,
   });
   app.addHook("onReady", async () => {
     await visioJobRunner.recoverJobs();
     await options.universalFigureExportRunner?.recoverJobs?.();
+    await drawingRunCoordinator.recover();
   });
   app.addHook("onClose", async () => {
     await options.universalFigureExportRunner?.close?.();
@@ -163,6 +198,11 @@ export async function buildDefaultApp(): Promise<FastifyInstance> {
       const app = buildApp({
         config,
         store: storage.store,
+        privateReceiptStore: storage.privateReceiptStore,
+        evidencePackStore: storage.evidencePackStore,
+        localProposalStore: storage.localProposalStore,
+        drawingArtifactStore: storage.drawingArtifactStore,
+        drawingWorkflowCheckpointer: storage.drawingWorkflowCheckpointer,
         leaseCoordinator: lease.coordinator,
         admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
         agentService: createAgentServiceForConfig(config),

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type DrawingRunStatus =
   | "received"
   | "input_accepted"
@@ -132,6 +134,8 @@ export interface PublicDrawingRun {
 
 export type DrawingRunSnapshot = PublicDrawingRun;
 
+export const DRAWING_CLARIFICATION_CONFIRMATION_HASH = createHash("sha256").update(JSON.stringify("confirm"), "utf8").digest("hex");
+
 export interface DrawingRunCommandInput {
   ownerId: string;
   deviceId: string;
@@ -142,6 +146,11 @@ export interface DrawingRunCommandInput {
 
 export interface StartDrawingRunInput extends Omit<DrawingRunCommandInput, "runId" | "expectedRevision"> {
   intent: DrawingIntent;
+}
+
+export interface AcceptDrawingInput extends DrawingRunCommandInput {
+  receiptIds: string[];
+  artifactHash: string;
 }
 
 export type ResumeDrawingRunInput = DrawingRunCommandInput;

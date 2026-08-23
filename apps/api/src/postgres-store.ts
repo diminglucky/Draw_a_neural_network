@@ -980,6 +980,15 @@ export class PostgresFoundationStore implements FoundationStore {
     return result.rows[0] ? mapDrawingRun(result.rows[0]) : null;
   }
 
+  async listDrawingRunsForRecovery(): Promise<DrawingRun[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM drawing_runs
+       WHERE status NOT IN ('readback_verified', 'cancelled', 'rejected', 'failed', 'conflicted')
+       ORDER BY updated_at ASC, run_id ASC`,
+    );
+    return result.rows.map(mapDrawingRun);
+  }
+
   async compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict"> {
     const run = input.next;
     const result = await this.pool.query(

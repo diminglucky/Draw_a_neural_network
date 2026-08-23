@@ -4,6 +4,7 @@ import type { FoundationStore } from "../store.js";
 export interface DrawingRunStore {
   create(run: DrawingRun): Promise<void>;
   get(ownerId: string, runId: string): Promise<DrawingRun | null>;
+  listForRecovery(): Promise<DrawingRun[]>;
   getByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null>;
   compareAndSet(input: {
     ownerId: string;
@@ -28,6 +29,12 @@ export class InMemoryDrawingRunStore implements DrawingRunStore {
   async get(ownerId: string, runId: string): Promise<DrawingRun | null> {
     const run = this.runs.get(this.key(ownerId, runId));
     return run ? structuredClone(run) : null;
+  }
+
+  async listForRecovery(): Promise<DrawingRun[]> {
+    return [...this.runs.values()]
+      .filter((run) => !isTerminal(run.status))
+      .map((run) => structuredClone(run));
   }
 
   async getByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null> {
@@ -89,6 +96,10 @@ export class FoundationDrawingRunStoreAdapter implements DrawingRunStore {
     return this.foundation.getDrawingRun(ownerId, runId);
   }
 
+  listForRecovery(): Promise<DrawingRun[]> {
+    return this.foundation.listDrawingRunsForRecovery();
+  }
+
   getByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null> {
     return this.foundation.getDrawingRunByStartIdempotency(ownerId, deviceId, idempotencyKey);
   }
@@ -113,4 +124,8 @@ export class FoundationDrawingRunStoreAdapter implements DrawingRunStore {
   listEvents(ownerId: string, runId: string): Promise<DrawingRunEvent[]> {
     return this.foundation.listDrawingRunEvents(ownerId, runId);
   }
+}
+
+function isTerminal(status: DrawingRun["status"]): boolean {
+  return ["readback_verified", "cancelled", "rejected", "failed", "conflicted"].includes(status);
 }

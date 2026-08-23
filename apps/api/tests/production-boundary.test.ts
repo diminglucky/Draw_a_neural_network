@@ -73,6 +73,43 @@ describe("production persistence boundary", () => {
     expect(sql).toContain("revision INTEGER NOT NULL");
   });
 
+  it("contains owner/device/revision-scoped LangGraph checkpoint storage", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/011_drawing_workflow_checkpoints.sql"), "utf8");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_workflow_checkpoints");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_workflow_checkpoint_writes");
+    expect(sql).toContain("PRIMARY KEY (owner_id, device_id, run_id, revision, checkpoint_ns, checkpoint_id)");
+    expect(sql).toContain("checkpoint_data BYTEA NOT NULL");
+    expect(sql).toContain("value_data BYTEA NOT NULL");
+    expect(sql).toContain("FOREIGN KEY (owner_id, run_id) REFERENCES drawing_runs");
+  });
+
+  it("contains private receipt content and owner-scoped batch bindings", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/012_private_input_receipts.sql"), "utf8");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS private_input_receipts");
+    expect(sql).toContain("content BYTEA NOT NULL");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS private_input_receipt_batches");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS private_input_receipt_batch_items");
+    expect(sql).toContain("FOREIGN KEY (owner_id, receipt_id)");
+  });
+
+  it("contains durable EvidencePack and Provider-local proposal artifacts", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/013_drawing_input_artifacts.sql"), "utf8");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_evidence_packs");
+    expect(sql).toContain("evidence_pack_hash TEXT");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_local_proposals");
+    expect(sql).toContain("proposal JSONB NOT NULL");
+    expect(sql).toContain("REFERENCES users(id)");
+  });
+
+  it("contains durable owner-scoped UGS, PVP, and QA artifacts", () => {
+    const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/014_drawing_artifacts.sql"), "utf8");
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_artifacts");
+    expect(sql).toContain("artifact_kind IN ('ugs', 'pvp', 'qa')");
+    expect(sql).toContain("PRIMARY KEY (owner_id, artifact_kind, artifact_hash)");
+    expect(sql).toContain("REFERENCES users(id)");
+    expect(sql).toContain("drawing_local_proposals_legacy_unscoped");
+  });
+
   it("rejects memory storage in production", () => {
     expect(() => loadConfig({ NODE_ENV: "production", SESSION_SECRET: "production-secret-production-secret", STORAGE_DRIVER: "memory" })).toThrow(/development-only/);
   });

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { buildApp } from "../src/app.js";
 import { FoundationError } from "../src/domain.js";
 import { InMemoryFoundationStore } from "../src/store.js";
@@ -924,5 +925,58 @@ describe("agent chat routes", () => {
     });
     expect(cancel.statusCode).toBe(200);
     expect(cancel.json()).toMatchObject({ status: "cancelled", revision: 1, allowedActions: [] });
+  });
+
+  it("accepts validated private receipts and rejects the legacy client-supplied artifact hash", async () => {
+    const { app, headers } = await createAuthorizedApp();
+    apps.add(app);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/drawing-runs",
+      headers: { ...headers, "idempotency-key": "drawing-receipt-start-1" },
+      payload: { intent: { action: "analyze_network", requestedDetail: "architecture", target: "browser_preview", sourceKinds: ["pytorch_source"] } },
+    });
+    const runId = start.json().runId as string;
+    const source = Buffer.from("class N(nn.Module):\n", "utf8");
+    const sha256 = createHash("sha256").update(source).digest("hex");
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${runId}/input`,
+      headers: { ...headers, "idempotency-key": "drawing-receipt-input-1" },
+      payload: { expectedRevision: 0, receipts: [{ kind: "pytorch_source", mimeType: "text/x-python", data: source.toString("base64"), sha256, retention: "ephemeral" }] },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ status: "input_accepted", revision: 1 });
+    expect(JSON.stringify(accepted.json())).not.toContain("receipt:");
+
+    const legacy = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${runId}/input`,
+      headers: { ...headers, "idempotency-key": "drawing-receipt-input-legacy" },
+      payload: { expectedRevision: 1, receiptIds: ["receipt-forged"], artifactHash: "a".repeat(64) },
+    });
+    expect(legacy.statusCode).toBe(400);
+  });
+
+  it("rejects an oversized receipt from its encoded length before decoding", async () => {
+    const { app, headers } = await createAuthorizedApp();
+    apps.add(app);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/drawing-runs",
+      headers: { ...headers, "idempotency-key": "drawing-receipt-size-start-1" },
+      payload: { intent: { action: "analyze_network", requestedDetail: "architecture", target: "browser_preview", sourceKinds: ["pytorch_source"] } },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${start.json().runId}/input`,
+      headers: { ...headers, "idempotency-key": "drawing-receipt-size-input-1" },
+      payload: {
+        expectedRevision: 0,
+        receipts: [{ kind: "pytorch_source", mimeType: "text/x-python", data: "A".repeat(266672), sha256: "a".repeat(64), retention: "ephemeral" }],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toMatch(/too large/i);
   });
 });

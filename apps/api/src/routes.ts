@@ -27,6 +27,15 @@ import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview 
 import { DrawingRunError } from "./drawing-run/errors.js";
 import type { DrawingRunCoordinator } from "./drawing-run/coordinator.js";
 import type { DrawingIntent } from "./drawing-run/contracts.js";
+import {
+  assertReceiptKindAndMime,
+  PRIVATE_RECEIPT_MAX_BYTES,
+  receiptBatchHash,
+  type PrivateInputReceipt,
+  type PrivateReceiptKind,
+  type PrivateReceiptRetention,
+  type PrivateReceiptStore,
+} from "./drawing-input/private-receipt.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -109,6 +118,7 @@ interface RouteOptions {
   figureAnalysisService: FigureAnalysisService;
   figureAnalysisPreviewService: FigureAnalysisPreviewServiceImpl;
   drawingRunCoordinator: DrawingRunCoordinator;
+  privateReceiptStore: PrivateReceiptStore;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -1029,6 +1039,40 @@ function requiredSha256Field(value: unknown, field: string): string {
   return digest;
 }
 
+async function ingestDrawingReceipts(ownerId: string, value: unknown, store: PrivateReceiptStore): Promise<PrivateInputReceipt[]> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) {
+    throw validationError("receipts must contain one to sixteen private inputs", { field: "receipts", reason: "invalid" });
+  }
+  const drafts = value.map((item, index) => {
+    const receipt = objectField(item, `receipts[${index}]`);
+    assertOnlyKeys(receipt, ["kind", "mimeType", "data", "sha256", "retention"], `receipts[${index}]`);
+    const kind = requiredStringField(receipt.kind, `receipts[${index}].kind`);
+    if (!["typed_text", "pytorch_source", "architecture_description", "sketch"].includes(kind)) throw validationError("receipt kind is invalid", { field: `receipts[${index}].kind`, reason: "invalid_value" });
+    const mimeType = requiredStringField(receipt.mimeType, `receipts[${index}].mimeType`);
+    try {
+      assertReceiptKindAndMime(kind as PrivateReceiptKind, mimeType);
+    } catch {
+      throw validationError("receipt MIME type is not allowed for its kind", { field: `receipts[${index}].mimeType`, reason: "invalid_value" });
+    }
+    const data = requiredStringField(receipt.data, `receipts[${index}].data`);
+    if (!BASE64_PATTERN.test(data) || data.length % 4 !== 0) throw validationError("receipt data must be padded base64", { field: `receipts[${index}].data`, reason: "invalid_value" });
+    const maxEncodedLength = Math.ceil(PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind] / 3) * 4;
+    if (data.length > maxEncodedLength) throw validationError("receipt is too large", { field: `receipts[${index}].data`, reason: "limit_exceeded", maxBytes: PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind] });
+    const bytes = Buffer.from(data, "base64");
+    if (bytes.toString("base64") !== data) throw validationError("receipt data must use canonical base64", { field: `receipts[${index}].data`, reason: "invalid_value" });
+    if (bytes.length > PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind]) throw validationError("receipt is too large", { field: `receipts[${index}].data`, reason: "limit_exceeded", maxBytes: PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind] });
+    const sha256 = requiredSha256Field(receipt.sha256, `receipts[${index}].sha256`);
+    const actualHash = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length === 0 || actualHash !== sha256) throw validationError("receipt digest does not match its bytes", { field: `receipts[${index}].sha256`, reason: "digest_mismatch" });
+    const retention = receipt.retention ?? "ephemeral";
+    if (retention !== "ephemeral" && retention !== "owner_revision") throw validationError("receipt retention is invalid", { field: `receipts[${index}].retention`, reason: "invalid_value" });
+    return { kind: kind as PrivateReceiptKind, mimeType, bytes, sha256, retention: retention as PrivateReceiptRetention };
+  });
+  const receipts = await Promise.all(drafts.map((draft) => store.ingest({ ownerId, ...draft })));
+  await store.bindBatchHash(ownerId, receiptBatchHash(receipts), receipts.map((receipt) => receipt.receiptId));
+  return receipts;
+}
+
 function optionalStringField(value: unknown, field: string): string | undefined {
   if (value == null) return undefined;
   return requiredStringField(value, field);
@@ -1154,6 +1198,30 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const run = await options.drawingRunCoordinator.get(access.user.id, runId);
     if (!run) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
     return run;
+  });
+
+  app.post("/api/drawing-runs/:runId/input", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision", "receipts"], "drawing run input");
+    const commandInput = drawingRunCommandInput(request, runId, input.expectedRevision);
+    const current = await options.drawingRunCoordinator.get(access.user.id, runId);
+    if (!current) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+    if (current.revision !== commandInput.expectedRevision) throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run revision is stale");
+    if (!current.allowedActions.includes("accept_input")) throw new DrawingRunError("DRAWING_RUN_TRANSITION_INVALID", "Drawing Run is not accepting input");
+    try {
+      const receipts = await ingestDrawingReceipts(access.user.id, input.receipts, options.privateReceiptStore);
+      return await options.drawingRunCoordinator.acceptInput({
+        ...commandInput,
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        receiptIds: receipts.map((receipt) => receipt.receiptId),
+        artifactHash: receiptBatchHash(receipts),
+      });
+    } catch (error) {
+      throw drawingRunError(error);
+    }
   });
 
   app.post("/api/drawing-runs/:runId/cancel", async (request) => {
