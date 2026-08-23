@@ -193,6 +193,92 @@ h3 {
   line-height: 1.45;
 }
 
+.drawing-run-panel {
+  min-height: 150px;
+}
+
+.drawing-run-refresh {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.drawing-run-list {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.drawing-run-row {
+  padding: 9px;
+  border: 1px solid rgba(18, 31, 51, 0.1);
+  border-radius: var(--radius-sm);
+  background: rgba(247, 250, 253, 0.82);
+}
+
+.drawing-run-row__top,
+.drawing-run-row__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.drawing-run-row__top strong {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.drawing-run-row__top span,
+.drawing-run-row__id,
+.drawing-run-message,
+.drawing-run-empty {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.drawing-run-row__id,
+.drawing-run-row__question {
+  margin: 5px 0 0;
+}
+
+.drawing-run-row__id {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.drawing-run-row__question {
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.drawing-run-row__actions {
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+.drawing-run-action {
+  padding: 4px 8px;
+  border: 1px solid rgba(49, 92, 255, 0.2);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  background: #fff;
+  font-size: 10px;
+}
+
+.drawing-run-action--danger {
+  color: #b42318;
+  border-color: rgba(180, 35, 24, 0.2);
+}
+
+.drawing-run-message {
+  min-height: 14px;
+  margin: 7px 0 0;
+}
+
 .ai-panel {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 248, 252, 0.9)),

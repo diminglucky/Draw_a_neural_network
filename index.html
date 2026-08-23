@@ -79,6 +79,7 @@
           </label>
           <div class="code-action-row">
             <button id="codeGenerateButton" class="primary-button ai-action" type="button">从代码绘制</button>
+            <button id="codeAgentRunButton" class="ghost-button ai-action" type="button">提交到 Agent Run</button>
             <label class="ghost-button code-file-button">
               导入 .py
               <input id="codeFileInput" type="file" accept=".py,.txt,.js,.json" />
@@ -257,6 +258,16 @@
           </div>
         </section>
 
+        <section class="panel-card drawing-run-panel" data-drawing-run-status>
+          <div class="section-heading">
+            <h3>运行状态</h3>
+            <button class="icon-button drawing-run-refresh" type="button" data-drawing-run-refresh title="刷新 Drawing Run 状态" aria-label="刷新 Drawing Run 状态">↻</button>
+          </div>
+          <p class="panel-note">查看结构分析、澄清和预览阶段。正式结构未确认前不会进入 Visio。</p>
+          <div class="drawing-run-list" data-drawing-run-list aria-live="polite"><p class="drawing-run-empty">等待授权后加载</p></div>
+          <p class="drawing-run-message" data-drawing-run-message role="status"></p>
+        </section>
+
         <section class="panel-card">
           <h3>快捷操作</h3>
           <ul class="shortcut-list">
@@ -307,5 +318,6 @@
     <script src="./apps/client/auth-gate.js" type="module"></script>
     <script src="./app.js" type="module"></script>
     <script src="./chat-agent.js" type="module"></script>
+    <script src="./apps/client/drawing-run-client.js" type="module"></script>
   </body>
 </html>

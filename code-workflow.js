@@ -1,3 +1,5 @@
+import { submitPyTorchDrawingRun } from "./apps/client/drawing-run-client.js";
+
 const paletteName = "dopamine";
 
 const nodePalette = {
@@ -70,6 +72,7 @@ export function setupCodeWorkflow({ applyDiagramDocument, setStatus }) {
   const frameworkInput = document.querySelector("#codeFrameworkInput");
   const generateButton = document.querySelector("#codeGenerateButton");
   const fileInput = document.querySelector("#codeFileInput");
+  const agentButton = document.querySelector("#codeAgentRunButton");
   const codeStatus = document.querySelector("#codeStatusText");
 
   if (!textarea || !generateButton || !frameworkInput) return;
@@ -87,6 +90,30 @@ export function setupCodeWorkflow({ applyDiagramDocument, setStatus }) {
       ? formatCodeStatus(document)
       : "代码解析结果没有通过画布校验。");
     if (ok) setStatus(`代码生成完成：${document.figure.title}`);
+  });
+
+  agentButton?.addEventListener("click", async () => {
+    const source = textarea.value.trim();
+    if (!source) {
+      updateCodeStatus(codeStatus, "请先粘贴 PyTorch 模型代码。");
+      return;
+    }
+    if (frameworkInput.value === "keras") {
+      updateCodeStatus(codeStatus, "当前 LangGraph 代码入口只接受静态 PyTorch；Keras 适配器仍未启用。");
+      return;
+    }
+    agentButton.disabled = true;
+    updateCodeStatus(codeStatus, "正在创建私有 receipt 并启动 Drawing Run...");
+    try {
+      const run = await submitPyTorchDrawingRun(source);
+      updateCodeStatus(codeStatus, `Agent Run 已启动：${run.status} · revision ${run.revision}。右侧运行状态会自动更新。`);
+      setStatus("LangGraph Drawing Run 已启动");
+      globalThis.synapseDrawingRunStatus?.refresh?.();
+    } catch (error) {
+      updateCodeStatus(codeStatus, error instanceof Error ? error.message : "Agent Run 启动失败");
+    } finally {
+      agentButton.disabled = false;
+    }
   });
 
   fileInput?.addEventListener("change", async () => {
