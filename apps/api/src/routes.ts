@@ -1205,6 +1205,14 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     return run;
   });
 
+  app.get("/api/drawing-runs/:runId/events", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const events = await options.drawingRunCoordinator.listEvents(access.user.id, runId);
+    if (!events) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+    return { runId, events };
+  });
+
   app.post("/api/drawing-runs/:runId/input", async (request) => {
     const access = await requireUser(request, options);
     const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");

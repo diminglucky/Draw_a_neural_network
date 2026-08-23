@@ -1,4 +1,4 @@
-import type { DrawingRun, DrawingRunCommand, PublicDrawingRun } from "./contracts.js";
+import type { DrawingRun, DrawingRunCommand, DrawingRunEvent, PublicDrawingRun, PublicDrawingRunEvent } from "./contracts.js";
 
 const actionsByStatus: Record<DrawingRun["status"], DrawingRunCommand["type"][]> = {
   received: ["accept_input", "cancel"],
@@ -26,10 +26,23 @@ export function projectPublicDrawingRun(state: DrawingRun): PublicDrawingRun {
     runId: state.runId,
     revision: state.revision,
     status: state.status,
+    errorCategory: state.errorCategory,
     allowedActions: [...actionsByStatus[state.status]],
     clarification: state.clarification
       ? { id: state.clarification.id, prompt: state.clarification.prompt }
       : null,
     preview: state.preview ? { ...state.preview } : null,
+  };
+}
+
+export function projectPublicDrawingRunEvent(event: DrawingRunEvent): PublicDrawingRunEvent {
+  return {
+    eventId: event.eventId,
+    runId: event.runId,
+    revision: event.revision,
+    status: event.status,
+    action: event.action,
+    errorCategory: event.errorCategory,
+    occurredAt: event.occurredAt,
   };
 }

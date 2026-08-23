@@ -249,6 +249,13 @@ h3 {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
+.drawing-run-row__error {
+  margin: 5px 0 0;
+  color: #b42318;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .drawing-run-row__question {
   color: var(--ink);
   font-size: 11px;

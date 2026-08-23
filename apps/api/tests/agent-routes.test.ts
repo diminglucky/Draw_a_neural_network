@@ -930,6 +930,15 @@ describe("agent chat routes", () => {
     expect(cancel.json()).toMatchObject({ status: "cancelled", revision: 1, allowedActions: [] });
     await expect(app.inject({ method: "GET", url: "/api/drawing-runs", headers })).resolves.toMatchObject({ statusCode: 200 });
     expect((await app.inject({ method: "GET", url: "/api/drawing-runs", headers })).json().runs[0]).toMatchObject({ runId, status: "cancelled" });
+
+    const events = await app.inject({ method: "GET", url: `/api/drawing-runs/${runId}/events`, headers });
+    expect(events.statusCode).toBe(200);
+    expect(events.json()).toMatchObject({ runId, events: [{ revision: 1, status: "cancelled", action: "failed", errorCategory: "cancelled" }] });
+    expect(JSON.stringify(events.json())).not.toContain("artifactHashes");
+    expect(JSON.stringify(events.json())).not.toContain("requestHash");
+
+    const missingEvents = await app.inject({ method: "GET", url: "/api/drawing-runs/unknown-run/events", headers });
+    expect(missingEvents.statusCode).toBe(404);
   });
 
   it("accepts validated private receipts and rejects the legacy client-supplied artifact hash", async () => {

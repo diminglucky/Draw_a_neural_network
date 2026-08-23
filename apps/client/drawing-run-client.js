@@ -21,6 +21,17 @@ const STATUS_LABELS = Object.freeze({
   conflicted: "发生冲突",
 });
 
+const ERROR_LABELS = Object.freeze({
+  none: "",
+  validation: "输入或结构校验失败",
+  provider_unavailable: "结构解释服务不可用",
+  provider_timeout: "结构解释超时",
+  provider_invalid: "结构解释结果无效",
+  worker: "Visio Worker 执行失败",
+  conflict: "运行版本冲突",
+  cancelled: "用户已取消",
+});
+
 function tokenFromStorage(storage = globalThis.localStorage) {
   try { return String(storage?.getItem("synapse.accessToken") || "").trim(); } catch { return ""; }
 }
@@ -36,6 +47,10 @@ function escapeHtml(value) {
 
 function statusLabel(status) {
   return STATUS_LABELS[status] || "未知状态";
+}
+
+function errorLabel(errorCategory) {
+  return ERROR_LABELS[errorCategory] || "运行失败";
 }
 
 function createRequestKey(randomUUIDFactory = globalThis.crypto?.randomUUID?.bind(globalThis.crypto)) {
@@ -161,11 +176,14 @@ export function renderDrawingRunStatusList(runs = []) {
   return runs.map((run) => {
     const status = String(run?.status || "");
     const clarification = run?.clarification;
+    const errorCategory = String(run?.errorCategory || "none");
+    const errorText = errorCategory === "none" ? "" : `<p class="drawing-run-row__error">${escapeHtml(errorLabel(errorCategory))}</p>`;
     const cancelable = Array.isArray(run?.allowedActions) && run.allowedActions.includes("cancel");
     const answerable = status === "awaiting_clarification" && clarification?.id;
     return `<article class="drawing-run-row" data-drawing-run-id="${escapeHtml(run?.runId)}">
       <div class="drawing-run-row__top"><strong>${escapeHtml(statusLabel(status))}</strong><span>Revision ${escapeHtml(run?.revision ?? "-")}</span></div>
       <p class="drawing-run-row__id">${escapeHtml(String(run?.runId || "").slice(0, 18))}</p>
+      ${errorText}
       ${clarification?.prompt ? `<p class="drawing-run-row__question">${escapeHtml(clarification.prompt)}</p>` : ""}
       <div class="drawing-run-row__actions">
         ${answerable ? '<button type="button" class="drawing-run-action" data-drawing-run-answer>回答</button>' : ""}

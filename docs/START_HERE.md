@@ -51,6 +51,7 @@ LangGraph 是 Drawing Run 的编排核心，负责阶段路由、暂停、恢复
 - Structural Harness 已能从已验证的线性 static-analysis EvidencePack 生成确定性的 local proposal，因此已证明的静态结构不依赖 Provider；typed declaration 的 branch、skip、merge 与封闭的 Add/Concat 事实会保留到 UGS，未证明的多输入合并、冲突语义、断开拓扑和非法 merge arity 只能进入 clarification/rejection。未知结构仍只能走 bounded Provider proposal 或 clarification/rejection。
 - `drawing-input/provider-context.ts` 已提供 Coordinator-owned reference 与有字符预算的 Provider payload factory；LangGraph checkpoint saver 拒绝 receipt ID、原文、Provider payload、路径和 native control 字段。
 - `/api/drawing-runs/:runId/input` 已改为接收并验证编码后的私有 receipt，不再接受客户端伪造的 `artifactHash`。
+- `/api/drawing-runs/:runId/events` 提供 owner-scoped、脱敏的 revision/event history；只返回阶段、动作、状态、错误类别和时间，不返回 artifact/request hash 或私有输入。
 - `buildDefaultApp()` 已将同一 Foundation Pool 上的 receipt、EvidencePack、proposal、UGS/PVP/QA artifact、Drawing Run store 和 PostgreSQL LangGraph checkpoint saver 装配到 receipt-bound workflow；API 启动时会扫描并恢复非终态 Drawing Run，内存模式仍只用于开发/测试，不能作为重启证据。
 - formal composer 已复用 `composeGeneralPublicationGraph`、`compilePublicationVisualPlan` 和确定性 PVP QA；它从 Harness 持久化的 UGS 取回内容，禁止用固定 hash 伪造 preview。
 

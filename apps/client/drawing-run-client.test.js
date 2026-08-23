@@ -8,7 +8,7 @@ function response(body, ok = true, status = 200) {
 describe("Drawing Run client status", () => {
   it("lists owner-scoped runs through the authenticated status route", async () => {
     const requests = [];
-    const runs = [{ runId: "run-1", revision: 2, status: "analyzing", allowedActions: ["cancel"], clarification: null, preview: null }];
+    const runs = [{ runId: "run-1", revision: 2, status: "analyzing", errorCategory: "none", allowedActions: ["cancel"], clarification: null, preview: null }];
     await expect(listDrawingRuns({ token: "token", apiBase: "http://api", fetchImpl: async (url, init) => { requests.push({ url, init }); return response({ runs }); } })).resolves.toEqual(runs);
     expect(requests[0]).toMatchObject({ url: "http://api/api/drawing-runs", init: { method: "GET", headers: { Authorization: "Bearer token" } } });
   });
@@ -40,11 +40,17 @@ describe("Drawing Run client status", () => {
   });
 
   it("escapes public status text and exposes only safe actions", () => {
-    const html = renderDrawingRunStatusList([{ runId: '<script>', revision: 1, status: "awaiting_clarification", allowedActions: ["cancel"], clarification: { id: "q-1", prompt: "<img>" }, preview: null }]);
+    const html = renderDrawingRunStatusList([{ runId: '<script>', revision: 1, status: "awaiting_clarification", errorCategory: "none", allowedActions: ["cancel"], clarification: { id: "q-1", prompt: "<img>" }, preview: null }]);
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("&lt;img&gt;");
     expect(html).toContain("data-drawing-run-answer");
     expect(html).toContain("data-drawing-run-cancel");
     expect(html).not.toContain("ownerId");
+  });
+
+  it("shows a safe failure category without exposing internal details", () => {
+    const html = renderDrawingRunStatusList([{ runId: "run-2", revision: 3, status: "rejected", errorCategory: "provider_invalid", allowedActions: [], clarification: null, preview: null }]);
+    expect(html).toContain("结构解释结果无效");
+    expect(html).not.toContain("proposalHash");
   });
 });

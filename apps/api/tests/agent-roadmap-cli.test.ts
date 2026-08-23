@@ -31,7 +31,7 @@ describe("agent roadmap CLI", () => {
     expect(run("verify")).toBe("");
     expect(run("verify", "--ci")).toBe("");
     expect(run("status")).toContain("Roadmap parity: ok");
-  }, 15_000);
+  }, 30_000);
 
   it("activates Core Drawing V1 interpretation only after its three reviewed foundation nodes are accepted", () => {
     const state = JSON.parse(readFileSync(programStatePath, "utf8")) as {

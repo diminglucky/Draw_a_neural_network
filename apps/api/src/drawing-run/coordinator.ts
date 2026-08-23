@@ -9,6 +9,7 @@ import {
   DRAWING_CLARIFICATION_CONFIRMATION_HASH,
   type DrawingRunCommand,
   type DrawingRunSnapshot,
+  type PublicDrawingRunEvent,
   type DrawingRunTransition,
   type RequestDrawingApplyInput,
   type ResumeDrawingRunInput,
@@ -16,7 +17,7 @@ import {
 } from "./contracts.js";
 import { DrawingRunError } from "./errors.js";
 import { DrawingRunIdempotency } from "./idempotency.js";
-import { projectPublicDrawingRun } from "./public-projection.js";
+import { projectPublicDrawingRun, projectPublicDrawingRunEvent } from "./public-projection.js";
 import { reduceDrawingRun } from "./reducer.js";
 import { InMemoryDrawingRunStore, type DrawingRunStore } from "./store.js";
 import type { DrawingWorkflowRunner } from "./langgraph-workflow.js";
@@ -32,6 +33,7 @@ export interface DrawingRunCoordinator {
   recover(): Promise<void>;
   get(ownerId: string, runId: string): Promise<DrawingRunSnapshot | null>;
   list(ownerId: string): Promise<DrawingRunSnapshot[]>;
+  listEvents(ownerId: string, runId: string): Promise<PublicDrawingRunEvent[] | null>;
 }
 
 export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
@@ -240,6 +242,12 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
 
   async list(ownerId: string): Promise<DrawingRunSnapshot[]> {
     return (await this.store.list(ownerId)).map(projectPublicDrawingRun);
+  }
+
+  async listEvents(ownerId: string, runId: string): Promise<PublicDrawingRunEvent[] | null> {
+    const run = await this.store.get(ownerId, runId);
+    if (!run) return null;
+    return (await this.store.listEvents(ownerId, runId)).map(projectPublicDrawingRunEvent);
   }
 
   async dispatch(command: DrawingRunCommand): Promise<DrawingRunSnapshot> {

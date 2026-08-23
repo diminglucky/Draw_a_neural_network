@@ -127,9 +127,20 @@ export interface PublicDrawingRun {
   runId: string;
   revision: number;
   status: DrawingRunStatus;
+  errorCategory: DrawingRunErrorCategory;
   allowedActions: DrawingRunCommand["type"][];
   clarification: { id: string; prompt: string } | null;
   preview: DrawingPreview | null;
+}
+
+export interface PublicDrawingRunEvent {
+  eventId: string;
+  runId: string;
+  revision: number;
+  status: DrawingRunStatus;
+  action: DrawingRunEventAction;
+  errorCategory: DrawingRunErrorCategory;
+  occurredAt: string;
 }
 
 export type DrawingRunSnapshot = PublicDrawingRun;
