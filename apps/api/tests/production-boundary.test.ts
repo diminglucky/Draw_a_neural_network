@@ -133,11 +133,13 @@ describe("production persistence boundary", () => {
   it("rolls back each expected migration failure before inspecting it and preserves a valid existing formal hash", () => {
     const smoke = readFileSync(resolve(process.cwd(), "scripts/postgres-drawing-run-migration-safety-smoke.mjs"), "utf8");
     const expectedFailure = smoke.match(/async function expectMigrationFailure[\s\S]*?\n}\n\nasync function assertLegacyAwaitStateRollback/);
+    const expectedFailureSource = expectedFailure?.[0];
 
-    expect(expectedFailure?.[0]).toMatch(/finally\s*{\s*await client\.query\("ROLLBACK"\);\s*}/);
-    expect(expectedFailure?.[0].indexOf('await client.query("ROLLBACK");')).toBeLessThan(expectedFailure?.[0].indexOf("assert(failure"));
-    expect(expectedFailure?.[0].indexOf('await client.query("ROLLBACK");')).toBeLessThan(expectedFailure?.[0].indexOf("const hint"));
-    expect(expectedFailure?.[0]).toContain("Migration 015 failed with unexpected hint");
+    expect(expectedFailureSource).toMatch(/finally\s*{\s*await client\.query\("ROLLBACK"\);\s*}/);
+    if (expectedFailureSource === undefined) throw new Error("Could not find migration failure helper");
+    expect(expectedFailureSource.indexOf('await client.query("ROLLBACK");')).toBeLessThan(expectedFailureSource.indexOf("assert(failure"));
+    expect(expectedFailureSource.indexOf('await client.query("ROLLBACK");')).toBeLessThan(expectedFailureSource.indexOf("const hint"));
+    expect(expectedFailureSource).toContain("Migration 015 failed with unexpected hint");
     expect(smoke).toContain('const existingValidHash = "b".repeat(64)');
     expect(smoke).toContain("formalUgsHash: existingValidHash");
     expect(smoke).toContain("Existing valid formal hash was not preserved during normalization");
