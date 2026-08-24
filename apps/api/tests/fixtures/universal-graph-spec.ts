@@ -79,6 +79,111 @@ export function unknownRepeatedFusionStackUgs(): any {
   return input;
 }
 
+/**
+ * Anonymous structural corpus for semantic-region derivation.  It deliberately
+ * combines generic facts instead of naming or routing through an architecture.
+ */
+export function unknownHybridSemanticRegionsUgs(): any {
+  const input = zeroTemplateUgs({
+    graphId: "unknown-hybrid-semantic-regions",
+    nodes: [
+      { id: "source_field", kind: "input", label: "Source field" },
+      {
+        id: "spatial_stage",
+        kind: "custom_operator",
+        label: "Spatial stage",
+        attributes: { repeatCount: 3, repeatGroupId: "repeat-core" },
+      },
+      { id: "left_path", kind: "custom_operator", label: "Left path" },
+      { id: "right_path", kind: "custom_operator", label: "Right path" },
+      { id: "add_gate", kind: "operator", label: "Add gate", attributes: { mergeKind: "add" } },
+      { id: "concat_gate", kind: "operator", label: "Concat gate", attributes: { mergeKind: "concat" } },
+      {
+        id: "token_attention",
+        kind: "operator",
+        label: "Token relation",
+        semanticHints: ["attention", "self_attention", "self"],
+        attributes: { attentionKind: "self" },
+      },
+      { id: "opaque_module", kind: "custom_module", label: "Opaque module" },
+      { id: "result_field", kind: "output", label: "Result field" },
+    ],
+    edges: [
+      { id: "source-to-spatial", from: "source_field", to: "spatial_stage" },
+      { id: "spatial-to-left", from: "spatial_stage", to: "left_path" },
+      { id: "spatial-to-right", from: "spatial_stage", to: "right_path" },
+      { id: "left-to-add", from: "left_path", to: "add_gate", relation: "merge" },
+      { id: "right-to-add", from: "right_path", to: "add_gate", relation: "merge" },
+      { id: "add-to-concat", from: "add_gate", to: "concat_gate", relation: "merge" },
+      { id: "spatial-to-concat", from: "spatial_stage", to: "concat_gate", relation: "merge" },
+      { id: "concat-to-attention", from: "concat_gate", to: "token_attention" },
+      { id: "attention-to-module", from: "token_attention", to: "opaque_module" },
+      { id: "module-to-result", from: "opaque_module", to: "result_field" },
+    ],
+  });
+
+  input.edges = input.edges.map((edge: any) => ({ ...edge, knowledge: "proven" }));
+  input.groups = [{
+    groupId: "repeat-core",
+    label: "Repeated core",
+    memberNodeIds: ["spatial_stage"],
+    evidenceIds: ["e-topology"],
+  }];
+  const facts = (channels: number, height: number, width: number) => ({
+    axes: ["channels", "height", "width"],
+    dimensions: { channels, height, width },
+    evidenceIds: ["e-topology"],
+  });
+  for (const node of input.nodes) node.tensorFacts = facts(32, 32, 32);
+  input.nodes.find((node: any) => node.nodeId === "source_field").tensorFacts = facts(16, 64, 64);
+  return input;
+}
+
+export function unknownHybridSemanticRegionsCandidateUgs(): any {
+  const input = unknownHybridSemanticRegionsUgs();
+  input.edges.push({
+    edgeId: "candidate-topology",
+    sourcePortId: "spatial-to-left:output",
+    targetPortId: "attention-to-module:input",
+    relation: "candidate",
+    knowledge: "candidate",
+    evidenceIds: ["e-topology"],
+  });
+  return input;
+}
+
+export function unknownHybridSemanticRegionsFeedbackUgs(): any {
+  const input = unknownHybridSemanticRegionsUgs();
+  input.edges.push({
+    edgeId: "feedback-topology",
+    sourcePortId: "module-to-result:output",
+    targetPortId: "spatial-to-left:input",
+    relation: "feedback",
+    knowledge: "proven",
+    evidenceIds: ["e-topology"],
+  });
+  return input;
+}
+
+export function scaleLikeLabelsWithoutFactsUgs(): any {
+  return zeroTemplateUgs({
+    graphId: "scale-like-labels-without-facts",
+    nodes: [
+      { id: "input_field", kind: "input", label: "Input field" },
+      { id: "pool_word", kind: "operator", label: "pool" },
+      { id: "up_word", kind: "operator", label: "up" },
+      { id: "down_word", kind: "operator", label: "down" },
+      { id: "output_field", kind: "output", label: "Output field" },
+    ],
+    edges: [
+      { id: "input-pool", from: "input_field", to: "pool_word" },
+      { id: "pool-up", from: "pool_word", to: "up_word" },
+      { id: "up-down", from: "up_word", to: "down_word" },
+      { id: "down-output", from: "down_word", to: "output_field" },
+    ],
+  });
+}
+
 type FixtureNode = {
   id: string;
   kind: string;
