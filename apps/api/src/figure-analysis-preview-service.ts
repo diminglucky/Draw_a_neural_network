@@ -1,15 +1,19 @@
 import { ApiErrorCode, FoundationError } from "./domain.js";
 import type { FigureAnalysisBlockingQuestion, FigureAnalysisRecord } from "./figure-analysis.js";
 import {
+  buildComposableDagPublicationPlan,
+  type ComposableDagPublicationBuildResult,
   type ComposableDagPublicationPlan,
   type ComposableDagVisualSpec,
 } from "./composable-dag-publication-plan.js";
 import type { ComposableFigureComponent, ComposableFigureConnection, FigureBounds } from "./composable-dag-figure-compiler.js";
+import { runComposableDagVisualQa } from "./composable-dag-visual-qa.js";
 import type { FigureComponentPort } from "./figure-components.js";
 import { defaultFigureIntent, type FigureIntent } from "./figure-intent.js";
 import { validateArchitectureIRv3 } from "./network-ir-v3.js";
-import { PublicationVisualPreviewService } from "./publication-visual-preview-service.js";
+import { PublicationVisualPreviewService, type PublicationVisualPreview } from "./publication-visual-preview-service.js";
 import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
+import type { VisualQaResult } from "./plan-snapshot.js";
 import type { FoundationStore } from "./store.js";
 import { projectArchitectureIrV3ToUniversalGraphSpec } from "./universal-graph-spec-adapter.js";
 
@@ -28,7 +32,12 @@ export interface PublicComposableDagPublicationPlan {
 
 export interface FigureAnalysisPreviewServiceOptions {
   store: Pick<FoundationStore, "getFigureAnalysis">;
+  compilePublicationPlan?: (input: Parameters<typeof buildComposableDagPublicationPlan>[0]) => ComposableDagPublicationBuildResult;
+  runVisualQa?: typeof runComposableDagVisualQa;
+  compilePublicationPreview?: (input: Parameters<PublicationVisualPreviewService["preview"]>[0]) => PublicationVisualPreview;
 }
+
+export type FigureAnalysisPreviewOptions = { version?: 3 | 4; deviceId?: string };
 
 export type FigureAnalysisPreviewResponse =
   | {
@@ -40,19 +49,43 @@ export type FigureAnalysisPreviewResponse =
       confirmedNodeIds: string[];
     }
   | {
+      version: 4;
+      kind: "candidate_structure";
+      analysis: { id: string; status: "candidate_structure"; capabilityVersion: string };
+      watermark: "STRUCTURE_PENDING_CONFIRMATION";
+      blockingQuestion: FigureAnalysisBlockingQuestion;
+      confirmedNodeIds: string[];
+    }
+  | {
       version: 3;
+      kind: "publication_plan";
+      analysis: { id: string; status: "ready_for_preview"; capabilityVersion: string };
+      publicationPlan: PublicComposableDagPublicationPlan;
+      visualQa: VisualQaResult;
+    }
+  | {
+      version: 4;
       kind: "publication_visual_preview";
       analysis: { id: string; status: "ready_for_preview"; capabilityVersion: string };
       publicationPreview: PublicationVisualPlanPreview;
     };
 
 export class FigureAnalysisPreviewServiceImpl {
-  constructor(private readonly options: FigureAnalysisPreviewServiceOptions) {}
+  private readonly compilePublicationPlan: NonNullable<FigureAnalysisPreviewServiceOptions["compilePublicationPlan"]>;
+  private readonly runVisualQa: NonNullable<FigureAnalysisPreviewServiceOptions["runVisualQa"]>;
+  private readonly compilePublicationPreview: NonNullable<FigureAnalysisPreviewServiceOptions["compilePublicationPreview"]>;
 
-  async preview(userId: string, analysisId: string): Promise<FigureAnalysisPreviewResponse> {
+  constructor(private readonly options: FigureAnalysisPreviewServiceOptions) {
+    this.compilePublicationPlan = options.compilePublicationPlan ?? buildComposableDagPublicationPlan;
+    this.runVisualQa = options.runVisualQa ?? runComposableDagVisualQa;
+    this.compilePublicationPreview = options.compilePublicationPreview ?? ((input) => new PublicationVisualPreviewService().preview(input));
+  }
+
+  async preview(userId: string, analysisId: string, options: FigureAnalysisPreviewOptions = {}): Promise<FigureAnalysisPreviewResponse> {
+    const version = options.version ?? 3;
     const record = await this.options.store.getFigureAnalysis(userId, analysisId);
     if (!record) throw notFoundPreviewError();
-    if (record.status === "candidate_structure") return candidatePreview(record);
+    if (record.status === "candidate_structure") return candidatePreview(record, version);
     if (record.status !== "ready_for_preview" || !record.architectureIR || !safeIdentifier(record.id)) {
       throw invalidPreviewError();
     }
@@ -60,13 +93,38 @@ export class FigureAnalysisPreviewServiceImpl {
     const validated = validateArchitectureIRv3(record.architectureIR, undefined, { renderReady: true });
     if (!validated.valid || !validated.ir) throw invalidPreviewError();
 
+    if (version === 3) {
+      const compiled = this.compilePublicationPlan({
+        architectureIr: validated.ir,
+        intent: defaultFigureIntent(),
+        layoutSeed: `m2-4-${record.id}`,
+      });
+      if (compiled.status !== "ready") throw invalidPreviewError();
+
+      const visualQa = this.runVisualQa(compiled.publicationPlan);
+      if (visualQa.status !== "pass") throw invalidPreviewError();
+
+      return {
+        version: 3,
+        kind: "publication_plan",
+        analysis: {
+          id: record.id,
+          status: "ready_for_preview",
+          capabilityVersion: record.capabilityVersion,
+        },
+        publicationPlan: projectPublicComposableDagPublicationPlan(compiled.publicationPlan),
+        visualQa: structuredClone(visualQa),
+      };
+    }
+
+    if (version !== 4 || !options.deviceId || !safeIdentifier(options.deviceId)) throw invalidPreviewError();
     const ugs = projectArchitectureIrV3ToUniversalGraphSpec(validated.ir);
-    const compiled = new PublicationVisualPreviewService().preview({
+    const compiled = this.compilePublicationPreview({
       ugs: { ...ugs, graphId: `analysis:${record.id}` },
       detail: "architecture",
       updateIdentity: {
         ownerId: userId,
-        deviceId: "figure-analysis-preview",
+        deviceId: options.deviceId,
         workflowId: `figure-analysis:${record.id}`,
         documentId: `analysis:${record.id}`,
         pageId: "pvp-preview",
@@ -75,7 +133,7 @@ export class FigureAnalysisPreviewServiceImpl {
     });
 
     return {
-      version: 3,
+      version: 4,
       kind: "publication_visual_preview",
       analysis: {
         id: record.id,
@@ -87,10 +145,10 @@ export class FigureAnalysisPreviewServiceImpl {
   }
 }
 
-function candidatePreview(record: FigureAnalysisRecord): FigureAnalysisPreviewResponse {
+function candidatePreview(record: FigureAnalysisRecord, version: 3 | 4): FigureAnalysisPreviewResponse {
   if (!record.blockingQuestion) throw invalidPreviewError();
   return {
-    version: 3,
+    version,
     kind: "candidate_structure",
     analysis: {
       id: record.id,

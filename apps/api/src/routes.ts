@@ -188,6 +188,17 @@ function figureAnalysisVersion(request: FastifyRequest): void {
   }
 }
 
+function figureAnalysisPreviewVersion(request: FastifyRequest): 3 | 4 {
+  const version = request.headers["accept-figure-version"];
+  if (version === "3") return 3;
+  if (version === "4") return 4;
+  throw validationError("Accept-Figure-Version: 3 or 4 is required for figure analysis preview", {
+    field: "Accept-Figure-Version",
+    reason: "unsupported_version",
+    supported: [3, 4],
+  });
+}
+
 function universalPreviewVersion(request: FastifyRequest): void {
   if (request.headers["accept-figure-version"] !== "4") {
     throw validationError("Accept-Figure-Version: 4 is required for universal figure preview", {
@@ -365,7 +376,18 @@ async function auditFigureAnalysisPreview(
       connectionCount: 0,
       qaStatus: null,
     }
-    : {
+    : preview.kind === "publication_plan"
+      ? {
+        analysisId: preview.analysis.id,
+        kind: preview.kind,
+        capabilityVersion: preview.analysis.capabilityVersion,
+        version: preview.version,
+        confirmedNodeCount: 0,
+        componentCount: preview.publicationPlan.components.length,
+        connectionCount: preview.publicationPlan.connections.length,
+        qaStatus: preview.visualQa.status,
+      }
+      : {
       analysisId: preview.analysis.id,
       kind: preview.kind,
       capabilityVersion: preview.analysis.capabilityVersion,
@@ -1413,15 +1435,15 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
   });
 
   app.get("/api/figure-analyses/:analysisId/preview", async (request, reply) => {
-    figureAnalysisVersion(request);
+    const version = figureAnalysisPreviewVersion(request);
     const access = await requireUser(request, options);
     const params = request.params as { analysisId?: string };
     if (!params.analysisId || !safeIdentifier(params.analysisId)) {
       throw validationError("Figure analysis id is invalid", { field: "analysisId", reason: "invalid" });
     }
-    const preview = await options.figureAnalysisPreviewService.preview(access.user.id, params.analysisId);
+    const preview = await options.figureAnalysisPreviewService.preview(access.user.id, params.analysisId, { version, deviceId: access.device.id });
     await auditFigureAnalysisPreview(options.store, access.user.id, preview);
-    reply.header("Figure-Version", "3");
+    reply.header("Figure-Version", String(version));
     return reply.send(preview);
   });
 

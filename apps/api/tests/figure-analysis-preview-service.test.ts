@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { FigureAnalysisRecord } from "../src/figure-analysis.js";
 import { buildComposableDagPublicationPlan } from "../src/composable-dag-publication-plan.js";
 import { defaultFigureIntent } from "../src/figure-intent.js";
+import { PublicationVisualPreviewService } from "../src/publication-visual-preview-service.js";
 import { cnnGoldIr } from "./fixtures/figure-component-gold-ir.js";
 import {
   FigureAnalysisPreviewServiceImpl,
+  type FigureAnalysisPreviewServiceOptions,
   projectPublicComposableDagPublicationPlan,
 } from "../src/figure-analysis-preview-service.js";
 
@@ -39,43 +41,96 @@ function analysisRecord(overrides: Partial<FigureAnalysisRecord> = {}): FigureAn
   };
 }
 
-function serviceFor(records: FigureAnalysisRecord[]) {
+function serviceFor(records: FigureAnalysisRecord[], overrides: Omit<FigureAnalysisPreviewServiceOptions, "store"> = {}) {
   const byOwner = new Map(records.map((record) => [`${record.userId}:${record.id}`, record]));
   const service = new FigureAnalysisPreviewServiceImpl({
     store: {
-      getFigureAnalysis: async (userId, id) => byOwner.get(`${userId}:${id}`) ?? null,
+      getFigureAnalysis: async (userId: string, id: string) => byOwner.get(`${userId}:${id}`) ?? null,
     },
+    ...overrides,
   });
   return { service };
 }
 
 describe("FigureAnalysisPreviewService", () => {
-  it("returns a watermarked candidate without compiling or running QA", async () => {
+  it("keeps candidate v3 and v4 requests non-authoritative without invoking either preview compiler", async () => {
     const candidate = analysisRecord({
       id: "analysis-candidate",
       status: "candidate_structure",
       blockingQuestion,
       unresolved: [blockingQuestion as never],
     });
-    const { service } = serviceFor([candidate]);
+    let legacyCalls = 0;
+    let pvpCalls = 0;
+    const pvp = new PublicationVisualPreviewService();
+    const { service } = serviceFor([candidate], {
+      compilePublicationPlan: () => {
+        legacyCalls += 1;
+        throw new Error("legacy compiler must not run for candidate analysis");
+      },
+      compilePublicationPreview: (input: Parameters<PublicationVisualPreviewService["preview"]>[0]) => {
+        pvpCalls += 1;
+        return pvp.preview(input);
+      },
+    });
 
-    const preview = await service.preview("user-1", "analysis-candidate");
+    const v3 = await service.preview("user-1", "analysis-candidate");
+    const v4 = await service.preview("user-1", "analysis-candidate", {
+      version: 4,
+      deviceId: "device-actual-1",
+    });
 
-    expect(preview).toMatchObject({
+    expect(v3).toMatchObject({
       version: 3,
       kind: "candidate_structure",
       watermark: "STRUCTURE_PENDING_CONFIRMATION",
       blockingQuestion,
     });
+    expect(v4).toMatchObject({
+      version: 4,
+      kind: "candidate_structure",
+      watermark: "STRUCTURE_PENDING_CONFIRMATION",
+      blockingQuestion,
+    });
+    expect({ legacyCalls, pvpCalls }).toEqual({ legacyCalls: 0, pvpCalls: 0 });
   });
 
-  it("routes a ready analysis through UGS, GPG, and public PVP without selecting the legacy compiler", async () => {
+  it("retains the established v3 public publication-plan discriminator and legacy fields", async () => {
     const { service } = serviceFor([analysisRecord()]);
 
     const preview = await service.preview("user-1", "analysis-ready");
 
     expect(preview).toMatchObject({
       version: 3,
+      kind: "publication_plan",
+      publicationPlan: { version: 1, graphId: "gold:cnn", compilerVersion: "composable-dag-v1" },
+      visualQa: { status: "pass" },
+    });
+    expect(JSON.stringify(preview)).not.toMatch(/evidenceIndex|sourceSha256|sourceRecordId|excerptDigest|locator/);
+  });
+
+  it("routes v4 through the injected UGS/GPG/PVP compiler seam with authenticated identity and no legacy compiler", async () => {
+    let legacyCalls = 0;
+    const pvpInputs: Parameters<PublicationVisualPreviewService["preview"]>[0][] = [];
+    const pvp = new PublicationVisualPreviewService();
+    const { service } = serviceFor([analysisRecord()], {
+      compilePublicationPlan: () => {
+        legacyCalls += 1;
+        throw new Error("legacy compiler must not run for v4");
+      },
+      compilePublicationPreview: (input: Parameters<PublicationVisualPreviewService["preview"]>[0]) => {
+        pvpInputs.push(structuredClone(input));
+        return pvp.preview(input);
+      },
+    });
+
+    const preview = await service.preview("user-1", "analysis-ready", {
+      version: 4,
+      deviceId: "device-actual-1",
+    });
+
+    expect(preview).toMatchObject({
+      version: 4,
       kind: "publication_visual_preview",
       publicationPreview: {
         schemaVersion: 1,
@@ -83,7 +138,19 @@ describe("FigureAnalysisPreviewService", () => {
         graph: { graphId: "analysis:analysis-ready", detail: "architecture" },
       },
     });
-    expect(JSON.stringify(preview)).not.toMatch(/composable-dag-v1|evidenceIndex|sourceSha256|sourceRecordId|excerptDigest|locator/);
+    expect(legacyCalls).toBe(0);
+    expect(pvpInputs).toEqual([expect.objectContaining({
+      ugs: expect.objectContaining({ graphId: "analysis:analysis-ready" }),
+      detail: "architecture",
+      updateIdentity: {
+        ownerId: "user-1",
+        deviceId: "device-actual-1",
+        workflowId: "figure-analysis:analysis-ready",
+        documentId: "analysis:analysis-ready",
+        pageId: "pvp-preview",
+        expectedRevision: 1,
+      },
+    })]);
   });
 
   it("uses one safe not-found result for missing and foreign analyses", async () => {

@@ -44,6 +44,7 @@ async function createAuthorizedApp(email: string) {
     app,
     store,
     userId: registered.json().user.id as string,
+    deviceId: registered.json().device.id as string,
     authorization: `Bearer ${login.json().accessToken as string}`,
   };
 }
@@ -91,8 +92,8 @@ async function createAnalysis(
   return response.json() as { id: string; status: string };
 }
 
-describe("owner-scoped v3 figure analysis preview route", () => {
-  it("requires the explicit v3 request header", async () => {
+describe("owner-scoped versioned figure analysis preview route", () => {
+  it("rejects a mismatched preview version with the established validation-error shape and both supported versions", async () => {
     const { app, authorization } = await createAuthorizedApp("preview-version@example.com");
 
     const response = await app.inject({
@@ -102,7 +103,10 @@ describe("owner-scoped v3 figure analysis preview route", () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().error).toMatchObject({ code: "VALIDATION_FAILED" });
+    expect(response.json().error).toMatchObject({
+      code: "VALIDATION_FAILED",
+      details: { field: "Accept-Figure-Version", reason: "unsupported_version", supported: [3, 4] },
+    });
   });
 
   it("requires an authenticated owner", async () => {
@@ -136,16 +140,12 @@ describe("owner-scoped v3 figure analysis preview route", () => {
     expect(first.headers["figure-version"]).toBe("3");
     expect(first.json()).toMatchObject({
       version: 3,
-      kind: "publication_visual_preview",
-      publicationPreview: {
-        schemaVersion: 1,
-        plan: { identity: { planId: expect.stringMatching(/^pvp:/), canonicalHash: expect.stringMatching(/^[a-f0-9]{64}$/) } },
-        graph: { version: 1, graphId: expect.any(String), detail: "architecture" },
-      },
+      kind: "publication_plan",
+      publicationPlan: { version: 1, compilerVersion: "composable-dag-v1" },
+      visualQa: { status: "pass" },
     });
     expect(first.body).toBe(second.body);
-    expect(first.body).not.toContain("preview-ready-source");
-    expect(first.body).not.toMatch(/composable-dag-v1|evidenceIndex|sourceSha256|sourceRecordId|sourceMappings|locator|excerpt|provider|worker|command/i);
+    expect(first.body).not.toMatch(/evidenceIndex|sourceSha256|sourceRecordId|sourceMappings|locator|excerpt|provider|worker|command/i);
     expect(await store.listJobs()).toHaveLength(0);
     const audit = (await store.listAuditRecords()).find((record) => record.action === "figure.analysis.preview.read");
     expect(audit).toMatchObject({
@@ -153,15 +153,35 @@ describe("owner-scoped v3 figure analysis preview route", () => {
       targetId: analysis.id,
       metadata: {
         analysisId: analysis.id,
-        kind: "publication_visual_preview",
+        kind: "publication_plan",
         version: 3,
-        pvpPlanId: expect.stringMatching(/^pvp:/),
-        pvpPlanHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-        gpgGraphId: expect.any(String),
-        gpgDetail: "architecture",
+        qaStatus: "pass",
       },
     });
     expect(JSON.stringify(audit?.metadata)).not.toMatch(/evidence|source|provider|worker|command|path/i);
+  });
+
+  it("returns the PVP public DTO with Figure-Version 4 for a v4 request", async () => {
+    const { app, authorization } = await createAuthorizedApp("preview-v4@example.com");
+    const analysis = await createAnalysis(app, authorization, linearSource, "preview-v4-source");
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/figure-analyses/${analysis.id}/preview`,
+      headers: { authorization, "accept-figure-version": "4" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["figure-version"]).toBe("4");
+    expect(response.json()).toMatchObject({
+      version: 4,
+      kind: "publication_visual_preview",
+      publicationPreview: {
+        schemaVersion: 1,
+        plan: { identity: { planId: expect.stringMatching(/^pvp:/), canonicalHash: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+        graph: { version: 1, graphId: expect.any(String), detail: "architecture" },
+      },
+    });
   });
 
   it("returns a watermarked candidate without preview side effects", async () => {
@@ -169,18 +189,27 @@ describe("owner-scoped v3 figure analysis preview route", () => {
     const analysis = await createAnalysis(app, authorization, dynamicSource, "preview-candidate-source");
 
     expect(analysis.status).toBe("candidate_structure");
-    const response = await app.inject({
+    const v3 = await app.inject({
       method: "GET",
       url: `/api/figure-analyses/${analysis.id}/preview`,
       headers: { authorization, "accept-figure-version": "3" },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ version: 3, kind: "candidate_structure", watermark: "STRUCTURE_PENDING_CONFIRMATION" });
-    expect(response.json()).not.toHaveProperty("architectureIR");
-    expect(response.json()).not.toHaveProperty("evidenceGraph");
-    expect(response.json()).not.toHaveProperty("sourceRef");
-    expect(response.json()).not.toHaveProperty("publicationPlan");
+    const v4 = await app.inject({
+      method: "GET",
+      url: `/api/figure-analyses/${analysis.id}/preview`,
+      headers: { authorization, "accept-figure-version": "4" },
+    });
+
+    expect(v3.statusCode).toBe(200);
+    expect(v3.json()).toMatchObject({ version: 3, kind: "candidate_structure", watermark: "STRUCTURE_PENDING_CONFIRMATION" });
+    expect(v4.statusCode).toBe(200);
+    expect(v4.json()).toMatchObject({ version: 4, kind: "candidate_structure", watermark: "STRUCTURE_PENDING_CONFIRMATION" });
+    expect(v3.json()).not.toHaveProperty("architectureIR");
+    expect(v3.json()).not.toHaveProperty("evidenceGraph");
+    expect(v3.json()).not.toHaveProperty("sourceRef");
+    expect(v3.json()).not.toHaveProperty("publicationPlan");
+    expect(v4.json()).not.toHaveProperty("publicationPreview");
     expect(await store.listJobs()).toHaveLength(0);
   });
 
