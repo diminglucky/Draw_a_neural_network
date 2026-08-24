@@ -127,16 +127,32 @@ function projectPrimitiveGroup(value: unknown): PreviewRecord {
 function projectPrimitive(value: unknown): PreviewRecord {
   const item = exactRecord(value, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label", "visual"], "PVP primitive", true);
   const kind = enumValue(own(item, "kind", "PVP primitive"), PRIMITIVE_KINDS, "PVP primitive kind");
-  const projection = { primitiveId: identifier(own(item, "primitiveId", "PVP primitive"), "PVP primitive ID"), componentId: identifier(own(item, "componentId", "PVP primitive"), "PVP component ID"), kind, regionId: identifier(own(item, "regionId", "PVP primitive"), "PVP primitive region ID"), bounds: bounds(own(item, "bounds", "PVP primitive"), "PVP primitive bounds"), zIndex: index(own(item, "zIndex", "PVP primitive"), "PVP primitive zIndex"), styleTokenIds: identifiers(own(item, "styleTokenIds", "PVP primitive"), "PVP primitive style token IDs"), label: displayText(own(item, "label", "PVP primitive"), "PVP primitive label") };
-  return Object.hasOwn(item, "visual") ? { ...projection, visual: projectVisual(own(item, "visual", "PVP primitive"), kind) } : projection;
+  const primitiveBounds = bounds(own(item, "bounds", "PVP primitive"), "PVP primitive bounds");
+  const projection = { primitiveId: identifier(own(item, "primitiveId", "PVP primitive"), "PVP primitive ID"), componentId: identifier(own(item, "componentId", "PVP primitive"), "PVP component ID"), kind, regionId: identifier(own(item, "regionId", "PVP primitive"), "PVP primitive region ID"), bounds: primitiveBounds, zIndex: index(own(item, "zIndex", "PVP primitive"), "PVP primitive zIndex"), styleTokenIds: identifiers(own(item, "styleTokenIds", "PVP primitive"), "PVP primitive style token IDs"), label: displayText(own(item, "label", "PVP primitive"), "PVP primitive label") };
+  return Object.hasOwn(item, "visual") ? { ...projection, visual: projectVisual(own(item, "visual", "PVP primitive"), kind, primitiveBounds) } : projection;
 }
 
-function projectVisual(value: unknown, kind: string): PreviewRecord {
+function projectVisual(value: unknown, kind: string, primitiveBounds: PreviewBounds): PreviewRecord {
   const visual = exactRecord(value, ["regionRole", "nativeSupport", "geometry"], "PVP primitive visual");
   const geometry = exactRecord(own(visual, "geometry", "PVP primitive visual"), kind === "TensorVolume" ? ["kind", "frontFace", "depthFace"] : kind === "AttentionTokenStrip" ? ["kind", "orderedCells"] : ["kind"], "PVP primitive geometry");
   const projection: PreviewRecord = { regionRole: enumValue(own(visual, "regionRole", "PVP primitive visual"), ["base", ...SEMANTIC_REGION_KINDS], "PVP primitive visual role"), nativeSupport: enumValue(own(visual, "nativeSupport", "PVP primitive visual"), ["supported", "restricted"], "PVP primitive native support") };
-  if (kind === "TensorVolume") return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP tensor geometry"), ["tensor_volume"], "PVP tensor geometry kind"), frontFace: array(own(geometry, "frontFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face")), depthFace: array(own(geometry, "depthFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face")) } };
-  if (kind === "AttentionTokenStrip") return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP token geometry"), ["ordered_cells"], "PVP token geometry kind"), orderedCells: array(own(geometry, "orderedCells", "PVP token geometry"), "PVP token cells").map((cell) => { const item = exactRecord(cell, ["cellId", "order", "bounds"], "PVP token cell"); return { cellId: identifier(own(item, "cellId", "PVP token cell"), "PVP token cell ID"), order: index(own(item, "order", "PVP token cell"), "PVP token cell order"), bounds: bounds(own(item, "bounds", "PVP token cell"), "PVP token cell bounds") }; }) } };
+  if (kind === "TensorVolume") {
+    const frontFace = array(own(geometry, "frontFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face"));
+    const depthFace = array(own(geometry, "depthFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face"));
+    if (frontFace.length !== 4 || depthFace.length !== 4 || [...frontFace, ...depthFace].some((point) => !containsPoint(primitiveBounds, point))) throw new Error("PVP tensor geometry is outside primitive bounds");
+    return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP tensor geometry"), ["tensor_volume"], "PVP tensor geometry kind"), frontFace, depthFace } };
+  }
+  if (kind === "AttentionTokenStrip") {
+    const orderedCells = array(own(geometry, "orderedCells", "PVP token geometry"), "PVP token cells").map((cell, expectedOrder) => {
+      const item = exactRecord(cell, ["cellId", "order", "bounds"], "PVP token cell");
+      const cellBounds = bounds(own(item, "bounds", "PVP token cell"), "PVP token cell bounds");
+      const order = index(own(item, "order", "PVP token cell"), "PVP token cell order");
+      if (order !== expectedOrder || !containsBounds(primitiveBounds, cellBounds)) throw new Error("PVP token geometry is outside primitive bounds or unordered");
+      return { cellId: identifier(own(item, "cellId", "PVP token cell"), "PVP token cell ID"), order, bounds: cellBounds };
+    });
+    if (orderedCells.length < 2 || new Set(orderedCells.map((cell) => cell.cellId)).size !== orderedCells.length) throw new Error("PVP token geometry is invalid");
+    return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP token geometry"), ["ordered_cells"], "PVP token geometry kind"), orderedCells } };
+  }
   return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP primitive geometry"), ["none"], "PVP primitive geometry kind") } };
 }
 
@@ -278,4 +294,6 @@ function offset(value: unknown, label: string): number { if (typeof value !== "n
 function positiveCount(value: unknown, label: string): number { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 2 || value > MAX_COLLECTION_ITEMS) throw new Error(`${label} is invalid`); return value; }
 function bounds(value: unknown, label: string): PreviewBounds { const item = exactRecord(value, ["x", "y", "width", "height"], label); return { x: index(own(item, "x", label), `${label} x`), y: index(own(item, "y", label), `${label} y`), width: index(own(item, "width", label), `${label} width`), height: index(own(item, "height", label), `${label} height`) }; }
 function pointValue(value: unknown, label: string): PreviewPoint { const item = exactRecord(value, ["x", "y"], label); return { x: index(own(item, "x", label), `${label} x`), y: index(own(item, "y", label), `${label} y`) }; }
+function containsPoint(outer: PreviewBounds, point: PreviewPoint): boolean { return point.x >= outer.x && point.y >= outer.y && point.x <= outer.x + outer.width && point.y <= outer.y + outer.height; }
+function containsBounds(outer: PreviewBounds, inner: PreviewBounds): boolean { return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height; }
 function layout(value: unknown, label: string): { rank: number; order: number } { const item = exactRecord(value, ["rank", "order"], label); return { rank: index(own(item, "rank", label), `${label} rank`), order: index(own(item, "order", label), `${label} order`) }; }

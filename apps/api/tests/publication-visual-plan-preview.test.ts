@@ -193,6 +193,23 @@ describe("projectPublicationVisualPlanPreview", () => {
     expect(() => createPublicationVisualPlan(draft)).toThrow(/primitive|kind|PVP/i);
   });
 
+  it("fails closed before browser rendering when public tensor or token geometry is outside its primitive contract", () => {
+    const { graph, pvp } = compiledSemanticPlan("formal");
+    const invalidGeometryDrafts = [
+      structuredClone(pvp) as any,
+      structuredClone(pvp) as any,
+    ];
+    const tensor = invalidGeometryDrafts[0].primitives.find((primitive: any) => primitive.kind === "TensorVolume");
+    const tokenStrip = invalidGeometryDrafts[1].primitives.find((primitive: any) => primitive.kind === "AttentionTokenStrip");
+    tensor.visual.geometry.frontFace[0] = { x: 0, y: tensor.visual.geometry.frontFace[0].y };
+    tokenStrip.visual.geometry.orderedCells[0].order = 1;
+
+    for (const draft of invalidGeometryDrafts) {
+      const parsed = createPublicationVisualPlan(draft);
+      expect(() => projectPublicationVisualPlanPreview({ graph, pvp: parsed })).toThrow(/visual|tensor|token|PVP|preview/i);
+    }
+  });
+
   it("fails closed when semantic-region input contains unknown fields or public-shape provenance arrays", () => {
     const { graph, pvp } = compiledSemanticPlan("formal");
     const publicSummary = graph.semanticRegions[0]!;

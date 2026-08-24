@@ -59,6 +59,35 @@ function planResponse(kind = "formal", qaStatus = "pending") {
   };
 }
 
+function visual(kind, regionRole, geometry = { kind: "none" }, nativeSupport = "supported") {
+  return { regionRole, nativeSupport, geometry };
+}
+
+function grammarResponse(kind = "formal") {
+  const response = planResponse(kind, kind === "formal" ? "passed" : "pending");
+  response.pvp.ports = [];
+  response.pvp.connectors = [];
+  response.pvp.annotations = [];
+  response.pvp.primitives = [
+    { primitiveId: "primitive:input", componentId: "input", kind: "InputTerminal", regionId: "region:main", bounds: { x: 40, y: 80, width: 120, height: 72 }, zIndex: 1, styleTokenIds: [], label: "Input <tensor>", visual: visual("InputTerminal", "base") },
+    { primitiveId: "primitive:custom", componentId: "custom", kind: "OperatorFrame", regionId: "region:main", bounds: { x: 220, y: 80, width: 130, height: 72 }, zIndex: 1, styleTokenIds: [], label: "Operator & gate", visual: visual("OperatorFrame", "base") },
+    { primitiveId: "primitive:module", componentId: "module", kind: "ModuleFrame", regionId: "region:main", bounds: { x: 390, y: 80, width: 140, height: 72 }, zIndex: 1, styleTokenIds: [], label: "Module", visual: visual("ModuleFrame", "custom_module") },
+    { primitiveId: "primitive:merge", componentId: "merge", kind: "ConcatMarker", regionId: "region:main", bounds: { x: 570, y: 80, width: 72, height: 72 }, zIndex: 1, styleTokenIds: [], label: "Concat", visual: visual("ConcatMarker", "concat_fusion") },
+    { primitiveId: "primitive:output", componentId: "output", kind: "OutputTerminal", regionId: "region:main", bounds: { x: 1020, y: 80, width: 120, height: 72 }, zIndex: 1, styleTokenIds: [], label: "Output", visual: visual("OutputTerminal", "base") },
+    { primitiveId: "primitive:stage", componentId: "stage", kind: "TensorStage", regionId: "region:scale", bounds: { x: 40, y: 220, width: 130, height: 80 }, zIndex: 1, styleTokenIds: [], label: "Stage", visual: visual("TensorStage", "scale_transition") },
+    { primitiveId: "primitive:volume", componentId: "volume", kind: "TensorVolume", regionId: "region:scale", bounds: { x: 220, y: 210, width: 160, height: 120 }, zIndex: 1, styleTokenIds: [], label: "Volume", visual: visual("TensorVolume", "scale_transition", { kind: "tensor_volume", frontFace: [{ x: 230, y: 230 }, { x: 330, y: 230 }, { x: 330, y: 310 }, { x: 230, y: 310 }], depthFace: [{ x: 260, y: 210 }, { x: 360, y: 210 }, { x: 360, y: 290 }, { x: 260, y: 290 }] }) },
+    { primitiveId: "primitive:repeat", componentId: "repeat", kind: "RepeatBadge", regionId: "region:repeat", bounds: { x: 420, y: 220, width: 88, height: 44 }, zIndex: 1, styleTokenIds: [], label: "×3", visual: visual("RepeatBadge", "repeat_group") },
+    { primitiveId: "primitive:split", componentId: "split", kind: "SplitMarker", regionId: "region:branch", bounds: { x: 550, y: 210, width: 72, height: 72 }, zIndex: 1, styleTokenIds: [], label: "Split", visual: visual("SplitMarker", "multi_branch") },
+    { primitiveId: "primitive:add", componentId: "add", kind: "AddMarker", regionId: "region:add", bounds: { x: 660, y: 210, width: 72, height: 72 }, zIndex: 1, styleTokenIds: [], label: "Add", visual: visual("AddMarker", "add_merge") },
+    { primitiveId: "primitive:tokens", componentId: "tokens", kind: "AttentionTokenStrip", regionId: "region:attention", bounds: { x: 780, y: 210, width: 210, height: 80 }, zIndex: 1, styleTokenIds: [], label: "Tokens", visual: visual("AttentionTokenStrip", "token_attention", { kind: "ordered_cells", orderedCells: [{ cellId: "cell:0", order: 0, bounds: { x: 790, y: 225, width: 45, height: 48 } }, { cellId: "cell:1", order: 1, bounds: { x: 850, y: 225, width: 45, height: 48 } }, { cellId: "cell:2", order: 2, bounds: { x: 910, y: 225, width: 45, height: 48 } }] }) },
+    { primitiveId: "primitive:attention", componentId: "attention", kind: "AttentionRelation", regionId: "region:attention", bounds: { x: 1020, y: 210, width: 120, height: 80 }, zIndex: 1, styleTokenIds: [], label: "Attention", visual: visual("AttentionRelation", "token_attention") },
+  ];
+  if (kind === "candidate") {
+    response.pvp.primitives.push({ primitiveId: "primitive:candidate", componentId: "candidate", kind: "CandidateCallout", regionId: "region:candidate", bounds: { x: 40, y: 400, width: 420, height: 90 }, zIndex: 1, styleTokenIds: [], label: "Review <uncertain>", visual: visual("CandidateCallout", "candidate_feedback", { kind: "none" }, "restricted") });
+  }
+  return response;
+}
+
 describe("PublicationVisualPlan browser preview", () => {
   it("renders a formal QA-pending PVP without advertising export", () => {
     const response = planResponse("formal", "pending");
@@ -80,6 +109,39 @@ describe("PublicationVisualPlan browser preview", () => {
     expect(svg).toContain("No source is rendered");
   });
 
+  it("renders every public visual grammar family with deterministic, kind-specific SVG", () => {
+    const response = grammarResponse();
+    const first = renderPublicationVisualPlanPreview(response);
+    const second = renderPublicationVisualPlanPreview(response);
+
+    expect(first).toBe(second);
+    expect(first).toContain(`data-pvp-plan="pvp:dual-stream"`);
+    expect(first).toContain(`data-pvp-hash="${"a".repeat(64)}"`);
+    expect(first).toContain('class="publication-visual-plan-tensor-volume-front"');
+    expect(first).toContain('class="publication-visual-plan-tensor-volume-depth"');
+    expect(first).toContain('class="publication-visual-plan-merge-symbol"');
+    expect(first).toContain(">+</text>");
+    expect(first).toContain(">∥</text>");
+    expect(first).toContain('class="publication-visual-plan-repeat-badge"');
+    expect(first).toContain('aria-label="Token 1 of 3"');
+    expect(first).toContain('aria-label="Token 2 of 3"');
+    expect(first).toContain('aria-label="Token 3 of 3"');
+    expect(first).toContain('class="publication-visual-plan-attention-relation"');
+    expect(first).toContain("Input &lt;tensor&gt;");
+    expect(first).toContain("Operator &amp; gate");
+    expect(first).not.toMatch(/sourceMappings|evidenceIds|worker|visio|nativeSupport|exportEligible/i);
+    expect(first).not.toMatch(/data-pvp-(?:connector|annotation|geometry|merge|repeat-badge|token-cell|token-order|attention-relation)/);
+  });
+
+  it("renders candidate grammar with a visible watermark and no export or native controls", () => {
+    const svg = renderPublicationVisualPlanPreview(grammarResponse("candidate"));
+
+    expect(svg).toContain('class="publication-visual-plan-candidate"');
+    expect(svg).toContain("CANDIDATE • REVIEW REQUIRED");
+    expect(svg).toContain("Review &lt;uncertain&gt;");
+    expect(svg).not.toMatch(/export|snapshot|visio|worker|native/i);
+  });
+
   it("projects stored Profile style tokens without inferring new topology or geometry", () => {
     const response = planResponse();
     response.pvp.styleTokens = {
@@ -97,7 +159,7 @@ describe("PublicationVisualPlan browser preview", () => {
     expect(svg).toContain('data-pvp-primitive="primitive:custom"');
     expect(svg).toContain('stroke="#1d4ed8"');
     expect(svg).toContain('fill="#eff6ff"');
-    expect(svg).toContain('data-pvp-connector="connector:input-custom"');
+    expect(svg).toContain('class="publication-visual-plan-connector"');
     expect(svg).toContain('stroke="#2563eb"');
     expect(svg).toContain('stroke-width="3"');
   });
@@ -127,7 +189,7 @@ describe("PublicationVisualPlan browser preview", () => {
   });
 
   it.each([
-    ["unsupported primitive", (response) => { response.pvp.primitives[0].kind = "TensorVolume"; }],
+    ["unsupported primitive", (response) => { response.pvp.primitives[0].kind = "UnsupportedPrimitive"; }],
     ["non-integer bounds", (response) => { response.pvp.primitives[0].bounds.x = 80.5; }],
     ["route endpoint mismatch", (response) => { response.pvp.connectors[0].route[0].x = 211; }],
     ["unsupported protocol", (response) => { response.pvp.rendererRequirements.protocolVersion = "pvp-renderer-2"; }],

@@ -6,7 +6,12 @@ const RESPONSE_FIELDS = Object.freeze({
 const PVP_FIELDS = Object.freeze([
   "identity", "eligibility", "lineage", "coordinateSpace", "regions", "primitiveGroups", "primitives", "ports", "connectors", "annotations", "legend", "styleTokens", "profileApplications", "sourceMappings", "rendererRequirements", "updateIdentity",
 ]);
-const PRIMITIVE_KINDS = new Set(["Input", "Output", "GenericModule", "CustomOperator", "CustomModule", "Split", "MergeAdd", "MergeConcat", "CustomFusion", "RepeatBadge", "CandidateRegion"]);
+const PRIMITIVE_KINDS = new Set([
+  "Input", "Output", "GenericModule", "CustomOperator", "CustomModule", "Split", "MergeAdd", "MergeConcat", "CustomFusion", "CandidateRegion",
+  "InputTerminal", "OutputTerminal", "TensorStage", "TensorVolume", "OperatorFrame", "ModuleFrame", "RepeatBadge", "SplitMarker", "AddMarker", "ConcatMarker", "AttentionTokenStrip", "AttentionRelation", "CandidateCallout",
+]);
+const VISUAL_PRIMITIVE_KINDS = new Set(["InputTerminal", "OutputTerminal", "TensorStage", "TensorVolume", "OperatorFrame", "ModuleFrame", "RepeatBadge", "SplitMarker", "AddMarker", "ConcatMarker", "AttentionTokenStrip", "AttentionRelation", "CandidateCallout"]);
+const VISUAL_REGION_ROLES = new Set(["base", "scale_transition", "repeat_group", "add_merge", "concat_fusion", "token_attention", "custom_module", "multi_branch", "candidate_feedback"]);
 const PORT_SIDES = new Set(["left", "right", "top", "bottom"]);
 const REQUIRED_CAPABILITIES = new Set(["native-text", "orthogonal-route", "shape-data"]);
 const MAX_ITEMS = 500;
@@ -22,10 +27,10 @@ export function renderPublicationVisualPlanPreview(response) {
   const primitives = pvp.primitives.map(renderPrimitive).join("");
   const annotations = pvp.annotations.map(renderAnnotation).join("");
   const candidateMark = candidate
-    ? `<g class="publication-visual-plan-candidate" aria-label="Candidate preview"><rect x="${page.x}" y="${page.y}" width="${page.width}" height="${page.height}"/><text x="${page.x + 24}" y="${page.y + 38}">Candidate preview</text></g>`
+    ? `<g class="publication-visual-plan-candidate" aria-label="Candidate preview"><rect x="${page.x}" y="${page.y}" width="${page.width}" height="${page.height}"/><text x="${page.x + 24}" y="${page.y + 38}">CANDIDATE • REVIEW REQUIRED</text></g>`
     : "";
 
-  return `<svg class="publication-visual-plan-svg${candidate ? " publication-visual-plan-svg--candidate" : ""}" viewBox="${page.x} ${page.y} ${page.width} ${page.height}" role="img" aria-label="Publication visual plan preview" xmlns="http://www.w3.org/2000/svg"><rect class="publication-visual-plan-page" x="${page.x}" y="${page.y}" width="${page.width}" height="${page.height}"/>${connectors}${primitives}${annotations}${candidateMark}</svg>`;
+  return `<svg class="publication-visual-plan-svg${candidate ? " publication-visual-plan-svg--candidate" : ""}" data-pvp-plan="${escapeAttribute(pvp.identity.planId)}" data-pvp-hash="${escapeAttribute(pvp.identity.canonicalHash)}" viewBox="${page.x} ${page.y} ${page.width} ${page.height}" role="img" aria-label="Publication visual plan preview" xmlns="http://www.w3.org/2000/svg"><rect class="publication-visual-plan-page" x="${page.x}" y="${page.y}" width="${page.width}" height="${page.height}"/>${connectors}${primitives}${annotations}${candidateMark}</svg>`;
 }
 
 export function publicationVisualPreviewSummary(response) {
@@ -97,7 +102,9 @@ function parsePvp(value, responseKind) {
   plainRecord(pvp.lineage, "PVP lineage is invalid");
   plainRecord(pvp.legend, "PVP legend is invalid");
   plainRecord(pvp.updateIdentity, "PVP update identity is invalid");
-  return Object.freeze({ identity: Object.freeze({ planId: identity.planId }), qaStatus: eligibility.qaStatus, coordinateSpace, primitives, ports, connectors, annotations });
+  const hasCandidateVisual = primitives.some(hasCandidateVisualSemantic);
+  if (hasCandidateVisual && (responseKind !== "candidate" || eligibility.qaStatus === "passed")) throw new Error("Candidate visual semantics are invalid");
+  return Object.freeze({ identity: Object.freeze({ planId: identity.planId, canonicalHash: identity.canonicalHash }), qaStatus: eligibility.qaStatus, coordinateSpace, primitives, ports, connectors, annotations });
 }
 
 function parseDraft(value) {
@@ -130,15 +137,84 @@ function parsePrimitives(value, page, styleTokens) {
   const ids = new Set();
   return Object.freeze(value.map((item) => {
     const primitive = plainRecord(item, "PVP primitive is invalid");
-    assertExactKeys(primitive, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label"], "PVP primitive");
+    assertAllowedKeys(primitive, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label", "visual"], ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label"], "PVP primitive");
     const styles = resolveStyleTokens(primitive.styleTokenIds, styleTokens, "PVP primitive");
     if (!identifier(primitive.primitiveId) || ids.has(primitive.primitiveId) || !identifier(primitive.componentId) || !identifier(primitive.regionId) || !PRIMITIVE_KINDS.has(primitive.kind) || !integer(primitive.zIndex)) throw new Error("PVP primitive is invalid");
     if (primitive.label !== undefined && !displayText(primitive.label)) throw new Error("PVP primitive label is invalid");
     const bounds = parseBounds(primitive.bounds, "PVP primitive bounds", false);
     if (!contains(page, bounds)) throw new Error("PVP primitive is outside page bounds");
+    const visual = parseVisual(primitive.visual, primitive.kind, bounds);
     ids.add(primitive.primitiveId);
-    return Object.freeze({ primitiveId: primitive.primitiveId, kind: primitive.kind, bounds, label: primitive.label || "", styles });
+    return Object.freeze({ primitiveId: primitive.primitiveId, kind: primitive.kind, bounds, label: primitive.label || "", styles, visual });
   }));
+}
+
+function parseVisual(value, kind, primitiveBounds) {
+  if (!VISUAL_PRIMITIVE_KINDS.has(kind)) {
+    if (value !== undefined) throw new Error("Legacy PVP primitive visual is invalid");
+    return null;
+  }
+  const visual = plainRecord(value, "PVP primitive visual is invalid");
+  assertExactKeys(visual, ["regionRole", "nativeSupport", "geometry"], "PVP primitive visual");
+  if (!VISUAL_REGION_ROLES.has(visual.regionRole) || !["supported", "restricted"].includes(visual.nativeSupport)) throw new Error("PVP primitive visual is invalid");
+  if (kind === "CandidateCallout" && visual.regionRole !== "candidate_feedback") throw new Error("CandidateCallout visual is invalid");
+  if (visual.regionRole === "candidate_feedback" && visual.nativeSupport !== "restricted") throw new Error("Candidate visual is invalid");
+  const geometry = parseVisualGeometry(visual.geometry, kind, primitiveBounds);
+  return Object.freeze({ regionRole: visual.regionRole, geometry });
+}
+
+function parseVisualGeometry(value, kind, primitiveBounds) {
+  const geometry = plainRecord(value, "PVP primitive geometry is invalid");
+  if (kind === "TensorVolume") {
+    assertExactKeys(geometry, ["kind", "frontFace", "depthFace"], "PVP tensor geometry");
+    const frontFace = parseFace(geometry.frontFace, primitiveBounds, "PVP tensor front face");
+    const depthFace = parseFace(geometry.depthFace, primitiveBounds, "PVP tensor depth face");
+    if (geometry.kind !== "tensor_volume") throw new Error("PVP tensor geometry is invalid");
+    return Object.freeze({ kind: "tensor_volume", frontFace, depthFace });
+  }
+  if (kind === "AttentionTokenStrip") {
+    assertExactKeys(geometry, ["kind", "orderedCells"], "PVP token geometry");
+    if (geometry.kind !== "ordered_cells") throw new Error("PVP token geometry is invalid");
+    const orderedCells = parseOrderedCells(geometry.orderedCells, primitiveBounds);
+    return Object.freeze({ kind: "ordered_cells", orderedCells });
+  }
+  assertExactKeys(geometry, ["kind"], "PVP primitive geometry");
+  if (geometry.kind !== "none") throw new Error("PVP primitive geometry is invalid");
+  return Object.freeze({ kind: "none" });
+}
+
+function parseFace(value, primitiveBounds, label) {
+  assertDenseArray(value, label);
+  if (value.length !== 4) throw new Error(`${label} is invalid`);
+  const face = value.map((point) => parsePoint(point, label));
+  if (face.some((point) => !contains(primitiveBounds, { x: point.x, y: point.y, width: 0, height: 0 }))) throw new Error(`${label} is invalid`);
+  return Object.freeze(face);
+}
+
+function parseOrderedCells(value, primitiveBounds) {
+  assertDenseArray(value, "PVP token cells");
+  if (value.length < 2 || value.length > MAX_ITEMS) throw new Error("PVP token cells are invalid");
+  const ids = new Set();
+  const cells = value.map((item, index) => {
+    const cell = plainRecord(item, "PVP token cell is invalid");
+    assertExactKeys(cell, ["cellId", "order", "bounds"], "PVP token cell");
+    const bounds = parseBounds(cell.bounds, "PVP token cell bounds", false);
+    if (!identifier(cell.cellId) || ids.has(cell.cellId) || cell.order !== index || !contains(primitiveBounds, bounds)) throw new Error("PVP token cell is invalid");
+    ids.add(cell.cellId);
+    return Object.freeze({ cellId: cell.cellId, order: cell.order, bounds });
+  });
+  return Object.freeze(cells);
+}
+
+function parsePoint(value, label) {
+  const point = plainRecord(value, `${label} is invalid`);
+  assertExactKeys(point, ["x", "y"], label);
+  if (!nonNegativeInteger(point.x) || !nonNegativeInteger(point.y)) throw new Error(`${label} is invalid`);
+  return Object.freeze({ x: point.x, y: point.y });
+}
+
+function hasCandidateVisualSemantic(primitive) {
+  return primitive.kind === "CandidateRegion" || primitive.kind === "CandidateCallout" || primitive.visual?.regionRole === "candidate_feedback";
 }
 
 function parsePorts(value, primitives, page) {
@@ -251,17 +327,118 @@ function parseBounds(value, label, allowPageOrigin) {
 
 function renderConnector(connector) {
   const d = connector.route.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
-  return `<path class="publication-visual-plan-connector" data-pvp-connector="${escapeAttribute(connector.connectorId)}"${styleAttributes(connector.styles)} d="${d}"/>`;
+  return `<path class="publication-visual-plan-connector"${styleAttributes(connector.styles)} d="${d}"/>`;
 }
 
 function renderPrimitive(primitive) {
   const { bounds } = primitive;
   const className = primitive.kind.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
-  return `<g class="publication-visual-plan-primitive publication-visual-plan-primitive--${className}" data-pvp-primitive="${escapeAttribute(primitive.primitiveId)}"><rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="12" ry="12"${styleAttributes(primitive.styles)}/><text x="${bounds.x + 12}" y="${bounds.y + Math.floor(bounds.height / 2)}">${escapeHtml(primitive.label || primitive.kind)}</text></g>`;
+  const content = renderPrimitiveFamily(primitive);
+  return `<g class="publication-visual-plan-primitive publication-visual-plan-primitive--${className}" data-pvp-primitive="${escapeAttribute(primitive.primitiveId)}">${content}</g>`;
+}
+
+function renderPrimitiveFamily(primitive) {
+  const { bounds } = primitive;
+  const label = renderPrimitiveLabel(primitive);
+  if (primitive.kind === "TensorStage") return renderTensorStage(primitive) + label;
+  if (primitive.kind === "TensorVolume") return renderTensorVolume(primitive) + label;
+  if (primitive.kind === "AddMarker" || primitive.kind === "MergeAdd") return renderMergeMarker(primitive, "add") + label;
+  if (primitive.kind === "ConcatMarker" || primitive.kind === "MergeConcat") return renderMergeMarker(primitive, "concat") + label;
+  if (primitive.kind === "RepeatBadge") return renderRepeatBadge(primitive) + label;
+  if (primitive.kind === "AttentionTokenStrip") return renderTokenStrip(primitive) + label;
+  if (primitive.kind === "AttentionRelation") return renderAttentionRelation(primitive) + label;
+  if (primitive.kind === "CandidateCallout" || primitive.kind === "CandidateRegion") return renderCandidateCallout(primitive) + label;
+  if (primitive.kind === "SplitMarker" || primitive.kind === "Split") return renderSplitMarker(primitive) + label;
+  if (primitive.kind === "OperatorFrame" || primitive.kind === "CustomOperator") return renderOperatorFrame(primitive) + label;
+  if (primitive.kind === "ModuleFrame" || primitive.kind === "CustomModule" || primitive.kind === "GenericModule" || primitive.kind === "CustomFusion") return renderModuleFrame(primitive) + label;
+  if (primitive.kind === "InputTerminal" || primitive.kind === "Input" || primitive.kind === "OutputTerminal" || primitive.kind === "Output") return renderTerminal(primitive) + label;
+  throw new Error("PVP primitive renderer is unsupported");
+}
+
+function renderTerminal(primitive) {
+  const { bounds } = primitive;
+  const points = primitive.kind === "InputTerminal" || primitive.kind === "Input"
+    ? `${bounds.x},${bounds.y} ${bounds.x + bounds.width - 16},${bounds.y} ${bounds.x + bounds.width},${bounds.y + Math.floor(bounds.height / 2)} ${bounds.x + bounds.width - 16},${bounds.y + bounds.height} ${bounds.x},${bounds.y + bounds.height}`
+    : `${bounds.x + 16},${bounds.y} ${bounds.x + bounds.width},${bounds.y} ${bounds.x + bounds.width},${bounds.y + bounds.height} ${bounds.x + 16},${bounds.y + bounds.height} ${bounds.x},${bounds.y + Math.floor(bounds.height / 2)}`;
+  return `<polygon class="publication-visual-plan-terminal" points="${points}"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderTensorStage(primitive) {
+  const { bounds } = primitive;
+  const inset = Math.max(8, Math.floor(bounds.height / 5));
+  const points = `${bounds.x + inset},${bounds.y} ${bounds.x + bounds.width - inset},${bounds.y} ${bounds.x + bounds.width},${bounds.y + bounds.height} ${bounds.x},${bounds.y + bounds.height}`;
+  return `<polygon class="publication-visual-plan-tensor-stage" points="${points}"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderTensorVolume(primitive) {
+  const visual = primitive.visual;
+  if (!visual || visual.geometry.kind !== "tensor_volume") throw new Error("TensorVolume visual is invalid");
+  const front = visual.geometry.frontFace.map((point) => `${point.x},${point.y}`).join(" ");
+  const depth = visual.geometry.depthFace.map((point) => `${point.x},${point.y}`).join(" ");
+  return `<polygon class="publication-visual-plan-tensor-volume-depth" points="${depth}"${styleAttributes(primitive.styles)}/><polygon class="publication-visual-plan-tensor-volume-front" points="${front}"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderOperatorFrame(primitive) {
+  const { bounds } = primitive;
+  return `<rect class="publication-visual-plan-operator-frame" x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="8" ry="8"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderModuleFrame(primitive) {
+  const { bounds } = primitive;
+  return `<rect class="publication-visual-plan-module-frame" x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="14" ry="14"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderRepeatBadge(primitive) {
+  const { bounds } = primitive;
+  return `<rect class="publication-visual-plan-repeat-badge" x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="${Math.min(16, Math.floor(bounds.height / 2))}" ry="${Math.min(16, Math.floor(bounds.height / 2))}"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderSplitMarker(primitive) {
+  const { bounds } = primitive;
+  const cx = bounds.x + Math.floor(bounds.width / 2);
+  const cy = bounds.y + Math.floor(bounds.height / 2);
+  return `<polygon class="publication-visual-plan-split-marker" points="${cx},${bounds.y} ${bounds.x + bounds.width},${cy} ${cx},${bounds.y + bounds.height} ${bounds.x},${cy}"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderMergeMarker(primitive, merge) {
+  const { bounds } = primitive;
+  const cx = bounds.x + Math.floor(bounds.width / 2);
+  const cy = bounds.y + Math.floor(bounds.height / 2);
+  const radius = Math.max(12, Math.floor(Math.min(bounds.width, bounds.height) / 2) - 4);
+  const symbol = merge === "add" ? "+" : "∥";
+  return `<circle class="publication-visual-plan-merge-marker publication-visual-plan-merge-marker--${merge}" cx="${cx}" cy="${cy}" r="${radius}"${styleAttributes(primitive.styles)}/><text class="publication-visual-plan-merge-symbol" x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="middle">${symbol}</text>`;
+}
+
+function renderTokenStrip(primitive) {
+  const visual = primitive.visual;
+  if (!visual || visual.geometry.kind !== "ordered_cells") throw new Error("AttentionTokenStrip visual is invalid");
+  const cells = visual.geometry.orderedCells.map((cell, index) => `<rect class="publication-visual-plan-token-cell" aria-label="Token ${index + 1} of ${visual.geometry.orderedCells.length}" x="${cell.bounds.x}" y="${cell.bounds.y}" width="${cell.bounds.width}" height="${cell.bounds.height}"/>`).join("");
+  return `<g class="publication-visual-plan-attention-token-strip">${cells}</g>`;
+}
+
+function renderAttentionRelation(primitive) {
+  const { bounds } = primitive;
+  const startX = bounds.x;
+  const startY = bounds.y + bounds.height;
+  const endX = bounds.x + bounds.width;
+  const endY = bounds.y;
+  const controlX = bounds.x + Math.floor(bounds.width / 2);
+  const controlY = bounds.y - Math.max(12, Math.floor(bounds.height / 3));
+  return `<path class="publication-visual-plan-attention-relation" d="M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderCandidateCallout(primitive) {
+  const { bounds } = primitive;
+  return `<rect class="publication-visual-plan-candidate-callout" x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="10" ry="10"${styleAttributes(primitive.styles)}/>`;
+}
+
+function renderPrimitiveLabel(primitive) {
+  const { bounds } = primitive;
+  return `<text class="publication-visual-plan-primitive-label" x="${bounds.x + 12}" y="${bounds.y + Math.floor(bounds.height / 2)}">${escapeHtml(primitive.label || primitive.kind)}</text>`;
 }
 
 function renderAnnotation(annotation) {
-  return `<text class="publication-visual-plan-annotation" data-pvp-annotation="${escapeAttribute(annotation.annotationId)}" x="${annotation.bounds.x}" y="${annotation.bounds.y + Math.floor(annotation.bounds.height / 2)}">${escapeHtml(annotation.text)}</text>`;
+  return `<text class="publication-visual-plan-annotation" x="${annotation.bounds.x}" y="${annotation.bounds.y + Math.floor(annotation.bounds.height / 2)}">${escapeHtml(annotation.text)}</text>`;
 }
 
 function plainRecord(value, message) {
@@ -273,6 +450,11 @@ function assertExactKeys(value, keys, label) {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new Error(`${label} has unsupported fields`);
+}
+
+function assertAllowedKeys(value, allowed, required, label) {
+  const actual = Object.keys(value);
+  if (actual.some((key) => !allowed.includes(key)) || required.some((key) => !Object.hasOwn(value, key))) throw new Error(`${label} has unsupported fields`);
 }
 
 function assertDenseArray(value, label) {
