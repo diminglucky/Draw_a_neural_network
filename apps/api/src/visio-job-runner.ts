@@ -1,5 +1,4 @@
 import { ApiErrorCode, FoundationError, type Job } from "./domain.js";
-import type { AgentVisioExecutionSnapshotStore } from "./agent-visio-execution-snapshot.js";
 import type { VisioExecutor } from "./adapters.js";
 import { JobService } from "./job-service.js";
 import type { FoundationStore } from "./store.js";
@@ -13,7 +12,6 @@ export interface VisioJobRunnerOptions {
   store: FoundationStore;
   jobService: JobService;
   executor: VisioExecutor;
-  agentVisioExecutionSnapshotStore?: AgentVisioExecutionSnapshotStore;
   maxConcurrentJobs?: number;
 }
 
@@ -156,26 +154,7 @@ export class VisioJobRunner {
   }
 
   private async executeTrustedDiagram(job: Job, input: Record<string, unknown>, signal: AbortSignal): Promise<{ path: string; readback: Awaited<ReturnType<VisioExecutor["readback"]>> }> {
-    const snapshotId = typeof input.agentVisioExecutionSnapshotId === "string" ? input.agentVisioExecutionSnapshotId : null;
-    if (!snapshotId) return this.options.executor.executeDiagram({ jobId: job.id, diagram: input.diagram }, { signal });
-
-    const expectedDigest = typeof input.planDigest === "string" ? input.planDigest : null;
-    const snapshots = this.options.agentVisioExecutionSnapshotStore;
-    if (!snapshots || !expectedDigest) {
-      throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Agent Visio Job has no execution snapshot binding", 500);
-    }
-    const snapshot = await snapshots.getById({ tenantId: "synapse-local", userId: job.userId }, snapshotId);
-    if (!snapshot || snapshot.planDigest !== expectedDigest || !snapshot.immutable) {
-      throw new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Agent Visio execution snapshot is unavailable or invalid", 409);
-    }
-    return this.options.executor.executeDiagram({
-      jobId: job.id,
-      diagram: snapshot.diagram,
-      userId: job.userId,
-      deviceId: job.deviceId,
-      workflowId: job.id,
-      operation: "apply",
-    }, { signal });
+    return this.options.executor.executeDiagram({ jobId: job.id, diagram: input.diagram }, { signal });
   }
 
   private isCancellable(status: Job["status"]): boolean {

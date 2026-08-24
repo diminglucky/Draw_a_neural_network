@@ -82,21 +82,21 @@
 
 **Produces:** no draft-revision native export route and no named-topology snapshot dependency; generic legacy Visio handling remains intact.
 
-- [ ] **Step 1: Write the retirement test first.**
+- [x] **Step 1: Write the retirement test first.**
 
   Create one Vitest that builds the default app, posts `{}` to `/api/figure-drafts/draft-structural/revisions/1/visio-exports`, asserts `404`, and closes the app in `afterEach`.
 
-- [ ] **Step 2: Prove the old route exists.**
+- [x] **Step 2: Prove the old route exists.**
 
   Run: `npx vitest run apps/api/tests/visio-draft-export-retirement.test.ts`
 
   Expected before implementation: FAIL because the route is registered.
 
-- [ ] **Step 3: Remove the route and all snapshot wiring.**
+- [x] **Step 3: Remove the route and all snapshot wiring.**
 
   Remove snapshot imports/options/default construction from `app.ts`; remove snapshot dependency/import and only the draft-revision native export handler from `routes.ts`; preserve `/api/legacy/visio-exports`.
 
-- [ ] **Step 4: Simplify the runner to its generic executor contract.**
+- [x] **Step 4: Simplify the runner to its generic executor contract.**
 
   Remove snapshot-store support from `VisioJobRunnerOptions` and replace snapshot execution with:
 
@@ -106,7 +106,7 @@
 
   Preserve queuing, cancellation, recovery, job state, output path, and readback behavior.
 
-- [ ] **Step 5: Delete named bridge/snapshot sources and run focused checks.**
+- [x] **Step 5: Delete named bridge/snapshot sources and run focused checks.**
 
   ```powershell
   npx vitest run apps/api/tests/visio-draft-export-retirement.test.ts apps/api/tests/visio-routes.test.ts apps/api/tests/visio-job-runner.test.ts
