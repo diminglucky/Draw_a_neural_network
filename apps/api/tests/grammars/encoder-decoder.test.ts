@@ -6,11 +6,11 @@ import { encoderDecoderGrammar } from "../../src/grammars/encoder-decoder.js";
 import { residualBackboneGrammar } from "../../src/grammars/residual-backbone.js";
 import { parseCanonicalNetworkIR } from "../../src/network-ir-v2.js";
 import { runVisualQa } from "../../src/visual-qa.js";
-import { unetCanonicalIr } from "../fixtures/unet-canonical-ir.js";
+import { structuralEncoderDecoderCanonicalIr } from "../fixtures/structural-encoder-decoder-ir.js";
 
 describe("encoder-decoder grammar", () => {
-  it("selects and compiles a U-Net as compact encoder, bottleneck, decoder, and Concat semantics", () => {
-    const ir = unetCanonicalIr();
+  it("selects and compiles an anonymous encoder-decoder topology with concat semantics", () => {
+    const ir = structuralEncoderDecoderCanonicalIr();
     const intent = defaultFigureIntent();
     const registry = new GrammarRegistry([cnnClassifierGrammar, encoderDecoderGrammar, residualBackboneGrammar]);
     const model = encoderDecoderGrammar.compileSemanticModel(ir, intent);
@@ -33,8 +33,8 @@ describe("encoder-decoder grammar", () => {
     expect(runVisualQa(plan).blocking).toEqual([]);
   });
 
-  it("fails closed when U-Net cross-scale pairing cannot be verified", () => {
-    const ir = unetCanonicalIr();
+  it("fails closed when encoder-decoder cross-scale pairing cannot be verified", () => {
+    const ir = structuralEncoderDecoderCanonicalIr();
     const malformed = {
       ...ir,
       tensors: ir.tensors.map((tensor) => tensor.id === "up-2-tensor" ? { ...tensor, shape: [96, 96, 256] } : tensor),
@@ -45,7 +45,7 @@ describe("encoder-decoder grammar", () => {
   });
 
   it("derives encoder, bottleneck, and decoder order from directed tensor flow instead of the IR node array order", () => {
-    const ir = unetCanonicalIr();
+    const ir = structuralEncoderDecoderCanonicalIr();
     const upsampleOne = ir.nodes.find((node) => node.id === "up-1")!;
     const reordered = { ...ir, nodes: [upsampleOne, ...ir.nodes.filter((node) => node.id !== "up-1")] };
     const model = encoderDecoderGrammar.compileSemanticModel(reordered, defaultFigureIntent());
@@ -54,9 +54,9 @@ describe("encoder-decoder grammar", () => {
     expect(model.displayRelations.find((relation) => relation.id === "upsample-1")).toMatchObject({ sourceDisplayId: "bottleneck-stage", targetDisplayId: "decoder-stage-1" });
   });
 
-  it("lays out every verified scale level distinctly instead of clamping deeper U-Nets into one row", () => {
+  it("lays out every verified scale level distinctly instead of clamping deeper structures into one row", () => {
     const intent = defaultFigureIntent();
-    const base = encoderDecoderGrammar.compileSemanticModel(unetCanonicalIr(), intent);
+    const base = encoderDecoderGrammar.compileSemanticModel(structuralEncoderDecoderCanonicalIr(), intent);
     const encoderStage = { ...base.displayNodes.find((node) => node.id === "encoder-stage-2")!, id: "encoder-stage-3", label: "Encoder level 3", semantic: { stage: 3, scaleHeight: 32, scaleWidth: 32, repeatCount: 1 } };
     const decoderStage = { ...base.displayNodes.find((node) => node.id === "decoder-stage-1")!, id: "decoder-stage-3", label: "Decoder level 3", semantic: { stage: 7, scaleHeight: 32, scaleWidth: 32, repeatCount: 1, merge: "Concat" } };
     const model = {
@@ -78,7 +78,7 @@ describe("encoder-decoder grammar", () => {
   });
 
   it("fails closed instead of choosing one of multiple independent input/output towers", () => {
-    const ir = unetCanonicalIr();
+    const ir = structuralEncoderDecoderCanonicalIr();
     const multipleTowers = parseCanonicalNetworkIR({
       ...ir,
       nodes: [
@@ -95,7 +95,7 @@ describe("encoder-decoder grammar", () => {
   });
 
   it("fails closed rather than silently omitting a third Concat input branch", () => {
-    const ir = unetCanonicalIr();
+    const ir = structuralEncoderDecoderCanonicalIr();
     const nonBinaryConcat = parseCanonicalNetworkIR({
       ...ir,
       nodes: [
@@ -117,8 +117,8 @@ describe("encoder-decoder grammar", () => {
     expect(new GrammarRegistry([encoderDecoderGrammar]).select(nonBinaryConcat, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
-  it("fails closed when a connected off-path branch would be omitted from the binary U-Net figure", () => {
-    const ir = unetCanonicalIr();
+  it("fails closed when a connected off-path branch would be omitted from the binary structural figure", () => {
+    const ir = structuralEncoderDecoderCanonicalIr();
     const offPathBranch = parseCanonicalNetworkIR({
       ...ir,
       nodes: [

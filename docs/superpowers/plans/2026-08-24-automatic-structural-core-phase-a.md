@@ -120,10 +120,23 @@
 **Files:**
 - Delete: `apps/api/tests/fixtures/vgg16-canonical-ir.ts`
 - Delete: `apps/api/tests/fixtures/ready-vgg16-figure-analysis.ts`
+- Delete: `apps/api/tests/fixtures/resnet50-canonical-ir.ts`
+- Delete: `apps/api/tests/fixtures/unet-canonical-ir.ts`
+- Delete: `apps/api/tests/fixtures/vit-canonical-ir.ts`
+- Create: `apps/api/tests/fixtures/structural-residual-merge-ir.ts`
+- Create: `apps/api/tests/fixtures/structural-encoder-decoder-ir.ts`
+- Create: `apps/api/tests/fixtures/structural-token-attention-ir.ts`
 - Modify: `apps/api/tests/grammars/cnn-classifier.test.ts`
+- Modify: `apps/api/tests/grammars/residual-backbone.test.ts`
+- Modify: `apps/api/tests/grammars/encoder-decoder.test.ts`
+- Modify: `apps/api/tests/grammars/token-transformer.test.ts`
 - Modify: `apps/api/tests/figure-draft-preview-service.test.ts`
 - Modify: `apps/api/tests/figure-draft-preview-routes.test.ts`
 - Modify: `apps/api/tests/network-ir-v1-adapter.test.ts`
+- Modify: `apps/api/tests/agent-runtime.test.ts`
+- Modify: `apps/api/tests/agent-routes.test.ts`
+- Modify: `apps/api/tests/agent-actions.test.ts`
+- Modify: `apps/api/src/grammars/encoder-decoder.ts`
 - Delete: `scripts/generate-vgg16-figure-plan.mts`
 - Delete: `scripts/generate-vgg16-figure-plan.test.mjs`
 - Delete: `scripts/vgg16-visio-smoke.ps1`
@@ -134,13 +147,15 @@
 
 **Produces:** an anonymous topology test corpus with no named-model fixture or executable script.
 
-- [ ] **Step 1: Change named-model-dependent tests to existing anonymous universal graph fixtures or delete tests that only validate the retired bridge.**
+- [ ] **Step 1: Change named-model-dependent tests to anonymous structural fixtures or delete tests that only validate the retired bridge.**
 
-  Preserve generic preview ownership, clarification, QA, and structural grammar assertions. Do not introduce a replacement named-model fixture. Where a legacy test requires canonical NetworkIR v2, build the smallest anonymous topology locally in that test using `parseCanonicalNetworkIR` and source-backed evidence IDs.
+  Preserve generic preview ownership, clarification, QA, and structural grammar assertions. Do not introduce a replacement named-model fixture. Replace the named spatial, residual-merge, encoder-decoder, and token-attention fixtures with anonymous source-backed topology cases. Test descriptions, figure metadata, fixture filenames, and exported helper names must describe only structural semantics. Where a legacy test requires canonical NetworkIR v2, build the smallest anonymous topology locally in that test using `parseCanonicalNetworkIR` and source-backed evidence IDs.
 
-- [ ] **Step 2: Delete all named scripts and fixture files.**
+  When the deterministic local provider sees an unproved merge word such as `concat` or `residual`, it must not encode that word as a linear-node topology. It must keep only independently drawable source facts and return one blocking clarification with the message evidence ID. Cover this through the real runtime: the result has `figureAnalysis.status === "needs_confirmation"`, contains no forged merge node, and retains the neutral source-derived figure title.
 
-  Delete exactly the files listed above; retain historical evidence and design logs.
+- [ ] **Step 2: Delete all named scripts and fixture files after their anonymous consumers exist.**
+
+  Delete exactly the files listed above; retain historical evidence and design logs. The final executable-tree scan must include every `apps/api/tests` grammar and fixture path, not just the files originally changed for the spatial topology.
 
 - [ ] **Step 3: Run the complete retirement verification matrix.**
 

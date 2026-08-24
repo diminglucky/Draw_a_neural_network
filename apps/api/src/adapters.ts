@@ -352,6 +352,7 @@ class LocalDeterministicAgentProvider implements AgentProvider {
     const codeAttachments = input.attachments.filter((attachment) => attachment.kind === "code");
     const imageAttachments = input.attachments.filter((attachment) => attachment.kind === "image");
     const layerKinds = collectLayerKinds([input.message, ...codeAttachments.map((attachment) => decodeCodeAttachment(attachment.data))].join("\n"));
+    const localStructure = resolveDeterministicLayerKinds(layerKinds);
     const sourceByKind = new Map(input.evidenceSources.map((source) => [source.kind, source]));
     const sourceFor = (kind: EvidenceSource["kind"]) => sourceByKind.get(kind) ?? input.evidenceSources[0];
     const evidence = [
@@ -366,7 +367,7 @@ class LocalDeterministicAgentProvider implements AgentProvider {
       detail: fact.value,
       confidence: fact.confidence,
     }));
-    const nodes = buildNodes(layerKinds, candidateEvidence);
+    const nodes = buildNodes(localStructure.drawableKinds, candidateEvidence);
     const proposal = parseAnalysisProposal({
       provider: "local-deterministic",
       responseText: imageAttachments.length > 0
@@ -382,7 +383,7 @@ class LocalDeterministicAgentProvider implements AgentProvider {
         edges: buildEdges(nodes),
         groups: [],
       },
-      unresolved: [],
+      unresolved: localStructure.unresolved,
       figureIntentSuggestion: {},
       warnings: imageAttachments.length > 0 ? ["Image evidence is reference-only in the local deterministic provider."] : [],
     });
@@ -419,7 +420,7 @@ class LocalDeterministicAgentProvider implements AgentProvider {
       })),
     ];
     const layerKinds = collectLayerKinds([input.message, ...codeAttachments.map((attachment) => decodeCodeAttachment(attachment.data))].join("\n"));
-    const nodes = buildNodes(layerKinds, evidence);
+    const nodes = buildNodes(resolveDeterministicLayerKinds(layerKinds).drawableKinds, evidence);
     const responseFragments = ["deterministic draft generated from text and code patterns."];
     if (imageAttachments.length > 0) {
       responseFragments.push("Image attachments were treated as low-confidence reference evidence only.");
@@ -673,6 +674,23 @@ function collectLayerKinds(text: string): string[] {
   }
 
   return matches.length > 0 ? matches : ["dense"];
+}
+
+function resolveDeterministicLayerKinds(layerKinds: string[]) {
+  const ambiguousMergeKinds = new Set(["concat", "residual"]);
+  const ambiguousKinds = [...new Set(layerKinds.filter((kind) => ambiguousMergeKinds.has(kind)))];
+  return {
+    drawableKinds: layerKinds.filter((kind) => !ambiguousMergeKinds.has(kind)),
+    unresolved: ambiguousKinds.length === 0
+      ? []
+      : [{
+        id: "local-ambiguous-merge",
+        question: "Which verified branch relationship should this merge use?",
+        severity: "blocking" as const,
+        candidateValues: ["add", "concat", "residual"],
+        evidenceIds: ["fact-message"],
+      }],
+  };
 }
 
 function buildLocalCanvasActions(message: string, canvas?: CanvasSnapshot): CanvasActionSet {

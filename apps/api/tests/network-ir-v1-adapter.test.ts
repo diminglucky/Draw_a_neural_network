@@ -5,7 +5,7 @@ import { validateCanonicalNetworkIR } from "../src/network-ir-v2.js";
 describe("NetworkIR v1 adapter", () => {
   it("selects only structural v1 data while materializing a matching EvidenceBundle", () => {
     const adapted = adaptNetworkIRv1({
-      figure: { id: "vgg16", title: "VGG16", description: null },
+      figure: { id: "structural-spatial", title: "Structural spatial topology", description: null },
       nodes: [{
         id: "block-1", kind: "conv", label: "Conv", subtitle: "", stage: 1, confidence: 0.9,
         sourceEvidence: [{ type: "code", value: "model.py", locator: "line:1", excerpt: "Conv2d" }],
@@ -29,7 +29,7 @@ describe("NetworkIR v1 adapter", () => {
 
   it("maps structural edges and deterministic legacy evidence IDs only", () => {
     const canonical = adaptNetworkIRv1ToCanonical({
-      figure: { id: "resnet", title: "ResNet", description: null },
+      figure: { id: "structural-residual", title: "Structural residual merge", description: null },
       nodes: [
         { id: "input-1", kind: "input", label: "Input", stage: 0, tensor: { shape: [3, 32, 32], dtype: "float32" }, sourceEvidence: [{ type: "code", value: "model.py" }] },
         { id: "input-2", kind: "input", label: "Shortcut", stage: 0, tensor: { shape: [3, 32, 32], dtype: "float32" }, sourceEvidence: [{ type: "code", value: "model.py" }] },

@@ -141,7 +141,7 @@ function createAgentService(
           stages: ["received", "analyzing", "completed"],
           response,
           networkIR: {
-            figure: { title: "ResNet draft" },
+            figure: { title: "Structural draft" },
             nodes: [{ id: "input", kind: "input", label: "Input" }],
             edges: [],
             groups: [],
@@ -150,7 +150,7 @@ function createAgentService(
             layout: {},
           },
           diagram: {
-            figure: { title: "ResNet draft" },
+            figure: { title: "Structural draft" },
             paletteName: "publication",
             nodes: [{ id: "input", x: 0, y: 0 }],
             edges: [],
@@ -643,7 +643,7 @@ describe("agent chat routes", () => {
       method: "POST",
       url: "/api/agent/chat",
       headers: { ...headers, "idempotency-key": "canvas-context-1" },
-      payload: { message: "把当前图改成 ResNet", canvas },
+      payload: { message: "把当前图改成带残差合并的结构", canvas },
     });
 
     expect(response.statusCode).toBe(200);

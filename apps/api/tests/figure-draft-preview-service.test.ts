@@ -5,24 +5,24 @@ import { GrammarRegistry } from "../src/grammar-registry.js";
 import { cnnClassifierGrammar } from "../src/grammars/cnn-classifier.js";
 import { parsePublicationFigurePlanV2 } from "../src/publication-figure-plan-v2.js";
 import { InMemoryFoundationStore } from "../src/store.js";
-import { readyVgg16FigureAnalysis, vgg16AnalysisNeedsConfirmation } from "./fixtures/ready-vgg16-figure-analysis.js";
+import { readyStructuralCnnFigureAnalysis, structuralCnnAnalysisNeedsConfirmation } from "./fixtures/structural-cnn-figure-analysis.js";
 
 function services() {
   const store = new InMemoryFoundationStore();
-  const drafts = new FigureDraftService({ store, createDraftId: () => "draft-vgg", now: () => "2026-08-14T09:00:00.000Z" });
+  const drafts = new FigureDraftService({ store, createDraftId: () => "draft-structural", now: () => "2026-08-14T09:00:00.000Z" });
   return { store, drafts, preview: new FigureDraftPreviewService({ figureDraftService: drafts }) };
 }
 
 describe("FigureDraftPreviewService", () => {
   it("compiles a ready owner Draft into a non-persisted preview-only CNN plan", async () => {
     const { store, drafts, preview } = services();
-    await drafts.createFromAnalysis("user-1", "conversation-1", readyVgg16FigureAnalysis());
+    await drafts.createFromAnalysis("user-1", "conversation-1", readyStructuralCnnFigureAnalysis());
 
-    const result = await preview.compile("user-1", "draft-vgg");
-    const persisted = await store.getFigureDraftRevision("user-1", "draft-vgg", 1);
+    const result = await preview.compile("user-1", "draft-structural");
+    const persisted = await store.getFigureDraftRevision("user-1", "draft-structural", 1);
 
     expect(result).toMatchObject({
-      draft: { id: "draft-vgg", status: "ready_for_preview", revision: 1 },
+      draft: { id: "draft-structural", status: "ready_for_preview", revision: 1 },
       intent: { target: "preview", purpose: "paper_overview", orientation: "landscape" },
       grammar: { id: "cnn-classifier", version: 1 },
       plan: { version: 2, target: "preview", renderIntent: { density: "standard", printMode: "color" } },
@@ -34,9 +34,9 @@ describe("FigureDraftPreviewService", () => {
 
   it("fails closed when the Draft still needs confirmation", async () => {
     const { drafts, preview } = services();
-    await drafts.createFromAnalysis("user-1", "conversation-1", vgg16AnalysisNeedsConfirmation());
+    await drafts.createFromAnalysis("user-1", "conversation-1", structuralCnnAnalysisNeedsConfirmation());
 
-    await expect(preview.compile("user-1", "draft-vgg")).rejects.toMatchObject({
+    await expect(preview.compile("user-1", "draft-structural")).rejects.toMatchObject({
       code: "FIGURE_PREVIEW_NOT_READY",
       statusCode: 409,
     });
@@ -44,9 +44,9 @@ describe("FigureDraftPreviewService", () => {
 
   it("does not reveal whether a Draft belongs to another user", async () => {
     const { drafts, preview } = services();
-    await drafts.createFromAnalysis("owner", "conversation-1", readyVgg16FigureAnalysis());
+    await drafts.createFromAnalysis("owner", "conversation-1", readyStructuralCnnFigureAnalysis());
 
-    await expect(preview.compile("other", "draft-vgg")).rejects.toMatchObject({
+    await expect(preview.compile("other", "draft-structural")).rejects.toMatchObject({
       code: "NOT_FOUND",
       statusCode: 404,
     });
@@ -54,7 +54,7 @@ describe("FigureDraftPreviewService", () => {
 
   it("fails closed with safe selection evidence when no grammar reaches the threshold", async () => {
     const store = new InMemoryFoundationStore();
-    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-vgg", now: () => "2026-08-14T09:00:00.000Z" });
+    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-structural", now: () => "2026-08-14T09:00:00.000Z" });
     const preview = new FigureDraftPreviewService({
       figureDraftService: drafts,
       grammarRegistry: new GrammarRegistry([{
@@ -63,9 +63,9 @@ describe("FigureDraftPreviewService", () => {
         evaluate: () => ({ grammarId: "cnn-classifier", score: 0.69, reasons: ["CNN topology is below the automatic-selection threshold"], blockers: [] }),
       }]),
     });
-    await drafts.createFromAnalysis("user-1", "conversation-1", readyVgg16FigureAnalysis());
+    await drafts.createFromAnalysis("user-1", "conversation-1", readyStructuralCnnFigureAnalysis());
 
-    await expect(preview.compile("user-1", "draft-vgg")).rejects.toMatchObject({
+    await expect(preview.compile("user-1", "draft-structural")).rejects.toMatchObject({
       code: "FIGURE_PREVIEW_SELECTION_REQUIRED",
       statusCode: 409,
       details: {
@@ -73,14 +73,14 @@ describe("FigureDraftPreviewService", () => {
         blockers: [],
       },
     });
-    await preview.compile("user-1", "draft-vgg").catch((error: unknown) => {
+    await preview.compile("user-1", "draft-structural").catch((error: unknown) => {
       expect(JSON.stringify(error)).not.toMatch(/plan|semanticModel|sourceMappings|provider|locator|excerpt/i);
     });
   });
 
   it("returns non-blocking visual QA warnings produced by the selected grammar plan", async () => {
     const store = new InMemoryFoundationStore();
-    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-vgg", now: () => "2026-08-14T09:00:00.000Z" });
+    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-structural", now: () => "2026-08-14T09:00:00.000Z" });
     const warningGrammar = {
       ...cnnClassifierGrammar,
       compilePlan(model: Parameters<typeof cnnClassifierGrammar.compilePlan>[0], intent: Parameters<typeof cnnClassifierGrammar.compilePlan>[1]) {
@@ -105,9 +105,9 @@ describe("FigureDraftPreviewService", () => {
       figureDraftService: drafts,
       grammarRegistry: new GrammarRegistry([warningGrammar]),
     });
-    await drafts.createFromAnalysis("user-1", "conversation-1", readyVgg16FigureAnalysis());
+    await drafts.createFromAnalysis("user-1", "conversation-1", readyStructuralCnnFigureAnalysis());
 
-    const result = await preview.compile("user-1", "draft-vgg");
+    const result = await preview.compile("user-1", "draft-structural");
 
     expect(result.qa.blocking).toEqual([]);
     expect(result.qa.warnings).toContainEqual(expect.objectContaining({ code: "annotation-density" }));

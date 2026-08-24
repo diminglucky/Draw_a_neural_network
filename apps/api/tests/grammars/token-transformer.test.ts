@@ -7,11 +7,11 @@ import { residualBackboneGrammar } from "../../src/grammars/residual-backbone.js
 import { tokenTransformerGrammar } from "../../src/grammars/token-transformer.js";
 import { parseCanonicalNetworkIR } from "../../src/network-ir-v2.js";
 import { runVisualQa } from "../../src/visual-qa.js";
-import { vitCanonicalIr } from "../fixtures/vit-canonical-ir.js";
+import { structuralTokenAttentionCanonicalIr } from "../fixtures/structural-token-attention-ir.js";
 
 describe("token-transformer grammar", () => {
-  it("selects and compiles a ViT token encoder rather than a spatial CNN or U-Net", () => {
-    const ir = vitCanonicalIr();
+  it("selects and compiles an anonymous token-attention topology rather than a spatial topology", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const intent = defaultFigureIntent();
     const registry = new GrammarRegistry([cnnClassifierGrammar, encoderDecoderGrammar, residualBackboneGrammar, tokenTransformerGrammar]);
     const model = tokenTransformerGrammar.compileSemanticModel(ir, intent);
@@ -20,7 +20,7 @@ describe("token-transformer grammar", () => {
     expect(registry.select(ir, intent).selected?.id).toBe("token-transformer");
     expect(tokenTransformerGrammar.evaluate(ir, intent).score).toBeGreaterThanOrEqual(0.7);
     expect(model.regions.map((region) => region.id)).toEqual(expect.arrayContaining(["tokenization", "transformer-encoder", "head"]));
-    expect(model.displayNodes.find((node) => node.id === "transformer-encoder")?.semantic.repeatCount).toBe(12);
+    expect(model.displayNodes.find((node) => node.id === "transformer-encoder")?.semantic.repeatCount).toBe(6);
     expect(model.displayNodes.find((node) => node.id === "transformer-encoder")?.summary).toContain("tokens × features");
     expect(model.displayRelations.some((relation) => relation.role === "attention")).toBe(true);
     expect(plan.primitives.every((item) => ["block_frame", "annotation_track"].includes(item.kind))).toBe(true);
@@ -31,13 +31,13 @@ describe("token-transformer grammar", () => {
     expect(plan.sourceMappings.find((mapping) => mapping.displayId === "transformer-encoder")?.networkNodeIds).toContain("transformer-encoder");
     expect(plan.sourceMappings.find((mapping) => mapping.displayId === "transformer-encoder")?.edgeIds).toContain("edge-transformer-classifier");
     expect(plan.annotations.find((annotation) => annotation.id === "label-tokenization")?.text).toBe("Tokenize · tokens × features");
-    expect(plan.annotations.find((annotation) => annotation.id === "label-transformer-encoder")?.text).toBe("Transformer encoder ×12 · tokens × features");
+    expect(plan.annotations.find((annotation) => annotation.id === "label-transformer-encoder")?.text).toBe("Transformer encoder ×6 · tokens × features");
     expect(plan.annotations.every((annotation) => annotation.text.length <= 48)).toBe(true);
     expect(runVisualQa(plan).blocking).toEqual([]);
   });
 
-  it("fails closed when a transformer claim lacks token axes or a transformer block", () => {
-    const ir = vitCanonicalIr();
+  it("fails closed when an attention claim lacks token axes or a repeated attention block", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const noTokens = { ...ir, tensors: ir.tensors.map((tensor) => tensor.axes.includes("token") ? { ...tensor, axes: ["feature", "depth"] } : tensor) };
     const noTransformer = { ...ir, nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, op: "dense" as const, repeats: null } : node) };
 
@@ -46,7 +46,7 @@ describe("token-transformer grammar", () => {
   });
 
   it.each(["cross_attention", "residual", "iteration"] as const)("fails closed when the token path contains a %s relation", (relation) => {
-    const ir = vitCanonicalIr();
+    const ir = structuralTokenAttentionCanonicalIr();
     const semanticRelation = parseCanonicalNetworkIR({
       ...ir,
       edges: [
@@ -64,8 +64,8 @@ describe("token-transformer grammar", () => {
     expect(registry.select(semanticRelation, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
-  it("fails closed rather than omitting a second Transformer stage", () => {
-    const ir = vitCanonicalIr();
+  it("fails closed rather than omitting a second repeated attention stage", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const twoTransformerStages = parseCanonicalNetworkIR({
       ...ir,
       nodes: ir.nodes.flatMap((node) => node.id === "transformer-encoder"
@@ -115,7 +115,7 @@ describe("token-transformer grammar", () => {
           relation: "data",
           tensorIds: ["transformer-stage-1-tokens"],
           confidence: 0.95,
-          evidenceIds: ["fact-transformer"],
+          evidenceIds: ["fact-attention"],
         },
       ],
       groups: [{ ...ir.groups[0]!, nodeIds: ["transformer-encoder-1", "transformer-encoder-2"] }],
@@ -125,8 +125,8 @@ describe("token-transformer grammar", () => {
     expect(new GrammarRegistry([tokenTransformerGrammar]).select(twoTransformerStages, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
-  it("fails closed when Transformer execution precedes tokenization", () => {
-    const ir = vitCanonicalIr();
+  it("fails closed when repeated attention execution precedes tokenization", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const outOfOrder = parseCanonicalNetworkIR({
       ...ir,
       nodes: ir.nodes.map((node) => {
@@ -156,7 +156,7 @@ describe("token-transformer grammar", () => {
   });
 
   it("fails closed when a feedback edge turns the apparent spine into a data cycle", () => {
-    const ir = vitCanonicalIr();
+    const ir = structuralTokenAttentionCanonicalIr();
     const cyclic = parseCanonicalNetworkIR({
       ...ir,
       nodes: ir.nodes.map((node) => {
@@ -172,8 +172,8 @@ describe("token-transformer grammar", () => {
     expect(new GrammarRegistry([tokenTransformerGrammar]).select(cyclic, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
-  it("fails closed when the Transformer consumes an unedged side tensor", () => {
-    const ir = vitCanonicalIr();
+  it("fails closed when repeated attention consumes an unedged side tensor", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const hiddenInput = parseCanonicalNetworkIR({
       ...ir,
       nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, inputTensorIds: [...node.inputTensorIds, "image"] } : node),
@@ -184,8 +184,8 @@ describe("token-transformer grammar", () => {
     expect(new GrammarRegistry([tokenTransformerGrammar]).select(hiddenInput, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
-  it("fails closed when a data edge carries a second Transformer input tensor", () => {
-    const ir = vitCanonicalIr();
+  it("fails closed when a data edge carries a second repeated-attention input tensor", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const hiddenEdgeTensor = parseCanonicalNetworkIR({
       ...ir,
       nodes: ir.nodes.map((node) => {
@@ -202,22 +202,22 @@ describe("token-transformer grammar", () => {
   });
 
   it.each([
-    ["is absent", (ir: ReturnType<typeof vitCanonicalIr>) => ({ ...ir, nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, repeats: null } : node) })],
-    ["has count one", (ir: ReturnType<typeof vitCanonicalIr>) => ({ ...ir, nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, repeats: { count: 1, unitNodeIds: ["transformer-encoder"] } } : node) })],
-    ["identifies an embedding as the repeated unit", (ir: ReturnType<typeof vitCanonicalIr>) => ({
+    ["is absent", (ir: ReturnType<typeof structuralTokenAttentionCanonicalIr>) => ({ ...ir, nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, repeats: null } : node) })],
+    ["has count one", (ir: ReturnType<typeof structuralTokenAttentionCanonicalIr>) => ({ ...ir, nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, repeats: { count: 1, unitNodeIds: ["transformer-encoder"] } } : node) })],
+    ["identifies an embedding as the repeated unit", (ir: ReturnType<typeof structuralTokenAttentionCanonicalIr>) => ({
       ...ir,
       nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, repeats: { count: 12, unitNodeIds: ["patch-embedding"] } } : node),
       groups: [{ ...ir.groups[0]!, nodeIds: ["patch-embedding", "transformer-encoder"] }],
     })],
-  ])("fails closed when Transformer repeat metadata %s", (_label, mutate) => {
-    const malformedRepeat = parseCanonicalNetworkIR(mutate(vitCanonicalIr()));
+  ])("fails closed when repeated-attention metadata %s", (_label, mutate) => {
+    const malformedRepeat = parseCanonicalNetworkIR(mutate(structuralTokenAttentionCanonicalIr()));
 
     expect(tokenTransformerGrammar.evaluate(malformedRepeat, defaultFigureIntent()).blockers).toEqual(expect.arrayContaining([expect.stringContaining("repeat metadata") ]));
     expect(new GrammarRegistry([tokenTransformerGrammar]).select(malformedRepeat, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
   it("fails closed when tokenization does not emit a token-feature representation", () => {
-    const ir = vitCanonicalIr();
+    const ir = structuralTokenAttentionCanonicalIr();
     const nonTokenEmbedding = parseCanonicalNetworkIR({
       ...ir,
       tensors: ir.tensors.map((tensor) => tensor.id === "tokens" ? { ...tensor, axes: ["feature", "depth"] } : tensor),
@@ -227,8 +227,8 @@ describe("token-transformer grammar", () => {
     expect(new GrammarRegistry([tokenTransformerGrammar]).select(nonTokenEmbedding, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
-  it("fails closed when Transformer repeat metadata lacks group evidence", () => {
-    const ir = vitCanonicalIr();
+  it("fails closed when repeated-attention metadata lacks group evidence", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const unevidencedRepeat = parseCanonicalNetworkIR({
       ...ir,
       nodes: ir.nodes.map((node) => node.id === "transformer-encoder" ? { ...node, sourceEvidenceIds: [] } : node),
@@ -239,8 +239,8 @@ describe("token-transformer grammar", () => {
     expect(new GrammarRegistry([tokenTransformerGrammar]).select(unevidencedRepeat, defaultFigureIntent())).toMatchObject({ status: "needs_confirmation", selected: null });
   });
 
-  it("fails closed when a visible Transformer flow lacks edge evidence", () => {
-    const ir = vitCanonicalIr();
+  it("fails closed when a visible repeated-attention flow lacks edge evidence", () => {
+    const ir = structuralTokenAttentionCanonicalIr();
     const unevidencedFlow = parseCanonicalNetworkIR({
       ...ir,
       edges: ir.edges.map((edge) => edge.id === "edge-position-transformer" ? { ...edge, evidenceIds: [] } : edge),
@@ -251,7 +251,7 @@ describe("token-transformer grammar", () => {
   });
 
   it("truncates a long figure title to fit the fixed title annotation", () => {
-    const ir = parseCanonicalNetworkIR({ ...vitCanonicalIr(), figure: { id: "vit-long-title", title: "Vision Transformer architecture for high-resolution multi-modal representation learning with publication-ready semantic precision", description: null } });
+    const ir = parseCanonicalNetworkIR({ ...structuralTokenAttentionCanonicalIr(), figure: { id: "long-structural-title", title: "Token attention topology for high-resolution multi-modal representation learning with publication-ready semantic precision", description: null } });
     const plan = tokenTransformerGrammar.compilePlan(tokenTransformerGrammar.compileSemanticModel(ir, defaultFigureIntent()), defaultFigureIntent());
     const title = plan.annotations.find((annotation) => annotation.id === "title");
 

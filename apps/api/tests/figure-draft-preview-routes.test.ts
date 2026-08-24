@@ -4,7 +4,7 @@ import { FigureDraftPreviewService } from "../src/figure-draft-preview-service.j
 import { FigureDraftService } from "../src/figure-draft-service.js";
 import { GrammarRegistry } from "../src/grammar-registry.js";
 import { InMemoryFoundationStore } from "../src/store.js";
-import { readyVgg16FigureAnalysis } from "./fixtures/ready-vgg16-figure-analysis.js";
+import { readyStructuralCnnFigureAnalysis } from "./fixtures/structural-cnn-figure-analysis.js";
 
 const SESSION_SECRET = "figure-draft-preview-route-session-secret";
 
@@ -30,7 +30,7 @@ describe("figure draft preview route", () => {
 
   it("requires an authenticated owner and returns only a preview-safe compiled artifact", async () => {
     const store = new InMemoryFoundationStore();
-    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-vgg", now: () => "2026-08-14T09:00:00.000Z" });
+    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-structural", now: () => "2026-08-14T09:00:00.000Z" });
     const app = buildApp({
       sessionSecret: SESSION_SECRET,
       store,
@@ -40,16 +40,16 @@ describe("figure draft preview route", () => {
     apps.add(app);
     const owner = await registerAndLogin(app, "preview-owner@example.com");
     const other = await registerAndLogin(app, "preview-other@example.com");
-    await drafts.createFromAnalysis(owner.userId, "conversation-1", readyVgg16FigureAnalysis());
+    await drafts.createFromAnalysis(owner.userId, "conversation-1", readyStructuralCnnFigureAnalysis());
 
-    const unauthenticated = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-vgg/preview" });
-    const response = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-vgg/preview", headers: owner.headers });
-    const inaccessible = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-vgg/preview", headers: other.headers });
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-structural/preview" });
+    const response = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-structural/preview", headers: owner.headers });
+    const inaccessible = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-structural/preview", headers: other.headers });
 
     expect(unauthenticated.statusCode).toBe(401);
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      draft: { id: "draft-vgg", revision: 1 },
+      draft: { id: "draft-structural", revision: 1 },
       grammar: { id: "cnn-classifier" },
       plan: { target: "preview", renderIntent: { density: "standard", printMode: "color" } },
       qa: { blocking: [], warnings: [] },
@@ -58,7 +58,7 @@ describe("figure draft preview route", () => {
     expect(inaccessible.statusCode).toBe(404);
 
     const audit = (await store.listAuditRecords()).find((record) => record.action === "figure-draft.preview.read");
-    expect(audit).toMatchObject({ actorId: owner.userId, targetId: "draft-vgg", metadata: { grammarId: "cnn-classifier", target: "preview" } });
+    expect(audit).toMatchObject({ actorId: owner.userId, targetId: "draft-structural", metadata: { grammarId: "cnn-classifier", target: "preview" } });
     expect(audit?.metadata).not.toHaveProperty("plan");
     expect(audit?.metadata).not.toHaveProperty("semanticModel");
     expect(audit?.metadata).not.toHaveProperty("sourceMappings");
@@ -67,7 +67,7 @@ describe("figure draft preview route", () => {
 
   it("fails closed without a compiled artifact when no grammar can be selected", async () => {
     const store = new InMemoryFoundationStore();
-    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-vgg", now: () => "2026-08-14T09:00:00.000Z" });
+    const drafts = new FigureDraftService({ store, createDraftId: () => "draft-structural", now: () => "2026-08-14T09:00:00.000Z" });
     const preview = new FigureDraftPreviewService({
       figureDraftService: drafts,
       grammarRegistry: new GrammarRegistry([{
@@ -79,9 +79,9 @@ describe("figure draft preview route", () => {
     const app = buildApp({ sessionSecret: SESSION_SECRET, store, figureDraftService: drafts, figureDraftPreviewService: preview });
     apps.add(app);
     const owner = await registerAndLogin(app, "selection-owner@example.com");
-    await drafts.createFromAnalysis(owner.userId, "conversation-1", readyVgg16FigureAnalysis());
+    await drafts.createFromAnalysis(owner.userId, "conversation-1", readyStructuralCnnFigureAnalysis());
 
-    const response = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-vgg/preview", headers: owner.headers });
+    const response = await app.inject({ method: "GET", url: "/api/figure-drafts/draft-structural/preview", headers: owner.headers });
 
     expect(response.statusCode).toBe(409);
     expect(response.json().error).toMatchObject({
@@ -107,7 +107,7 @@ describe("figure draft preview route", () => {
     apps.add(app);
     const owner = await registerAndLogin(app, "pvp-owner@example.com");
     const other = await registerAndLogin(app, "pvp-other@example.com");
-    await drafts.createFromAnalysis(owner.userId, "conversation-1", readyVgg16FigureAnalysis());
+    await drafts.createFromAnalysis(owner.userId, "conversation-1", readyStructuralCnnFigureAnalysis());
 
     const url = "/api/figure-drafts/draft-pvp/revisions/1/publication-preview";
     const unauthenticated = await app.inject({ method: "GET", url, headers: { "accept-figure-version": "3" } });
@@ -138,7 +138,7 @@ describe("figure draft preview route", () => {
     const app = buildApp({ sessionSecret: SESSION_SECRET, store, figureDraftService: drafts });
     apps.add(app);
     const owner = await registerAndLogin(app, "clarification-owner@example.com");
-    const analysis = readyVgg16FigureAnalysis();
+    const analysis = readyStructuralCnnFigureAnalysis();
     analysis.status = "needs_confirmation";
     analysis.blockingQuestions = [{ id: "topology-direction", question: "Which direction does this branch use?", candidateValues: ["forward", "reverse"] }];
     await drafts.createFromAnalysis(owner.userId, "conversation-1", analysis);

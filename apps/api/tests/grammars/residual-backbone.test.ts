@@ -4,11 +4,11 @@ import { GrammarRegistry } from "../../src/grammar-registry.js";
 import { cnnClassifierGrammar } from "../../src/grammars/cnn-classifier.js";
 import { residualBackboneGrammar } from "../../src/grammars/residual-backbone.js";
 import { runVisualQa } from "../../src/visual-qa.js";
-import { resnet50CanonicalIr } from "../fixtures/resnet50-canonical-ir.js";
+import { structuralResidualMergeCanonicalIr } from "../fixtures/structural-residual-merge-ir.js";
 
 describe("residual-backbone grammar", () => {
-  it("selects and compiles ResNet-50 with bounded shortcuts mapped to residual IR edges", () => {
-    const ir = resnet50CanonicalIr();
+  it("selects and compiles an anonymous residual-merge topology with bounded shortcuts", () => {
+    const ir = structuralResidualMergeCanonicalIr();
     const intent = defaultFigureIntent();
     const registry = new GrammarRegistry([cnnClassifierGrammar, residualBackboneGrammar]);
     const model = residualBackboneGrammar.compileSemanticModel(ir, intent);
@@ -26,14 +26,14 @@ describe("residual-backbone grammar", () => {
   });
 
   it("fails closed when direct compilation receives a blocking unresolved fact", () => {
-    const ir = resnet50CanonicalIr();
+    const ir = structuralResidualMergeCanonicalIr();
     const blocked = { ...ir, unresolved: [{ id: "shortcut", question: "Is this shortcut projected?", severity: "blocking" as const, candidateValues: ["yes", "no"], evidenceIds: [] }] };
 
     expect(() => residualBackboneGrammar.compileSemanticModel(blocked, defaultFigureIntent())).toThrow(/unresolved/i);
   });
 
   it("returns a selection blocker when a residual Add has no non-input main path producer", () => {
-    const ir = resnet50CanonicalIr();
+    const ir = structuralResidualMergeCanonicalIr();
     const unresolvable = {
       ...ir,
       nodes: ir.nodes.map((node) => node.id === "stem" || node.id === "block-1" ? { ...node, op: "input" as const } : node),

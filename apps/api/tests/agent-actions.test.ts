@@ -7,7 +7,7 @@ import {
 } from "../src/agent-actions.js";
 
 const baseDocument: CanvasDocument = {
-  figure: { title: "ResNet", subtitle: "publication draft", stages: ["Input", "Backbone", "Head"] },
+  figure: { title: "Structural network", subtitle: "publication draft", stages: ["Input", "Backbone", "Head"] },
   paletteName: "dopamine",
   nodes: [
     { id: "input", type: "tensor", x: 100, y: 200, w: 120, h: 180, label: "Input", subtitle: "224 x 224 x 3", stage: 0, color: "#00e5ff" },
@@ -47,7 +47,7 @@ describe("Agent canvas action contract", () => {
 
   it("supports an explicit full replacement and figure metadata update", () => {
     const replacement: CanvasDocument = {
-      figure: { title: "U-Net", subtitle: "high-resolution segmentation", stages: ["Encoder", "Bottleneck", "Decoder"] },
+      figure: { title: "Encoder-decoder topology", subtitle: "high-resolution segmentation", stages: ["Encoder", "Bottleneck", "Decoder"] },
       paletteName: "aurora",
       nodes: [{ id: "u-input", type: "volume", x: 200, y: 300, w: 150, h: 210, label: "MRI", subtitle: "128 x 128 x 96", stage: 0, color: "#22f7d0" }],
       edges: [],
@@ -61,7 +61,7 @@ describe("Agent canvas action contract", () => {
 
     expect(result.nodes).toEqual(replacement.nodes);
     expect(result.paletteName).toBe("aurora");
-    expect(result.figure).toEqual({ title: "U-Net", subtitle: "review-ready figure", stages: ["Encoder", "Bottleneck", "Decoder"] });
+    expect(result.figure).toEqual({ title: "Encoder-decoder topology", subtitle: "review-ready figure", stages: ["Encoder", "Bottleneck", "Decoder"] });
   });
 
   it("rejects unknown actions, missing node references, duplicate IDs, and invalid edge endpoints", () => {

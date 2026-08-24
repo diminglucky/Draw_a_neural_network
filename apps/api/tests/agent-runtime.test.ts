@@ -80,7 +80,7 @@ describe("agent runtime wiring", () => {
     expect(diagram.nodes.every((node) => node.bwStyle)).toBe(true);
   });
 
-  it("runs the journal U-Net preset through the production IR parser and layout", async () => {
+  it("derives a neutral layout from explicit structural operators without model-name routing", async () => {
     const config = loadConfig({
       NODE_ENV: "development",
       STORAGE_DRIVER: "memory",
@@ -90,13 +90,17 @@ describe("agent runtime wiring", () => {
     const service = createAgentServiceForConfig(config);
     const result = await service.chat({
       userId: "user-1",
-      message: "Draw a U-Net for biomedical segmentation with encoder decoder skip connections.",
+      message: "Draw an unfamiliar architecture with Conv, Pool, Concat, and residual skip connections.",
       attachments: [],
     });
     const diagram = result.diagram as { figure?: { title?: string }; nodes?: Array<{ label?: string; subtitle?: string }> };
 
-    expect(diagram.figure?.title).toBe("U-Net Encoder-Decoder Architecture");
-    expect(diagram.nodes?.some((node) => node.label === "Skip concat II")).toBe(true);
-    expect(diagram.nodes?.some((node) => node.subtitle === "128 + 128 channels")).toBe(true);
+    expect(diagram.figure?.title).toBe("Neural Network Architecture");
+    expect(diagram.nodes?.map((node) => node.label)).toEqual(expect.arrayContaining(["Conv", "Pool"]));
+    expect(diagram.nodes?.map((node) => node.label)).not.toEqual(expect.arrayContaining(["Concat", "Residual"]));
+    expect(result.figureAnalysis).toMatchObject({
+      status: "needs_confirmation",
+      blockingQuestions: [{ id: "local-ambiguous-merge", candidateValues: ["add", "concat", "residual"] }],
+    });
   });
 });

@@ -164,7 +164,18 @@ This design is implemented only when:
 6. the anonymous topology corpus passes structural, negative, determinism, SVG, grayscale, and manual visual-review gates;
 7. only after those conditions, a separate Visio acceptance slice proves selected-current-page update, preservation of user shapes, save/reopen, and independent native readback.
 
-## 11. Non-goals
+## 11. Delivery order and architectural baseline
+
+The product is delivered in dependency order, so drawing quality is never delayed by commercial, native-host, or model-catalogue work:
+
+1. **Remove template paths.** Delete every named-architecture preset, fixture, script, bridge, snapshot, and export path that can still act as a runtime shortcut. A neutral anonymous topology corpus is the regression baseline.
+2. **Recover meaning from structure.** Complete source-specific evidence extraction, reconciliation, UGS, and composable semantic-region derivation. This is the first generalization boundary: a previously unseen graph must be represented from its evidence, or explicitly request one clarification.
+3. **Compile and prove visual quality.** Compose semantic regions into a GPG/PVP, render deterministic SVG/PNG previews, and pass automated geometry, contrast, grayscale, label, route, density, and source-mapping checks plus manual visual review. The evaluation corpus must include hybrid graphs so a figure can contain several region types at once.
+4. **Apply an already accepted plan to Visio.** Only a sealed QA-passing PVP may reach the current-page Visio adapter. Native work cannot become a replacement analyzer, a fallback layout engine, or a reason to open a different document/page.
+
+The codebase must preserve these boundaries as a compatibility rule: source-specific extraction may add evidence; reconciliation may decide formal versus candidate state; semantic derivation may add semantic regions; the PVP compiler may add geometry; renderers may materialize a PVP. No later stage may infer missing topology or replace an uncertainty with a named-model default. Model names may appear only as user-visible source evidence, never as a dispatch key, a topology input, a layout input, a grammar selector, or a renderer selector.
+
+## 12. Non-goals
 
 - No model-name catalogue, template library, or automatic model-family shortcut.
 - No free-form LLM coordinates or direct Visio/COM/Worker generation.

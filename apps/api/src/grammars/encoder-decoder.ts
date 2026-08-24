@@ -246,7 +246,7 @@ function analyzeTopology(ir: CanonicalNetworkIR): TopologyAnalysis {
   const mainPath = selectMainPath(ir, input.id, output.id, tensorById);
   if (!mainPath) return { topology: null, blockers: ["requires one unambiguous input-to-output encoder-decoder data path"], reasons };
   if (mainPath.length !== ir.nodes.length) {
-    return { topology: null, blockers: ["requires every data node in the connected component to belong to the represented binary U-Net path"], reasons };
+    return { topology: null, blockers: ["requires every data node in the connected component to belong to the represented binary encoder-decoder path"], reasons };
   }
   const pathNodes = mainPath.map((id) => nodeById.get(id)!);
   const downsampleIndices = pathNodes.flatMap((node, index) => node.op === "pool" && reducesSpatialScale(node, tensorById) ? [index] : []);
