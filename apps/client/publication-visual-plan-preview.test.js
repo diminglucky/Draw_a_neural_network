@@ -118,6 +118,84 @@ function publicGrammarResponse(kind = "formal") {
 }
 
 describe("PublicationVisualPlan browser preview", () => {
+  it("accepts the public relation sourceComponentId without relaxing forbidden provenance controls", () => {
+    const response = publicGrammarResponse();
+    response.graph.components = [
+      { componentId: "input", role: "input", label: "Input", layoutOrder: { rank: 0, order: 0 } },
+      { componentId: "custom", role: "custom_operator", label: "Custom", layoutOrder: { rank: 1, order: 0 } },
+    ];
+    response.graph.layoutOrder = [
+      { componentId: "input", rank: 0, order: 0 },
+      { componentId: "custom", rank: 1, order: 0 },
+    ];
+    response.graph.relations = [{
+      relationId: "relation:input-custom",
+      role: "flow",
+      sourceComponentId: "input",
+      targetComponentId: "custom",
+    }];
+
+    expect(renderPublicationVisualPlanPreview(response)).toContain("publication-visual-plan-svg");
+  });
+
+  it.each([
+    ["a component", (response) => {
+      response.graph.components = [{
+        componentId: "input",
+        role: "input",
+        label: "Input",
+        layoutOrder: { rank: 0, order: 0 },
+        sourceComponentId: "private-source-payload",
+      }];
+      response.graph.layoutOrder = [{ componentId: "input", rank: 0, order: 0 }];
+    }, /component has unsupported fields/i],
+    ["a relation with a non-identifier source", (response) => {
+      response.graph.relations = [{
+        relationId: "relation:invalid-source",
+        role: "flow",
+        sourceComponentId: { value: "private-source-payload" },
+        targetComponentId: "custom",
+      }];
+    }, /relation is invalid/i],
+    ["a relation with nested provenance", (response) => {
+      response.graph.relations = [{
+        relationId: "relation:nested-source",
+        role: "flow",
+        sourceComponentId: "input",
+        targetComponentId: "custom",
+        sourcePayload: { locator: "private-source-payload" },
+      }];
+    }, /relation has unsupported fields/i],
+  ])("rejects sourceComponentId outside its exact public relation contract: %s", (_name, mutate, expectedError) => {
+    const response = publicGrammarResponse();
+    mutate(response);
+
+    expect(() => renderPublicationVisualPlanPreview(response)).toThrow(expectedError);
+  });
+
+  it("uses the PVP canonical rounded port anchors when validating public connector endpoints", () => {
+    const response = publicGrammarResponse();
+    response.plan.primitives = response.plan.primitives.slice(0, 2).map((primitive, index) => ({
+      ...primitive,
+      bounds: { x: index === 0 ? 0 : 200, y: 0, width: 101, height: 101 },
+    }));
+    response.plan.ports = [
+      { portId: "port:input-out", primitiveId: "primitive:input", role: "output", anchor: { side: "right", offset: 500 }, order: 0, semanticPortId: "input:out" },
+      { portId: "port:custom-in", primitiveId: "primitive:custom", role: "input", anchor: { side: "left", offset: 500 }, order: 0, semanticPortId: "custom:in" },
+    ];
+    response.plan.connectors = [{
+      connectorId: "connector:rounded-anchor",
+      sourcePortId: "port:input-out",
+      targetPortId: "port:custom-in",
+      relation: "data",
+      route: [{ x: 101, y: 51 }, { x: 150, y: 51 }, { x: 150, y: 51 }, { x: 200, y: 51 }],
+      styleTokenIds: [],
+      zIndex: 0,
+    }];
+
+    expect(renderPublicationVisualPlanPreview(response)).toContain('d="M 101 51 L 150 51 L 150 51 L 200 51"');
+  });
+
   it("accepts only the server-projected public preview and rejects a raw internal PVP", () => {
     const publicPreview = publicGrammarResponse();
 

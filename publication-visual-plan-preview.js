@@ -12,6 +12,9 @@ const PRIMITIVE_KINDS = new Set([
 ]);
 const VISUAL_PRIMITIVE_KINDS = new Set(["InputTerminal", "OutputTerminal", "TensorStage", "TensorVolume", "OperatorFrame", "ModuleFrame", "RepeatBadge", "SplitMarker", "AddMarker", "ConcatMarker", "AttentionTokenStrip", "AttentionRelation", "CandidateCallout"]);
 const VISUAL_REGION_ROLES = new Set(["base", "scale_transition", "repeat_group", "add_merge", "concat_fusion", "token_attention", "custom_module", "multi_branch", "candidate_feedback"]);
+const PUBLIC_COMPONENT_ROLES = new Set(["input", "output", "generic_module", "custom_operator", "custom_module", "split", "merge_add", "merge_concat", "custom_fusion", "repeat_badge", "candidate_region"]);
+const PUBLIC_RELATION_ROLES = new Set(["flow", "skip", "merge", "condition", "feedback"]);
+const PUBLIC_SEMANTIC_REGION_KINDS = new Set(["scale_transition", "repeat_group", "add_merge", "concat_fusion", "token_attention", "custom_module", "multi_branch", "candidate_feedback"]);
 const PORT_SIDES = new Set(["left", "right", "top", "bottom"]);
 const REQUIRED_CAPABILITIES = new Set(["native-text", "orthogonal-route", "shape-data"]);
 const MAX_ITEMS = 500;
@@ -111,22 +114,71 @@ function parsePublicGraph(value) {
   const graph = plainRecord(value, "PVP public graph is invalid");
   assertExactKeys(graph, ["version", "graphId", "detail", "exportEligibility", "components", "relations", "semanticRegions", "layoutOrder"], "PVP public graph");
   if (graph.version !== 1 || !identifier(graph.graphId) || !["overview", "architecture", "operator_detail"].includes(graph.detail) || !["eligible", "ineligible"].includes(graph.exportEligibility)) throw new Error("PVP public graph is invalid");
-  for (const field of ["components", "relations", "semanticRegions", "layoutOrder"]) assertDenseArray(graph[field], `PVP public graph ${field}`);
-  assertNoForbiddenPublicFields(graph);
+  const components = parsePublicComponents(graph.components);
+  const relations = parsePublicRelations(graph.relations);
+  const semanticRegions = parsePublicSemanticRegions(graph.semanticRegions);
+  const layoutOrder = parsePublicLayoutOrder(graph.layoutOrder);
+  const componentIds = new Set(components.map((component) => component.componentId));
+  if (componentIds.size !== components.length || layoutOrder.length !== components.length || new Set(layoutOrder.map((item) => item.componentId)).size !== layoutOrder.length || layoutOrder.some((item) => !componentIds.has(item.componentId))) throw new Error("PVP public graph component layout is invalid");
+  for (const component of components) {
+    const layout = layoutOrder.find((item) => item.componentId === component.componentId);
+    if (!layout || layout.rank !== component.layoutOrder.rank || layout.order !== component.layoutOrder.order) throw new Error("PVP public graph component layout is incoherent");
+  }
+  if (new Set(relations.map((relation) => relation.relationId)).size !== relations.length || relations.some((relation) => !componentIds.has(relation.sourceComponentId) || !componentIds.has(relation.targetComponentId) || relation.sourceComponentId === relation.targetComponentId)) throw new Error("PVP public graph relations are invalid");
+  if (new Set(semanticRegions.map((region) => region.regionId)).size !== semanticRegions.length) throw new Error("PVP public graph semantic regions are invalid");
   return Object.freeze({ graphId: graph.graphId, exportEligibility: graph.exportEligibility });
 }
 
-function assertNoForbiddenPublicFields(value) {
-  if (Array.isArray(value)) {
-    for (const item of value) assertNoForbiddenPublicFields(item);
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  const record = plainRecord(value, "PVP public graph is invalid");
-  for (const [key, item] of Object.entries(record)) {
-    if (FORBIDDEN_PUBLIC_FIELDS.has(key) || /^(source|evidence|worker|visio|native)/i.test(key)) throw new Error("PVP public graph contains forbidden fields");
-    assertNoForbiddenPublicFields(item);
-  }
+function parsePublicComponents(value) {
+  assertDenseArray(value, "PVP public graph components");
+  if (value.length > MAX_ITEMS) throw new Error("PVP public graph has too many components");
+  return value.map((entry) => {
+    const component = plainRecord(entry, "PVP public graph component is invalid");
+    assertAllowedKeys(component, ["componentId", "role", "label", "count", "layoutOrder"], ["componentId", "role", "label", "layoutOrder"], "PVP public graph component");
+    if (!identifier(component.componentId) || !PUBLIC_COMPONENT_ROLES.has(component.role) || !displayText(component.label)) throw new Error("PVP public graph component is invalid");
+    if (Object.hasOwn(component, "count") && (!integer(component.count) || component.count < 2 || component.count > MAX_ITEMS)) throw new Error("PVP public graph component count is invalid");
+    return { componentId: component.componentId, layoutOrder: parsePublicLayout(component.layoutOrder, "PVP public graph component layout") };
+  });
+}
+
+function parsePublicRelations(value) {
+  assertDenseArray(value, "PVP public graph relations");
+  if (value.length > MAX_ITEMS) throw new Error("PVP public graph has too many relations");
+  return value.map((entry) => {
+    const relation = plainRecord(entry, "PVP public graph relation is invalid");
+    assertExactKeys(relation, ["relationId", "role", "sourceComponentId", "targetComponentId"], "PVP public graph relation");
+    if (!identifier(relation.relationId) || !PUBLIC_RELATION_ROLES.has(relation.role) || !identifier(relation.sourceComponentId) || !identifier(relation.targetComponentId)) throw new Error("PVP public graph relation is invalid");
+    return { relationId: relation.relationId, sourceComponentId: relation.sourceComponentId, targetComponentId: relation.targetComponentId };
+  });
+}
+
+function parsePublicSemanticRegions(value) {
+  assertDenseArray(value, "PVP public graph semanticRegions");
+  if (value.length > MAX_ITEMS) throw new Error("PVP public graph has too many semantic regions");
+  return value.map((entry) => {
+    const region = plainRecord(entry, "PVP public graph semantic region is invalid");
+    assertExactKeys(region, ["regionId", "kind", "label", "state"], "PVP public graph semantic region");
+    if (!identifier(region.regionId) || !PUBLIC_SEMANTIC_REGION_KINDS.has(region.kind) || !displayText(region.label) || !["formal", "candidate"].includes(region.state)) throw new Error("PVP public graph semantic region is invalid");
+    return { regionId: region.regionId };
+  });
+}
+
+function parsePublicLayoutOrder(value) {
+  assertDenseArray(value, "PVP public graph layoutOrder");
+  if (value.length > MAX_ITEMS) throw new Error("PVP public graph has too many layout entries");
+  return value.map((entry) => {
+    const layout = plainRecord(entry, "PVP public graph layout is invalid");
+    assertExactKeys(layout, ["componentId", "rank", "order"], "PVP public graph layout");
+    if (!identifier(layout.componentId)) throw new Error("PVP public graph layout is invalid");
+    return { componentId: layout.componentId, ...parsePublicLayout({ rank: layout.rank, order: layout.order }, "PVP public graph layout") };
+  });
+}
+
+function parsePublicLayout(value, label) {
+  const layout = plainRecord(value, `${label} is invalid`);
+  assertExactKeys(layout, ["rank", "order"], label);
+  if (!nonNegativeInteger(layout.rank) || !nonNegativeInteger(layout.order) || layout.rank > 1_000_000 || layout.order > 1_000_000) throw new Error(`${label} is invalid`);
+  return { rank: layout.rank, order: layout.order };
 }
 
 function parseDraft(value) {
@@ -576,10 +628,10 @@ function contains(outer, inner) { return inner.x >= outer.x && inner.y >= outer.
 function samePoint(left, right) { return left.x === right.x && left.y === right.y; }
 
 function anchorPoint(bounds, side, offset) {
-  if (side === "left") return { x: bounds.x, y: bounds.y + Math.floor((bounds.height * offset) / 1000) };
-  if (side === "right") return { x: bounds.x + bounds.width, y: bounds.y + Math.floor((bounds.height * offset) / 1000) };
-  if (side === "top") return { x: bounds.x + Math.floor((bounds.width * offset) / 1000), y: bounds.y };
-  return { x: bounds.x + Math.floor((bounds.width * offset) / 1000), y: bounds.y + bounds.height };
+  if (side === "left") return { x: bounds.x, y: Math.round(bounds.y + (bounds.height * offset) / 1000) };
+  if (side === "right") return { x: bounds.x + bounds.width, y: Math.round(bounds.y + (bounds.height * offset) / 1000) };
+  if (side === "top") return { x: Math.round(bounds.x + (bounds.width * offset) / 1000), y: bounds.y };
+  return { x: Math.round(bounds.x + (bounds.width * offset) / 1000), y: bounds.y + bounds.height };
 }
 
 function escapeHtml(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;"); }
