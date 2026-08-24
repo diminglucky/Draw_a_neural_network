@@ -70,16 +70,24 @@ export function projectPublicationVisualPlanPreview(input: {
   const graph = projectGraph(input.graph);
   const planProjection = projectPlan(plan);
   if (planProjection.identity.planId !== `pvp:${graph.graphId}:${graph.detail}`) throw new Error("PVP and graph identity are incoherent");
-  if (planProjection.eligibility.kind === "formal" && graph.exportEligibility !== "eligible") throw new Error("Formal PVP requires an eligible graph");
-  if (planProjection.eligibility.kind === "candidate" && graph.exportEligibility !== "ineligible") throw new Error("Candidate PVP requires an ineligible graph");
+  const hasCandidateVisualSemantics = planProjection.primitives.some(hasCandidateVisualSemantic);
+  const candidate = hasCandidateVisualSemantics || planProjection.eligibility.kind === "candidate";
+  if (hasCandidateVisualSemantics && (planProjection.eligibility.kind !== "candidate" || planProjection.eligibility.qaStatus === "passed")) throw new Error("Candidate visual semantics cannot claim formal or QA-passed eligibility");
+  if (!candidate && graph.exportEligibility !== "eligible") throw new Error("Formal PVP requires an eligible graph");
+  if (candidate && graph.exportEligibility !== "ineligible") throw new Error("Candidate PVP requires an ineligible graph");
 
   return {
     schemaVersion: 1,
-    kind: planProjection.eligibility.kind,
-    exportEligible: planProjection.eligibility.kind === "formal" && planProjection.eligibility.qaStatus === "passed" && graph.exportEligibility === "eligible",
+    kind: candidate ? "candidate" : "formal",
+    exportEligible: !candidate && planProjection.eligibility.qaStatus === "passed" && graph.exportEligibility === "eligible",
     plan: planProjection,
     graph,
   };
+}
+
+function hasCandidateVisualSemantic(primitive: PreviewRecord): boolean {
+  const visual = primitive.visual;
+  return primitive.kind === "CandidateRegion" || primitive.kind === "CandidateCallout" || (visual !== null && typeof visual === "object" && !Array.isArray(visual) && (visual as PreviewRecord).regionRole === "candidate_feedback");
 }
 
 function projectPlan(plan: PublicationVisualPlan): PublicationVisualPlanPreview["plan"] {

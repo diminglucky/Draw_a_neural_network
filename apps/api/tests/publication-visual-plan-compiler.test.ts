@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assertPublicationVisualPlanRendererCapabilities, compilePublicationVisualPlan } from "../src/publication-visual-plan-compiler.js";
+import { evaluatePublicationVisualPlanQa } from "../src/publication-visual-plan-qa.js";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
 import { unknownDualStreamFusionUgs, unknownHybridSemanticRegionsCandidateUgs, unknownHybridSemanticRegionsUgs } from "./fixtures/universal-graph-spec.js";
@@ -75,6 +76,157 @@ describe("PublicationVisualPlan compiler", () => {
     }
   });
 
+  it("keeps anonymous composite meanings as separate visuals without duplicating data-topology connectors", () => {
+    const input = unknownHybridSemanticRegionsUgs();
+    input.nodes.find((node: any) => node.nodeId === "spatial_stage").kind = "custom_module";
+    const ugs = parseUniversalGraphSpec(input);
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const first = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const second = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const spatialPrimitives = (first.primitives as any[]).filter((primitive) => (first.sourceMappings as any[])
+      .find((mapping) => mapping.visualId === primitive.primitiveId)?.ugsIds.includes("spatial_stage"));
+
+    expect(first).toEqual(second);
+    expect(spatialPrimitives).toEqual(expect.arrayContaining([
+      expect.objectContaining({ primitiveId: "primitive:node:spatial_stage", kind: "ModuleFrame" }),
+      expect.objectContaining({ primitiveId: "primitive:semantic:scale_transition:source-to-spatial:stage", kind: "TensorStage" }),
+      expect.objectContaining({ primitiveId: "primitive:semantic:scale_transition:source-to-spatial:volume", kind: "TensorVolume" }),
+      expect.objectContaining({ primitiveId: "primitive:repeat:spatial_stage", kind: "RepeatBadge" }),
+      expect.objectContaining({ primitiveId: "primitive:semantic:multi_branch:spatial_stage:split", kind: "SplitMarker" }),
+    ]));
+    expect(first.connectors).toHaveLength(graph.relations.length);
+    expect(new Set((first.connectors as any[]).map((connector) => connector.connectorId)).size).toBe(graph.relations.length);
+    expect(new Set((first.connectors as any[]).map((connector) => `${connector.sourcePortId}:${connector.targetPortId}`)).size).toBe(graph.relations.length);
+
+    const byId = new Map((first.primitives as any[]).map((primitive) => [primitive.primitiveId, primitive]));
+    const primary = byId.get("primitive:node:spatial_stage")!;
+    const repeat = byId.get("primitive:repeat:spatial_stage")!;
+    const split = byId.get("primitive:semantic:multi_branch:spatial_stage:split")!;
+    const stage = byId.get("primitive:semantic:scale_transition:source-to-spatial:stage")!;
+    const volume = byId.get("primitive:semantic:scale_transition:source-to-spatial:volume")!;
+
+    expect(primary.bounds).toMatchObject({ width: 760, height: 320 });
+    expect(repeat.bounds).toMatchObject({
+      x: primary.bounds.x + primary.bounds.width + 16,
+      y: primary.bounds.y + 16,
+      width: 180,
+      height: 48,
+    });
+    expect(split.bounds).toMatchObject({
+      x: primary.bounds.x + primary.bounds.width + 16,
+      y: primary.bounds.y + 184,
+      width: 300,
+      height: 48,
+    });
+    expect(stage.bounds).toMatchObject({
+      x: primary.bounds.x + primary.bounds.width + 16,
+      y: primary.bounds.y + 80,
+      width: 300,
+      height: 88,
+    });
+    expect(volume.bounds).toMatchObject({
+      x: primary.bounds.x + primary.bounds.width + 16,
+      y: primary.bounds.y + 236,
+      width: 300,
+      height: 68,
+    });
+    expect([repeat, split, stage, volume].every((primitive) => primitive.bounds.width < primary.bounds.width && primitive.bounds.height < primary.bounds.height)).toBe(true);
+    expect([repeat, split, stage, volume].every((primitive) => (first.sourceMappings as any[])
+      .some((mapping) => mapping.visualId === primitive.primitiveId && mapping.ugsIds.includes("spatial_stage")))).toBe(true);
+    expect(evaluatePublicationVisualPlanQa(first).status).toBe("passed");
+  });
+
+  it("packs every anonymous composite attachment beside one stable primary without visual collisions", () => {
+    const input = unknownHybridSemanticRegionsUgs();
+    const spatial = input.nodes.find((node: any) => node.nodeId === "spatial_stage");
+    spatial.kind = "custom_module";
+    spatial.semanticHints = ["attention", "self_attention", "self"];
+    spatial.attributes = { ...spatial.attributes, attentionKind: "self" };
+    const ugs = parseUniversalGraphSpec(input);
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const first = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const second = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const byId = new Map((first.primitives as any[]).map((primitive) => [primitive.primitiveId, primitive]));
+    const expectedIds = [
+      "primitive:node:spatial_stage",
+      "primitive:repeat:spatial_stage",
+      "primitive:semantic:scale_transition:source-to-spatial:stage",
+      "primitive:semantic:scale_transition:source-to-spatial:volume",
+      "primitive:semantic:multi_branch:spatial_stage:split",
+      "primitive:semantic:token_attention:spatial_stage:tokens",
+      "primitive:semantic:token_attention:spatial_stage:relation",
+    ];
+    const composite = expectedIds.map((primitiveId) => byId.get(primitiveId));
+    const primary = composite[0]!;
+    const attachments = composite.slice(1);
+
+    expect(first).toEqual(second);
+    expect(composite.every(Boolean)).toBe(true);
+    expect(composite).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "ModuleFrame" }),
+      expect.objectContaining({ kind: "RepeatBadge" }),
+      expect.objectContaining({ kind: "TensorStage" }),
+      expect.objectContaining({ kind: "TensorVolume" }),
+      expect.objectContaining({ kind: "SplitMarker" }),
+      expect.objectContaining({ kind: "AttentionTokenStrip" }),
+      expect.objectContaining({ kind: "AttentionRelation" }),
+    ]));
+    expect(primary.bounds).toMatchObject({ width: 760, height: 320 });
+    expect(attachments.every((primitive) => primitive.bounds.x >= primary.bounds.x + primary.bounds.width)).toBe(true);
+    expect(attachments.every((primitive, index) => attachments.slice(index + 1).every((other) => !boundsOverlap(primitive.bounds, other.bounds)))).toBe(true);
+    expect(attachments.every((primitive) => (first.sourceMappings as any[]).some((mapping) => mapping.visualId === primitive.primitiveId
+      && mapping.ugsIds.includes("spatial_stage") && mapping.evidenceIds.includes("e-topology")))).toBe(true);
+    expect(evaluatePublicationVisualPlanQa(first).status).toBe("passed");
+    expect(first.connectors).toHaveLength(graph.relations.length);
+    expect((first.connectors as any[]).map((connector) => connector.connectorId).sort()).toEqual(graph.relations.map((relation) => `connector:${relation.relationId}`).sort());
+    expect(new Set((first.connectors as any[]).map((connector) => `${connector.sourcePortId}:${connector.targetPortId}`)).size).toBe(graph.relations.length);
+  });
+
+  it("packs attachments from anonymous complex modules sharing one rank without cross-module collisions", () => {
+    const input = unknownHybridSemanticRegionsUgs();
+    for (const nodeId of ["left_path", "right_path"]) {
+      const node = input.nodes.find((item: any) => item.nodeId === nodeId);
+      node.kind = "custom_module";
+      node.semanticHints = ["attention", "self_attention", "self"];
+      node.attributes = { ...node.attributes, attentionKind: "self", repeatCount: 2, repeatGroupId: `repeat-${nodeId}` };
+      input.groups.push({ groupId: `repeat-${nodeId}`, label: `Repeated ${nodeId}`, memberNodeIds: [nodeId], evidenceIds: ["e-topology"] });
+    }
+    input.nodes.find((item: any) => item.nodeId === "left_path").tensorFacts.dimensions = { channels: 32, height: 16, width: 16 };
+
+    const ugs = parseUniversalGraphSpec(input);
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const first = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const second = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const primitives = first.primitives as any[];
+    const primaryByNodeId = new Map(["left_path", "right_path"].map((nodeId) => [nodeId, primitives.find((primitive) => primitive.primitiveId === `primitive:node:${nodeId}`)]));
+    const attachmentsFor = (nodeId: string) => primitives.filter((primitive) => primitive.primitiveId === `primitive:repeat:${nodeId}`
+      || primitive.primitiveId === `primitive:semantic:token_attention:${nodeId}:tokens`
+      || primitive.primitiveId === `primitive:semantic:token_attention:${nodeId}:relation`);
+    const attachments = ["left_path", "right_path"].flatMap(attachmentsFor);
+
+    expect(first).toEqual(second);
+    expect(primaryByNodeId.get("left_path")).toMatchObject({ kind: "ModuleFrame" });
+    expect(primaryByNodeId.get("right_path")).toMatchObject({ kind: "ModuleFrame" });
+    expect(attachments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ primitiveId: "primitive:repeat:left_path", kind: "RepeatBadge" }),
+      expect.objectContaining({ primitiveId: "primitive:repeat:right_path", kind: "RepeatBadge" }),
+      expect.objectContaining({ primitiveId: "primitive:semantic:token_attention:left_path:tokens", kind: "AttentionTokenStrip" }),
+      expect.objectContaining({ primitiveId: "primitive:semantic:token_attention:left_path:relation", kind: "AttentionRelation" }),
+      expect.objectContaining({ primitiveId: "primitive:semantic:token_attention:right_path:tokens", kind: "AttentionTokenStrip" }),
+      expect.objectContaining({ primitiveId: "primitive:semantic:token_attention:right_path:relation", kind: "AttentionRelation" }),
+    ]));
+    expect(primitives.every((primitive, index) => primitives.slice(index + 1).every((other) => !boundsOverlap(primitive.bounds, other.bounds)))).toBe(true);
+    for (const [nodeId, primary] of primaryByNodeId) {
+      const nodeAttachments = attachmentsFor(nodeId);
+      expect(nodeAttachments).toHaveLength(3);
+      expect(nodeAttachments.every((primitive) => primitive.bounds.x >= primary.bounds.x + primary.bounds.width)).toBe(true);
+    }
+    expect(evaluatePublicationVisualPlanQa(first).status).toBe("passed");
+    expect(first.connectors).toHaveLength(graph.relations.length);
+    expect((first.connectors as any[]).map((connector) => connector.connectorId).sort()).toEqual(graph.relations.map((relation) => `connector:${relation.relationId}`).sort());
+    expect(new Set((first.connectors as any[]).map((connector) => `${connector.sourcePortId}:${connector.targetPortId}`)).size).toBe(graph.relations.length);
+  });
+
   it("adds a CandidateCallout and keeps a candidate semantic graph non-exportable", () => {
     const ugs = parseUniversalGraphSpec(unknownHybridSemanticRegionsCandidateUgs());
     const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
@@ -85,3 +237,10 @@ describe("PublicationVisualPlan compiler", () => {
     expect((plan.primitives as any[]).some((primitive) => primitive.kind === "TensorVolume")).toBe(false);
   });
 });
+
+function boundsOverlap(left: { x: number; y: number; width: number; height: number }, right: { x: number; y: number; width: number; height: number }): boolean {
+  return left.x < right.x + right.width
+    && left.x + left.width > right.x
+    && left.y < right.y + right.height
+    && left.y + left.height > right.y;
+}

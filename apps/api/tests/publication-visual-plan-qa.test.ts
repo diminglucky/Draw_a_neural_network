@@ -32,6 +32,44 @@ function changed(mutator: (draft: any) => void) {
   return createPublicationVisualPlan(draft);
 }
 
+function forgedCandidateVisualPlan() {
+  const draft = structuredClone(pendingPlan()) as any;
+  draft.primitives[0] = {
+    ...draft.primitives[0],
+    kind: "CandidateCallout",
+    visual: {
+      regionRole: "candidate_feedback",
+      nativeSupport: "restricted",
+      geometry: { kind: "none" },
+    },
+  };
+  draft.eligibility = {
+    kind: "formal",
+    formalReasons: ["topology-complete"],
+    blockingReasons: [],
+    qaStatus: "passed",
+  };
+  return createPublicationVisualPlan(draft);
+}
+
+function candidatePlanWithPrimitive(kind: "CandidateRegion" | "CandidateCallout" | "TensorStage") {
+  const draft = structuredClone(pendingPlan()) as any;
+  draft.primitives[0] = {
+    ...draft.primitives[0],
+    kind,
+    ...(kind === "CandidateRegion" ? {} : {
+      visual: {
+        regionRole: "candidate_feedback",
+        nativeSupport: "restricted",
+        geometry: { kind: "none" },
+      },
+    }),
+  };
+  if (kind === "CandidateRegion") delete draft.primitives[0].visual;
+  draft.eligibility = { kind: "candidate", formalReasons: [], blockingReasons: ["topology-candidate"], qaStatus: "pending" };
+  return createPublicationVisualPlan(draft);
+}
+
 function reanchorRoutes(draft: any) {
   const primitives = new Map<string, any>(draft.primitives.map((primitive: any) => [primitive.primitiveId, primitive]));
   const ports = new Map<string, any>(draft.ports.map((port: any) => [port.portId, port]));
@@ -52,6 +90,28 @@ function reanchorRoutes(draft: any) {
 }
 
 describe("PublicationVisualPlan QA", () => {
+  it.each(["CandidateRegion", "CandidateCallout", "TensorStage"] as const)("treats %s candidate visual semantics as export-blocking", (kind) => {
+    const result = evaluatePublicationVisualPlanQa(candidatePlanWithPrimitive(kind));
+
+    expect(result.status).toBe("failed");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "candidate-export-eligibility", status: "failed" }));
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "candidate-visual-semantics", status: "failed" }));
+  });
+
+  it("fails candidate visual semantics that forge formal passed export readiness", () => {
+    let result;
+    try {
+      result = evaluatePublicationVisualPlanQa(forgedCandidateVisualPlan());
+    } catch (error) {
+      expect(error).toMatchObject({ message: expect.stringMatching(/candidate|eligibility|PVP/i) });
+      return;
+    }
+
+    expect(result.status).toBe("failed");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "candidate-visual-semantics", status: "failed" }));
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "candidate-export-eligibility", status: "failed" }));
+  });
+
   it("records a stable passing audit for a formal PVP without mutating its pending eligibility", () => {
     const plan = pendingPlan();
     const result = evaluatePublicationVisualPlanQa(plan);

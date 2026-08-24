@@ -57,16 +57,21 @@ export function parsePublicationVisualPlan(input: unknown): PublicationVisualPla
     if (application.applicationId !== `profile-application:${String(application.profileId ?? "")}` || !identifier(application.profileId) || typeof application.profileVersion !== "string" || application.profileVersion.length === 0 || application.profileVersion.length > 64 || typeof application.inputHash !== "string" || !DIGEST.test(application.inputHash) || typeof application.outputHash !== "string" || !DIGEST.test(application.outputHash) || !Array.isArray(affectedIds) || affectedIds.length === 0 || affectedIds.some((id) => !identifier(id)) || new Set(affectedIds).size !== affectedIds.length || affectedIds.some((id, index) => id !== [...affectedIds].sort(compareCodeUnits)[index])) throw new Error("PVP Profile application is invalid");
   }
   const primitiveById = new Map<string, Record<string, unknown>>();
+  const candidateVisualPrimitiveIds: string[] = [];
   for (const value of primitives) {
     const primitive = record(value, "PVP primitive is invalid");
     assertAllowedKeys(primitive, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label", "visual"], ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label"], "PVP primitive");
     if (!identifier(primitive.primitiveId) || !identifier(primitive.componentId) || typeof primitive.kind !== "string" || !ACCEPTED_PRIMITIVE_KINDS.has(primitive.kind) || typeof primitive.regionId !== "string" || !integer(primitive.zIndex) || !Array.isArray(primitive.styleTokenIds) || primitive.styleTokenIds.some((id) => !identifier(id)) || typeof primitive.label !== "string") throw new Error("PVP primitive is invalid");
-    if (isPublicationVisualPrimitiveKind(primitive.kind)) validateVisual(primitive.visual, primitive.kind, "PVP primitive visual");
+    if (isPublicationVisualPrimitiveKind(primitive.kind)) {
+      validateVisual(primitive.visual, primitive.kind, "PVP primitive visual");
+    }
     else if (primitive.visual !== undefined) throw new Error("Legacy PVP primitive cannot carry visual grammar");
+    if (hasCandidateVisualSemantics(primitive)) candidateVisualPrimitiveIds.push(primitive.primitiveId as string);
     const primitiveBounds = bounds(primitive.bounds, "PVP primitive bounds");
     if (!contains(page, primitiveBounds)) throw new Error("PVP primitive bounds must be inside the page");
     primitiveById.set(primitive.primitiveId as string, primitive);
   }
+  if (candidateVisualPrimitiveIds.length > 0 && (eligibility.kind !== "candidate" || eligibility.qaStatus === "passed")) throw new Error("Candidate visual semantics cannot claim formal or QA-passed eligibility");
   const portById = new Map<string, { primitiveId: string; x: number; y: number }>();
   for (const value of ports) {
     const port = record(value, "PVP port is invalid");
@@ -120,6 +125,8 @@ function validateVisual(value: unknown, kind: typeof PUBLICATION_VISUAL_PRIMITIV
   const visual = record(value, `${label} is required`);
   assertExactKeys(visual, ["regionRole", "nativeSupport", "geometry"], label);
   if (typeof visual.regionRole !== "string" || !( ["base", "scale_transition", "repeat_group", "add_merge", "concat_fusion", "token_attention", "custom_module", "multi_branch", "candidate_feedback"] as string[]).includes(visual.regionRole) || !( ["supported", "restricted"] as unknown[]).includes(visual.nativeSupport)) throw new Error(`${label} is invalid`);
+  if (kind === "CandidateCallout" && visual.regionRole !== "candidate_feedback") throw new Error(`${label} CandidateCallout must be candidate_feedback`);
+  if (visual.regionRole === "candidate_feedback" && visual.nativeSupport !== "restricted") throw new Error(`${label} candidate_feedback requires restricted native support`);
   const geometry = record(visual.geometry, `${label} geometry is invalid`);
   if (kind === "TensorVolume") {
     assertExactKeys(geometry, ["kind", "frontFace", "depthFace"], `${label} tensor geometry`);
@@ -133,6 +140,10 @@ function validateVisual(value: unknown, kind: typeof PUBLICATION_VISUAL_PRIMITIV
   }
   assertExactKeys(geometry, ["kind"], `${label} geometry`);
   if (geometry.kind !== "none") throw new Error(`${label} geometry is invalid`);
+}
+function hasCandidateVisualSemantics(primitive: Record<string, unknown>): boolean {
+  const visual = primitive.visual;
+  return primitive.kind === "CandidateRegion" || primitive.kind === "CandidateCallout" || (visual !== null && typeof visual === "object" && !Array.isArray(visual) && Object.getPrototypeOf(visual) === Object.prototype && (visual as Record<string, unknown>).regionRole === "candidate_feedback");
 }
 function face(value: unknown): boolean { return Array.isArray(value) && value.length === 4 && value.every((point) => { try { pointValue(point, "PVP visual face"); return true; } catch { return false; } }); }
 function tokenCell(value: unknown): boolean { try { const cell = record(value, "PVP token cell"); assertExactKeys(cell, ["cellId", "order", "bounds"], "PVP token cell"); return identifier(cell.cellId) && integer(cell.order) && cell.order >= 0 && (() => { bounds(cell.bounds, "PVP token cell bounds"); return true; })(); } catch { return false; } }

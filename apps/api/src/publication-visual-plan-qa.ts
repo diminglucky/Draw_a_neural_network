@@ -31,10 +31,14 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
   const page = asBounds((plan.coordinateSpace as Record<string, unknown>).page);
   const primitiveById = new Map(primitives.map((primitive) => [String(primitive.primitiveId), primitive]));
   const checks: PublicationVisualPlanQaCheck[] = [];
+  const candidateVisualPrimitiveIds = primitives.filter(hasCandidateVisualSemantics).map((primitive) => String(primitive.primitiveId));
+  const legacyCandidatePrimitiveIds = primitives.filter((primitive) => primitive.kind === "CandidateRegion").map((primitive) => String(primitive.primitiveId));
+  const candidateSemanticsPresent = candidateVisualPrimitiveIds.length > 0;
 
-  checks.push(check("eligibility-formal", plan.eligibility.kind === "formal" && plan.eligibility.blockingReasons.length === 0, []));
-  checks.push(check("candidate-export-eligibility", plan.eligibility.kind !== "candidate", plan.eligibility.kind === "candidate" ? [plan.identity.planId] : []));
-  checks.push(check("candidate-region", !primitives.some((primitive) => primitive.kind === "CandidateRegion"), primitives.filter((primitive) => primitive.kind === "CandidateRegion").map((primitive) => String(primitive.primitiveId))));
+  checks.push(check("eligibility-formal", plan.eligibility.kind === "formal" && plan.eligibility.blockingReasons.length === 0 && !candidateSemanticsPresent, candidateSemanticsPresent ? candidateVisualPrimitiveIds : []));
+  checks.push(check("candidate-export-eligibility", !candidateSemanticsPresent && plan.eligibility.kind !== "candidate", candidateSemanticsPresent ? candidateVisualPrimitiveIds : plan.eligibility.kind === "candidate" ? [plan.identity.planId] : []));
+  checks.push(check("candidate-region", legacyCandidatePrimitiveIds.length === 0, legacyCandidatePrimitiveIds));
+  checks.push(check("candidate-visual-semantics", candidateVisualPrimitiveIds.length === 0, candidateVisualPrimitiveIds));
   checks.push(check("duplicate-ids", uniqueIds(primitives, "primitiveId") && uniqueIds(ports, "portId") && uniqueIds(connectors, "connectorId"), []));
   checks.push(check("feedback-connector", !connectors.some((connector) => connector.relation === "feedback"), connectors.filter((connector) => connector.relation === "feedback").map((connector) => String(connector.connectorId))));
 
@@ -221,6 +225,10 @@ function uniqueIds(values: readonly Record<string, unknown>[], field: string): b
 function visualRole(primitive: Record<string, unknown>): string {
   const visual = asRecordOrNull(primitive.visual);
   return visual && typeof visual.regionRole === "string" ? visual.regionRole : "base";
+}
+
+function hasCandidateVisualSemantics(primitive: Record<string, unknown>): boolean {
+  return primitive.kind === "CandidateRegion" || primitive.kind === "CandidateCallout" || visualRole(primitive) === "candidate_feedback";
 }
 
 function validTensorGeometry(primitive: Record<string, unknown>): boolean {

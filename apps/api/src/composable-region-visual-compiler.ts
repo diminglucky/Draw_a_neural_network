@@ -24,6 +24,15 @@ export interface ComposableRegionVisualDescriptor {
   readonly sourceEdgeIds: readonly string[];
   readonly evidenceIds: readonly string[];
   readonly layout: Readonly<{ readonly rank: number; readonly lane: number; readonly order: number }>;
+  /** Renderer-neutral relationship to the stable topology primitive that owns an auxiliary semantic visual. */
+  readonly attachment: ComposableRegionVisualAttachment | null;
+}
+
+export interface ComposableRegionVisualAttachment {
+  readonly primaryPrimitiveId: string;
+  readonly placement: "corner_top_right" | "output_side" | "adjacent_right_top" | "adjacent_right_bottom";
+  /** Stable ordinal within one primary/placement family; assigned after all semantic regions are compiled. */
+  readonly slot: number;
 }
 
 export interface ComposableRegionVisualGroup {
@@ -37,7 +46,7 @@ export interface ComposableRegionVisualGroup {
 
 export interface ComposableRegionLayoutConstraint {
   readonly constraintId: string;
-  readonly kind: "rank" | "order" | "containment" | "collision_safe_spacing" | "orthogonal_route";
+  readonly kind: "rank" | "order" | "containment" | "collision_safe_spacing" | "orthogonal_route" | "attachment";
   readonly subjectIds: readonly string[];
 }
 
@@ -65,7 +74,9 @@ export function compileComposableRegionVisuals(graph: GeneralPublicationGraph): 
     const regionDescriptors = compileRegion(region, descriptors, componentByNodeId, relationBySourceEdgeId, semanticOrder);
     semanticOrder += regionDescriptors.length + 1;
     for (const descriptor of regionDescriptors) {
-      if (!descriptors.some((item) => item.primitiveId === descriptor.primitiveId)) descriptors.push(descriptor);
+      const index = descriptors.findIndex((item) => item.primitiveId === descriptor.primitiveId);
+      if (index >= 0) descriptors[index] = descriptor;
+      else descriptors.push(descriptor);
     }
     if (regionDescriptors.length > 0) {
       const primitiveIds = regionDescriptors.map((item) => item.primitiveId).sort(compareCodeUnits);
@@ -81,10 +92,17 @@ export function compileComposableRegionVisuals(graph: GeneralPublicationGraph): 
         constraint(`constraint:containment:${region.regionId}`, "containment", primitiveIds),
         constraint(`constraint:spacing:${region.regionId}`, "collision_safe_spacing", primitiveIds),
       );
+      for (const descriptor of regionDescriptors) {
+        if (descriptor.attachment) constraints.push(
+          constraint(`constraint:attachment:${descriptor.attachment.primaryPrimitiveId}:${descriptor.primitiveId}`, "attachment", [descriptor.attachment.primaryPrimitiveId, descriptor.primitiveId]),
+        );
+      }
     }
   }
 
-  for (const descriptor of descriptors) {
+  const slottedDescriptors = assignAttachmentSlots(descriptors);
+
+  for (const descriptor of slottedDescriptors) {
     constraints.push(
       constraint(`constraint:rank:${descriptor.primitiveId}`, "rank", [descriptor.primitiveId]),
       constraint(`constraint:order:${descriptor.primitiveId}`, "order", [descriptor.primitiveId]),
@@ -93,7 +111,7 @@ export function compileComposableRegionVisuals(graph: GeneralPublicationGraph): 
   for (const relation of graph.relations) constraints.push(constraint(`constraint:route:${relation.relationId}`, "orthogonal_route", [relation.sourceComponentId, relation.targetComponentId]));
 
   return {
-    descriptors: [...descriptors].sort(descriptorOrder),
+    descriptors: [...slottedDescriptors].sort(descriptorOrder),
     groups: [...groups].sort((left, right) => compareCodeUnits(left.groupId, right.groupId)),
     constraints: [...constraints].sort((left, right) => compareCodeUnits(left.constraintId, right.constraintId)),
     exportEligible: graph.exportEligibility === "eligible" && !graph.semanticRegions.some((region) => region.state === "candidate"),
@@ -114,6 +132,7 @@ function componentDescriptor(component: GeneralPublicationComponent): Composable
     sourceEdgeIds: component.sourceEdgeIds,
     evidenceIds: component.evidenceIds,
     layout: { rank: component.layoutOrder.rank, lane: component.layoutOrder.order * 8, order: component.layoutOrder.order },
+    attachment: null,
   });
 }
 
@@ -125,63 +144,58 @@ function compileRegion(
   semanticOrder: number,
 ): ComposableRegionVisualDescriptor[] {
   if (region.kind === "candidate_feedback") return candidateDescriptors(region, descriptors, semanticOrder);
-  if (region.kind === "scale_transition") return scaleDescriptors(region, descriptors, relationBySourceEdgeId, semanticOrder);
-  if (region.kind === "repeat_group") return existingComponentDescriptors(region, descriptors, componentByNodeId, "RepeatBadge");
+  const primary = primaryDescriptorFor(region, descriptors, relationBySourceEdgeId);
+  if (region.kind === "scale_transition") return scaleDescriptors(region, primary, semanticOrder);
+  if (region.kind === "repeat_group") return existingComponentDescriptors(region, descriptors, componentByNodeId, "RepeatBadge", primary, "corner_top_right");
   if (region.kind === "add_merge") return existingComponentDescriptors(region, descriptors, componentByNodeId, "AddMarker");
   if (region.kind === "concat_fusion") return existingComponentDescriptors(region, descriptors, componentByNodeId, "ConcatMarker");
-  if (region.kind === "token_attention") return attentionDescriptors(region, descriptors, componentByNodeId, semanticOrder);
+  if (region.kind === "token_attention") return attentionDescriptors(region, primary, semanticOrder);
   if (region.kind === "custom_module") return existingComponentDescriptors(region, descriptors, componentByNodeId, "ModuleFrame");
-  return splitDescriptors(region, descriptors, componentByNodeId, semanticOrder);
+  return splitDescriptors(region, primary, semanticOrder);
 }
 
-function scaleDescriptors(region: ComposableSemanticRegion, descriptors: ComposableRegionVisualDescriptor[], relations: Map<string, GeneralPublicationRelation>, semanticOrder: number): ComposableRegionVisualDescriptor[] {
-  const relation = region.sourceEdgeIds.map((edgeId) => relations.get(edgeId)).find((item): item is GeneralPublicationRelation => item !== undefined);
-  const source = relation ? descriptors.find((item) => item.topologyComponentId === relation.sourceComponentId) : undefined;
-  const target = relation ? descriptors.find((item) => item.topologyComponentId === relation.targetComponentId) : undefined;
-  const result: ComposableRegionVisualDescriptor[] = [];
-  if (source && canEnhanceTensor(source.kind)) result.push(upgradeDescriptor(descriptors, source, "TensorStage", "scale_transition"));
-  else result.push(semanticVisual(region, "stage", "TensorStage", semanticOrder));
-  if (target && canEnhanceTensor(target.kind)) result.push(upgradeDescriptor(descriptors, target, "TensorVolume", "scale_transition"));
-  else result.push(semanticVisual(region, "volume", "TensorVolume", semanticOrder + 1));
-  return result;
+function scaleDescriptors(region: ComposableSemanticRegion, primary: ComposableRegionVisualDescriptor | null, semanticOrder: number): ComposableRegionVisualDescriptor[] {
+  // Data topology remains attached to its stable component primitive. Scale is
+  // an additional visual meaning, not a replacement for a module/operator.
+  return [
+    semanticVisual(region, "stage", "TensorStage", semanticOrder, primary, "adjacent_right_top"),
+    semanticVisual(region, "volume", "TensorVolume", semanticOrder + 1, primary, "adjacent_right_bottom"),
+  ];
 }
 
-function attentionDescriptors(region: ComposableSemanticRegion, descriptors: ComposableRegionVisualDescriptor[], components: Map<string, GeneralPublicationComponent>, semanticOrder: number): ComposableRegionVisualDescriptor[] {
-  const component = firstComponent(region, components);
-  const current = component ? descriptors.find((item) => item.topologyComponentId === component.componentId) : undefined;
-  const result = current ? [upgradeDescriptor(descriptors, current, "AttentionTokenStrip", "token_attention")] : [semanticVisual(region, "tokens", "AttentionTokenStrip", semanticOrder)];
-  result.push(semanticVisual(region, "relation", "AttentionRelation", semanticOrder + 1));
-  return result;
+function attentionDescriptors(region: ComposableSemanticRegion, primary: ComposableRegionVisualDescriptor | null, semanticOrder: number): ComposableRegionVisualDescriptor[] {
+  return [
+    semanticVisual(region, "tokens", "AttentionTokenStrip", semanticOrder, primary, "adjacent_right_top"),
+    semanticVisual(region, "relation", "AttentionRelation", semanticOrder + 1, primary, "adjacent_right_bottom"),
+  ];
 }
 
-function splitDescriptors(region: ComposableSemanticRegion, descriptors: ComposableRegionVisualDescriptor[], components: Map<string, GeneralPublicationComponent>, semanticOrder: number): ComposableRegionVisualDescriptor[] {
-  const component = firstComponent(region, components);
-  const current = component ? descriptors.find((item) => item.topologyComponentId === component.componentId) : undefined;
-  if (current?.kind === "SplitMarker") return [upgradeDescriptor(descriptors, current, "SplitMarker", "multi_branch")];
-  return [semanticVisual(region, "split", "SplitMarker", semanticOrder)];
+function splitDescriptors(region: ComposableSemanticRegion, primary: ComposableRegionVisualDescriptor | null, semanticOrder: number): ComposableRegionVisualDescriptor[] {
+  return [semanticVisual(region, "split", "SplitMarker", semanticOrder, primary, "output_side")];
 }
 
 function candidateDescriptors(region: ComposableSemanticRegion, descriptors: ComposableRegionVisualDescriptor[], semanticOrder: number): ComposableRegionVisualDescriptor[] {
   const existing = descriptors.filter((item) => item.kind === "CandidateCallout" && item.sourceEdgeIds.some((edgeId) => region.sourceEdgeIds.includes(edgeId)));
-  return existing.length > 0 ? existing.map((item) => upgradeDescriptor(descriptors, item, "CandidateCallout", "candidate_feedback")) : [semanticVisual(region, "callout", "CandidateCallout", semanticOrder)];
+  return existing.length > 0 ? existing : [semanticVisual(region, "callout", "CandidateCallout", semanticOrder)];
 }
 
-function existingComponentDescriptors(region: ComposableSemanticRegion, descriptors: ComposableRegionVisualDescriptor[], components: Map<string, GeneralPublicationComponent>, kind: PublicationVisualPrimitiveKind): ComposableRegionVisualDescriptor[] {
+function existingComponentDescriptors(region: ComposableSemanticRegion, descriptors: ComposableRegionVisualDescriptor[], components: Map<string, GeneralPublicationComponent>, kind: PublicationVisualPrimitiveKind, primary: ComposableRegionVisualDescriptor | null = null, placement: ComposableRegionVisualAttachment["placement"] | null = null): ComposableRegionVisualDescriptor[] {
   const candidates = [...region.sourceNodeIds].sort(compareCodeUnits)
     .map((nodeId) => components.get(nodeId))
     .filter((item): item is GeneralPublicationComponent => item !== undefined)
     .map((component) => descriptors.find((item) => item.topologyComponentId === component.componentId))
     .filter((item): item is ComposableRegionVisualDescriptor => item !== undefined);
-  const current = candidates.find((item) => item.kind === kind) ?? candidates[0];
-  return current ? [upgradeDescriptor(descriptors, current, kind, region.kind)] : [];
+  const current = descriptors
+    .filter((descriptor) => descriptor.kind === kind && descriptor.sourceNodeIds.some((nodeId) => region.sourceNodeIds.includes(nodeId)))
+    .sort(descriptorOrder)[0]
+    ?? candidates.find((item) => item.kind === kind);
+  if (!current) return [semanticVisual(region, kind.toLowerCase(), kind, 0, primary, placement)];
+  if (!primary || placement === null || current.primitiveId === primary.primitiveId) return [current];
+  return [attach(current, primary, placement)];
 }
 
-function firstComponent(region: ComposableSemanticRegion, components: Map<string, GeneralPublicationComponent>): GeneralPublicationComponent | undefined {
-  return [...region.sourceNodeIds].sort(compareCodeUnits).map((nodeId) => components.get(nodeId)).find((item): item is GeneralPublicationComponent => item !== undefined);
-}
-
-function semanticVisual(region: ComposableSemanticRegion, suffix: string, kind: PublicationVisualPrimitiveKind, order: number): ComposableRegionVisualDescriptor {
-  const rank = Math.max(0, ...region.sourceNodeIds.map(() => 0));
+function semanticVisual(region: ComposableSemanticRegion, suffix: string, kind: PublicationVisualPrimitiveKind, order: number, primary: ComposableRegionVisualDescriptor | null = null, placement: ComposableRegionVisualAttachment["placement"] | null = null): ComposableRegionVisualDescriptor {
+  const attachment = primary && placement ? { primaryPrimitiveId: primary.primitiveId, placement, slot: 0 } : null;
   return visual({
     primitiveId: `primitive:semantic:${region.regionId}:${suffix}`,
     componentId: `semantic:${region.regionId}:${suffix}`,
@@ -193,16 +207,9 @@ function semanticVisual(region: ComposableSemanticRegion, suffix: string, kind: 
     sourceNodeIds: region.sourceNodeIds,
     sourceEdgeIds: region.sourceEdgeIds,
     evidenceIds: region.evidenceIds,
-    layout: { rank, lane: 100 + order, order },
+    layout: attachment ? { rank: primary!.layout.rank, lane: primary!.layout.lane, order } : { rank: 0, lane: 100 + order, order },
+    attachment,
   });
-}
-
-function upgradeDescriptor(descriptors: ComposableRegionVisualDescriptor[], current: ComposableRegionVisualDescriptor, kind: PublicationVisualPrimitiveKind, regionRole: PublicationVisualRegionRole): ComposableRegionVisualDescriptor {
-  const replacement = visual({ ...current, kind, regionRole });
-  const index = descriptors.findIndex((item) => item.primitiveId === current.primitiveId);
-  if (index < 0) throw new Error(`Visual descriptor is missing: ${current.primitiveId}`);
-  descriptors[index] = replacement;
-  return replacement;
 }
 
 function visual(input: Omit<ComposableRegionVisualDescriptor, "styleTokenIds" | "nativeSupport" | "connectorPorts" | "geometryRequirement">): ComposableRegionVisualDescriptor {
@@ -219,8 +226,50 @@ function visual(input: Omit<ComposableRegionVisualDescriptor, "styleTokenIds" | 
   };
 }
 
+function attach(descriptor: ComposableRegionVisualDescriptor, primary: ComposableRegionVisualDescriptor, placement: ComposableRegionVisualAttachment["placement"]): ComposableRegionVisualDescriptor {
+  return {
+    ...descriptor,
+    layout: { rank: primary.layout.rank, lane: primary.layout.lane, order: descriptor.layout.order },
+    attachment: { primaryPrimitiveId: primary.primitiveId, placement, slot: 0 },
+  };
+}
+
+function primaryDescriptorFor(region: ComposableSemanticRegion, descriptors: readonly ComposableRegionVisualDescriptor[], relations: Map<string, GeneralPublicationRelation>): ComposableRegionVisualDescriptor | null {
+  if (region.kind === "scale_transition") {
+    const targetComponentId = region.sourceEdgeIds.map((edgeId) => relations.get(edgeId)?.targetComponentId).find((item): item is string => item !== undefined);
+    const target = targetComponentId ? descriptors.find((descriptor) => descriptor.topologyComponentId === targetComponentId) : undefined;
+    if (target) return target;
+  }
+  const candidates = region.sourceNodeIds
+    .map((nodeId) => descriptors.find((descriptor) => descriptor.topologyComponentId === `node:${nodeId}`))
+    .filter((descriptor): descriptor is ComposableRegionVisualDescriptor => descriptor !== undefined)
+    .filter((descriptor) => descriptor.kind !== "InputTerminal" && descriptor.kind !== "OutputTerminal")
+    .sort(descriptorOrder);
+  return candidates[0] ?? null;
+}
+
+function assignAttachmentSlots(descriptors: readonly ComposableRegionVisualDescriptor[]): ComposableRegionVisualDescriptor[] {
+  const slotByFamily = new Map<string, number>();
+  return [...descriptors].sort((left, right) => compareCodeUnits(left.primitiveId, right.primitiveId)).map((descriptor) => {
+    if (!descriptor.attachment) return descriptor;
+    const family = `${descriptor.attachment.primaryPrimitiveId}\u0000${descriptor.attachment.placement}`;
+    const slot = slotByFamily.get(family) ?? 0;
+    slotByFamily.set(family, slot + 1);
+    return { ...descriptor, attachment: { ...descriptor.attachment, slot } };
+  });
+}
+
 function componentIndex(components: readonly GeneralPublicationComponent[]): Map<string, GeneralPublicationComponent> {
-  return new Map(components.flatMap((component) => component.sourceNodeIds.map((nodeId) => [nodeId, component] as const)));
+  const byNodeId = new Map<string, GeneralPublicationComponent[]>();
+  for (const component of components) {
+    for (const nodeId of component.sourceNodeIds) byNodeId.set(nodeId, [...(byNodeId.get(nodeId) ?? []), component]);
+  }
+  return new Map([...byNodeId.entries()].map(([nodeId, candidates]) => [nodeId, [...candidates].sort((left, right) => {
+    const primaryId = `node:${nodeId}`;
+    if (left.componentId === primaryId) return -1;
+    if (right.componentId === primaryId) return 1;
+    return left.layoutOrder.order - right.layoutOrder.order || compareCodeUnits(left.componentId, right.componentId);
+  })[0]]));
 }
 
 function relationIndex(relations: readonly GeneralPublicationRelation[]): Map<string, GeneralPublicationRelation> {
@@ -247,10 +296,6 @@ function roleForComponent(component: GeneralPublicationComponent): PublicationVi
   if (component.role === "candidate_region") return "candidate_feedback";
   if (component.role === "custom_module" || component.role === "custom_fusion") return "custom_module";
   return "base";
-}
-
-function canEnhanceTensor(kind: PublicationVisualPrimitiveKind): boolean {
-  return kind === "OperatorFrame" || kind === "ModuleFrame";
 }
 
 function descriptorOrder(left: ComposableRegionVisualDescriptor, right: ComposableRegionVisualDescriptor): number {

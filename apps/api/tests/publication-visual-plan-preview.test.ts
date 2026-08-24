@@ -25,7 +25,96 @@ function compiledSemanticPlan(kind: "formal" | "candidate") {
   return { graph, pvp };
 }
 
+function withCandidateVisual(
+  pvp: unknown,
+  options: { kind?: "CandidateCallout" | "TensorStage"; nativeSupport?: "supported" | "restricted"; eligibilityKind?: "formal" | "candidate"; qaStatus?: "pending" | "passed" } = {},
+) {
+  const draft = structuredClone(pvp) as any;
+  draft.primitives[0] = {
+    ...draft.primitives[0],
+    kind: options.kind ?? "CandidateCallout",
+    visual: {
+      regionRole: "candidate_feedback",
+      nativeSupport: options.nativeSupport ?? "restricted",
+      geometry: { kind: "none" },
+    },
+  };
+  draft.eligibility = options.eligibilityKind === "candidate"
+    ? { kind: "candidate", formalReasons: [], blockingReasons: ["topology-candidate"], qaStatus: options.qaStatus ?? "pending" }
+    : { kind: "formal", formalReasons: ["topology-complete"], blockingReasons: [], qaStatus: options.qaStatus ?? "pending" };
+  return draft;
+}
+
+function withLegacyCandidateRegion(
+  pvp: unknown,
+  options: { kind?: "formal" | "candidate"; qaStatus?: "pending" | "passed" } = {},
+) {
+  const draft = structuredClone(pvp) as any;
+  draft.primitives[0] = {
+    ...draft.primitives[0],
+    kind: "CandidateRegion",
+  };
+  delete draft.primitives[0].visual;
+  draft.eligibility = options.kind === "candidate"
+    ? { kind: "candidate", formalReasons: [], blockingReasons: ["topology-candidate"], qaStatus: options.qaStatus ?? "pending" }
+    : { kind: "formal", formalReasons: ["topology-complete"], blockingReasons: [], qaStatus: options.qaStatus ?? "passed" };
+  return draft;
+}
+
 describe("projectPublicationVisualPlanPreview", () => {
+  it("rejects a legacy CandidateRegion that forges formal passed eligibility", () => {
+    const { pvp } = compiledPlan("formal");
+
+    expect(() => createPublicationVisualPlan(withLegacyCandidateRegion(pvp))).toThrow(/candidate|eligibility|PVP/i);
+  });
+
+  it("projects a legacy CandidateRegion as candidate and never export-eligible", () => {
+    const { graph, pvp } = compiledPlan("candidate");
+    const candidatePvp = createPublicationVisualPlan(withLegacyCandidateRegion(pvp, { kind: "candidate" }));
+
+    expect(projectPublicationVisualPlanPreview({ graph, pvp: candidatePvp })).toMatchObject({ kind: "candidate", exportEligible: false });
+  });
+
+  it.each([
+    ["legacy CandidateRegion", "CandidateRegion" as const],
+    ["CandidateCallout", "CandidateCallout" as const],
+    ["candidate_feedback role", "TensorStage" as const],
+  ])("rejects a formal PVP containing every candidate visual semantic through %s", (_name, kind) => {
+    const { pvp } = compiledSemanticPlan("formal");
+
+    const candidate = kind === "CandidateRegion"
+      ? withLegacyCandidateRegion(pvp)
+      : withCandidateVisual(pvp, { kind });
+    expect(() => createPublicationVisualPlan(candidate)).toThrow(/candidate|eligibility|PVP/i);
+  });
+
+  it("rejects a CandidateCallout whose native support is not restricted", () => {
+    const { pvp } = compiledSemanticPlan("formal");
+
+    expect(() => createPublicationVisualPlan(withCandidateVisual(pvp, { nativeSupport: "supported" }))).toThrow(/candidate|native|PVP/i);
+  });
+
+  it("rejects candidate_feedback on a non-CandidateCallout with supported native support", () => {
+    const { pvp } = compiledSemanticPlan("formal");
+
+    expect(() => createPublicationVisualPlan(withCandidateVisual(pvp, { kind: "TensorStage", eligibilityKind: "candidate", nativeSupport: "supported" }))).toThrow(/candidate|native|PVP/i);
+  });
+
+  it("rejects candidate visual semantics that claim a passed QA state", () => {
+    const { pvp } = compiledSemanticPlan("formal");
+
+    expect(() => createPublicationVisualPlan(withCandidateVisual(pvp, { qaStatus: "passed" }))).toThrow(/candidate|QA|eligibility|PVP/i);
+  });
+
+  it("never projects forged candidate visual semantics as export-eligible", () => {
+    const { graph, pvp } = compiledSemanticPlan("formal");
+
+    expect(() => projectPublicationVisualPlanPreview({
+      graph,
+      pvp: createPublicationVisualPlan(withCandidateVisual(pvp, { qaStatus: "passed" })),
+    })).toThrow(/candidate|eligibility|PVP|preview/i);
+  });
+
   it("projects a parsed, QA-passed formal PVP and GPG through nested allowlists without mutating either input", () => {
     const { graph, pvp } = compiledPlan("formal");
     const planDraft = structuredClone(pvp) as any;
