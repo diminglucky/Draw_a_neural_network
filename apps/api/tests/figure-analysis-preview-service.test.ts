@@ -172,16 +172,45 @@ describe("FigureAnalysisPreviewService", () => {
     await expect(service.preview("user-1", "analysis-ready")).rejects.toThrow(/preview/i);
   });
 
-  it("returns deterministic, caller-isolated ready projections", async () => {
+  it("returns caller-isolated v3 legacy public projections", async () => {
     const { service } = serviceFor([analysisRecord()]);
 
     const first = await service.preview("user-1", "analysis-ready");
     const second = await service.preview("user-1", "analysis-ready");
 
+    expect(first.kind).toBe("publication_plan");
+    expect(second.kind).toBe("publication_plan");
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-    if (first.kind === "publication_visual_preview") first.publicationPreview.plan.primitives[0]!.primitiveId = "changed";
+    if (first.kind !== "publication_plan" || second.kind !== "publication_plan") throw new Error("ready v3 preview must return a legacy publication plan");
+    const originalWidth = first.publicationPlan.components[0]!.bounds.width;
+    first.publicationPlan.components[0]!.bounds.width = originalWidth + 1;
+
     const third = await service.preview("user-1", "analysis-ready");
-    expect(JSON.stringify(third)).toBe(JSON.stringify(second));
+    expect(third.kind).toBe("publication_plan");
+    if (third.kind !== "publication_plan") throw new Error("ready v3 preview must return a legacy publication plan");
+    expect(third.publicationPlan.components[0]!.bounds.width).toBe(second.publicationPlan.components[0]!.bounds.width);
+    expect(third.publicationPlan.components[0]!.bounds.width).not.toBe(first.publicationPlan.components[0]!.bounds.width);
+  });
+
+  it("returns caller-isolated v4 PVP public projections", async () => {
+    const { service } = serviceFor([analysisRecord()]);
+
+    const first = await service.preview("user-1", "analysis-ready", { version: 4, deviceId: "device-actual-1" });
+    const second = await service.preview("user-1", "analysis-ready", { version: 4, deviceId: "device-actual-1" });
+
+    expect(first.kind).toBe("publication_visual_preview");
+    expect(second.kind).toBe("publication_visual_preview");
+    if (first.kind !== "publication_visual_preview" || second.kind !== "publication_visual_preview") throw new Error("ready v4 preview must return a publication visual preview");
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    const originalLabel = first.publicationPreview.plan.primitives[0]!.label;
+    if (typeof originalLabel !== "string") throw new Error("PVP primitive label must be a string");
+    first.publicationPreview.plan.primitives[0]!.label = `${originalLabel}-caller-mutated`;
+
+    const third = await service.preview("user-1", "analysis-ready", { version: 4, deviceId: "device-actual-1" });
+    expect(third.kind).toBe("publication_visual_preview");
+    if (third.kind !== "publication_visual_preview") throw new Error("ready v4 preview must return a publication visual preview");
+    expect(third.publicationPreview.plan.primitives[0]!.label).toBe(second.publicationPreview.plan.primitives[0]!.label);
+    expect(third.publicationPreview.plan.primitives[0]!.label).not.toBe(first.publicationPreview.plan.primitives[0]!.label);
     expect(defaultFigureIntent().version).toBe(1);
   });
 
