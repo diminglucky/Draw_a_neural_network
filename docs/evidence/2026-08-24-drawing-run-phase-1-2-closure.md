@@ -1,7 +1,7 @@
 # DrawingRun Phase 1/2 closure — code evidence, deployment gate retained
 
-**Recorded:** 2026-08-24  
-**Scope:** DrawingRun trusted scope, durable `formalUgsHash`, forward migration `015`, authenticated resume, and migration-safety smoke.  
+**Recorded:** 2026-08-24
+**Scope:** DrawingRun trusted scope, durable `formalUgsHash`, forward migration `015`, authenticated resume, and migration-safety smoke.
 **Delivery range:** `deeb5a17d691c3724957b0e6b6f7495e3c237bee..a1354efab2f0d696085bfeacb7846a086256d406`
 
 ## Implemented boundary
