@@ -23,6 +23,15 @@ export type UniversalEdgeRelation = "data" | "skip" | "merge" | "condition" | "f
 export type GraphKnowledge = "proven" | "declared" | "candidate";
 export type UniversalPreviewEligibility = "renderable" | "candidate";
 export type UniversalExportEligibility = "eligible" | "ineligible";
+export const UNIVERSAL_TENSOR_AXIS_ORDER = ["batch", "channels", "height", "width", "tokens", "embedding", "features"] as const;
+export type UniversalTensorAxis = typeof UNIVERSAL_TENSOR_AXIS_ORDER[number];
+export type UniversalTensorDimension = number | "symbolic" | "unknown";
+
+export interface UniversalTensorFacts {
+  axes: UniversalTensorAxis[];
+  dimensions: Partial<Record<UniversalTensorAxis, UniversalTensorDimension>>;
+  evidenceIds: string[];
+}
 
 export interface UniversalNode {
   nodeId: string;
@@ -35,6 +44,8 @@ export interface UniversalNode {
   shapeClaim: "proven" | "symbolic" | "unknown";
   operationKnowledge: "known" | "inferred" | "custom";
   evidenceIds: string[];
+  /** Omitted legacy inputs normalize to null when parsed. */
+  tensorFacts?: UniversalTensorFacts | null;
 }
 
 export interface UniversalPort {
@@ -115,6 +126,14 @@ const attributesSchema = z.record(attributeValueSchema).superRefine((value, cont
   }
 });
 
+const universalTensorAxisSchema = z.enum(UNIVERSAL_TENSOR_AXIS_ORDER);
+const universalTensorDimensionSchema = z.union([z.number().finite().positive(), z.literal("symbolic"), z.literal("unknown")]);
+const tensorFactsSchema = z.object({
+  axes: z.array(universalTensorAxisSchema).min(1).max(UNIVERSAL_TENSOR_AXIS_ORDER.length),
+  dimensions: z.record(universalTensorAxisSchema, universalTensorDimensionSchema),
+  evidenceIds: evidenceIdListSchema,
+}).strict();
+
 function isForbiddenAttributeKey(key: string): boolean {
   const tokens = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").split("_").filter(Boolean).map((token) => token.toLowerCase());
   return tokens.some((token) => forbiddenAttributeTokens.has(token)) || forbiddenAttributeCompounds.has(tokens.join(""));
@@ -131,6 +150,7 @@ const nodeSchema = z.object({
   shapeClaim: z.enum(["proven", "symbolic", "unknown"]),
   operationKnowledge: z.enum(["known", "inferred", "custom"]),
   evidenceIds: structuralEvidenceIdListSchema,
+  tensorFacts: tensorFactsSchema.nullable().default(null),
 }).strict();
 
 const portSchema = z.object({
@@ -226,6 +246,7 @@ export function validateUniversalGraphSpec(input: unknown): UniversalGraphSpecVa
     for (const portId of node.inputPortIds) assertPortOwnership(portById.get(portId), node.nodeId, "input", `nodes[${index}].inputPortIds`, issues);
     for (const portId of node.outputPortIds) assertPortOwnership(portById.get(portId), node.nodeId, "output", `nodes[${index}].outputPortIds`, issues);
     assertEvidence(node.evidenceIds, evidenceIds, `nodes[${index}].evidenceIds`, issues);
+    assertTensorFacts(node.tensorFacts ?? null, evidenceIds, `nodes[${index}].tensorFacts`, issues);
   }
   for (const [index, port] of ugs.ports.entries()) {
     const owner = nodeById.get(port.nodeId);
@@ -292,6 +313,28 @@ function assertPortOwnership(port: UniversalPort | undefined, nodeId: string, di
 function assertEvidence(ids: string[], known: Set<string>, path: string, issues: UniversalGraphSpecValidationIssue[]): void {
   unique(ids, "evidence-reference", path, issues);
   for (const [index, id] of ids.entries()) if (!known.has(id)) issue(issues, "unknown-evidence", `Unknown evidence ${id}`, `${path}[${index}]`);
+}
+
+function assertTensorFacts(facts: UniversalTensorFacts | null, knownEvidenceIds: Set<string>, path: string, issues: UniversalGraphSpecValidationIssue[]): void {
+  if (!facts) return;
+
+  unique(facts.axes, "tensor-axis", `${path}.axes`, issues);
+  for (const [index, axis] of facts.axes.entries()) {
+    if (index > 0 && tensorAxisRank(axis) <= tensorAxisRank(facts.axes[index - 1]!)) {
+      issue(issues, "tensor-axis-order", "Tensor fact axes must use canonical declared order", `${path}.axes[${index}]`);
+    }
+  }
+  for (const axis of Object.keys(facts.dimensions) as UniversalTensorAxis[]) {
+    if (!facts.axes.includes(axis)) issue(issues, "tensor-dimension-outside-axis", `Tensor dimension ${axis} is not a declared axis`, `${path}.dimensions.${axis}`);
+  }
+  assertEvidence(facts.evidenceIds, knownEvidenceIds, `${path}.evidenceIds`, issues);
+  if (Object.values(facts.dimensions).some((dimension) => typeof dimension === "number") && facts.evidenceIds.length === 0) {
+    issue(issues, "tensor-numeric-dimension-without-evidence", "Numeric tensor dimensions require at least one evidence ID", `${path}.evidenceIds`);
+  }
+}
+
+function tensorAxisRank(axis: UniversalTensorAxis): number {
+  return UNIVERSAL_TENSOR_AXIS_ORDER.indexOf(axis);
 }
 
 function findNonFeedbackCycle(ugs: UniversalGraphSpec, portById: Map<string, UniversalPort>): string[] {

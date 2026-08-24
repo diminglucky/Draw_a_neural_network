@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parseUniversalGraphSpec, type UniversalEdgeRelation, type UniversalGraphSpec, type UniversalNodeKind } from "./universal-graph-spec.js";
+import { parseUniversalGraphSpec, UNIVERSAL_TENSOR_AXIS_ORDER, type UniversalEdgeRelation, type UniversalGraphSpec, type UniversalNodeKind, type UniversalTensorAxis, type UniversalTensorDimension } from "./universal-graph-spec.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
 const knownOperations = new Set([
@@ -12,9 +12,13 @@ const attributeValueTypes = new Set(["string", "number", "boolean"]);
 export type PromptDeclarationNodeKind = "input" | "output" | "operator" | "module";
 export type PromptDeclarationTopology = "complete" | "ambiguous";
 export interface PromptDeclaredPort { portId: string; label?: string | null; representation?: string | null; semanticType?: string | null; }
+export interface PromptDeclaredTensorFacts {
+  axes: UniversalTensorAxis[];
+  dimensions: Partial<Record<UniversalTensorAxis, UniversalTensorDimension>>;
+}
 export interface PromptDeclaredNode {
   nodeId: string; kind: PromptDeclarationNodeKind; label: string; operation?: string; semanticHints?: string[];
-  attributes?: Record<string, string | number | boolean | null>; inputPorts: PromptDeclaredPort[]; outputPorts: PromptDeclaredPort[];
+  attributes?: Record<string, string | number | boolean | null>; tensorFacts?: PromptDeclaredTensorFacts | null; inputPorts: PromptDeclaredPort[]; outputPorts: PromptDeclaredPort[];
 }
 export interface PromptDeclaredEdge { edgeId: string; sourcePortId: string; targetPortId: string; relation?: Exclude<UniversalEdgeRelation, "candidate">; }
 /** A bounded graph declaration carried in prompt text, without renderer controls. */
@@ -50,7 +54,7 @@ export function compilePromptToUniversalGraphSpec(input: { sourceId: string; pro
 function parsePromptDeclaration(prompt: string): PromptGraphDeclaration { try { return JSON.parse(prompt) as PromptGraphDeclaration; } catch { throw new Error("Prompt must be a JSON-serialized typed graph declaration"); } }
 function projectNode(node: PromptDeclaredNode, evidence: EvidenceFactory) {
   const kind = nodeKind(node);
-  return { nodeId: node.nodeId, kind, label: node.label, semanticHints: uniqueSorted(node.semanticHints ?? []), inputPortIds: node.inputPorts.map((port) => portId(node.nodeId, port.portId)).sort(compareCodeUnits), outputPortIds: node.outputPorts.map((port) => portId(node.nodeId, port.portId)).sort(compareCodeUnits), attributes: orderedAttributes(node.attributes ?? {}), shapeClaim: "unknown" as const, operationKnowledge: kind === "custom_operator" || kind === "custom_module" ? "custom" as const : "known" as const, evidenceIds: [evidence.for(`prompt:node:${node.nodeId}`)] };
+  return { nodeId: node.nodeId, kind, label: node.label, semanticHints: uniqueSorted(node.semanticHints ?? []), inputPortIds: node.inputPorts.map((port) => portId(node.nodeId, port.portId)).sort(compareCodeUnits), outputPortIds: node.outputPorts.map((port) => portId(node.nodeId, port.portId)).sort(compareCodeUnits), attributes: orderedAttributes(node.attributes ?? {}), shapeClaim: "unknown" as const, operationKnowledge: kind === "custom_operator" || kind === "custom_module" ? "custom" as const : "known" as const, evidenceIds: [evidence.for(`prompt:node:${node.nodeId}`)], tensorFacts: projectTensorFacts(node, evidence) };
 }
 function projectPorts(nodeId: string, ports: PromptDeclaredPort[], direction: "input" | "output", evidence: EvidenceFactory) { return [...ports].sort((left, right) => compareCodeUnits(left.portId, right.portId)).map((port) => ({ portId: portId(nodeId, port.portId), nodeId, direction, label: port.label ?? null, representation: port.representation ?? null, semanticType: port.semanticType ?? null, evidenceIds: [evidence.for(`prompt:port:${nodeId}:${direction}:${port.portId}`)] })); }
 function nodeKind(node: PromptDeclaredNode): UniversalNodeKind { if (node.kind === "input") return "input"; if (node.kind === "output") return "output"; if (node.kind === "module") return "custom_module"; return node.operation && knownOperations.has(node.operation) ? "operator" : "custom_operator"; }
@@ -69,14 +73,39 @@ function assertBoundedPromptDeclaration(declaration: PromptGraphDeclaration): vo
 }
 function assertCompilerInput(input: { sourceId: string; prompt: string; revision?: number }): void { const value = asRecord(input, "compile prompt input"); assertExactKeys(value, ["sourceId", "prompt", "revision"], "compile prompt input"); assertSafeText(input.sourceId, "sourceId"); assertSafeText(input.prompt, "prompt"); if (input.revision !== undefined && (!Number.isInteger(input.revision) || input.revision <= 0)) throw new Error("revision must be a positive integer"); }
 function assertNode(node: PromptDeclaredNode, index: number): void {
-  const value = asRecord(node, `nodes[${index}]`); assertExactKeys(value, ["nodeId", "kind", "label", "operation", "semanticHints", "attributes", "inputPorts", "outputPorts"], `nodes[${index}]`); assertSafeText(node.nodeId, `nodes[${index}].nodeId`); assertSafeText(node.label, `nodes[${index}].label`);
+  const value = asRecord(node, `nodes[${index}]`); assertExactKeys(value, ["nodeId", "kind", "label", "operation", "semanticHints", "attributes", "tensorFacts", "inputPorts", "outputPorts"], `nodes[${index}]`); assertSafeText(node.nodeId, `nodes[${index}].nodeId`); assertSafeText(node.label, `nodes[${index}].label`);
   if (!( ["input", "output", "operator", "module"] as const).includes(node.kind)) throw new Error(`nodes[${index}].kind is not permitted`); if (node.operation !== undefined) assertSafeText(node.operation, `nodes[${index}].operation`); if (!Array.isArray(node.inputPorts) || !Array.isArray(node.outputPorts)) throw new Error(`nodes[${index}] ports must be arrays`);
   if (node.semanticHints !== undefined) { if (!Array.isArray(node.semanticHints)) throw new Error(`nodes[${index}].semanticHints must be an array`); for (const [hintIndex, hint] of node.semanticHints.entries()) assertSafeText(hint, `nodes[${index}].semanticHints[${hintIndex}]`); }
-  if (node.attributes !== undefined) assertAttributes(node.attributes, `nodes[${index}].attributes`); for (const [portIndex, port] of node.inputPorts.entries()) assertPort(port, `nodes[${index}].inputPorts[${portIndex}]`); for (const [portIndex, port] of node.outputPorts.entries()) assertPort(port, `nodes[${index}].outputPorts[${portIndex}]`); assertUnique([...node.inputPorts, ...node.outputPorts].map((port) => port.portId), `port ID on ${node.nodeId}`);
+  if (node.attributes !== undefined) assertAttributes(node.attributes, `nodes[${index}].attributes`); assertTensorFacts(node.tensorFacts, `nodes[${index}].tensorFacts`); for (const [portIndex, port] of node.inputPorts.entries()) assertPort(port, `nodes[${index}].inputPorts[${portIndex}]`); for (const [portIndex, port] of node.outputPorts.entries()) assertPort(port, `nodes[${index}].outputPorts[${portIndex}]`); assertUnique([...node.inputPorts, ...node.outputPorts].map((port) => port.portId), `port ID on ${node.nodeId}`);
 }
 function assertPort(port: PromptDeclaredPort, location: string): void { const value = asRecord(port, location); assertExactKeys(value, ["portId", "label", "representation", "semanticType"], location); assertSafeText(port.portId, `${location}.portId`); for (const [field, text] of Object.entries({ label: port.label, representation: port.representation, semanticType: port.semanticType })) if (text !== undefined && text !== null) assertSafeText(text, `${location}.${field}`); }
 function assertEdge(edge: PromptDeclaredEdge, index: number): void { const value = asRecord(edge, `edges[${index}]`); assertExactKeys(value, ["edgeId", "sourcePortId", "targetPortId", "relation"], `edges[${index}]`); assertSafeText(edge.edgeId, `edges[${index}].edgeId`); assertSafeText(edge.sourcePortId, `edges[${index}].sourcePortId`); assertSafeText(edge.targetPortId, `edges[${index}].targetPortId`); if (edge.relation !== undefined && !( ["data", "skip", "merge", "condition", "feedback"] as const).includes(edge.relation)) throw new Error(`edges[${index}].relation is not permitted`); }
 function assertAttributes(attributes: Record<string, string | number | boolean | null>, location: string): void { const value = asRecord(attributes, location); for (const [key, item] of Object.entries(value)) { assertSafeText(key, `${location}.${key}`); if (item !== null && (!attributeValueTypes.has(typeof item) || (typeof item === "number" && !Number.isFinite(item)))) throw new Error(`${location}.${key} has an invalid value`); if (typeof item === "string") assertSafeText(item, `${location}.${key}`); } }
+function assertTensorFacts(tensorFacts: PromptDeclaredTensorFacts | null | undefined, location: string): void {
+  if (tensorFacts === undefined || tensorFacts === null) return;
+  const value = asRecord(tensorFacts, location); assertExactKeys(value, ["axes", "dimensions"], location);
+  if (!Array.isArray(tensorFacts.axes) || tensorFacts.axes.length === 0) throw new Error(`${location}.axes must be a non-empty array`);
+  assertUnique(tensorFacts.axes, `${location} axis`);
+  for (const [index, axis] of tensorFacts.axes.entries()) {
+    if (!(UNIVERSAL_TENSOR_AXIS_ORDER as readonly string[]).includes(axis)) throw new Error(`${location}.axes[${index}] is not permitted`);
+    if (index > 0 && tensorAxisRank(axis) <= tensorAxisRank(tensorFacts.axes[index - 1]!)) throw new Error(`${location}.axes must use canonical axis order`);
+  }
+  const dimensions = asRecord(tensorFacts.dimensions, `${location}.dimensions`);
+  for (const [axis, dimension] of Object.entries(dimensions)) {
+    if (!(UNIVERSAL_TENSOR_AXIS_ORDER as readonly string[]).includes(axis)) throw new Error(`${location}.dimensions.${axis} is not permitted`);
+    if (!tensorFacts.axes.includes(axis as UniversalTensorAxis)) throw new Error(`${location}.dimensions.${axis} is outside a declared axis`);
+    if (typeof dimension === "number") {
+      if (!Number.isFinite(dimension) || dimension <= 0) throw new Error(`${location}.dimensions.${axis} must be a finite positive number`);
+    } else if (dimension !== "symbolic" && dimension !== "unknown") throw new Error(`${location}.dimensions.${axis} must be numeric, symbolic, or unknown`);
+  }
+}
+function projectTensorFacts(node: PromptDeclaredNode, evidence: EvidenceFactory) {
+  if (!node.tensorFacts) return null;
+  const axes = [...node.tensorFacts.axes];
+  const dimensions = Object.fromEntries(axes.filter((axis) => Object.hasOwn(node.tensorFacts!.dimensions, axis)).map((axis) => [axis, node.tensorFacts!.dimensions[axis]!])) as Partial<Record<UniversalTensorAxis, UniversalTensorDimension>>;
+  return { axes, dimensions, evidenceIds: [evidence.for(`prompt:node:${node.nodeId}:tensor-facts`)] };
+}
+function tensorAxisRank(axis: UniversalTensorAxis): number { return UNIVERSAL_TENSOR_AXIS_ORDER.indexOf(axis); }
 function assertExactKeys(value: Record<string, unknown>, allowed: string[], location: string): void { for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`Prompt declaration contains forbidden control field ${location}.${key}`); }
 function assertSafeText(value: unknown, location: string): asserts value is string { if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${location} must be non-empty text`); if (forbiddenControlText.test(value)) throw new Error(`Prompt declaration contains forbidden control text at ${location}`); }
 function asRecord(value: unknown, location: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${location} must be an object`); return value as Record<string, unknown>; }

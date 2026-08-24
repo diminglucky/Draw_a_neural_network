@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { analyzeStaticPyTorchSource } from "../src/static-pytorch-source-analyzer.js";
 import { compileStaticPyTorchSourceToUniversalGraphSpec } from "../src/static-pytorch-universal-graph-spec.js";
+import type { ArchitectureIRv3 } from "../src/network-ir-v3.js";
+import { projectArchitectureIrV3ToUniversalGraphSpec } from "../src/universal-graph-spec-adapter.js";
 import { getUniversalGraphEligibility } from "../src/universal-graph-spec.js";
 
 function sha256(value: string): string {
@@ -37,6 +39,65 @@ describe("compileStaticPyTorchSourceToUniversalGraphSpec", () => {
       ["conv:out", "terminal:output:in"],
     ]);
     expect(ugs.evidence.every((item) => item.sourceHash === sourceSha256)).toBe(true);
+    expect(ugs.nodes.every((node) => node.tensorFacts === null)).toBe(true);
+  });
+
+  it("projects one source-backed ArchitectureIR port shape without inferring from labels", () => {
+    const ugs = projectArchitectureIrV3ToUniversalGraphSpec({
+      version: 3,
+      graphId: "proved-spatial-facts",
+      inputs: [{ nodeId: "input", portId: "out" }],
+      outputs: [{ nodeId: "output", portId: "in" }],
+      modules: [],
+      nodes: [
+        { id: "input", kind: "input", semanticRole: "image input", inputPorts: [], outputPorts: [{ id: "out", representation: "spatial_feature_map", semanticType: "data" }], evidenceIds: ["e-input"] },
+        {
+          id: "stage",
+          kind: "operator",
+          semanticRole: "pool up down decoder",
+          inputPorts: [{ id: "in", representation: "spatial_feature_map", semanticType: "data" }],
+          outputPorts: [{
+            id: "out",
+            representation: "spatial_feature_map",
+            semanticType: "data",
+            shape: {
+              axes: ["B", "C", "H", "W"],
+              dimensions: [{ kind: "known", value: 1 }, { kind: "known", value: 48 }, { kind: "known", value: 32 }, { kind: "known", value: 32 }],
+              batchSemantics: "independent",
+            },
+          }],
+          evidenceIds: ["e-stage-shape"],
+        },
+        { id: "output", kind: "output", semanticRole: "result", inputPorts: [{ id: "in", representation: "spatial_feature_map", semanticType: "prediction" }], outputPorts: [], evidenceIds: ["e-output"] },
+      ],
+      edges: [
+        { id: "input-stage", source: { nodeId: "input", portId: "out" }, target: { nodeId: "stage", portId: "in" }, transport: "data", evidenceIds: ["e-stage-shape"] },
+        { id: "stage-output", source: { nodeId: "stage", portId: "out" }, target: { nodeId: "output", portId: "in" }, transport: "data", evidenceIds: ["e-stage-shape"] },
+      ],
+      processes: [],
+      evidenceIndex: {
+        "e-input": [evidence("input")],
+        "e-stage-shape": [evidence("stage-shape")],
+        "e-output": [evidence("output")],
+      },
+      unresolved: [],
+    });
+
+    const stage = ugs.nodes.find((node) => node.nodeId === "stage");
+
+    expect(stage?.tensorFacts).toEqual({
+      axes: ["batch", "channels", "height", "width"],
+      dimensions: { batch: 1, channels: 48, height: 32, width: 32 },
+      evidenceIds: expect.arrayContaining([expect.any(String)]),
+    });
+    expect(stage?.tensorFacts?.evidenceIds.every((id) => ugs.evidence.some((item) => item.evidenceId === id))).toBe(true);
+    expect(ugs.nodes.find((node) => node.nodeId === "input")?.tensorFacts).toBeNull();
+  });
+
+  it("fails closed when ArchitectureIR ports expose competing shapes", () => {
+    const ir = architectureIrWithCompetingShapes();
+
+    expect(projectArchitectureIrV3ToUniversalGraphSpec(ir).nodes.find((node) => node.nodeId === "stage")?.tensorFacts).toBeNull();
   });
 
   it("preserves a provable unknown static module as a custom operator", () => {
@@ -217,3 +278,34 @@ describe("compileStaticPyTorchSourceToUniversalGraphSpec", () => {
     }
   });
 });
+
+function evidence(locator: string) {
+  return {
+    sourceId: "static-shape-source",
+    sourceSha256: "a".repeat(64),
+    locator: { kind: "code" as const, startLine: 1, startColumn: 1, endLine: 1, endColumn: locator.length + 1 },
+    excerptDigest: "b".repeat(64),
+  };
+}
+
+function architectureIrWithCompetingShapes(): ArchitectureIRv3 {
+  return {
+    version: 3,
+    graphId: "competing-spatial-facts",
+    inputs: [{ nodeId: "stage", portId: "in" }],
+    outputs: [{ nodeId: "stage", portId: "out" }],
+    modules: [],
+    nodes: [{
+      id: "stage",
+      kind: "operator",
+      semanticRole: "pool up down",
+      inputPorts: [{ id: "in", representation: "spatial_feature_map", semanticType: "data", shape: { axes: ["C", "H", "W"], dimensions: [{ kind: "known", value: 16 }, { kind: "known", value: 64 }, { kind: "known", value: 64 }], batchSemantics: "independent" } }],
+      outputPorts: [{ id: "out", representation: "spatial_feature_map", semanticType: "data", shape: { axes: ["C", "H", "W"], dimensions: [{ kind: "known", value: 32 }, { kind: "known", value: 32 }, { kind: "known", value: 32 }], batchSemantics: "independent" } }],
+      evidenceIds: ["e-stage-shape"],
+    }],
+    edges: [],
+    processes: [],
+    evidenceIndex: { "e-stage-shape": [evidence("stage-shape")] },
+    unresolved: [],
+  };
+}

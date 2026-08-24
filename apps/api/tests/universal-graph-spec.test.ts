@@ -8,7 +8,54 @@ describe("UniversalGraphSpec", () => {
 
     expect(ugs.nodes.map((node) => node.kind)).toEqual(expect.arrayContaining(["custom_operator", "custom_module"]));
     expect(ugs.nodes.find((node) => node.nodeId === "spectral_fusion")?.inputPortIds).toEqual(["spectral_fusion:left", "spectral_fusion:right"]);
+    expect(ugs.nodes.every((node) => node.tensorFacts === null)).toBe(true);
     expect(getUniversalGraphEligibility(ugs)).toEqual({ preview: "renderable", export: "eligible" });
+  });
+
+  it("accepts source-backed tensor facts in canonical axis order", () => {
+    const input = unknownDualStreamFusionUgs();
+    input.nodes[1].tensorFacts = {
+      axes: ["channels", "height", "width"],
+      dimensions: { channels: 48, height: 32, width: 32 },
+      evidenceIds: ["e-texture"],
+    };
+
+    const ugs = parseUniversalGraphSpec(input);
+
+    expect(ugs.nodes[1].tensorFacts).toEqual(input.nodes[1].tensorFacts);
+  });
+
+  it.each([
+    [{ axes: ["height", "channels"], dimensions: { channels: 48, height: 32 }, evidenceIds: ["e-texture"] }, /canonical.*order|order.*canonical/i],
+    [{ axes: ["channels", "channels"], dimensions: { channels: 48 }, evidenceIds: ["e-texture"] }, /axis.*unique|duplicate.*axis/i],
+    [{ axes: ["channels"], dimensions: { channels: 48, width: 32 }, evidenceIds: ["e-texture"] }, /declared.*axis|axis.*declared/i],
+    [{ axes: ["channels"], dimensions: { channels: 48 }, evidenceIds: [] }, /numeric.*evidence|evidence.*numeric/i],
+    [{ axes: ["channels"], dimensions: { channels: 48 }, evidenceIds: ["missing-evidence"] }, /unknown evidence/i],
+    [{ axes: ["channels"], dimensions: { channels: 48 }, evidenceIds: ["e-texture", "e-texture"] }, /duplicate.*evidence/i],
+    [{ axes: ["channels"], dimensions: { channels: Infinity }, evidenceIds: ["e-texture"] }, /finite|number/i],
+  ])("rejects malformed or unsupported tensor facts %#", (tensorFacts, message) => {
+    const input = unknownDualStreamFusionUgs();
+    input.nodes[1].tensorFacts = tensorFacts;
+
+    expect(() => parseUniversalGraphSpec(input)).toThrow(message);
+  });
+
+  it("preserves symbolic and unknown tensor dimensions without inventing numeric dimensions", () => {
+    const input = unknownDualStreamFusionUgs();
+    input.nodes[1].tensorFacts = {
+      axes: ["tokens", "embedding"],
+      dimensions: { tokens: "symbolic", embedding: "unknown" },
+      evidenceIds: ["e-texture"],
+    };
+
+    expect(parseUniversalGraphSpec(input).nodes[1].tensorFacts).toEqual(input.nodes[1].tensorFacts);
+  });
+
+  it("does not infer tensor facts from scale-like labels", () => {
+    const input = unknownDualStreamFusionUgs();
+    input.nodes[1].label = "Pool up down image decoder";
+
+    expect(parseUniversalGraphSpec(input).nodes[1].tensorFacts).toBeNull();
   });
 
   it("keeps ambiguous topology as a candidate and denies export eligibility", () => {

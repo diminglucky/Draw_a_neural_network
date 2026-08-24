@@ -1,5 +1,5 @@
 import type { ArchitectureEdge, ArchitectureIRNode, ArchitectureIRv3, TypedPort, UnresolvedQuestion } from "./network-ir-v3.js";
-import { parseUniversalGraphSpec, type UniversalEdgeRelation, type UniversalEvidence, type UniversalGraphSpec, type UniversalNode, type UniversalNodeKind } from "./universal-graph-spec.js";
+import { parseUniversalGraphSpec, UNIVERSAL_TENSOR_AXIS_ORDER, type UniversalEdgeRelation, type UniversalEvidence, type UniversalGraphSpec, type UniversalNode, type UniversalNodeKind, type UniversalTensorAxis, type UniversalTensorDimension, type UniversalTensorFacts } from "./universal-graph-spec.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
 const knownOperatorRoles = new Set([
@@ -20,7 +20,7 @@ export function projectArchitectureIrV3ToUniversalGraphSpec(ir: ArchitectureIRv3
     revision: 1,
     sourceIds: sourceIds.length > 0 ? sourceIds : ["architecture-v3"],
     sourceHashes: sourceHashes.length > 0 ? sourceHashes : ["0".repeat(64)],
-    nodes: ir.nodes.map((node) => projectNode(node, repeatGroupIds, projectedEvidence.idsBySourceEvidenceId)),
+    nodes: ir.nodes.map((node) => projectNode(node, repeatGroupIds, projectedEvidence.idsBySourceEvidenceId, projectedEvidence.sourceEvidenceIds)),
     ports: ir.nodes.flatMap((node) => [
       ...node.inputPorts.map((port) => projectPort(node.id, port, "input")),
       ...node.outputPorts.map((port) => projectPort(node.id, port, "output")),
@@ -46,7 +46,12 @@ export function projectArchitectureIrV3ToUniversalGraphSpec(ir: ArchitectureIRv3
   });
 }
 
-function projectNode(node: ArchitectureIRNode, repeatGroupIds: Map<string, string>, evidenceIdsBySourceEvidenceId: Map<string, string[]>): UniversalNode {
+function projectNode(
+  node: ArchitectureIRNode,
+  repeatGroupIds: Map<string, string>,
+  evidenceIdsBySourceEvidenceId: Map<string, string[]>,
+  sourceEvidenceIds: Set<string>,
+): UniversalNode {
   const kind = projectNodeKind(node);
   return {
     nodeId: node.id,
@@ -59,6 +64,7 @@ function projectNode(node: ArchitectureIRNode, repeatGroupIds: Map<string, strin
     shapeClaim: nodeHasKnownShape(node) ? "proven" : "unknown",
     operationKnowledge: kind === "custom_operator" || kind === "custom_module" ? "custom" : "known",
     evidenceIds: projectStructuralEvidenceIds(node.evidenceIds, "node", node.id, evidenceIdsBySourceEvidenceId),
+    tensorFacts: projectTensorFacts(node, evidenceIdsBySourceEvidenceId, sourceEvidenceIds),
   };
 }
 
@@ -130,13 +136,17 @@ function projectEdge(edge: ArchitectureEdge, evidenceIdsBySourceEvidenceId: Map<
   };
 }
 
-function projectEvidence(ir: ArchitectureIRv3): { items: UniversalEvidence[]; idsBySourceEvidenceId: Map<string, string[]> } {
+function projectEvidence(ir: ArchitectureIRv3): { items: UniversalEvidence[]; idsBySourceEvidenceId: Map<string, string[]>; sourceEvidenceIds: Set<string> } {
   const idsBySourceEvidenceId = new Map<string, string[]>();
+  const sourceEvidenceIds = new Set<string>();
   const referencedEvidenceIds = collectReferencedEvidenceIds(ir);
   const reservedEvidenceIds = new Set([...Object.keys(ir.evidenceIndex), ...referencedEvidenceIds]);
   const items = Object.entries(ir.evidenceIndex).sort(([left], [right]) => compareCodeUnits(left, right)).flatMap(([evidenceId, refs]) => {
     const projectedIds = refs.map((_, index) => index === 0 ? evidenceId : allocateDerivedEvidenceId(evidenceId, index + 1, reservedEvidenceIds));
-    if (projectedIds.length > 0) idsBySourceEvidenceId.set(evidenceId, projectedIds);
+    if (projectedIds.length > 0) {
+      idsBySourceEvidenceId.set(evidenceId, projectedIds);
+      sourceEvidenceIds.add(evidenceId);
+    }
     return refs.map((ref, index) => ({
       evidenceId: projectedIds[index]!,
       sourceId: ref.sourceId,
@@ -152,7 +162,49 @@ function projectEvidence(ir: ArchitectureIRv3): { items: UniversalEvidence[]; id
     items.push(structuralFallbackEvidence(evidenceId));
   }
 
-  return { items: items.sort((left, right) => compareCodeUnits(left.evidenceId, right.evidenceId)), idsBySourceEvidenceId };
+  return { items: items.sort((left, right) => compareCodeUnits(left.evidenceId, right.evidenceId)), idsBySourceEvidenceId, sourceEvidenceIds };
+}
+
+function projectTensorFacts(
+  node: ArchitectureIRNode,
+  evidenceIdsBySourceEvidenceId: Map<string, string[]>,
+  sourceEvidenceIds: Set<string>,
+): UniversalTensorFacts | null {
+  const evidenceIds = projectEvidenceIds(node.evidenceIds.filter((id) => sourceEvidenceIds.has(id)), evidenceIdsBySourceEvidenceId);
+  if (evidenceIds.length === 0) return null;
+
+  const projectedShapes = [...node.inputPorts, ...node.outputPorts]
+    .flatMap((port) => port.shape ? [projectTensorShape(port.shape)] : [])
+    .filter((facts): facts is Omit<UniversalTensorFacts, "evidenceIds"> => facts !== null);
+  const distinctShapes = new Map(projectedShapes.map((facts) => [JSON.stringify(facts), facts]));
+  if (distinctShapes.size !== 1) return null;
+
+  return { ...distinctShapes.values().next().value!, evidenceIds };
+}
+
+function projectTensorShape(shape: NonNullable<TypedPort["shape"]>): Omit<UniversalTensorFacts, "evidenceIds"> | null {
+  const facts = new Map<UniversalTensorAxis, UniversalTensorDimension>();
+  for (const [index, sourceAxis] of shape.axes.entries()) {
+    const axis = projectTensorAxis(sourceAxis);
+    if (!axis) continue;
+    const dimension = shape.dimensions[index]!;
+    facts.set(axis, dimension.kind === "known" ? dimension.value : dimension.kind === "symbol" ? "symbolic" : "unknown");
+  }
+  const axes = UNIVERSAL_TENSOR_AXIS_ORDER.filter((axis) => facts.has(axis));
+  if (axes.length === 0) return null;
+  return { axes, dimensions: Object.fromEntries(axes.map((axis) => [axis, facts.get(axis)!])) };
+}
+
+function projectTensorAxis(axis: string): UniversalTensorAxis | null {
+  switch (axis) {
+    case "B": return "batch";
+    case "C": return "channels";
+    case "H": return "height";
+    case "W": return "width";
+    case "T": return "tokens";
+    case "F": return "features";
+    default: return null;
+  }
 }
 
 function collectReferencedEvidenceIds(ir: ArchitectureIRv3): string[] {
