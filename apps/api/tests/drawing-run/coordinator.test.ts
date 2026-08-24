@@ -22,6 +22,7 @@ const intent = {
 class JsonTamperingDrawingRunStore extends InMemoryDrawingRunStore {
   tamperOwner = false;
   tamperDevice = false;
+  tamperRunId = false;
   captureCommits = false;
   capturedCommitCount = 0;
 
@@ -54,6 +55,7 @@ class JsonTamperingDrawingRunStore extends InMemoryDrawingRunStore {
     const restored = JSON.parse(JSON.stringify(run)) as typeof run;
     if (this.tamperOwner) restored.ownerId = "owner-tampered";
     if (this.tamperDevice) restored.deviceId = "device-tampered";
+    if (this.tamperRunId) restored.runId = "run-tampered";
     return restored;
   }
 }
@@ -70,34 +72,44 @@ describe("Drawing Run coordinator", () => {
     await expect(coordinator.start(input)).rejects.toBeInstanceOf(DrawingRunError);
   });
 
-  it("rejects device-only JSON-restored tampering on get", async () => {
+  it("returns controlled absence for a different device on get", async () => {
     const store = new JsonTamperingDrawingRunStore();
     const coordinator = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-trusted-get" });
     await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-trusted-get", intent });
 
     store.tamperDevice = true;
 
-    await expect(coordinator.get("owner-1", "run-trusted-get", "device-1")).rejects.toBeInstanceOf(DrawingRunError);
+    await expect(coordinator.get("owner-1", "run-trusted-get", "device-1")).resolves.toBeNull();
   });
 
-  it("rejects device-only JSON-restored tampering on list", async () => {
+  it("excludes a different device from list", async () => {
     const store = new JsonTamperingDrawingRunStore();
     const coordinator = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-trusted-list" });
     await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-trusted-list", intent });
 
     store.tamperDevice = true;
 
-    await expect(coordinator.list("owner-1", "device-1")).rejects.toBeInstanceOf(DrawingRunError);
+    await expect(coordinator.list("owner-1", "device-1")).resolves.toEqual([]);
   });
 
-  it("rejects device-only JSON-restored tampering on listEvents", async () => {
+  it("returns controlled absence for a different device on listEvents", async () => {
     const store = new JsonTamperingDrawingRunStore();
     const coordinator = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-trusted-events" });
     const started = await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-trusted-events", intent });
 
     store.tamperDevice = true;
 
-    await expect(coordinator.listEvents("owner-1", started.runId, "device-1")).rejects.toBeInstanceOf(DrawingRunError);
+    await expect(coordinator.listEvents("owner-1", started.runId, "device-1")).resolves.toBeNull();
+  });
+
+  it("rejects a malformed restored run that claims the current device", async () => {
+    const store = new JsonTamperingDrawingRunStore();
+    const coordinator = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-malformed-read" });
+    await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-malformed-read", intent });
+
+    store.tamperRunId = true;
+
+    await expect(coordinator.get("owner-1", "run-malformed-read", "device-1")).rejects.toBeInstanceOf(DrawingRunError);
   });
 
   it("rejects a tampered JSON-restored run on an idempotent replay projection", async () => {
@@ -263,6 +275,84 @@ describe("Drawing Run coordinator", () => {
     await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-1", intent });
     await expect(coordinator.get("owner-2", "run-1", "device-1")).resolves.toBeNull();
     await expect(coordinator.cancel({ ownerId: "owner-1", deviceId: "foreign", runId: "run-1", expectedRevision: 0, idempotencyKey: "cancel-1" })).rejects.toBeInstanceOf(DrawingRunError);
+  });
+
+  it("scopes same-owner reads to the authenticated device and does not schedule foreign or stale resumes", async () => {
+    const store = new InMemoryDrawingRunStore();
+    const first = new InMemoryDrawingRunCoordinator({ store, createRunId: (() => {
+      let sequence = 0;
+      return () => `run-device-${++sequence}`;
+    })() });
+    const deviceA = await first.start({ ownerId: "owner-1", deviceId: "device-a", idempotencyKey: "start-device-a", intent });
+    const deviceB = await first.start({ ownerId: "owner-1", deviceId: "device-b", idempotencyKey: "start-device-b", intent });
+    let calls = 0;
+    const coordinator = new InMemoryDrawingRunCoordinator({
+      store,
+      workflow: {
+        run: async (workflowInput) => {
+          calls += 1;
+          return {
+            runId: workflowInput.runId,
+            ownerId: workflowInput.ownerId,
+            deviceId: workflowInput.deviceId,
+            revision: workflowInput.revision,
+            phase: "awaiting_input",
+            artifactHashes: workflowInput.artifactHashes,
+            evidencePackHash: null,
+            needsInterpreter: false,
+            proposalHash: null,
+            assessment: null,
+            pvpHash: null,
+            qaHash: null,
+            pauseReason: "input_required",
+          };
+        },
+      },
+    });
+
+    await expect(coordinator.list("owner-1", "device-a")).resolves.toEqual([deviceA]);
+    await expect(coordinator.get("owner-1", deviceB.runId, "device-a")).resolves.toBeNull();
+    await expect(coordinator.listEvents("owner-1", deviceB.runId, "device-a")).resolves.toBeNull();
+    await expect(coordinator.resume({ ownerId: "owner-1", deviceId: "device-a", runId: deviceB.runId, expectedRevision: 0, idempotencyKey: "resume-device-mismatch" })).rejects.toBeInstanceOf(DrawingRunError);
+    await expect(coordinator.resume({ ownerId: "owner-1", deviceId: "device-a", runId: deviceA.runId, expectedRevision: 1, idempotencyKey: "resume-stale-revision" })).rejects.toBeInstanceOf(DrawingRunError);
+    expect(calls).toBe(0);
+  });
+
+  it("does not schedule or transition a device-tampered persisted run through authenticated resume", async () => {
+    const store = new JsonTamperingDrawingRunStore();
+    const first = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-tampered-resume" });
+    const started = await first.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-tampered-resume", intent });
+    let calls = 0;
+    const coordinator = new InMemoryDrawingRunCoordinator({
+      store,
+      workflow: {
+        run: async (workflowInput) => {
+          calls += 1;
+          return {
+            runId: workflowInput.runId,
+            ownerId: workflowInput.ownerId,
+            deviceId: workflowInput.deviceId,
+            revision: workflowInput.revision,
+            phase: "awaiting_input",
+            artifactHashes: workflowInput.artifactHashes,
+            evidencePackHash: null,
+            needsInterpreter: false,
+            proposalHash: null,
+            assessment: null,
+            pvpHash: null,
+            qaHash: null,
+            pauseReason: "input_required",
+          };
+        },
+      },
+    });
+    store.tamperDevice = true;
+    store.captureCommits = true;
+
+    await expect(coordinator.resume({ ownerId: "owner-1", deviceId: "device-1", runId: started.runId, expectedRevision: 0, idempotencyKey: "resume-tampered" })).rejects.toBeInstanceOf(DrawingRunError);
+
+    expect(calls).toBe(0);
+    expect(store.capturedCommitCount).toBe(0);
   });
 
   it("commits a concurrent command and its event exactly once", async () => {
@@ -509,7 +599,8 @@ describe("Drawing Run coordinator", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(calls).toBeGreaterThan(0);
     const callsAtPreview = calls;
-    await coordinator.resume({ ownerId: "owner-1", deviceId: "device-1", runId: started.runId, expectedRevision: 4, idempotencyKey: "resume-preview-fence" });
+    const current = await coordinator.get("owner-1", started.runId, "device-1");
+    await coordinator.resume({ ownerId: "owner-1", deviceId: "device-1", runId: started.runId, expectedRevision: current!.revision, idempotencyKey: "resume-preview-fence" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(calls).toBe(callsAtPreview);
   });

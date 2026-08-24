@@ -99,6 +99,9 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
   async resume(input: ResumeDrawingRunInput): Promise<DrawingRunSnapshot> {
     const trustedScope = drawingRunTrustedScope(input);
     const run = await this.requireRun(trustedScope);
+    if (run.revision !== input.expectedRevision) {
+      throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run revision is stale");
+    }
     if (this.workflow && isWorkflowResumable(run.status)) {
       void this.scheduleWorkflow(run, trustedScope);
     }
@@ -290,21 +293,22 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
   async get(ownerId: string, runId: string, deviceId: string): Promise<DrawingRunSnapshot | null> {
     const run = await this.store.get(ownerId, runId);
     if (!run) return null;
-    const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId, deviceId });
+    const trustedScope = readableDrawingRunScope(run, { ownerId, runId, deviceId });
+    if (!trustedScope) return null;
     return projectPublicDrawingRun(run, trustedScope);
   }
 
   async list(ownerId: string, deviceId: string): Promise<DrawingRunSnapshot[]> {
-    return (await this.store.list(ownerId)).map((run) => {
-      const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId: run.runId, deviceId });
-      return projectPublicDrawingRun(run, trustedScope);
+    return (await this.store.list(ownerId)).flatMap((run) => {
+      const trustedScope = readableDrawingRunScope(run, { ownerId, runId: run.runId, deviceId });
+      return trustedScope ? [projectPublicDrawingRun(run, trustedScope)] : [];
     });
   }
 
   async listEvents(ownerId: string, runId: string, deviceId: string): Promise<PublicDrawingRunEvent[] | null> {
     const run = await this.store.get(ownerId, runId);
     if (!run) return null;
-    verifiedDrawingRunScope(run, { ownerId, runId, deviceId });
+    if (!readableDrawingRunScope(run, { ownerId, runId, deviceId })) return null;
     return (await this.store.listEvents(ownerId, runId)).map(projectPublicDrawingRunEvent);
   }
 
@@ -372,6 +376,17 @@ function verifiedDrawingRunScope(
     throw new DrawingRunError("DRAWING_RUN_IDENTITY_MISMATCH", "Drawing Run identity does not match the trusted scope");
   }
   return trustedScope;
+}
+
+function readableDrawingRunScope(
+  run: DrawingRun,
+  input: Pick<DrawingRunTrustedScope, "runId" | "ownerId" | "deviceId">,
+): DrawingRunTrustedScope | null {
+  const trustedScope = drawingRunTrustedScope(input);
+  if (run.runId !== trustedScope.runId || run.ownerId !== trustedScope.ownerId) {
+    throw new DrawingRunError("DRAWING_RUN_IDENTITY_MISMATCH", "Drawing Run identity does not match the trusted scope");
+  }
+  return run.deviceId === trustedScope.deviceId ? trustedScope : null;
 }
 
 function isWorkflowResumable(status: DrawingRun["status"]): boolean {

@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { buildApp } from "../src/app.js";
 import { FoundationError } from "../src/domain.js";
 import { InMemoryFoundationStore } from "../src/store.js";
+import { InMemoryDrawingRunCoordinator } from "../src/drawing-run/coordinator.js";
+import { FoundationDrawingRunStoreAdapter } from "../src/drawing-run/store.js";
+import type { DrawingWorkflowRunner } from "../src/drawing-run/langgraph-workflow.js";
 import { vi } from "vitest";
 
 const TEST_SESSION_SECRET = "test-session-secret-test-session-secret";
@@ -162,14 +165,20 @@ function createAgentService(
 async function createAuthorizedApp(
   agentServiceOverride?: { chat(input: AgentChatCall): Promise<unknown> },
   figureDraftService?: unknown,
+  drawingWorkflow?: DrawingWorkflowRunner,
 ) {
   const agent = createAgentService();
   const store = new InMemoryFoundationStore();
+  const drawingRunCoordinator = new InMemoryDrawingRunCoordinator({
+    store: new FoundationDrawingRunStoreAdapter(store),
+    workflow: drawingWorkflow,
+  });
   const app = buildApp({
     sessionSecret: TEST_SESSION_SECRET,
     store,
     agentService: agentServiceOverride ?? agent.service,
     ...(figureDraftService ? { figureDraftService } : {}),
+    drawingRunCoordinator,
   } as any);
 
   const registered = await app.inject({
@@ -207,6 +216,9 @@ async function createAuthorizedApp(
     app,
     agent,
     store,
+    drawingRunCoordinator,
+    userId: registered.json().user.id as string,
+    deviceId,
     headers: { authorization: `Bearer ${login.json().accessToken as string}` },
   };
 }
@@ -939,6 +951,88 @@ describe("agent chat routes", () => {
 
     const missingEvents = await app.inject({ method: "GET", url: "/api/drawing-runs/unknown-run/events", headers });
     expect(missingEvents.statusCode).toBe(404);
+  });
+
+  it("filters same-owner foreign-device runs and returns controlled absence before command preflight", async () => {
+    const { app, headers, store, drawingRunCoordinator, userId, deviceId } = await createAuthorizedApp();
+    apps.add(app);
+    const currentDevice = await store.getDevice(deviceId);
+    await store.createDevice({ ...currentDevice!, id: "device-b", name: "Second Research PC", lastSeenAt: null });
+    const current = await drawingRunCoordinator.start({
+      ownerId: userId,
+      deviceId,
+      idempotencyKey: "drawing-device-a",
+      intent: { action: "create_figure", requestedDetail: "overview", target: "browser_preview", sourceKinds: ["typed_text"] },
+    });
+    const foreign = await drawingRunCoordinator.start({
+      ownerId: userId,
+      deviceId: "device-b",
+      idempotencyKey: "drawing-device-b",
+      intent: { action: "create_figure", requestedDetail: "overview", target: "browser_preview", sourceKinds: ["typed_text"] },
+    });
+
+    const list = await app.inject({ method: "GET", url: "/api/drawing-runs", headers });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().runs).toEqual([current]);
+    const getForeign = await app.inject({ method: "GET", url: `/api/drawing-runs/${foreign.runId}`, headers });
+    expect(getForeign.statusCode).toBe(404);
+    const eventsForeign = await app.inject({ method: "GET", url: `/api/drawing-runs/${foreign.runId}/events`, headers });
+    expect(eventsForeign.statusCode).toBe(404);
+    const inputForeign = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${foreign.runId}/input`,
+      headers: { ...headers, "idempotency-key": "drawing-foreign-input" },
+      payload: { expectedRevision: 0, receipts: [] },
+    });
+    expect(inputForeign.statusCode).toBe(404);
+    expect(JSON.stringify([getForeign.json(), eventsForeign.json(), inputForeign.json()])).not.toContain(foreign.runId);
+  });
+
+  it("resumes a valid persisted run only through the authenticated route after no-op recovery", async () => {
+    let calls = 0;
+    const workflow: DrawingWorkflowRunner = {
+      run: async (workflowInput) => {
+        calls += 1;
+        return {
+          runId: workflowInput.runId,
+          ownerId: workflowInput.ownerId,
+          deviceId: workflowInput.deviceId,
+          revision: workflowInput.revision,
+          phase: "awaiting_input",
+          artifactHashes: workflowInput.artifactHashes,
+          evidencePackHash: null,
+          needsInterpreter: false,
+          proposalHash: null,
+          assessment: null,
+          pvpHash: null,
+          qaHash: null,
+          pauseReason: "input_required",
+        };
+      },
+    };
+    const { app, headers, store, userId, deviceId } = await createAuthorizedApp(undefined, undefined, workflow);
+    apps.add(app);
+    const seed = new InMemoryDrawingRunCoordinator({ store: new FoundationDrawingRunStoreAdapter(store), createRunId: () => "persisted-route-resume" });
+    const persisted = await seed.start({
+      ownerId: userId,
+      deviceId,
+      idempotencyKey: "drawing-resume-persisted",
+      intent: { action: "create_figure", requestedDetail: "overview", target: "browser_preview", sourceKinds: ["typed_text"] },
+    });
+    expect(calls).toBe(0);
+
+    const resume = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${persisted.runId}/resume`,
+      headers: { ...headers, "idempotency-key": "drawing-resume-route" },
+      payload: { expectedRevision: 0 },
+    });
+
+    expect(resume.statusCode).toBe(200);
+    for (let attempt = 0; attempt < 20 && calls === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(calls).toBe(1);
   });
 
   it("accepts validated private receipts and rejects the legacy client-supplied artifact hash", async () => {
