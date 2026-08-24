@@ -7,6 +7,7 @@
     "api:test": "vitest run",
     "api:check": "tsx scripts/check-foundation.mjs",
     "api:smoke:postgres": "node scripts/postgres-smoke.mjs",
+    "api:smoke:postgres:drawing-run-migration-safety": "node scripts/postgres-drawing-run-migration-safety-smoke.mjs",
     "api:smoke:postgres:checkpoint": "tsx scripts/postgres-checkpoint-smoke.ts",
     "api:smoke:postgres:restart": "tsx scripts/postgres-restart-smoke.ts",
     "api:smoke:redis": "tsx scripts/redis-smoke.mjs",

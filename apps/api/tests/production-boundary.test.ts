@@ -92,6 +92,29 @@ describe("production persistence boundary", () => {
     expect(migration).toContain("'page_bound', 'applying'");
   });
 
+  it("normalizes an existing formal UGS hash column and provides an executable disposable-PostgreSQL safety smoke", () => {
+    const migration = readFileSync(resolve(process.cwd(), "apps/api/sql/015_drawing_run_formal_ugs_state.sql"), "utf8");
+    const smokePath = resolve(process.cwd(), "scripts/postgres-drawing-run-migration-safety-smoke.mjs");
+
+    expect(migration).toContain("Migration 015 blocked: formal_ugs_hash has incompatible type");
+    expect(migration).toContain("atttypid IN ('pg_catalog.text'::regtype, 'pg_catalog.varchar'::regtype, 'pg_catalog.bpchar'::regtype)");
+    expect(migration).toContain("ALTER COLUMN formal_ugs_hash TYPE TEXT USING formal_ugs_hash::TEXT");
+    expect(migration).toContain("ALTER COLUMN formal_ugs_hash DROP NOT NULL");
+    expect(migration.indexOf("invalid_hash_count")).toBeLessThan(migration.indexOf("DROP NOT NULL"));
+
+    expect(existsSync(smokePath)).toBe(true);
+    if (!existsSync(smokePath)) return;
+
+    const smoke = readFileSync(smokePath, "utf8");
+    expect(smoke).toContain("DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL");
+    expect(smoke).not.toContain("process.env.DATABASE_URL");
+    expect(smoke).toContain("DROP SCHEMA public CASCADE");
+    expect(smoke).toContain("legacy await state aborts and rolls back");
+    expect(smoke).toContain("invalid existing hash aborts and rolls back");
+    expect(smoke).toContain("NOT NULL formal hash becomes nullable and accepts null");
+    expect(smoke).toContain("fresh 010 plus 015 reruns safely");
+  });
+
   it("contains owner/device/revision-scoped LangGraph checkpoint storage", () => {
     const sql = readFileSync(resolve(process.cwd(), "apps/api/sql/011_drawing_workflow_checkpoints.sql"), "utf8");
     expect(sql).toContain("CREATE TABLE IF NOT EXISTS drawing_workflow_checkpoints");
