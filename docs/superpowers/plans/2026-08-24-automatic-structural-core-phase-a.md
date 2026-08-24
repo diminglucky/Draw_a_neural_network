@@ -147,13 +147,13 @@
 
 **Produces:** an anonymous topology test corpus with no named-model fixture or executable script.
 
-- [ ] **Step 1: Change named-model-dependent tests to anonymous structural fixtures or delete tests that only validate the retired bridge.**
+- [x] **Step 1: Change named-model-dependent tests to anonymous structural fixtures or delete tests that only validate the retired bridge.**
 
   Preserve generic preview ownership, clarification, QA, and structural grammar assertions. Do not introduce a replacement named-model fixture. Replace the named spatial, residual-merge, encoder-decoder, and token-attention fixtures with anonymous source-backed topology cases. Test descriptions, figure metadata, fixture filenames, and exported helper names must describe only structural semantics. Where a legacy test requires canonical NetworkIR v2, build the smallest anonymous topology locally in that test using `parseCanonicalNetworkIR` and source-backed evidence IDs.
 
   When the deterministic local provider sees an unproved merge word such as `concat` or `residual`, it must not encode that word as a linear-node topology. It must keep only independently drawable source facts and return one blocking clarification with the message evidence ID. Cover this through the real runtime: the result has `figureAnalysis.status === "needs_confirmation"`, contains no forged merge node, and retains the neutral source-derived figure title.
 
-- [ ] **Step 2: Delete all named scripts and fixture files after their anonymous consumers exist.**
+- [x] **Step 2: Delete all named scripts and fixture files after their anonymous consumers exist.**
 
   Delete exactly the files listed above; retain historical evidence and design logs. The final executable-tree scan must include every `apps/api/tests` grammar and fixture path, not just the files originally changed for the spatial topology.
 
@@ -169,6 +169,16 @@
   ```
 
   Expected: verification commands pass; the final search has no output in executable source/test/script trees.
+
+#### Task 3 verification ledger — 2026-08-24
+
+- **Committed implementation evidence:** `4892f74` removed runtime presets; `57caa33` retired the template Visio export path; `916032d` removed named fixtures and scripts. The checked Task 3 source/fixture changes are present at the `agent` branch head.
+- **Focused retirement regression:** PASS — 8 files / 57 tests: `agent-runtime`, `agent-service`, draft preview service/routes, and anonymous structural grammar suites.
+- **Executable named-model scan:** PASS — `rg -n -i 'vgg(?:[-_ ]?16)?|resnet|u[-_ ]?net|vision transformer|\bvit\b' apps/api/src apps/api/tests apps/client scripts package.json --glob '!apps/api/tests/publication-visual-plan-zero-template.test.ts'` found no executable-tree matches (exit 1 means no match).
+- **TypeScript:** PASS — `npx tsc --noEmit`.
+- **Working-tree diff check:** PASS — `git diff --check`; it emitted only the existing CRLF warning for protected `apps/api/tests/agent-roadmap-cli.test.ts` and no whitespace error.
+- **Full API regression:** NOT GREEN, but no drawing-core regression was observed — `npm run api:test` produced 1,038 passed / 1,040 total, with exactly two failures in protected user-owned roadmap assertions: `apps/api/tests/agent-roadmap.test.ts` expects `Phase 0.*Phase 2`, and `apps/api/tests/agent-roadmap-cli.test.ts` expects `free-text compatibility prototype.*Harness rekeying`. The current roadmap `nextAction` text differs. These files were not edited, staged, or used as a reason to alter the drawing-core implementation.
+- **Task 3 status:** source/fixture removal is verified; the complete-matrix checkbox remains open until the unrelated roadmap owner resolves or explicitly waives the two baseline assertion mismatches. This does not authorize changes to those protected files.
 
 ### Task 4: Implement composable semantic-region derivation as the next drawing-core slice
 
