@@ -14,6 +14,11 @@ import {
 import {
   parseVisioSessionCommand,
   parseVisioSessionResponse,
+  parseSelectedPageVisioSessionCommand,
+  SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+  type SealedSelectedPageNativeIntent,
+  type SelectedPageVisioSessionCommand,
+  type TrustedSelectedPageBinding,
   type TrustedVisioSessionIdentity,
   type VisioSessionCommand,
   type VisioSessionResponse,
@@ -63,6 +68,12 @@ interface PersistentSession {
   stderr: string;
   closed: Promise<void>;
   resolveClosed(): void;
+}
+
+export interface BuildSelectedPageVisioSessionCommandsInput {
+  requestIdFactory: (suffix: "attach" | "apply" | "save" | "read" | "close") => string;
+  binding: TrustedSelectedPageBinding;
+  sealedNativeIntent: SealedSelectedPageNativeIntent;
 }
 
 export class VisioWorkerClient implements VisioExecutor {
@@ -419,6 +430,42 @@ export class VisioWorkerClient implements VisioExecutor {
       child.stdin.end(`${JSON.stringify(request)}\n`);
     });
   }
+}
+
+export function buildSelectedPageVisioSessionCommands(input: BuildSelectedPageVisioSessionCommandsInput): SelectedPageVisioSessionCommand[] {
+  const attach = parseSelectedPageVisioSessionCommand({
+    protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+    requestId: input.requestIdFactory("attach"),
+    command: "attachSelectedPage",
+    binding: input.binding,
+  });
+  const apply = parseSelectedPageVisioSessionCommand({
+    protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+    requestId: input.requestIdFactory("apply"),
+    command: "applyOwnedRegion",
+    binding: input.binding,
+    ownershipNamespace: input.binding.ownershipNamespace,
+    sealedNativeIntent: input.sealedNativeIntent,
+  });
+  const save = parseSelectedPageVisioSessionCommand({
+    protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+    requestId: input.requestIdFactory("save"),
+    command: "saveSelectedDocument",
+    binding: input.binding,
+  });
+  const read = parseSelectedPageVisioSessionCommand({
+    protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+    requestId: input.requestIdFactory("read"),
+    command: "readSelectedPage",
+    binding: input.binding,
+  });
+  const close = parseSelectedPageVisioSessionCommand({
+    protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+    requestId: input.requestIdFactory("close"),
+    command: "closeSession",
+    binding: input.binding,
+  });
+  return [attach, apply, save, read, close];
 }
 
 export function buildVisioWorkerArguments(options: {

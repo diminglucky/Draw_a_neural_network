@@ -3,7 +3,13 @@ import { spawn } from "node:child_process";
 import { ApiErrorCode, FoundationError } from "./domain.js";
 import {
   UNIVERSAL_VISIO_PROTOCOL_VERSION,
+  SELECTED_PAGE_UNIVERSAL_VISIO_PROTOCOL_VERSION,
+  parseSelectedPageUniversalVisioWorkerRequest,
   parseUniversalVisioWorkerRequest,
+  verifySelectedPageSealedPlan,
+  type SelectedPageSealedPlanBinding,
+  type SelectedPageSealedPlanEnvelope,
+  type SelectedPageUniversalVisioWorkerRequest,
   parseUniversalVisioWorkerResponse,
   verifySealedPlan,
   type SealedPlanBinding,
@@ -23,6 +29,10 @@ export interface UniversalVisioWorkerClientOptions {
 export interface ExecuteSealedPlanInput {
   sealedPlan: SealedPlanEnvelope;
   binding: SealedPlanBinding;
+}
+export interface PrepareSelectedPageSealedPlanInput {
+  sealedPlan: SelectedPageSealedPlanEnvelope;
+  binding: SelectedPageSealedPlanBinding;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -53,6 +63,17 @@ export class UniversalVisioWorkerClient {
       throw new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Universal Visio Worker rejected the sealed plan", 502, { jobId: request.jobId });
     }
     return response;
+  }
+
+  prepareSelectedPageSealedPlan(input: PrepareSelectedPageSealedPlanInput): SelectedPageUniversalVisioWorkerRequest {
+    verifySelectedPageSealedPlan(input.sealedPlan, input.binding, this.options.sealedPlanSecret, this.now());
+    return parseSelectedPageUniversalVisioWorkerRequest({
+      protocolVersion: SELECTED_PAGE_UNIVERSAL_VISIO_PROTOCOL_VERSION,
+      requestId: `request-${randomUUID()}`,
+      jobId: input.binding.jobId,
+      mode: this.options.mode,
+      sealedPlan: input.sealedPlan,
+    });
   }
 
   private runWorker(request: ReturnType<typeof parseUniversalVisioWorkerRequest>, signal?: AbortSignal): Promise<UniversalVisioWorkerResponse> {

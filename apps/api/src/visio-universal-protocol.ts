@@ -3,6 +3,7 @@ import { z } from "zod";
 import { canonicalJson } from "./plan-snapshot.js";
 
 export const UNIVERSAL_VISIO_PROTOCOL_VERSION = 1 as const;
+export const SELECTED_PAGE_UNIVERSAL_VISIO_PROTOCOL_VERSION = 2 as const;
 
 export interface SealedPlanEnvelope {
   version: 1;
@@ -82,9 +83,53 @@ export interface UniversalVisioWorkerFailureResponse {
 }
 export type UniversalVisioWorkerResponse = UniversalVisioWorkerSuccessResponse | UniversalVisioWorkerFailureResponse;
 export interface SealedPlanBinding { jobId: string; tenantId: string; userId: string; deviceId: string; planId: string; }
+export interface SelectedPageSealedPlanEnvelope {
+  version: 2;
+  jobId: string;
+  tenantId: string;
+  userId: string;
+  deviceId: string;
+  workflowId: string;
+  documentId: string;
+  pageId: string;
+  documentFingerprint: string;
+  pageFingerprint: string;
+  expectedRevision: number;
+  ownershipNamespace: string;
+  planId: string;
+  planHash: string;
+  expiresAt: string;
+  canonicalPlanBase64: string;
+  signature: string;
+}
+export interface CreateSelectedPageSealedPlanInput extends Omit<SelectedPageSealedPlanEnvelope, "version" | "planHash" | "canonicalPlanBase64" | "signature"> {
+  canonicalPlanBytes: Buffer;
+}
+export interface SelectedPageSealedPlanBinding {
+  jobId: string;
+  tenantId: string;
+  userId: string;
+  deviceId: string;
+  workflowId: string;
+  documentId: string;
+  pageId: string;
+  documentFingerprint: string;
+  pageFingerprint: string;
+  expectedRevision: number;
+  ownershipNamespace: string;
+  planId: string;
+}
+export interface SelectedPageUniversalVisioWorkerRequest {
+  protocolVersion: 2;
+  requestId: string;
+  jobId: string;
+  mode: "mock" | "live";
+  sealedPlan: SelectedPageSealedPlanEnvelope;
+}
 
 const identifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/i);
+const revision = z.number().int().nonnegative();
 const sealedPlanSchema = z.object({
   version: z.literal(1),
   jobId: identifier,
@@ -105,6 +150,34 @@ const universalVisioWorkerRequestSchema = z.object({
   sealedPlan: sealedPlanSchema,
 }).strict().superRefine((request, context) => {
   if (request.jobId !== request.sealedPlan.jobId) context.addIssue({ code: z.ZodIssueCode.custom, message: "Worker request jobId must match sealed plan jobId", path: ["sealedPlan", "jobId"] });
+});
+const selectedPageSealedPlanSchema = z.object({
+  version: z.literal(2),
+  jobId: identifier,
+  tenantId: identifier,
+  userId: identifier,
+  deviceId: identifier,
+  workflowId: identifier,
+  documentId: identifier,
+  pageId: identifier,
+  documentFingerprint: hash,
+  pageFingerprint: hash,
+  expectedRevision: revision,
+  ownershipNamespace: identifier,
+  planId: identifier,
+  planHash: hash,
+  expiresAt: z.string().datetime({ offset: true }),
+  canonicalPlanBase64: z.string().min(1).max(2_000_000).regex(/^[A-Za-z0-9_-]+$/),
+  signature: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
+}).strict();
+const selectedPageUniversalVisioWorkerRequestSchema = z.object({
+  protocolVersion: z.literal(SELECTED_PAGE_UNIVERSAL_VISIO_PROTOCOL_VERSION),
+  requestId: identifier,
+  jobId: identifier,
+  mode: z.enum(["mock", "live"]),
+  sealedPlan: selectedPageSealedPlanSchema,
+}).strict().superRefine((request, context) => {
+  if (request.jobId !== request.sealedPlan.jobId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["sealedPlan", "jobId"], message: "Selected-page Worker request jobId must match sealed plan jobId" });
 });
 const universalArtifactSchema = z.object({
   format: z.enum(["vsdx", "pdf", "png"]),
@@ -174,8 +247,38 @@ export function createSealedPlan(input: CreateSealedPlanInput, secret: string): 
   return { ...unsigned, signature: sign(unsigned, secret) };
 }
 
+export function createSelectedPageSealedPlan(input: CreateSelectedPageSealedPlanInput, secret: string): SelectedPageSealedPlanEnvelope {
+  if (!secret.trim()) throw new Error("selected-page sealed plan secret is required");
+  validateSelectedPageBinding(input);
+  if (!(input.canonicalPlanBytes instanceof Buffer) || input.canonicalPlanBytes.length === 0) throw new Error("selected-page sealed plan requires canonical plan bytes");
+  if (!Number.isFinite(Date.parse(input.expiresAt))) throw new Error("selected-page sealed plan expiration is invalid");
+  const unsigned = {
+    version: 2 as const,
+    jobId: input.jobId,
+    tenantId: input.tenantId,
+    userId: input.userId,
+    deviceId: input.deviceId,
+    workflowId: input.workflowId,
+    documentId: input.documentId,
+    pageId: input.pageId,
+    documentFingerprint: input.documentFingerprint,
+    pageFingerprint: input.pageFingerprint,
+    expectedRevision: input.expectedRevision,
+    ownershipNamespace: input.ownershipNamespace,
+    planId: input.planId,
+    planHash: sha256(input.canonicalPlanBytes),
+    expiresAt: input.expiresAt,
+    canonicalPlanBase64: input.canonicalPlanBytes.toString("base64url"),
+  };
+  return { ...unsigned, signature: sign(unsigned, secret) };
+}
+
 export function parseUniversalVisioWorkerRequest(value: unknown): UniversalVisioWorkerRequest {
   return universalVisioWorkerRequestSchema.parse(value);
+}
+
+export function parseSelectedPageUniversalVisioWorkerRequest(value: unknown): SelectedPageUniversalVisioWorkerRequest {
+  return selectedPageUniversalVisioWorkerRequestSchema.parse(value);
 }
 
 export function parseAndVerifyUniversalVisioWorkerRequest(
@@ -187,6 +290,17 @@ export function parseAndVerifyUniversalVisioWorkerRequest(
   const request = parseUniversalVisioWorkerRequest(value);
   if (request.jobId !== expected.jobId) throw new Error("Worker request jobId does not match the expected binding");
   return { request, canonicalPlanBytes: verifySealedPlan(request.sealedPlan, expected, secret, now) };
+}
+
+export function parseAndVerifySelectedPageUniversalVisioWorkerRequest(
+  value: unknown,
+  expected: SelectedPageSealedPlanBinding,
+  secret: string,
+  now = new Date(),
+): { request: SelectedPageUniversalVisioWorkerRequest; canonicalPlanBytes: Buffer } {
+  const request = parseSelectedPageUniversalVisioWorkerRequest(value);
+  if (request.jobId !== expected.jobId) throw new Error("Selected-page Worker request jobId does not match the expected binding");
+  return { request, canonicalPlanBytes: verifySelectedPageSealedPlan(request.sealedPlan, expected, secret, now) };
 }
 
 export function parseUniversalVisioWorkerResponse(value: unknown): UniversalVisioWorkerResponse {
@@ -206,12 +320,35 @@ export function verifySealedPlan(envelope: SealedPlanEnvelope, expected: SealedP
   return bytes;
 }
 
-function sign(unsigned: Omit<SealedPlanEnvelope, "signature">, secret: string): string {
+export function verifySelectedPageSealedPlan(envelope: SelectedPageSealedPlanEnvelope, expected: SelectedPageSealedPlanBinding, secret: string, now = new Date()): Buffer {
+  if (!secret.trim()) throw new Error("selected-page sealed plan secret is required");
+  const parsed = selectedPageSealedPlanSchema.parse(envelope);
+  validateSelectedPageBinding(expected);
+  const { signature, ...unsigned } = parsed;
+  if (!safeEqual(signature, sign(unsigned, secret))) throw new Error("selected-page sealed plan signature is invalid");
+  for (const field of ["jobId", "tenantId", "userId", "deviceId", "workflowId", "documentId", "pageId", "documentFingerprint", "pageFingerprint", "expectedRevision", "ownershipNamespace", "planId"] as const) {
+    if (parsed[field] !== expected[field]) throw new Error("selected-page sealed plan binding does not match the Worker job");
+  }
+  if (Date.parse(parsed.expiresAt) <= now.getTime()) throw new Error("selected-page sealed plan has expired");
+  const bytes = Buffer.from(parsed.canonicalPlanBase64, "base64url");
+  if (bytes.length === 0 || sha256(bytes) !== parsed.planHash) throw new Error("selected-page sealed plan hash does not match canonical bytes");
+  return bytes;
+}
+
+function sign(unsigned: Record<string, unknown>, secret: string): string {
   return createHmac("sha256", secret).update(canonicalJson(unsigned), "utf8").digest("base64url");
 }
 
 function validateBinding(binding: SealedPlanBinding): void {
   for (const value of [binding.jobId, binding.tenantId, binding.userId, binding.deviceId, binding.planId]) if (!identifier.safeParse(value).success) throw new Error("sealed plan binding contains an invalid identifier");
+}
+
+function validateSelectedPageBinding(binding: SelectedPageSealedPlanBinding): void {
+  for (const value of [binding.jobId, binding.tenantId, binding.userId, binding.deviceId, binding.workflowId, binding.documentId, binding.pageId, binding.ownershipNamespace, binding.planId]) {
+    if (!identifier.safeParse(value).success) throw new Error("selected-page sealed plan binding contains an invalid identifier");
+  }
+  if (!hash.safeParse(binding.documentFingerprint).success || !hash.safeParse(binding.pageFingerprint).success) throw new Error("selected-page sealed plan binding contains an invalid fingerprint");
+  if (!revision.safeParse(binding.expectedRevision).success) throw new Error("selected-page sealed plan binding contains an invalid expected revision");
 }
 
 function sha256(bytes: Buffer): string {
