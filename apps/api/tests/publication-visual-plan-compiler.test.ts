@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { assertPublicationVisualPlanRendererCapabilities, compilePublicationVisualPlan } from "../src/publication-visual-plan-compiler.js";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
-import { unknownDualStreamFusionUgs, unknownResidualMultiBranchUgs } from "./fixtures/universal-graph-spec.js";
+import { unknownDualStreamFusionUgs, unknownHybridSemanticRegionsCandidateUgs, unknownHybridSemanticRegionsUgs } from "./fixtures/universal-graph-spec.js";
 
 const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
 
@@ -13,7 +13,7 @@ describe("PublicationVisualPlan compiler", () => {
     const plan = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
 
     expect(plan.eligibility).toMatchObject({ kind: "formal", qaStatus: "pending" });
-    expect((plan.primitives as any[]).some((item) => item.kind === "CustomOperator")).toBe(true);
+    expect((plan.primitives as any[]).some((item) => item.kind === "OperatorFrame")).toBe(true);
     expect(plan.ports).toHaveLength(graph.relations.length * 2);
     expect(plan.connectors).toHaveLength(graph.relations.length);
     expect(plan.sourceMappings).toHaveLength(graph.components.length);
@@ -53,18 +53,35 @@ describe("PublicationVisualPlan compiler", () => {
     expect(() => assertPublicationVisualPlanRendererCapabilities(plan, ["native-text", "orthogonal-route", "shape-data"])).not.toThrow();
   });
 
-  it("records deterministic Profile provenance without changing structural PVP topology", () => {
-    const ugs = parseUniversalGraphSpec(unknownResidualMultiBranchUgs());
+  it("compiles an anonymous semantic hybrid into the full publication grammar with deterministic layout", () => {
+    const ugs = parseUniversalGraphSpec(unknownHybridSemanticRegionsUgs());
     const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
     const first = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
     const second = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const kinds = (first.primitives as any[]).map((primitive) => primitive.kind);
 
-    expect(first.profileApplications).toEqual(second.profileApplications);
-    expect(first.profileApplications).toMatchObject([{ profileId: "residual-branch", profileVersion: "u3-1" }]);
-    expect((first.lineage as any).profileSetHash).not.toBe("4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945");
-    expect(first.sourceMappings).toEqual(second.sourceMappings);
-    expect(first.ports).toEqual(second.ports);
-    expect((first.connectors as any[]).map(({ connectorId, sourcePortId, targetPortId, route }) => ({ connectorId, sourcePortId, targetPortId, route })))
-      .toEqual((second.connectors as any[]).map(({ connectorId, sourcePortId, targetPortId, route }) => ({ connectorId, sourcePortId, targetPortId, route })));
+    expect(kinds).toEqual(expect.arrayContaining([
+      "InputTerminal", "OutputTerminal", "TensorStage", "TensorVolume",
+      "OperatorFrame", "ModuleFrame", "RepeatBadge", "SplitMarker",
+      "AddMarker", "ConcatMarker", "AttentionTokenStrip", "AttentionRelation",
+    ]));
+    expect((first.primitives as any[]).every((primitive) => primitive.visual)).toBe(true);
+    expect((first.primitiveGroups as any[]).every((group) => group.semanticRegionId)).toBe(true);
+    expect(first).toEqual(second);
+    for (const connector of first.connectors as any[]) {
+      for (let index = 1; index < connector.route.length; index += 1) {
+        expect(connector.route[index].x === connector.route[index - 1].x || connector.route[index].y === connector.route[index - 1].y).toBe(true);
+      }
+    }
+  });
+
+  it("adds a CandidateCallout and keeps a candidate semantic graph non-exportable", () => {
+    const ugs = parseUniversalGraphSpec(unknownHybridSemanticRegionsCandidateUgs());
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const plan = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+
+    expect(plan.eligibility).toMatchObject({ kind: "candidate", formalReasons: [] });
+    expect((plan.primitives as any[]).some((primitive) => primitive.kind === "CandidateCallout")).toBe(true);
+    expect((plan.primitives as any[]).some((primitive) => primitive.kind === "TensorVolume")).toBe(false);
   });
 });

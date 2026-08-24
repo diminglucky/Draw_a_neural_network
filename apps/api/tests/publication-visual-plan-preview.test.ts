@@ -89,6 +89,21 @@ describe("projectPublicationVisualPlanPreview", () => {
     expect(JSON.stringify(preview.graph.semanticRegions)).not.toMatch(/sourceNodeIds|sourceEdgeIds|sourceGroupIds|evidenceIds|worker|visio|native/i);
   });
 
+  it("projects only approved visual grammar fields and rejects an unknown primitive kind", () => {
+    const { graph, pvp } = compiledSemanticPlan("formal");
+    const preview = projectPublicationVisualPlanPreview({ graph, pvp });
+    const tensorVolume = preview.plan.primitives.find((primitive) => primitive.kind === "TensorVolume") as any;
+
+    expect(tensorVolume).toMatchObject({
+      visual: { regionRole: "scale_transition", geometry: { kind: "tensor_volume" } },
+    });
+    expect(JSON.stringify(preview.plan.primitives)).not.toMatch(/sourceNodeIds|sourceEdgeIds|evidenceIds|worker|visio/i);
+
+    const draft = structuredClone(pvp) as any;
+    draft.primitives[0].kind = "UnapprovedPrimitive";
+    expect(() => createPublicationVisualPlan(draft)).toThrow(/primitive|kind|PVP/i);
+  });
+
   it("fails closed when semantic-region input contains unknown fields or public-shape provenance arrays", () => {
     const { graph, pvp } = compiledSemanticPlan("formal");
     const publicSummary = graph.semanticRegions[0]!;
@@ -138,8 +153,10 @@ describe("projectPublicationVisualPlanPreview", () => {
       const { graph, pvp } = compiledPlan("formal");
       const draft = structuredClone(pvp) as any;
       mutate(draft);
-      const unsafePlan = createPublicationVisualPlan(draft);
-      expect(() => projectPublicationVisualPlanPreview({ graph, pvp: unsafePlan })).toThrow(/PVP|display|preview/i);
+      expect(() => {
+        const unsafePlan = createPublicationVisualPlan(draft);
+        projectPublicationVisualPlanPreview({ graph, pvp: unsafePlan });
+      }).toThrow(/PVP|display|preview|primitive/i);
     }
   });
 

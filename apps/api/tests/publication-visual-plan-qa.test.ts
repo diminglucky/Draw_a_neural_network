@@ -4,10 +4,20 @@ import { compilePublicationVisualPlan } from "../src/publication-visual-plan-com
 import { evaluatePublicationVisualPlanQa } from "../src/publication-visual-plan-qa.js";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
-import { unknownDualStreamFusionUgs } from "./fixtures/universal-graph-spec.js";
+import { unknownDualStreamFusionUgs, unknownHybridSemanticRegionsUgs } from "./fixtures/universal-graph-spec.js";
 
 function pendingPlan() {
   const ugs = parseUniversalGraphSpec(unknownDualStreamFusionUgs());
+  const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+  return compilePublicationVisualPlan({
+    ugs,
+    graph,
+    updateIdentity: { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 },
+  });
+}
+
+function semanticPlan() {
+  const ugs = parseUniversalGraphSpec(unknownHybridSemanticRegionsUgs());
   const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
   return compilePublicationVisualPlan({
     ugs,
@@ -28,10 +38,10 @@ function reanchorRoutes(draft: any) {
   const anchor = (port: any) => {
     const bounds = primitives.get(port.primitiveId).bounds;
     const offset = port.anchor.offset / 1000;
-    if (port.anchor.side === "left") return { x: bounds.x, y: bounds.y + bounds.height * offset };
-    if (port.anchor.side === "right") return { x: bounds.x + bounds.width, y: bounds.y + bounds.height * offset };
-    if (port.anchor.side === "top") return { x: bounds.x + bounds.width * offset, y: bounds.y };
-    return { x: bounds.x + bounds.width * offset, y: bounds.y + bounds.height };
+    if (port.anchor.side === "left") return { x: bounds.x, y: Math.round(bounds.y + bounds.height * offset) };
+    if (port.anchor.side === "right") return { x: bounds.x + bounds.width, y: Math.round(bounds.y + bounds.height * offset) };
+    if (port.anchor.side === "top") return { x: Math.round(bounds.x + bounds.width * offset), y: bounds.y };
+    return { x: Math.round(bounds.x + bounds.width * offset), y: bounds.y + bounds.height };
   };
   for (const connector of draft.connectors) {
     const source = anchor(ports.get(connector.sourcePortId));
@@ -125,5 +135,35 @@ describe("PublicationVisualPlan QA", () => {
 
     expect(result.status).toBe("failed");
     expect(result.checks).toContainEqual(expect.objectContaining({ code: "style-token-reference", status: "failed" }));
+  });
+
+  it("blocks malformed semantic geometry, containment, merge ports, token order, clipping, and grayscale role collisions", () => {
+    const cases: Array<[string, (draft: any) => void, string]> = [
+      ["tensor depth", (draft) => {
+        const primitive = draft.primitives.find((item: any) => item.kind === "TensorVolume");
+        primitive.visual.geometry.depthFace = structuredClone(primitive.visual.geometry.frontFace);
+      }, "tensor-volume-depth-geometry"],
+      ["containment", (draft) => { draft.primitiveGroups[0].primitiveIds = ["primitive:missing"]; }, "semantic-containment"],
+      ["merge ports", (draft) => {
+        const primitive = draft.primitives.find((item: any) => item.kind === "AddMarker");
+        const ports = draft.ports.filter((item: any) => item.primitiveId === primitive.primitiveId && item.role === "input");
+        ports[1].semanticPortId = ports[0].semanticPortId;
+      }, "merge-distinct-input-ports"],
+      ["token ordering", (draft) => {
+        const primitive = draft.primitives.find((item: any) => item.kind === "AttentionTokenStrip");
+        primitive.visual.geometry.orderedCells.reverse();
+      }, "token-cell-order"],
+      ["label clipping", (draft) => { draft.primitives[0].label = "x".repeat(512); }, "label-clipping"],
+      ["grayscale collision", (draft) => {
+        for (const token of draft.styleTokens.tokens) token.values.fill = "#808080";
+      }, "grayscale-role-collision"],
+    ];
+
+    for (const [_name, mutate, code] of cases) {
+      const plan = changed((draft) => { Object.assign(draft, structuredClone(semanticPlan())); mutate(draft); });
+      const result = evaluatePublicationVisualPlanQa(plan);
+      expect(result.status).toBe("failed");
+      expect(result.checks).toContainEqual(expect.objectContaining({ code, status: "failed" }));
+    }
   });
 });

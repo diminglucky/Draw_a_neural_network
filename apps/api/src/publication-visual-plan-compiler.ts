@@ -1,15 +1,15 @@
 import { digestGenericPlanSnapshotValue } from "./generic-plan-snapshot.js";
-import { composeGeneralPublicationGraph, type GeneralPublicationComponentRole, type GeneralPublicationGraph } from "./general-publication-graph.js";
+import { compileComposableRegionVisuals, type ComposableRegionVisualDescriptor } from "./composable-region-visual-compiler.js";
+import { composeGeneralPublicationGraph, type GeneralPublicationGraph } from "./general-publication-graph.js";
 import { createPublicationVisualPlan, type PublicationVisualPlan } from "./publication-visual-plan.js";
-import { applyPresentationProfiles } from "./presentation-profile-registry.js";
 import { getUniversalGraphEligibility, parseUniversalGraphSpec, type UniversalGraphSpec } from "./universal-graph-spec.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
 const MARGIN = 200;
-const WIDTH = 900;
-const HEIGHT = 400;
-const COLUMN_GAP = 700;
-const LANE_GAP = 240;
+const WIDTH = 760;
+const HEIGHT = 320;
+const COLUMN_GAP = 360;
+const LANE_GAP = 120;
 
 export interface PublicationVisualPlanUpdateIdentity {
   ownerId: string; deviceId: string; workflowId: string; documentId: string; pageId: string; expectedRevision: number;
@@ -29,8 +29,7 @@ export function compilePublicationVisualPlan(input: { ugs: UniversalGraphSpec; g
   const ugs = parseUniversalGraphSpec(input.ugs);
   const graph = composeGeneralPublicationGraph(ugs, { detail: input.graph.detail });
   if (digestGenericPlanSnapshotValue(input.graph) !== digestGenericPlanSnapshotValue(graph)) throw new Error("General Publication Graph must match canonical UGS projection");
-  const generalPlan = compileGeneralPublicationVisualPlan({ ugs, graph, updateIdentity: input.updateIdentity });
-  return applyPresentationProfiles({ ugs, graph, plan: generalPlan }).plan;
+  return compileGeneralPublicationVisualPlan({ ugs, graph, updateIdentity: input.updateIdentity });
 }
 
 /** Produces the renderer-neutral General PVP before any optional presentation enhancement. */
@@ -38,43 +37,103 @@ export function compileGeneralPublicationVisualPlan(input: { ugs: UniversalGraph
   const ugs = parseUniversalGraphSpec(input.ugs);
   const canonicalGraph = composeGeneralPublicationGraph(ugs, { detail: input.graph.detail });
   if (digestGenericPlanSnapshotValue(input.graph) !== digestGenericPlanSnapshotValue(canonicalGraph)) throw new Error("General Publication Graph must match canonical UGS projection");
-  const components = [...canonicalGraph.components].sort((left, right) => compareCodeUnits(left.componentId, right.componentId));
-  const boundsByComponent = new Map(components.map((component) => [component.componentId, {
-    x: MARGIN + component.layoutOrder.rank * (WIDTH + COLUMN_GAP), y: MARGIN + component.layoutOrder.order * (HEIGHT + LANE_GAP), width: WIDTH, height: HEIGHT,
+  const visualCompilation = compileComposableRegionVisuals(canonicalGraph);
+  const descriptors = compactDeterministicLayout(visualCompilation.descriptors);
+  const boundsByPrimitive = new Map(descriptors.map((descriptor) => [descriptor.primitiveId, {
+    x: MARGIN + descriptor.layout.rank * (WIDTH + COLUMN_GAP),
+    y: MARGIN + descriptor.layout.lane * (HEIGHT + LANE_GAP),
+    width: WIDTH,
+    height: HEIGHT,
   }]));
-  const pageWidth = Math.max(...[...boundsByComponent.values()].map((item) => item.x + item.width)) + MARGIN;
-  const pageHeight = Math.max(...[...boundsByComponent.values()].map((item) => item.y + item.height)) + MARGIN;
-  const candidate = getUniversalGraphEligibility(ugs).preview === "candidate" || canonicalGraph.exportEligibility !== "eligible" || canonicalGraph.relations.some((relation) => relation.role === "feedback");
-  const primitives = components.map((component) => ({ primitiveId: `primitive:${component.componentId}`, componentId: component.componentId, kind: primitiveKind(component.role), regionId: "region:main", bounds: boundsByComponent.get(component.componentId), zIndex: 1, styleTokenIds: [], label: component.label }));
-  const ports: Record<string, unknown>[] = [];
-  const connectors: Record<string, unknown>[] = [];
-  for (const relation of [...canonicalGraph.relations].sort((left, right) => compareCodeUnits(left.relationId, right.relationId))) {
-    const source = boundsByComponent.get(relation.sourceComponentId);
-    const target = boundsByComponent.get(relation.targetComponentId);
-    if (!source || !target) throw new Error("General Publication Graph relation lacks a component bound");
-    const sourcePortId = `port:${relation.relationId}:source`;
-    const targetPortId = `port:${relation.relationId}:target`;
-    const sourcePoint = { x: source.x + source.width, y: source.y + source.height / 2 };
-    const targetPoint = { x: target.x, y: target.y + target.height / 2 };
-    const middleX = Math.max(sourcePoint.x + 100, Math.floor((sourcePoint.x + targetPoint.x) / 2));
-    ports.push(
-      { portId: sourcePortId, primitiveId: `primitive:${relation.sourceComponentId}`, role: "output", anchor: { side: "right", offset: 500 }, order: 0, semanticPortId: `${relation.relationId}:source` },
-      { portId: targetPortId, primitiveId: `primitive:${relation.targetComponentId}`, role: "input", anchor: { side: "left", offset: 500 }, order: 0, semanticPortId: `${relation.relationId}:target` },
-    );
-    connectors.push({ connectorId: `connector:${relation.relationId}`, sourcePortId, targetPortId, relation: relation.role, route: [sourcePoint, { x: middleX, y: sourcePoint.y }, { x: middleX, y: targetPoint.y }, targetPoint], styleTokenIds: [], zIndex: 0 });
-  }
+  const pageWidth = Math.max(...[...boundsByPrimitive.values()].map((item) => item.x + item.width)) + MARGIN;
+  const pageHeight = Math.max(...[...boundsByPrimitive.values()].map((item) => item.y + item.height)) + MARGIN;
+  const candidate = getUniversalGraphEligibility(ugs).preview === "candidate" || !visualCompilation.exportEligible || canonicalGraph.exportEligibility !== "eligible" || canonicalGraph.relations.some((relation) => relation.role === "feedback");
+  const primitives = descriptors.map((descriptor) => ({
+    primitiveId: descriptor.primitiveId,
+    componentId: descriptor.componentId,
+    kind: descriptor.kind,
+    regionId: descriptor.regionId,
+    bounds: boundsByPrimitive.get(descriptor.primitiveId),
+    zIndex: descriptor.topologyComponentId === null ? 2 : 1,
+    styleTokenIds: [...descriptor.styleTokenIds],
+    label: descriptor.label,
+    visual: visualFor(descriptor, boundsByPrimitive.get(descriptor.primitiveId)!),
+  }));
+  const { ports, connectors } = connectorsFor(canonicalGraph, descriptors, boundsByPrimitive);
   return createPublicationVisualPlan({
     identity: { schemaVersion: 1, planId: `pvp:${ugs.graphId}:${canonicalGraph.detail}` },
     eligibility: candidate ? { kind: "candidate", formalReasons: [], blockingReasons: ["topology-candidate"], qaStatus: "pending" } : { kind: "formal", formalReasons: ["topology-complete"], blockingReasons: [], qaStatus: "pending" },
-    lineage: { ugsHash: digestGenericPlanSnapshotValue(ugs), gpgHash: digestGenericPlanSnapshotValue(canonicalGraph), sourceHashes: [...ugs.sourceHashes].sort(compareCodeUnits), composerHash: digestGenericPlanSnapshotValue({ version: "gpg-1", detail: canonicalGraph.detail }), profileSetHash: digestGenericPlanSnapshotValue([]) },
+    lineage: { ugsHash: digestGenericPlanSnapshotValue(ugs), gpgHash: digestGenericPlanSnapshotValue(canonicalGraph), sourceHashes: [...ugs.sourceHashes].sort(compareCodeUnits), composerHash: digestGenericPlanSnapshotValue({ version: "gpg-visual-grammar-1", detail: canonicalGraph.detail }), profileSetHash: digestGenericPlanSnapshotValue([]) },
     coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: { x: 0, y: 0, width: pageWidth, height: pageHeight }, safeMargins: { x: MARGIN, y: MARGIN, width: pageWidth - MARGIN * 2, height: pageHeight - MARGIN * 2 } },
     regions: [{ regionId: "region:main", bounds: { x: MARGIN, y: MARGIN, width: pageWidth - MARGIN * 2, height: pageHeight - MARGIN * 2 }, role: "main", zIndex: 0 }],
-    primitiveGroups: [], primitives, ports, connectors, annotations: [], legend: { entries: [], styleTokenIds: [] }, styleTokens: { tokenSetVersion: "pvp-style-1", tokens: [] }, profileApplications: [],
-    sourceMappings: components.map((component) => ({ visualId: `primitive:${component.componentId}`, ugsIds: [...component.sourceNodeIds].sort(compareCodeUnits), evidenceIds: [...component.evidenceIds].sort(compareCodeUnits) })),
+    primitiveGroups: visualCompilation.groups.map((group) => ({ ...group, zIndex: 1 })),
+    primitives, ports, connectors, annotations: [], legend: { entries: [], styleTokenIds: [] }, styleTokens: { tokenSetVersion: "pvp-style-1", tokens: styleTokensFor(descriptors) }, profileApplications: [],
+    sourceMappings: descriptors.map((descriptor) => ({ visualId: descriptor.primitiveId, ugsIds: [...descriptor.sourceNodeIds].sort(compareCodeUnits), evidenceIds: [...descriptor.evidenceIds].sort(compareCodeUnits) })),
     rendererRequirements: { protocolVersion: "pvp-renderer-1", requiredCapabilities: ["native-text", "orthogonal-route", "shape-data"], optionalCapabilities: [] }, updateIdentity: input.updateIdentity,
   });
 }
 
-function primitiveKind(role: GeneralPublicationComponentRole): string {
-  return ({ input: "Input", output: "Output", generic_module: "GenericModule", custom_operator: "CustomOperator", custom_module: "CustomModule", split: "Split", merge_add: "MergeAdd", merge_concat: "MergeConcat", custom_fusion: "CustomFusion", repeat_badge: "RepeatBadge", candidate_region: "CandidateRegion" } as const)[role];
+function connectorsFor(graph: GeneralPublicationGraph, descriptors: readonly ComposableRegionVisualDescriptor[], boundsByPrimitive: Map<string, { x: number; y: number; width: number; height: number }>): { ports: Record<string, unknown>[]; connectors: Record<string, unknown>[] } {
+  const primitiveByComponentId = new Map(descriptors.filter((descriptor) => descriptor.topologyComponentId !== null).map((descriptor) => [descriptor.topologyComponentId!, descriptor]));
+  const incomingByComponent = new Map<string, string[]>();
+  for (const relation of graph.relations) incomingByComponent.set(relation.targetComponentId, [...(incomingByComponent.get(relation.targetComponentId) ?? []), relation.relationId]);
+  const ports: Record<string, unknown>[] = [];
+  const connectors: Record<string, unknown>[] = [];
+  for (const relation of [...graph.relations].sort((left, right) => compareCodeUnits(left.relationId, right.relationId))) {
+    const source = primitiveByComponentId.get(relation.sourceComponentId);
+    const target = primitiveByComponentId.get(relation.targetComponentId);
+    if (!source || !target) throw new Error("General Publication Graph relation lacks a visual primitive");
+    const sourceBounds = boundsByPrimitive.get(source.primitiveId);
+    const targetBounds = boundsByPrimitive.get(target.primitiveId);
+    if (!sourceBounds || !targetBounds) throw new Error("Visual primitive lacks layout bounds");
+    const sourcePortId = `port:${relation.relationId}:source`;
+    const targetPortId = `port:${relation.relationId}:target`;
+    const targetRelations = [...(incomingByComponent.get(relation.targetComponentId) ?? [])].sort(compareCodeUnits);
+    const targetIndex = Math.max(0, targetRelations.indexOf(relation.relationId));
+    const targetOffset = Math.floor((targetIndex + 1) * 1000 / (targetRelations.length + 1));
+    const sourcePoint = anchor(sourceBounds, "right", 500);
+    const targetPoint = anchor(targetBounds, "left", targetOffset);
+    const middleX = Math.max(sourcePoint.x + 80, Math.floor((sourcePoint.x + targetPoint.x) / 2));
+    ports.push(
+      { portId: sourcePortId, primitiveId: source.primitiveId, role: "output", anchor: { side: "right", offset: 500 }, order: 0, semanticPortId: `${relation.relationId}:source` },
+      { portId: targetPortId, primitiveId: target.primitiveId, role: "input", anchor: { side: "left", offset: targetOffset }, order: targetIndex, semanticPortId: `${relation.relationId}:target` },
+    );
+    connectors.push({ connectorId: `connector:${relation.relationId}`, sourcePortId, targetPortId, relation: relation.role, route: [sourcePoint, { x: middleX, y: sourcePoint.y }, { x: middleX, y: targetPoint.y }, targetPoint], styleTokenIds: ["style:relation"], zIndex: 0 });
+  }
+  return { ports, connectors };
+}
+
+function visualFor(descriptor: ComposableRegionVisualDescriptor, bounds: { x: number; y: number; width: number; height: number }): Record<string, unknown> {
+  if (descriptor.kind === "TensorVolume") {
+    const depth = Math.max(24, Math.floor(Math.min(bounds.width, bounds.height) / 8));
+    const frontFace = [{ x: bounds.x, y: bounds.y + depth }, { x: bounds.x + bounds.width - depth, y: bounds.y + depth }, { x: bounds.x + bounds.width - depth, y: bounds.y + bounds.height }, { x: bounds.x, y: bounds.y + bounds.height }];
+    const depthFace = [{ x: bounds.x + bounds.width - depth, y: bounds.y + depth }, { x: bounds.x + bounds.width, y: bounds.y }, { x: bounds.x + bounds.width, y: bounds.y + bounds.height - depth }, { x: bounds.x + bounds.width - depth, y: bounds.y + bounds.height }];
+    return { regionRole: descriptor.regionRole, nativeSupport: descriptor.nativeSupport, geometry: { kind: "tensor_volume", frontFace, depthFace } };
+  }
+  if (descriptor.kind === "AttentionTokenStrip") {
+    const cellWidth = Math.floor(bounds.width / 4);
+    const orderedCells = [0, 1, 2, 3].map((order) => ({ cellId: `${descriptor.primitiveId}:cell:${order}`, order, bounds: { x: bounds.x + order * cellWidth, y: bounds.y, width: cellWidth, height: bounds.height } }));
+    return { regionRole: descriptor.regionRole, nativeSupport: descriptor.nativeSupport, geometry: { kind: "ordered_cells", orderedCells } };
+  }
+  return { regionRole: descriptor.regionRole, nativeSupport: descriptor.nativeSupport, geometry: { kind: "none" } };
+}
+
+function styleTokensFor(descriptors: readonly ComposableRegionVisualDescriptor[]): Array<{ tokenId: string; values: Record<string, string | number> }> {
+  const fills: Record<string, string> = {
+    "style:terminal": "#e0f2fe", "style:tensor-stage": "#bae6fd", "style:tensor-volume": "#7dd3fc", "style:operator": "#eef2ff", "style:module": "#dcfce7", "style:repeat": "#fef3c7", "style:split": "#fce7f3", "style:add": "#fee2e2", "style:concat": "#ede9fe", "style:attention": "#e0e7ff", "style:candidate": "#ffedd5", "style:relation": "#475569",
+  };
+  return [...new Set(descriptors.flatMap((descriptor) => descriptor.styleTokenIds).concat(["style:relation"]))].sort(compareCodeUnits).map((tokenId) => ({ tokenId, values: { fill: fills[tokenId] ?? "#ffffff", stroke: "#1e293b", strokeWidth: "2" } }));
+}
+
+function anchor(bounds: { x: number; y: number; width: number; height: number }, side: "left" | "right", offset: number): { x: number; y: number } {
+  const y = Math.round(bounds.y + bounds.height * offset / 1000);
+  return side === "left" ? { x: bounds.x, y } : { x: bounds.x + bounds.width, y };
+}
+
+function compactDeterministicLayout(input: readonly ComposableRegionVisualDescriptor[]): ComposableRegionVisualDescriptor[] {
+  const byRank = new Map<number, ComposableRegionVisualDescriptor[]>();
+  for (const descriptor of input) byRank.set(descriptor.layout.rank, [...(byRank.get(descriptor.layout.rank) ?? []), descriptor]);
+  return [...byRank.entries()].sort(([left], [right]) => left - right).flatMap(([rank, descriptors]) => descriptors
+    .sort((left, right) => left.layout.lane - right.layout.lane || left.layout.order - right.layout.order || compareCodeUnits(left.primitiveId, right.primitiveId))
+    .map((descriptor, lane) => ({ ...descriptor, layout: { rank, lane, order: lane } })));
 }

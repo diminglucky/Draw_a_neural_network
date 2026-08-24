@@ -1,5 +1,6 @@
 import { type GeneralPublicationGraph } from "./general-publication-graph.js";
 import { type ComposableSemanticRegionKind } from "./composable-semantic-regions.js";
+import { PUBLICATION_VISUAL_PRIMITIVE_KINDS } from "./publication-visual-grammar.js";
 import { parsePublicationVisualPlan, type PublicationVisualPlan } from "./publication-visual-plan.js";
 
 type PreviewRecord = Record<string, unknown>;
@@ -17,7 +18,7 @@ const DETAILS = ["overview", "architecture", "operator_detail"] as const;
 const COMPONENT_ROLES = ["input", "output", "generic_module", "custom_operator", "custom_module", "split", "merge_add", "merge_concat", "custom_fusion", "repeat_badge", "candidate_region"] as const;
 const RELATION_ROLES = ["flow", "skip", "merge", "condition", "feedback"] as const;
 const SEMANTIC_REGION_KINDS = ["scale_transition", "repeat_group", "add_merge", "concat_fusion", "token_attention", "custom_module", "multi_branch", "candidate_feedback"] as const satisfies readonly ComposableSemanticRegionKind[];
-const PRIMITIVE_KINDS = ["Input", "Output", "GenericModule", "CustomOperator", "CustomModule", "Split", "MergeAdd", "MergeConcat", "CustomFusion", "RepeatBadge", "CandidateRegion"] as const;
+const PRIMITIVE_KINDS = [...PUBLICATION_VISUAL_PRIMITIVE_KINDS, "Input", "Output", "GenericModule", "CustomOperator", "CustomModule", "Split", "MergeAdd", "MergeConcat", "CustomFusion", "CandidateRegion"] as const;
 const ANNOTATION_ROLES = ["note", "heading", "detail"] as const;
 const LEGEND_KINDS = ["swatch", "line", "shape"] as const;
 const STYLE_VALUE_KEYS = ["fill", "stroke", "strokeWidth", "strokeDasharray", "opacity", "color", "fontFamily", "fontSize", "fontWeight"] as const;
@@ -110,13 +111,25 @@ function projectRegion(value: unknown): PreviewRecord {
 }
 
 function projectPrimitiveGroup(value: unknown): PreviewRecord {
-  const item = exactRecord(value, ["groupId", "regionId", "label", "zIndex", "primitiveIds", "styleTokenIds"], "PVP primitive group");
-  return { groupId: identifier(own(item, "groupId", "PVP primitive group"), "PVP group ID"), regionId: identifier(own(item, "regionId", "PVP primitive group"), "PVP group region ID"), label: displayText(own(item, "label", "PVP primitive group"), "PVP group label"), zIndex: index(own(item, "zIndex", "PVP primitive group"), "PVP group zIndex"), primitiveIds: identifiers(own(item, "primitiveIds", "PVP primitive group"), "PVP group primitive IDs"), styleTokenIds: identifiers(own(item, "styleTokenIds", "PVP primitive group"), "PVP group style token IDs") };
+  const item = exactRecord(value, ["groupId", "regionId", "semanticRegionId", "label", "zIndex", "primitiveIds", "styleTokenIds"], "PVP primitive group", true);
+  const projection = { groupId: identifier(own(item, "groupId", "PVP primitive group"), "PVP group ID"), regionId: identifier(own(item, "regionId", "PVP primitive group"), "PVP group region ID"), label: displayText(own(item, "label", "PVP primitive group"), "PVP group label"), zIndex: index(own(item, "zIndex", "PVP primitive group"), "PVP group zIndex"), primitiveIds: identifiers(own(item, "primitiveIds", "PVP group primitive IDs"), "PVP group primitive IDs"), styleTokenIds: identifiers(own(item, "styleTokenIds", "PVP group style token IDs"), "PVP group style token IDs") };
+  return Object.hasOwn(item, "semanticRegionId") ? { ...projection, semanticRegionId: identifier(own(item, "semanticRegionId", "PVP primitive group"), "PVP group semantic region ID") } : projection;
 }
 
 function projectPrimitive(value: unknown): PreviewRecord {
-  const item = exactRecord(value, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label"], "PVP primitive");
-  return { primitiveId: identifier(own(item, "primitiveId", "PVP primitive"), "PVP primitive ID"), componentId: identifier(own(item, "componentId", "PVP primitive"), "PVP component ID"), kind: enumValue(own(item, "kind", "PVP primitive"), PRIMITIVE_KINDS, "PVP primitive kind"), regionId: identifier(own(item, "regionId", "PVP primitive"), "PVP primitive region ID"), bounds: bounds(own(item, "bounds", "PVP primitive"), "PVP primitive bounds"), zIndex: index(own(item, "zIndex", "PVP primitive"), "PVP primitive zIndex"), styleTokenIds: identifiers(own(item, "styleTokenIds", "PVP primitive"), "PVP primitive style token IDs"), label: displayText(own(item, "label", "PVP primitive"), "PVP primitive label") };
+  const item = exactRecord(value, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label", "visual"], "PVP primitive", true);
+  const kind = enumValue(own(item, "kind", "PVP primitive"), PRIMITIVE_KINDS, "PVP primitive kind");
+  const projection = { primitiveId: identifier(own(item, "primitiveId", "PVP primitive"), "PVP primitive ID"), componentId: identifier(own(item, "componentId", "PVP primitive"), "PVP component ID"), kind, regionId: identifier(own(item, "regionId", "PVP primitive"), "PVP primitive region ID"), bounds: bounds(own(item, "bounds", "PVP primitive"), "PVP primitive bounds"), zIndex: index(own(item, "zIndex", "PVP primitive"), "PVP primitive zIndex"), styleTokenIds: identifiers(own(item, "styleTokenIds", "PVP primitive"), "PVP primitive style token IDs"), label: displayText(own(item, "label", "PVP primitive"), "PVP primitive label") };
+  return Object.hasOwn(item, "visual") ? { ...projection, visual: projectVisual(own(item, "visual", "PVP primitive"), kind) } : projection;
+}
+
+function projectVisual(value: unknown, kind: string): PreviewRecord {
+  const visual = exactRecord(value, ["regionRole", "nativeSupport", "geometry"], "PVP primitive visual");
+  const geometry = exactRecord(own(visual, "geometry", "PVP primitive visual"), kind === "TensorVolume" ? ["kind", "frontFace", "depthFace"] : kind === "AttentionTokenStrip" ? ["kind", "orderedCells"] : ["kind"], "PVP primitive geometry");
+  const projection: PreviewRecord = { regionRole: enumValue(own(visual, "regionRole", "PVP primitive visual"), ["base", ...SEMANTIC_REGION_KINDS], "PVP primitive visual role"), nativeSupport: enumValue(own(visual, "nativeSupport", "PVP primitive visual"), ["supported", "restricted"], "PVP primitive native support") };
+  if (kind === "TensorVolume") return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP tensor geometry"), ["tensor_volume"], "PVP tensor geometry kind"), frontFace: array(own(geometry, "frontFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face")), depthFace: array(own(geometry, "depthFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face")) } };
+  if (kind === "AttentionTokenStrip") return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP token geometry"), ["ordered_cells"], "PVP token geometry kind"), orderedCells: array(own(geometry, "orderedCells", "PVP token geometry"), "PVP token cells").map((cell) => { const item = exactRecord(cell, ["cellId", "order", "bounds"], "PVP token cell"); return { cellId: identifier(own(item, "cellId", "PVP token cell"), "PVP token cell ID"), order: index(own(item, "order", "PVP token cell"), "PVP token cell order"), bounds: bounds(own(item, "bounds", "PVP token cell"), "PVP token cell bounds") }; }) } };
+  return { ...projection, geometry: { kind: enumValue(own(geometry, "kind", "PVP primitive geometry"), ["none"], "PVP primitive geometry kind") } };
 }
 
 function projectPort(value: unknown): PreviewRecord {

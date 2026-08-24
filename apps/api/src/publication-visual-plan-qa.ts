@@ -24,6 +24,8 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
   const plan = parsePublicationVisualPlan(input);
   const primitives = plan.primitives.map((value) => asRecord(value));
   const connectors = plan.connectors.map((value) => asRecord(value));
+  const ports = plan.ports.map((value) => asRecord(value));
+  const groups = (plan.primitiveGroups as unknown[]).map((value) => asRecordOrNull(value));
   const mappings = plan.sourceMappings.map((value) => asRecord(value));
   const annotations = (plan.annotations as unknown[]).map((value) => asRecordOrNull(value));
   const page = asBounds((plan.coordinateSpace as Record<string, unknown>).page);
@@ -31,7 +33,9 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
   const checks: PublicationVisualPlanQaCheck[] = [];
 
   checks.push(check("eligibility-formal", plan.eligibility.kind === "formal" && plan.eligibility.blockingReasons.length === 0, []));
+  checks.push(check("candidate-export-eligibility", plan.eligibility.kind !== "candidate", plan.eligibility.kind === "candidate" ? [plan.identity.planId] : []));
   checks.push(check("candidate-region", !primitives.some((primitive) => primitive.kind === "CandidateRegion"), primitives.filter((primitive) => primitive.kind === "CandidateRegion").map((primitive) => String(primitive.primitiveId))));
+  checks.push(check("duplicate-ids", uniqueIds(primitives, "primitiveId") && uniqueIds(ports, "portId") && uniqueIds(connectors, "connectorId"), []));
   checks.push(check("feedback-connector", !connectors.some((connector) => connector.relation === "feedback"), connectors.filter((connector) => connector.relation === "feedback").map((connector) => String(connector.connectorId))));
 
   const collidingPrimitiveIds: string[] = [];
@@ -44,6 +48,30 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
   }
   checks.push(check("primitive-collision", collidingPrimitiveIds.length === 0, collidingPrimitiveIds));
 
+  const semanticPrimitives = primitives.filter((primitive) => visualRole(primitive) !== "base");
+  const semanticOverlapIds: string[] = [];
+  for (let left = 0; left < semanticPrimitives.length; left += 1) {
+    for (let right = left + 1; right < semanticPrimitives.length; right += 1) {
+      if (overlaps(asBounds(semanticPrimitives[left]!.bounds), asBounds(semanticPrimitives[right]!.bounds))) semanticOverlapIds.push(String(semanticPrimitives[left]!.primitiveId), String(semanticPrimitives[right]!.primitiveId));
+    }
+  }
+  checks.push(check("semantic-overlap", semanticOverlapIds.length === 0, semanticOverlapIds));
+
+  const containmentIds: string[] = [];
+  for (const group of groups) {
+    if (!group || typeof group.groupId !== "string") { containmentIds.push("unknown"); continue; }
+    if (!Array.isArray(group.primitiveIds) || group.primitiveIds.length === 0 || group.primitiveIds.some((id) => typeof id !== "string" || !primitiveById.has(id))) containmentIds.push(group.groupId);
+  }
+  checks.push(check("semantic-containment", containmentIds.length === 0, containmentIds));
+
+  const invalidTensorIds = primitives.filter((primitive) => primitive.kind === "TensorVolume" && !validTensorGeometry(primitive)).map((primitive) => String(primitive.primitiveId));
+  checks.push(check("tensor-volume-depth-geometry", invalidTensorIds.length === 0, invalidTensorIds));
+  const invalidTokenIds = primitives.filter((primitive) => primitive.kind === "AttentionTokenStrip" && !validTokenCells(primitive)).map((primitive) => String(primitive.primitiveId));
+  checks.push(check("token-cell-order", invalidTokenIds.length === 0, invalidTokenIds));
+
+  const invalidMergeIds = primitives.filter((primitive) => (primitive.kind === "AddMarker" || primitive.kind === "ConcatMarker") && !hasDistinctMergeInputs(primitive, ports)).map((primitive) => String(primitive.primitiveId));
+  checks.push(check("merge-distinct-input-ports", invalidMergeIds.length === 0, invalidMergeIds));
+
   const nonOrthogonalConnectorIds: string[] = [];
   const escapedConnectorIds: string[] = [];
   for (const connector of connectors) {
@@ -54,6 +82,7 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
   }
   checks.push(check("connector-page-bounds", escapedConnectorIds.length === 0, escapedConnectorIds));
   checks.push(check("connector-orthogonal", nonOrthogonalConnectorIds.length === 0, nonOrthogonalConnectorIds));
+  checks.push(check("connector-route-failure", escapedConnectorIds.length === 0 && nonOrthogonalConnectorIds.length === 0, [...escapedConnectorIds, ...nonOrthogonalConnectorIds]));
 
   const uncoveredPrimitiveIds = primitives
     .filter((primitive) => {
@@ -62,6 +91,10 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
     })
     .map((primitive) => String(primitive.primitiveId));
   checks.push(check("source-mapping-coverage", uncoveredPrimitiveIds.length === 0, uncoveredPrimitiveIds));
+  checks.push(check("unmapped-primitive", uncoveredPrimitiveIds.length === 0, uncoveredPrimitiveIds));
+
+  const clippedPrimitiveIds = primitives.filter((primitive) => typeof primitive.label !== "string" || primitive.label.length * 12 > asBounds(primitive.bounds).width).map((primitive) => String(primitive.primitiveId));
+  checks.push(check("label-clipping", clippedPrimitiveIds.length === 0, clippedPrimitiveIds));
 
   const invalidAnnotationIds: string[] = [];
   const validAnnotations: Array<{ id: string; bounds: Bounds }> = [];
@@ -103,6 +136,22 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
     .filter((tokenId) => !knownStyleTokenIds.has(tokenId))
     .map((tokenId) => `${String(item.primitiveId ?? item.connectorId ?? item.annotationId)}:${tokenId}`));
   checks.push(check("style-token-reference", unknownStyleReferences.length === 0, unknownStyleReferences));
+
+  const styleById = styleTokenValues(plan.styleTokens);
+  const grayscaleByRole = new Map<string, string>();
+  const grayscaleCollisionIds: string[] = [];
+  for (const primitive of primitives) {
+    const role = visualRole(primitive);
+    if (role === "base") continue;
+    for (const tokenId of styleReferences(primitive)) {
+      const fill = styleById.get(tokenId)?.fill;
+      if (!isGrayscale(fill)) continue;
+      const existing = grayscaleByRole.get(fill!);
+      if (existing && existing !== role) grayscaleCollisionIds.push(String(primitive.primitiveId));
+      grayscaleByRole.set(fill!, role);
+    }
+  }
+  checks.push(check("grayscale-role-collision", grayscaleCollisionIds.length === 0, grayscaleCollisionIds));
 
   return deepFreeze({
     qaVersion: QA_VERSION,
@@ -162,6 +211,55 @@ function styleTokenIds(value: unknown): Set<string> {
 
 function styleReferences(value: Record<string, unknown>): string[] {
   return Array.isArray(value.styleTokenIds) && value.styleTokenIds.every((item) => typeof item === "string") ? value.styleTokenIds as string[] : ["invalid-style-token-reference"];
+}
+
+function uniqueIds(values: readonly Record<string, unknown>[], field: string): boolean {
+  const ids = values.map((value) => value[field]);
+  return ids.every((id) => typeof id === "string") && new Set(ids).size === ids.length;
+}
+
+function visualRole(primitive: Record<string, unknown>): string {
+  const visual = asRecordOrNull(primitive.visual);
+  return visual && typeof visual.regionRole === "string" ? visual.regionRole : "base";
+}
+
+function validTensorGeometry(primitive: Record<string, unknown>): boolean {
+  const visual = asRecordOrNull(primitive.visual);
+  const geometry = visual && asRecordOrNull(visual.geometry);
+  if (!geometry || geometry.kind !== "tensor_volume" || !Array.isArray(geometry.frontFace) || !Array.isArray(geometry.depthFace) || geometry.frontFace.length !== 4 || geometry.depthFace.length !== 4) return false;
+  const front = geometry.frontFace.map(asPointOrNull);
+  const depth = geometry.depthFace.map(asPointOrNull);
+  return front.every((point): point is Point => point !== null) && depth.every((point): point is Point => point !== null) && JSON.stringify(front) !== JSON.stringify(depth);
+}
+
+function validTokenCells(primitive: Record<string, unknown>): boolean {
+  const visual = asRecordOrNull(primitive.visual);
+  const geometry = visual && asRecordOrNull(visual.geometry);
+  if (!geometry || geometry.kind !== "ordered_cells" || !Array.isArray(geometry.orderedCells) || geometry.orderedCells.length < 2) return false;
+  const cells = geometry.orderedCells.map(asRecordOrNull);
+  if (cells.some((cell) => !cell) || cells.some((cell, index) => cell!.order !== index)) return false;
+  const bounds = cells.map((cell) => tryBounds(cell!.bounds));
+  return bounds.every((item): item is Bounds => item !== null) && bounds.every((left, index) => bounds.slice(index + 1).every((right) => !overlaps(left, right)));
+}
+
+function hasDistinctMergeInputs(primitive: Record<string, unknown>, ports: readonly Record<string, unknown>[]): boolean {
+  const inputs = ports.filter((port) => port.primitiveId === primitive.primitiveId && port.role === "input" && typeof port.semanticPortId === "string");
+  return inputs.length >= 2 && new Set(inputs.map((port) => port.semanticPortId)).size === inputs.length;
+}
+
+function styleTokenValues(value: unknown): Map<string, { fill?: string }> {
+  const tokens = asRecordOrNull(value)?.tokens;
+  if (!Array.isArray(tokens)) return new Map();
+  return new Map(tokens.flatMap((token) => {
+    const record = asRecordOrNull(token);
+    const values = record && asRecordOrNull(record.values);
+    return record && typeof record.tokenId === "string" ? [[record.tokenId, { fill: typeof values?.fill === "string" ? values.fill : undefined }] as const] : [];
+  }));
+}
+
+function isGrayscale(value: string | undefined): boolean {
+  if (!value || !/^#[a-fA-F0-9]{6}$/.test(value)) return false;
+  return value.slice(1, 3).toLowerCase() === value.slice(3, 5).toLowerCase() && value.slice(3, 5).toLowerCase() === value.slice(5, 7).toLowerCase();
 }
 
 function deepFreeze<T>(value: T): T {

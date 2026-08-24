@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
+import { isPublicationVisualPrimitiveKind, PUBLICATION_VISUAL_PRIMITIVE_KINDS } from "./publication-visual-grammar.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
 const ID = /^[A-Za-z][A-Za-z0-9._:-]*$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const TOP_LEVEL = ["identity", "eligibility", "lineage", "coordinateSpace", "regions", "primitiveGroups", "primitives", "ports", "connectors", "annotations", "legend", "styleTokens", "profileApplications", "sourceMappings", "rendererRequirements", "updateIdentity"];
+const LEGACY_PRIMITIVE_KINDS = ["Input", "Output", "GenericModule", "CustomOperator", "CustomModule", "Split", "MergeAdd", "MergeConcat", "CustomFusion", "CandidateRegion"] as const;
+const ACCEPTED_PRIMITIVE_KINDS = new Set<string>([...PUBLICATION_VISUAL_PRIMITIVE_KINDS, ...LEGACY_PRIMITIVE_KINDS]);
 
 export interface PublicationVisualPlan {
   readonly identity: { readonly schemaVersion: 1; readonly planId: string; readonly canonicalHash: string };
@@ -56,7 +59,10 @@ export function parsePublicationVisualPlan(input: unknown): PublicationVisualPla
   const primitiveById = new Map<string, Record<string, unknown>>();
   for (const value of primitives) {
     const primitive = record(value, "PVP primitive is invalid");
-    if (!identifier(primitive.primitiveId) || !identifier(primitive.componentId) || typeof primitive.kind !== "string" || typeof primitive.regionId !== "string" || !integer(primitive.zIndex)) throw new Error("PVP primitive is invalid");
+    assertAllowedKeys(primitive, ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label", "visual"], ["primitiveId", "componentId", "kind", "regionId", "bounds", "zIndex", "styleTokenIds", "label"], "PVP primitive");
+    if (!identifier(primitive.primitiveId) || !identifier(primitive.componentId) || typeof primitive.kind !== "string" || !ACCEPTED_PRIMITIVE_KINDS.has(primitive.kind) || typeof primitive.regionId !== "string" || !integer(primitive.zIndex) || !Array.isArray(primitive.styleTokenIds) || primitive.styleTokenIds.some((id) => !identifier(id)) || typeof primitive.label !== "string") throw new Error("PVP primitive is invalid");
+    if (isPublicationVisualPrimitiveKind(primitive.kind)) validateVisual(primitive.visual, primitive.kind, "PVP primitive visual");
+    else if (primitive.visual !== undefined) throw new Error("Legacy PVP primitive cannot carry visual grammar");
     const primitiveBounds = bounds(primitive.bounds, "PVP primitive bounds");
     if (!contains(page, primitiveBounds)) throw new Error("PVP primitive bounds must be inside the page");
     primitiveById.set(primitive.primitiveId as string, primitive);
@@ -105,10 +111,31 @@ function integer(value: unknown): value is number { return typeof value === "num
 function bounds(value: unknown, message: string): { x: number; y: number; width: number; height: number } { const item = record(value, message); if (!integer(item.x) || !integer(item.y) || !integer(item.width) || !integer(item.height) || item.x < 0 || item.y < 0 || item.width < 0 || item.height < 0) throw new Error(message); return item as { x: number; y: number; width: number; height: number }; }
 function contains(outer: { x: number; y: number; width: number; height: number }, inner: { x: number; y: number; width: number; height: number }): boolean { return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height; }
 function assertExactKeys(value: Record<string, unknown>, keys: string[], label: string): void { const actual = Object.keys(value).sort(compareCodeUnits); const expected = [...keys].sort(compareCodeUnits); if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new Error(`${label} has unknown or missing fields`); }
+function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], required: string[], label: string): void { const actual = Object.keys(value); if (actual.some((key) => !allowed.includes(key)) || required.some((key) => !Object.hasOwn(value, key))) throw new Error(`${label} has unknown or missing fields`); }
 function assertSortedUnique(values: unknown[], key: string, label: string): void { const ids = values.map((value) => record(value, `${label} is invalid`)[key]); if (ids.some((id) => !identifier(id))) throw new Error(`${label} ID is invalid`); const sorted = [...ids].sort((a, b) => compareCodeUnits(a as string, b as string)); if (new Set(ids).size !== ids.length || ids.some((id, index) => id !== sorted[index])) throw new Error(`${label} IDs must be unique and sorted`); }
-function anchorPoint(value: { x: number; y: number; width: number; height: number }, side: string, offset: number): { x: number; y: number } { if (side === "left") return { x: value.x, y: value.y + value.height * offset / 1000 }; if (side === "right") return { x: value.x + value.width, y: value.y + value.height * offset / 1000 }; if (side === "top") return { x: value.x + value.width * offset / 1000, y: value.y }; return { x: value.x + value.width * offset / 1000, y: value.y + value.height }; }
+function anchorPoint(value: { x: number; y: number; width: number; height: number }, side: string, offset: number): { x: number; y: number } { if (side === "left") return { x: value.x, y: Math.round(value.y + value.height * offset / 1000) }; if (side === "right") return { x: value.x + value.width, y: Math.round(value.y + value.height * offset / 1000) }; if (side === "top") return { x: Math.round(value.x + value.width * offset / 1000), y: value.y }; return { x: Math.round(value.x + value.width * offset / 1000), y: value.y + value.height }; }
 function pointValue(value: unknown, message: string): { x: number; y: number } { const point = record(value, message); if (!integer(point.x) || !integer(point.y)) throw new Error(message); return point as { x: number; y: number }; }
 function samePoint(left: { x: number; y: number }, right: { x: number; y: number }): boolean { return left.x === right.x && left.y === right.y; }
+function validateVisual(value: unknown, kind: typeof PUBLICATION_VISUAL_PRIMITIVE_KINDS[number], label: string): void {
+  const visual = record(value, `${label} is required`);
+  assertExactKeys(visual, ["regionRole", "nativeSupport", "geometry"], label);
+  if (typeof visual.regionRole !== "string" || !( ["base", "scale_transition", "repeat_group", "add_merge", "concat_fusion", "token_attention", "custom_module", "multi_branch", "candidate_feedback"] as string[]).includes(visual.regionRole) || !( ["supported", "restricted"] as unknown[]).includes(visual.nativeSupport)) throw new Error(`${label} is invalid`);
+  const geometry = record(visual.geometry, `${label} geometry is invalid`);
+  if (kind === "TensorVolume") {
+    assertExactKeys(geometry, ["kind", "frontFace", "depthFace"], `${label} tensor geometry`);
+    if (geometry.kind !== "tensor_volume" || !face(geometry.frontFace) || !face(geometry.depthFace)) throw new Error(`${label} tensor geometry is invalid`);
+    return;
+  }
+  if (kind === "AttentionTokenStrip") {
+    assertExactKeys(geometry, ["kind", "orderedCells"], `${label} token geometry`);
+    if (geometry.kind !== "ordered_cells" || !Array.isArray(geometry.orderedCells) || geometry.orderedCells.length < 2 || geometry.orderedCells.some((cell) => !tokenCell(cell))) throw new Error(`${label} token geometry is invalid`);
+    return;
+  }
+  assertExactKeys(geometry, ["kind"], `${label} geometry`);
+  if (geometry.kind !== "none") throw new Error(`${label} geometry is invalid`);
+}
+function face(value: unknown): boolean { return Array.isArray(value) && value.length === 4 && value.every((point) => { try { pointValue(point, "PVP visual face"); return true; } catch { return false; } }); }
+function tokenCell(value: unknown): boolean { try { const cell = record(value, "PVP token cell"); assertExactKeys(cell, ["cellId", "order", "bounds"], "PVP token cell"); return identifier(cell.cellId) && integer(cell.order) && cell.order >= 0 && (() => { bounds(cell.bounds, "PVP token cell bounds"); return true; })(); } catch { return false; } }
 function canonicalValue(value: unknown): unknown { if (value === null || typeof value === "string" || typeof value === "boolean") return value; if (typeof value === "number") { if (!Number.isFinite(value)) throw new Error("PVP canonical JSON does not permit non-finite numbers"); return value; } if (Array.isArray(value)) return value.map(canonicalValue); const item = record(value, "PVP canonical JSON accepts only plain JSON values"); return Object.fromEntries(Object.keys(item).sort(compareCodeUnits).map((key) => [key, canonicalValue(item[key])])); }
 function sha256(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 function deepFreeze<T>(value: T): T { if (value && typeof value === "object" && !Object.isFrozen(value)) { Object.freeze(value); for (const item of Object.values(value as Record<string, unknown>)) deepFreeze(item); } return value; }
