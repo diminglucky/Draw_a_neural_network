@@ -2,7 +2,7 @@
 
 **Record ID：** `IR-2026-08-20-current-roadmap`
 **对应基线：** `DB-2026-08-21-receipt-bound-harness-closure`
-**最后核对：** `2026-08-23T04:13:08Z`
+**最后核对：** `2026-08-24T11:00:00Z`
 **正式 ledger 焦点：** `M2.12 — Evidence-augmented architecture interpretation`
 **总体状态：** `active` — `aa9835c383aa18c804a23856893685af97443fef` 已推送至 `origin/agent`。M2.8、M2.10、M2.11 的来源边界、非执行静态分析、会话澄清与局部 PVP delta 已完成全套回归和两组独立审查，且正式证据已记录。M2.12 当前是设计和迁移盘点焦点，而非可直接编码的独立解释器：其实现必须先依赖 DrawingRun、Coordinator、idempotency/cancellation 与 EvidencePack 前置合同。现有自由文本解释器仅为兼容原型；正式实现必须使用私有回执、Coordinator 内部上下文、脱敏 Provider payload、Harness 公共证据投影与规范 ID 重键。最近的真实浏览器/API smoke 已验证授权、receipt 提交、状态轮询和 bounded error projection，但不改变 M2.12 的 active 状态。
 
@@ -17,8 +17,8 @@
 | 层次 | 当前判断 | 证据边界 |
 |---|---|---|
 | 设计 | `approved_for_staged_implementation` | 用户已确认以未知网络直绘为目标；规格和治理资产仍是未提交 working-tree 文档 |
-| 当前路线图 | `active` | M2.8、M2.10、M2.11 已接受；M2.12 是唯一 active 的设计/盘点节点，但生产代码须先完成主平台 Phase 0–2 前置。M3.2 仍因产品优先级保持 deferred，PatternLibrary 继续后置。 |
-| API | `passed` | `npx tsc --noEmit`、`npm run api:check` 通过；完整 API 套件为 141 个测试文件、964 个测试通过；Drawing Run 公共状态包含 bounded `errorCategory`，并提供脱敏 revision/event history，前端只显示固定安全文案 |
+| 当前路线图 | `active` | M2.8、M2.10、M2.11 已接受；M2.12 是唯一 active 的设计/盘点节点。Phase 0–2 代码与本地证据已记录，但真实 PostgreSQL 迁移矩阵未执行，因而不能写为 accepted predecessor。M3.2 仍因产品优先级保持 deferred，PatternLibrary 继续后置。 |
+| API | `passed` | `npx tsc --noEmit`、`npm run api:check` 通过；当前工作树完整 API 套件为 142 个测试文件、1,051 个测试通过。Drawing Run 公共状态包含 bounded `errorCategory`，并提供脱敏 revision/event history，前端只显示固定安全文案。 |
 | Worker 单元测试 | `passed` | 234 通过、2 跳过、0 失败；跳过项不是真实 Visio 验收 |
 | 通用未知网络直绘 | `M2.12 active — design gated` | UGS 严格合同、未知模块直绘、candidate topology、结构证据、GPG/PVP、会话澄清及全套 API 证据均已接受；受限 v4 preview 已支持 typed prompt/static PyTorch → UGS → GPG → PVP。M2.12 的自由文本解释器是待迁移兼容原型，不能作为正式通用理解能力或后续视觉/Visio 权威；新 Harness 须先依赖 Phase 0–2，再完成 receipt/EvidencePack、内部 context 与外发 payload 分离、formal-only PVP 及 canonical rekeying。 |
 | 通用 Visio | `not_started` | 当前 bridge 仍是 canonical VGG16 夹具，不能作为通用导出能力 |
@@ -35,7 +35,7 @@
 | R4A | Prompt-to-UGS | `accepted` → `M2.8` | `aa9835c` 补齐端口级 evidence lineage；全套回归与独立审查均通过 | 仅以 canonical evidence 向 M2.12 提供输入，不授予 export/Visio 权限 |
 | R4B | Static-code-to-UGS | `accepted` → `M2.10` | `aa9835c` 强制直接分析器摘要绑定，并使条件初始化 fail closed；全套回归与独立审查均通过 | 仅以非执行 canonical evidence 向 M2.12 提供输入，不授予 export/Visio 权限 |
 | R4D | Evidence-constrained drawing session | `accepted` → `M2.11` | 来源配对、逐条澄清与 PVP semantic delta 已有回归和两组独立审查；正式 evidence 已记录 | 保持 renderer-neutral；M2.12 不得引入 persistence、provider、Snapshot、export、Worker 或 Visio |
-| R4E | Receipt-bound Structural Harness | `active — design gated` → `M2.12` | 现有自由文本 interpreter 原型与 83 项聚焦回归存在，但无 M2.12 acceptance evidence；其自由 locator 与 Provider ID 不能构成长期公开边界，且不能绕过 DrawingRun/Coordinator 前置 | 先完成 Phase 0–2，再建立 PrivateInputReceipt → EvidencePack → Coordinator-internal ProviderContextReference → redacted ProviderContextPayload → local proposal → Harness。Provider 仅 localRef/localFactRef；Harness 完成 canonical evidence/graph ordering 后才可发出 formal UGS |
+| R4E | Receipt-bound Structural Harness | `active — design gated` → `M2.12` | Phase 0–2 的 DrawingRun/Coordinator/durable-state closure 已完成代码、166 项聚焦回归、完整 API 回归、类型检查和独立审查；详见 `docs/evidence/2026-08-24-drawing-run-phase-1-2-closure.md`。专用 PostgreSQL 的迁移安全矩阵未执行，故这不是 accepted predecessor，也不是 Harness acceptance evidence。自由 locator 与 Provider ID 仍不能构成长期公开边界。 | 先运行专用 PostgreSQL 迁移矩阵；之后建立 PrivateInputReceipt → EvidencePack → Coordinator-internal ProviderContextReference → redacted ProviderContextPayload → local proposal → Harness。Provider 仅 localRef/localFactRef；Harness 完成 canonical evidence/graph ordering 后才可发出 formal UGS |
 | R4C | Sketch-to-UGS | `planned` → `M4.5` | 在 M2.9 后才开始，且只产生 candidate/clarification | 不能静默猜拓扑，不能直接写 formal PVP、Snapshot 或 export job |
 | R5 | 通用 Visio + 真实主机验收 | `deferred` → `M3.1`–`M3.5` | M3.1 已接受且只从服务端存储的 GenericPlanSnapshot 定位并重验 PVP。PVP 的 owner/device/revision 与 UGS/GPG/source-hash 谱系必须与 Snapshot 一致，之后才映射 allowlisted native intent。candidate、pending、手工伪造 QA、能力不完整、未知图元及非 allowlisted connector 均被拒绝。公共 bridge 仍为 VGG fixture，尚无 COM/真实主机证据 | M3.2 sealed authorization 保持 deferred，等待 M2.11 核心会话获得独立验收后再恢复；之后才是 Worker → readback/recovery → real-host matrix |
 
@@ -73,8 +73,8 @@
 
 R0 的 legacy VGG16 fixture 只保留作回归基线。M2.6 已接受的 UGS、General Publication Graph 与 PublicationVisualPlan 合同仍是唯一通用结构输入。M2.8/M2.10/M2.11 现已接受：提示/静态代码的 canonical facts 进入确定性的 owner/device-bound session，阻塞 topology 只能返回一个澄清且没有 PVP，确认只更新所涉语义区域并重新编译 GPG/PVP。它不读取路径、不会产生 COM 参数、Snapshot、export job 或 renderer authority。M2.12 的下一步不是直接实现陌生架构解释器，而是完成平台 Phase 0–2 的状态机、Coordinator、存储、幂等、取消和迁移清单；之后才按 receipt/EvidencePack、内部 context/外发 payload、local proposal、Harness 的顺序实施。任何 candidate 或 blocking UGS 均不得进入 PVP、Snapshot、native intent、Worker 或 Visio。其后依次是语义 visual grammar 与 zero-template 人工审阅、仅候选/澄清的草图观察、sealed formal PVP 驱动的当前 Visio 页更新、保存/重开/独立 readback。M3.1 的 Snapshot-only native intent 维持已接受边界；M3.2 仍因产品优先级 deferred。PatternLibrary 必须等待预览、真实 Visio 生命周期和 Sketch 的受限证据。任何后续实现必须更新本记录、对应 baseline 和 Operation History，并根据证据决定是否更新 ledger。
 
-## 6. Phase 0 DrawingRun migration truth
+## 6. Phase 0–2 DrawingRun closure truth
 
-Phase 0 records the migration baseline only. `M2.12` remains the active design-gated current focus with its established `M2.8`/`M2.10`/`M2.11` dependencies. Phase 0 migration governance, Phase 1 DrawingRun contracts/public projection, Phase 2 Coordinator/durability, and the following receipt/EvidencePack intake are non-skippable prerequisites recorded in M2.12's existing quality acceptance and next action, not new graph dependencies or executable ledger nodes. M2.12 must remain active and cannot enter review or acceptance from test-only evidence or without documented Phase 0-2 predecessor closure. Its free-text interpreter remains a regression-only compatibility prototype. `M2.13` remains planned and needs manual visual review in addition to tests.
+`M2.12` remains the active design-gated current focus with its established `M2.8`/`M2.10`/`M2.11` dependencies. Phase 0 migration governance, Phase 1 DrawingRun contracts/public projection, and Phase 2 Coordinator/durability now have code, local regression, typecheck, full API regression, and independent-review evidence in `docs/evidence/2026-08-24-drawing-run-phase-1-2-closure.md`. The dedicated PostgreSQL migration-safety matrix is still unexecuted, so the predecessor is not deployment-accepted and must not be reported as accepted. Phase 3 receipt/EvidencePack intake and Phase 4 Harness rekeying remain non-skippable before M2.12 can enter review. Its free-text interpreter remains a regression-only compatibility prototype. `M2.13` remains planned and needs manual visual review in addition to tests.
 
 The only planned current-page Visio record is `M3.6`. It cannot be accepted until formal PVP, sealed binding, restricted Worker, independent readback/recovery, and real-host acceptance have all completed. Unit tests, existing VGG fixtures, Snapshot-only native intent, an export job, or `OpenOrCreate` behavior do not satisfy that claim. This Phase 0 work adds no Provider, PVP, Worker, Visio, API, persistence, or real-host capability and changes no node to `accepted`.
