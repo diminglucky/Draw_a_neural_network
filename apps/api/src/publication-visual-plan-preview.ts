@@ -135,7 +135,10 @@ function projectPrimitive(value: unknown): PreviewRecord {
 function projectVisual(value: unknown, kind: string, primitiveBounds: PreviewBounds): PreviewRecord {
   const visual = exactRecord(value, ["regionRole", "nativeSupport", "geometry"], "PVP primitive visual");
   const geometry = exactRecord(own(visual, "geometry", "PVP primitive visual"), kind === "TensorVolume" ? ["kind", "frontFace", "depthFace"] : kind === "AttentionTokenStrip" ? ["kind", "orderedCells"] : ["kind"], "PVP primitive geometry");
-  const projection: PreviewRecord = { regionRole: enumValue(own(visual, "regionRole", "PVP primitive visual"), ["base", ...SEMANTIC_REGION_KINDS], "PVP primitive visual role"), nativeSupport: enumValue(own(visual, "nativeSupport", "PVP primitive visual"), ["supported", "restricted"], "PVP primitive native support") };
+  // Native support is an adapter capability, not browser-rendering data. Validate it
+  // while parsing the trusted PVP, but never project it across the public SVG boundary.
+  enumValue(own(visual, "nativeSupport", "PVP primitive visual"), ["supported", "restricted"], "PVP primitive native support");
+  const projection: PreviewRecord = { regionRole: enumValue(own(visual, "regionRole", "PVP primitive visual"), ["base", ...SEMANTIC_REGION_KINDS], "PVP primitive visual role") };
   if (kind === "TensorVolume") {
     const frontFace = array(own(geometry, "frontFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face"));
     const depthFace = array(own(geometry, "depthFace", "PVP tensor geometry"), "PVP tensor face").map((point) => pointValue(point, "PVP tensor face"));

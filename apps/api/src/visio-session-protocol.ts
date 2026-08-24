@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { selectedPageVisioReadbackSchema, visioReadbackSchema } from "./visio-readback.js";
+import { verifySelectedPageSealedPlan, type SelectedPageSealedPlanEnvelope } from "./visio-universal-protocol.js";
 
 export const VISIO_SESSION_PROTOCOL_VERSION = 2 as const;
 export const SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION = 3 as const;
@@ -12,6 +13,7 @@ const base = { protocolVersion: z.literal(VISIO_SESSION_PROTOCOL_VERSION), reque
 const fingerprint = z.string().regex(/^[a-f0-9]{64}$/i);
 const expectedRevision = z.number().int().nonnegative();
 const selectedPageBindingSchema = z.object({
+  jobId: identifier,
   tenantId: identifier,
   userId: identifier,
   deviceId: identifier,
@@ -24,14 +26,23 @@ const selectedPageBindingSchema = z.object({
   ownershipNamespace: identifier,
 }).strict();
 const sealedNativeIntentSchema = z.object({
-  intentId: identifier,
+  version: z.literal(2),
+  jobId: identifier,
+  tenantId: identifier,
+  userId: identifier,
+  deviceId: identifier,
+  workflowId: identifier,
   planId: identifier,
   planHash: fingerprint,
   documentId: identifier,
   pageId: identifier,
+  documentFingerprint: fingerprint,
+  pageFingerprint: fingerprint,
   expectedRevision,
   ownershipNamespace: identifier,
-  signature: z.string().trim().min(1).max(512),
+  expiresAt: z.string().datetime({ offset: true }),
+  canonicalPlanBase64: z.string().min(1).max(2_000_000).regex(/^[A-Za-z0-9_-]+$/),
+  signature: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
 }).strict();
 const selectedPageBase = {
   protocolVersion: z.literal(SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION),
@@ -95,7 +106,12 @@ const selectedPageResponseSchema = z.object({
 
 export interface TrustedVisioSessionIdentity { tenantId: string; userId: string; deviceId: string; workflowId: string; }
 export type TrustedSelectedPageBinding = z.infer<typeof selectedPageBindingSchema>;
-export type SealedSelectedPageNativeIntent = z.infer<typeof sealedNativeIntentSchema>;
+export type SealedSelectedPageNativeIntent = SelectedPageSealedPlanEnvelope;
+export interface TrustedSelectedPageCommandVerification {
+  binding: TrustedSelectedPageBinding;
+  sealedPlanSecret: string;
+  now?: Date;
+}
 export type VisioSessionCommand = z.infer<typeof commandSchema>;
 export type VisioSessionResponse = z.infer<typeof responseSchema>;
 export type SelectedPageVisioSessionCommand = z.infer<typeof selectedPageCommandSchema>;
@@ -103,16 +119,26 @@ export type SelectedPageVisioSessionResponse = z.infer<typeof selectedPageRespon
 
 export function parseVisioSessionCommand(value: unknown): VisioSessionCommand { return parse(commandSchema, value, "request"); }
 export function parseVisioSessionResponse(value: unknown): VisioSessionResponse { return parse(responseSchema, value, "response"); }
-export function parseSelectedPageVisioSessionCommand(value: unknown): SelectedPageVisioSessionCommand { return parse(selectedPageCommandSchema, value, "selected-page request"); }
-export function parseSelectedPageVisioSessionResponse(value: unknown, expected?: TrustedSelectedPageBinding): SelectedPageVisioSessionResponse {
+export function parseSelectedPageVisioSessionCommand(value: unknown, verification?: TrustedSelectedPageCommandVerification): SelectedPageVisioSessionCommand {
+  const command = parse(selectedPageCommandSchema, value, "selected-page request");
+  if (command.command !== "applyOwnedRegion") return command;
+  if (!verification) throw new Error("Invalid Visio session selected-page request: applyOwnedRegion requires trusted sealed-intent verification");
+  if (!sameBinding(command.binding, verification.binding)) throw new Error("Invalid Visio session selected-page request: selected page binding does not match trusted request");
+  verifySelectedPageSealedPlan(command.sealedNativeIntent, { ...command.binding, planId: command.sealedNativeIntent.planId }, verification.sealedPlanSecret, verification.now);
+  return command;
+}
+export function parseSelectedPageVisioSessionResponse(value: unknown, expected: TrustedSelectedPageBinding, expectedCommand: SelectedPageVisioSessionCommand): SelectedPageVisioSessionResponse {
   const response = parse(selectedPageResponseSchema, value, "selected-page response");
-  if (expected && response.selectedPage && !sameBinding(response.selectedPage, expected)) throw new Error("Invalid Visio selected-page response: selected page binding does not match the trusted request");
-  if (expected && response.readback && !sameReadbackTarget(response.readback, expected)) throw new Error("Invalid Visio selected-page response: readback binding does not match the trusted request");
+  if (!sameBinding(expectedCommand.binding, expected)) throw new Error("Invalid Visio selected-page response: expected command binding does not match the trusted request");
+  if (response.requestId !== expectedCommand.requestId) throw new Error("Invalid Visio selected-page response: request ID does not match the expected command");
+  if (response.selectedPage && !sameBinding(response.selectedPage, expected)) throw new Error("Invalid Visio selected-page response: selected page binding does not match the trusted request");
+  if (response.readback && !sameReadbackTarget(response.readback, expected)) throw new Error("Invalid Visio selected-page response: readback binding does not match the trusted request");
+  if (response.status === "succeeded" && expectedCommand.command === "readSelectedPage" && !response.readback) throw new Error("Invalid Visio selected-page response: successful readSelectedPage requires readback evidence");
   return response;
 }
 
-function sameBinding(value: Pick<TrustedSelectedPageBinding, "tenantId" | "userId" | "deviceId" | "workflowId" | "documentId" | "pageId" | "documentFingerprint" | "pageFingerprint" | "expectedRevision" | "ownershipNamespace">, expected: TrustedSelectedPageBinding): boolean {
-  return value.tenantId === expected.tenantId && value.userId === expected.userId && value.deviceId === expected.deviceId && value.workflowId === expected.workflowId && value.documentId === expected.documentId && value.pageId === expected.pageId && value.documentFingerprint === expected.documentFingerprint && value.pageFingerprint === expected.pageFingerprint && value.expectedRevision === expected.expectedRevision && value.ownershipNamespace === expected.ownershipNamespace;
+function sameBinding(value: Pick<TrustedSelectedPageBinding, "jobId" | "tenantId" | "userId" | "deviceId" | "workflowId" | "documentId" | "pageId" | "documentFingerprint" | "pageFingerprint" | "expectedRevision" | "ownershipNamespace">, expected: TrustedSelectedPageBinding): boolean {
+  return value.jobId === expected.jobId && value.tenantId === expected.tenantId && value.userId === expected.userId && value.deviceId === expected.deviceId && value.workflowId === expected.workflowId && value.documentId === expected.documentId && value.pageId === expected.pageId && value.documentFingerprint === expected.documentFingerprint && value.pageFingerprint === expected.pageFingerprint && value.expectedRevision === expected.expectedRevision && value.ownershipNamespace === expected.ownershipNamespace;
 }
 
 function sameReadbackTarget(value: Pick<TrustedSelectedPageBinding, "documentId" | "pageId" | "documentFingerprint" | "pageFingerprint" | "expectedRevision" | "ownershipNamespace">, expected: TrustedSelectedPageBinding): boolean {

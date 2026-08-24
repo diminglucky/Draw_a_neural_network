@@ -1579,11 +1579,11 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
         createdAt: new Date().toISOString(),
       });
       return {
+        schemaVersion: 1,
         kind: "clarification" as const,
         draft: { id: snapshot.draft.id, revision: snapshot.revision.revision },
         question: blockingQuestion,
         affectedRegionIds: [],
-        evidenceIds: [],
       };
     }
     const preview = new PublicationVisualPreviewService().preview({
@@ -1617,10 +1617,8 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
       createdAt: new Date().toISOString(),
     });
     return {
-      kind: preview.kind,
-      exportEligible: preview.exportEligible,
+      ...projectPublicationVisualPlanPreview({ graph: preview.graph, pvp: preview.pvp }),
       draft: { id: snapshot.draft.id, revision: snapshot.revision.revision },
-      pvp: preview.pvp,
     };
   });
 

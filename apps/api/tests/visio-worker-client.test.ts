@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiErrorCode } from "../src/domain.js";
 import { buildSelectedPageVisioSessionCommands, buildVisioWorkerArguments, normalizeVisioDiagram, VisioWorkerClient } from "../src/visio-worker-client.js";
+import { createSelectedPageSealedPlan } from "../src/visio-universal-protocol.js";
 import { completeVisioReadback } from "./fixtures/visio-readback.js";
 
 const fixtureDiagram = {
@@ -44,27 +45,33 @@ afterEach(async () => {
 describe("VisioWorkerClient", () => {
   it("builds only the sealed selected-page command sequence and rejects a mismatched binding", () => {
     const binding = {
+      jobId: "job-1",
       tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", workflowId: "workflow-1",
       documentId: "document-1", pageId: "page-1", documentFingerprint: "a".repeat(64), pageFingerprint: "b".repeat(64),
       expectedRevision: 4, ownershipNamespace: "agent-region-1",
     };
+    const sealedPlanSecret = "selected-page-worker-client-test-secret";
+    const sealedNativeIntent = createSelectedPageSealedPlan({
+      ...binding,
+      planId: "plan-1",
+      canonicalPlanBytes: Buffer.from('{"plan":"selected-page"}', "utf8"),
+      expiresAt: "2030-08-24T12:00:00.000Z",
+    }, sealedPlanSecret);
     const commands = buildSelectedPageVisioSessionCommands({
       requestIdFactory: (suffix) => `request-${suffix}`,
       binding,
-      sealedNativeIntent: {
-        intentId: "intent-1", planId: "plan-1", planHash: "c".repeat(64), documentId: binding.documentId, pageId: binding.pageId,
-        expectedRevision: binding.expectedRevision, ownershipNamespace: binding.ownershipNamespace, signature: "signed-intent",
-      },
+      sealedNativeIntent,
+      sealedPlanSecret,
+      now: new Date("2026-08-24T12:00:00.000Z"),
     });
     expect(commands.map((command) => command.command)).toEqual(["attachSelectedPage", "applyOwnedRegion", "saveSelectedDocument", "readSelectedPage", "closeSession"]);
     expect(JSON.stringify(commands)).not.toMatch(/outputPath|createDocument|createPage|open/i);
     expect(() => buildSelectedPageVisioSessionCommands({
       requestIdFactory: (suffix) => `request-${suffix}`,
       binding,
-      sealedNativeIntent: {
-        intentId: "intent-1", planId: "plan-1", planHash: "c".repeat(64), documentId: binding.documentId, pageId: "other-page",
-        expectedRevision: binding.expectedRevision, ownershipNamespace: binding.ownershipNamespace, signature: "signed-intent",
-      },
+      sealedNativeIntent: { ...sealedNativeIntent, pageId: "other-page" },
+      sealedPlanSecret,
+      now: new Date("2026-08-24T12:00:00.000Z"),
     })).toThrow(/pageId|binding/i);
   });
 

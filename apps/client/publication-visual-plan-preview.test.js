@@ -88,16 +88,80 @@ function grammarResponse(kind = "formal") {
   return response;
 }
 
+function publicPreview(raw) {
+  const { pvp, ...response } = raw;
+  const { lineage, sourceMappings, rendererRequirements, updateIdentity, ...plan } = pvp;
+  plan.primitives = plan.primitives.map((primitive) => {
+    if (!primitive.visual) return primitive;
+    const { nativeSupport, ...visual } = primitive.visual;
+    return { ...primitive, visual };
+  });
+  return {
+    schemaVersion: 1,
+    ...response,
+    plan,
+    graph: {
+      version: 1,
+      graphId: "dual-stream",
+      detail: "architecture",
+      exportEligibility: raw.kind === "candidate" ? "ineligible" : "eligible",
+      components: [],
+      relations: [],
+      semanticRegions: [],
+      layoutOrder: [],
+    },
+  };
+}
+
+function publicGrammarResponse(kind = "formal") {
+  return publicPreview(grammarResponse(kind));
+}
+
 describe("PublicationVisualPlan browser preview", () => {
+  it("accepts only the server-projected public preview and rejects a raw internal PVP", () => {
+    const publicPreview = publicGrammarResponse();
+
+    expect(renderPublicationVisualPlanPreview(publicPreview)).toContain("publication-visual-plan-svg");
+    expect(() => renderPublicationVisualPlanPreview(grammarResponse())).toThrow(/public|preview|fields/i);
+  });
+
+  it("fails closed when public visual geometry cannot produce an in-bounds readable SVG family", () => {
+    const cases = [
+      (preview) => { const item = preview.plan.primitives.find((primitive) => primitive.kind === "TensorStage"); item.bounds = { x: 0, y: 0, width: 1, height: 1000 }; },
+      (preview) => { const item = preview.plan.primitives.find((primitive) => primitive.kind === "AttentionRelation"); item.bounds = { x: 5, y: 0, width: 20, height: 8 }; },
+      (preview) => { const item = preview.plan.primitives.find((primitive) => primitive.kind === "TensorVolume"); item.visual.geometry.frontFace = Array.from({ length: 4 }, () => ({ x: 230, y: 230 })); },
+      (preview) => { const item = preview.plan.primitives.find((primitive) => primitive.kind === "TensorVolume"); item.visual.geometry.depthFace = [...item.visual.geometry.frontFace.slice(2), ...item.visual.geometry.frontFace.slice(0, 2)]; },
+      (preview) => { const item = preview.plan.primitives.find((primitive) => primitive.kind === "TensorVolume"); item.visual.geometry.depthFace = [...item.visual.geometry.frontFace].reverse(); },
+      (preview) => { const item = preview.plan.primitives.find((primitive) => primitive.kind === "TensorVolume"); item.visual.geometry.frontFace = [{ x: 230, y: 230 }, { x: 280, y: 230 }, { x: 330, y: 230 }, { x: 230, y: 310 }]; },
+      (preview) => { const item = preview.plan.primitives.find((primitive) => primitive.kind === "AttentionTokenStrip"); item.visual.geometry.orderedCells[1].bounds = { ...item.visual.geometry.orderedCells[0].bounds }; },
+    ];
+
+    for (const mutate of cases) {
+      const preview = publicGrammarResponse();
+      mutate(preview);
+      expect(() => renderPublicationVisualPlanPreview(preview)).toThrow(/geometry|bounds|visual|tensor|token|attention|stage/i);
+    }
+  });
+
+  it("fails closed when public plan and graph eligibility disagree", () => {
+    const contradictoryCandidate = publicGrammarResponse("candidate");
+    contradictoryCandidate.graph.exportEligibility = "eligible";
+    const contradictoryFormal = publicGrammarResponse("formal");
+    contradictoryFormal.graph.exportEligibility = "ineligible";
+
+    expect(() => renderPublicationVisualPlanPreview(contradictoryCandidate)).toThrow(/eligibility|candidate|graph/i);
+    expect(() => renderPublicationVisualPlanPreview(contradictoryFormal)).toThrow(/eligibility|formal|graph/i);
+  });
+
   it("renders a formal QA-pending PVP without advertising export", () => {
-    const response = planResponse("formal", "pending");
+    const response = publicPreview(planResponse("formal", "pending"));
 
     expect(renderPublicationVisualPlanPreview(response)).toContain("publication-visual-plan-svg");
     expect(publicationVisualPreviewSummary(response)).toMatchObject({ kind: "formal", exportEligible: false });
   });
 
   it("renders PVP page geometry, generic primitives, stored routes, and escaped text", () => {
-    const svg = renderPublicationVisualPlanPreview(planResponse());
+    const svg = renderPublicationVisualPlanPreview(publicPreview(planResponse()));
 
     expect(svg).toMatch(/<svg class="publication-visual-plan-svg(?:\s|")/);
     expect(svg).toContain('viewBox="0 0 1200 600"');
@@ -110,7 +174,7 @@ describe("PublicationVisualPlan browser preview", () => {
   });
 
   it("renders every public visual grammar family with deterministic, kind-specific SVG", () => {
-    const response = grammarResponse();
+    const response = publicGrammarResponse();
     const first = renderPublicationVisualPlanPreview(response);
     const second = renderPublicationVisualPlanPreview(response);
 
@@ -134,7 +198,7 @@ describe("PublicationVisualPlan browser preview", () => {
   });
 
   it("renders candidate grammar with a visible watermark and no export or native controls", () => {
-    const svg = renderPublicationVisualPlanPreview(grammarResponse("candidate"));
+    const svg = renderPublicationVisualPlanPreview(publicGrammarResponse("candidate"));
 
     expect(svg).toContain('class="publication-visual-plan-candidate"');
     expect(svg).toContain("CANDIDATE • REVIEW REQUIRED");
@@ -143,16 +207,17 @@ describe("PublicationVisualPlan browser preview", () => {
   });
 
   it("projects stored Profile style tokens without inferring new topology or geometry", () => {
-    const response = planResponse();
-    response.pvp.styleTokens = {
+    const raw = planResponse();
+    raw.pvp.styleTokens = {
       tokenSetVersion: "pvp-style-1",
       tokens: [
         { tokenId: "profile:test:primitive", values: { stroke: "#1d4ed8", fill: "#eff6ff", strokeWidth: "3" } },
         { tokenId: "profile:test:connector", values: { stroke: "#2563eb", strokeWidth: "3" } },
       ],
     };
-    response.pvp.primitives[1].styleTokenIds = ["profile:test:primitive"];
-    response.pvp.connectors[0].styleTokenIds = ["profile:test:connector"];
+    raw.pvp.primitives[1].styleTokenIds = ["profile:test:primitive"];
+    raw.pvp.connectors[0].styleTokenIds = ["profile:test:connector"];
+    const response = publicPreview(raw);
 
     const svg = renderPublicationVisualPlanPreview(response);
 
@@ -165,7 +230,7 @@ describe("PublicationVisualPlan browser preview", () => {
   });
 
   it("makes candidate state visible and never advertises export", () => {
-    const response = planResponse("candidate");
+    const response = publicPreview(planResponse("candidate"));
     const svg = renderPublicationVisualPlanPreview(response);
 
     expect(svg).toContain("publication-visual-plan-svg--candidate");
@@ -176,11 +241,11 @@ describe("PublicationVisualPlan browser preview", () => {
 
   it("renders clarification without constructing an SVG preview", () => {
     const clarification = {
+      schemaVersion: 1,
       kind: "clarification",
       draft: { id: "draft-question", revision: 2 },
       question: { id: "branch-direction", question: "Which direction is the branch?", candidateValues: ["forward", "reverse"] },
       affectedRegionIds: [],
-      evidenceIds: [],
     };
 
     expect(renderPublicationVisualClarification(clarification)).toContain("Which direction is the branch?");
@@ -189,13 +254,19 @@ describe("PublicationVisualPlan browser preview", () => {
   });
 
   it.each([
-    ["unsupported primitive", (response) => { response.pvp.primitives[0].kind = "UnsupportedPrimitive"; }],
-    ["non-integer bounds", (response) => { response.pvp.primitives[0].bounds.x = 80.5; }],
-    ["route endpoint mismatch", (response) => { response.pvp.connectors[0].route[0].x = 211; }],
-    ["unsupported protocol", (response) => { response.pvp.rendererRequirements.protocolVersion = "pvp-renderer-2"; }],
+    ["unsupported primitive", (response) => { response.plan.primitives[0].kind = "UnsupportedPrimitive"; }],
+    ["non-integer bounds", (response) => { response.plan.primitives[0].bounds.x = 80.5; }],
+    ["route endpoint mismatch", (response) => { response.plan.connectors[0].route[0].x = 211; }],
+    ["unsupported protocol", (response) => { response.schemaVersion = 2; }],
     ["leaked source locator", (response) => { response.locator = "C:/private/model.py"; }],
     ["leaked semantic region provenance", (response) => {
       response.graph = {
+        version: 1,
+        graphId: "dual-stream",
+        detail: "architecture",
+        exportEligibility: "eligible",
+        components: [],
+        relations: [],
         semanticRegions: [{
           regionId: "region:private",
           kind: "custom_module",
@@ -206,10 +277,11 @@ describe("PublicationVisualPlan browser preview", () => {
           sourceGroupIds: [],
           evidenceIds: ["internal-evidence"],
         }],
+        layoutOrder: [],
       };
     }],
   ])("fails closed for %s", (_name, mutate) => {
-    const response = planResponse();
+    const response = publicPreview(planResponse());
     mutate(response);
     expect(() => renderPublicationVisualPlanPreview(response)).toThrow();
   });

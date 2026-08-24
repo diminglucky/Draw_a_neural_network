@@ -6,8 +6,10 @@ import {
   parseSelectedPageVisioSessionCommand,
   parseSelectedPageVisioSessionResponse,
 } from "../src/visio-session-protocol.js";
+import { createSelectedPageSealedPlan } from "../src/visio-universal-protocol.js";
 
 const binding = {
+  jobId: "job-1",
   tenantId: "tenant-1",
   userId: "user-1",
   deviceId: "device-1",
@@ -19,6 +21,25 @@ const binding = {
   expectedRevision: 4,
   ownershipNamespace: "agent-region-1",
 };
+const sealedPlanSecret = "selected-page-session-test-secret";
+
+function sealedNativeIntent() {
+  return createSelectedPageSealedPlan({
+    ...binding,
+    planId: "plan-1",
+    canonicalPlanBytes: Buffer.from('{"plan":"selected-page"}', "utf8"),
+    expiresAt: "2030-08-24T12:00:00.000Z",
+  }, sealedPlanSecret);
+}
+
+function attachCommand(requestId = "request-1") {
+  return {
+    protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+    requestId,
+    command: "attachSelectedPage" as const,
+    binding,
+  };
+}
 
 describe("selected-current-page Visio session protocol", () => {
   it("retains the legacy v2 parser without allowing it to masquerade as v3", () => {
@@ -94,17 +115,27 @@ describe("selected-current-page Visio session protocol", () => {
       command: "applyOwnedRegion",
       binding,
       ownershipNamespace: "other-region",
-      sealedNativeIntent: {
-        intentId: "intent-1",
-        planId: "plan-1",
-        planHash: "c".repeat(64),
-        documentId: binding.documentId,
-        pageId: binding.pageId,
-        expectedRevision: binding.expectedRevision,
-        ownershipNamespace: binding.ownershipNamespace,
-        signature: "signed-intent",
-      },
+      sealedNativeIntent: sealedNativeIntent(),
     })).toThrow(/ownershipNamespace/i);
+  });
+
+  it("cryptographically verifies the sealed native intent before accepting applyOwnedRegion", () => {
+    const valid = sealedNativeIntent();
+    const command = {
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: "request-verified-apply",
+      command: "applyOwnedRegion",
+      binding,
+      ownershipNamespace: binding.ownershipNamespace,
+      sealedNativeIntent: valid,
+    };
+    const trust = { binding, sealedPlanSecret, now: new Date("2026-08-24T12:00:00.000Z") };
+
+    expect(() => parseSelectedPageVisioSessionCommand(command, trust)).not.toThrow();
+    expect(() => parseSelectedPageVisioSessionCommand({
+      ...command,
+      sealedNativeIntent: { ...valid, signature: "forged-signature" },
+    }, trust)).toThrow(/signature|sealed|intent/i);
   });
 
   it("rejects a selected-page response that cannot prove its binding and ownership separation", () => {
@@ -113,7 +144,7 @@ describe("selected-current-page Visio session protocol", () => {
       requestId: "request-1",
       status: "succeeded",
       selectedPage: { ...binding, pageId: "different-page" },
-    }, binding)).toThrow(/pageId|binding/i);
+    }, binding, attachCommand())).toThrow(/pageId|binding/i);
 
     expect(() => parseSelectedPageVisioSessionResponse({
       protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
@@ -132,6 +163,22 @@ describe("selected-current-page Visio session protocol", () => {
         agentOwnedShapes: [{ nativeShapeId: "shape-1", ownershipNamespace: "other-region", sourceMappingSemanticIds: ["semantic-1"] }],
         unclassifiedShapeCount: 0,
       },
-    }, binding)).toThrow(/namespace/i);
+    }, binding, attachCommand())).toThrow(/namespace/i);
+  });
+
+  it("requires readback evidence for a successful response to readSelectedPage", () => {
+    const readCommand = {
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: "request-read",
+      command: "readSelectedPage" as const,
+      binding,
+    };
+
+    expect(() => parseSelectedPageVisioSessionResponse({
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: "request-read",
+      status: "succeeded",
+      selectedPage: binding,
+    }, binding, readCommand)).toThrow(/readback|readSelectedPage/i);
   });
 });

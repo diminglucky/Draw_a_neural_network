@@ -74,6 +74,8 @@ export interface BuildSelectedPageVisioSessionCommandsInput {
   requestIdFactory: (suffix: "attach" | "apply" | "save" | "read" | "close") => string;
   binding: TrustedSelectedPageBinding;
   sealedNativeIntent: SealedSelectedPageNativeIntent;
+  sealedPlanSecret: string;
+  now?: Date;
 }
 
 export class VisioWorkerClient implements VisioExecutor {
@@ -446,7 +448,7 @@ export function buildSelectedPageVisioSessionCommands(input: BuildSelectedPageVi
     binding: input.binding,
     ownershipNamespace: input.binding.ownershipNamespace,
     sealedNativeIntent: input.sealedNativeIntent,
-  });
+  }, { binding: input.binding, sealedPlanSecret: input.sealedPlanSecret, now: input.now });
   const save = parseSelectedPageVisioSessionCommand({
     protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
     requestId: input.requestIdFactory("save"),

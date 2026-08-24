@@ -95,7 +95,7 @@ describe("figure draft preview route", () => {
     expect((await store.listAuditRecords()).some((record) => record.action === "figure-draft.preview.read")).toBe(false);
   });
 
-  it("returns a revision-bound publication visual plan without exposing source or renderer controls", async () => {
+  it("returns a revision-bound public publication preview without exposing source, native, or Visio controls", async () => {
     const store = new InMemoryFoundationStore();
     const drafts = new FigureDraftService({ store, createDraftId: () => "draft-pvp", now: () => "2026-08-14T09:00:00.000Z" });
     const app = buildApp({
@@ -118,18 +118,21 @@ describe("figure draft preview route", () => {
     expect(foreign.statusCode).toBe(404);
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
+      schemaVersion: 1,
       kind: "formal",
       exportEligible: false,
       draft: { id: "draft-pvp", revision: 1 },
-      pvp: {
+      plan: {
         identity: { schemaVersion: 1, planId: expect.any(String), canonicalHash: expect.any(String) },
         coordinateSpace: { id: "pvp-du-1", duPerInch: 1000 },
       },
+      graph: { version: 1, graphId: expect.any(String), detail: "architecture" },
     });
     const serialized = JSON.stringify(response.json()).toLowerCase();
-    for (const forbidden of ["locator", "excerpt", "snapshot", "worker", "command"]) {
+    for (const forbidden of ["locator", "excerpt", "snapshot", "worker", "command", "sourcemappings", "evidenceids", "lineage", "rendererrequirements", "updateidentity", "ownerid", "deviceid", "documentid", "pageid", "nativesupport"]) {
       expect(serialized).not.toContain(forbidden);
     }
+    expect(response.json()).not.toHaveProperty("pvp");
   });
 
   it("returns clarification without a PVP while the revision has a blocking topology question", async () => {
@@ -151,11 +154,11 @@ describe("figure draft preview route", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
+      schemaVersion: 1,
       kind: "clarification",
       draft: { id: "draft-clarification", revision: 1 },
       question: { id: "topology-direction", question: "Which direction does this branch use?", candidateValues: ["forward", "reverse"] },
       affectedRegionIds: [],
-      evidenceIds: [],
     });
   });
 });

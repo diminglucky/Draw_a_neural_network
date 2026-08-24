@@ -26,13 +26,13 @@ import {
 function publicationVisualResponse(kind = "formal", qaStatus = "pending") {
   const candidate = kind === "candidate";
   return {
+    schemaVersion: 1,
     kind,
     exportEligible: !candidate && qaStatus === "passed",
     draft: { id: "draft-pvp", revision: 7 },
-    pvp: {
+    plan: {
       identity: { schemaVersion: 1, planId: "pvp:chat", canonicalHash: "b".repeat(64) },
       eligibility: { kind, formalReasons: candidate ? [] : ["topology-complete"], blockingReasons: candidate ? ["topology-candidate"] : [], qaStatus },
-      lineage: {},
       coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: { x: 0, y: 0, width: 600, height: 300 }, safeMargins: { x: 25, y: 25, width: 550, height: 250 } },
       regions: [], primitiveGroups: [],
       primitives: [
@@ -44,9 +44,9 @@ function publicationVisualResponse(kind = "formal", qaStatus = "pending") {
         { portId: "port:out", primitiveId: "primitive:output", role: "input", anchor: { side: "left", offset: 500 }, order: 0, semanticPortId: "output:in" },
       ],
       connectors: [{ connectorId: "connector:flow", sourcePortId: "port:in", targetPortId: "port:out", relation: "data", route: [{ x: 150, y: 140 }, { x: 275, y: 140 }, { x: 275, y: 140 }, { x: 400, y: 140 }], styleTokenIds: [], zIndex: 0 }],
-      annotations: [], legend: {}, styleTokens: {}, profileApplications: [], sourceMappings: [],
-      rendererRequirements: { protocolVersion: "pvp-renderer-1", requiredCapabilities: ["native-text", "orthogonal-route", "shape-data"], optionalCapabilities: [] }, updateIdentity: {},
+      annotations: [], legend: {}, styleTokens: {}, profileApplications: [],
     },
+    graph: { version: 1, graphId: "chat", detail: "architecture", exportEligibility: candidate ? "ineligible" : "eligible", components: [], relations: [], semanticRegions: [], layoutOrder: [] },
   };
 }
 

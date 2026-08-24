@@ -1,10 +1,10 @@
 const RESPONSE_FIELDS = Object.freeze({
-  formal: ["kind", "exportEligible", "draft", "pvp"],
-  candidate: ["kind", "exportEligible", "draft", "pvp"],
-  clarification: ["kind", "draft", "question", "affectedRegionIds", "evidenceIds"],
+  formal: ["schemaVersion", "kind", "exportEligible", "draft", "plan", "graph"],
+  candidate: ["schemaVersion", "kind", "exportEligible", "draft", "plan", "graph"],
+  clarification: ["schemaVersion", "kind", "draft", "question", "affectedRegionIds"],
 });
 const PVP_FIELDS = Object.freeze([
-  "identity", "eligibility", "lineage", "coordinateSpace", "regions", "primitiveGroups", "primitives", "ports", "connectors", "annotations", "legend", "styleTokens", "profileApplications", "sourceMappings", "rendererRequirements", "updateIdentity",
+  "identity", "eligibility", "coordinateSpace", "regions", "primitiveGroups", "primitives", "ports", "connectors", "annotations", "legend", "styleTokens", "profileApplications",
 ]);
 const PRIMITIVE_KINDS = new Set([
   "Input", "Output", "GenericModule", "CustomOperator", "CustomModule", "Split", "MergeAdd", "MergeConcat", "CustomFusion", "CandidateRegion",
@@ -16,21 +16,22 @@ const PORT_SIDES = new Set(["left", "right", "top", "bottom"]);
 const REQUIRED_CAPABILITIES = new Set(["native-text", "orthogonal-route", "shape-data"]);
 const MAX_ITEMS = 500;
 const MAX_TEXT_LENGTH = 500;
+const FORBIDDEN_PUBLIC_FIELDS = new Set(["sourceMappings", "evidenceIds", "lineage", "rendererRequirements", "updateIdentity", "ownerId", "deviceId", "workflowId", "documentId", "pageId", "nativeSupport", "worker", "visio", "native", "outputPath"]);
 
 export function renderPublicationVisualPlanPreview(response) {
   const preview = parsePvpResponse(response);
   if (preview.kind === "clarification") throw new Error("PVP clarification response has no visual plan");
-  const { pvp } = preview;
-  const page = pvp.coordinateSpace.page;
+  const { plan } = preview;
+  const page = plan.coordinateSpace.page;
   const candidate = preview.kind === "candidate";
-  const connectors = pvp.connectors.map(renderConnector).join("");
-  const primitives = pvp.primitives.map(renderPrimitive).join("");
-  const annotations = pvp.annotations.map(renderAnnotation).join("");
+  const connectors = plan.connectors.map(renderConnector).join("");
+  const primitives = plan.primitives.map(renderPrimitive).join("");
+  const annotations = plan.annotations.map(renderAnnotation).join("");
   const candidateMark = candidate
     ? `<g class="publication-visual-plan-candidate" aria-label="Candidate preview"><rect x="${page.x}" y="${page.y}" width="${page.width}" height="${page.height}"/><text x="${page.x + 24}" y="${page.y + 38}">CANDIDATE • REVIEW REQUIRED</text></g>`
     : "";
 
-  return `<svg class="publication-visual-plan-svg${candidate ? " publication-visual-plan-svg--candidate" : ""}" data-pvp-plan="${escapeAttribute(pvp.identity.planId)}" data-pvp-hash="${escapeAttribute(pvp.identity.canonicalHash)}" viewBox="${page.x} ${page.y} ${page.width} ${page.height}" role="img" aria-label="Publication visual plan preview" xmlns="http://www.w3.org/2000/svg"><rect class="publication-visual-plan-page" x="${page.x}" y="${page.y}" width="${page.width}" height="${page.height}"/>${connectors}${primitives}${annotations}${candidateMark}</svg>`;
+  return `<svg class="publication-visual-plan-svg${candidate ? " publication-visual-plan-svg--candidate" : ""}" data-pvp-plan="${escapeAttribute(plan.identity.planId)}" data-pvp-hash="${escapeAttribute(plan.identity.canonicalHash)}" viewBox="${page.x} ${page.y} ${page.width} ${page.height}" role="img" aria-label="Publication visual plan preview" xmlns="http://www.w3.org/2000/svg"><rect class="publication-visual-plan-page" x="${page.x}" y="${page.y}" width="${page.width}" height="${page.height}"/>${connectors}${primitives}${annotations}${candidateMark}</svg>`;
 }
 
 export function publicationVisualPreviewSummary(response) {
@@ -43,9 +44,9 @@ export function publicationVisualPreviewSummary(response) {
     exportEligible: preview.exportEligible,
     draftId: preview.draft.id,
     revision: preview.draft.revision,
-    planId: preview.pvp.identity.planId,
-    primitiveCount: preview.pvp.primitives.length,
-    connectorCount: preview.pvp.connectors.length,
+    planId: preview.plan.identity.planId,
+    primitiveCount: preview.plan.primitives.length,
+    connectorCount: preview.plan.connectors.length,
   });
 }
 
@@ -69,13 +70,16 @@ function parsePvpResponse(value) {
   const kind = response.kind;
   if (kind !== "formal" && kind !== "candidate" && kind !== "clarification") throw new Error("PVP preview kind is invalid");
   assertExactKeys(response, RESPONSE_FIELDS[kind], "PVP preview response");
+  if (response.schemaVersion !== 1) throw new Error("PVP preview schema version is invalid");
   const draft = parseDraft(response.draft);
   if (kind === "clarification") {
-    return Object.freeze({ kind, draft, question: parseQuestion(response.question), affectedRegionIds: parseIdentifierArray(response.affectedRegionIds, "affectedRegionIds"), evidenceIds: parseIdentifierArray(response.evidenceIds, "evidenceIds") });
+    return Object.freeze({ kind, draft, question: parseQuestion(response.question), affectedRegionIds: parseIdentifierArray(response.affectedRegionIds, "affectedRegionIds") });
   }
-  const pvp = parsePvp(response.pvp, kind);
-  if (response.exportEligible !== (kind === "formal" && pvp.qaStatus === "passed")) throw new Error("PVP preview export eligibility is invalid");
-  return Object.freeze({ kind, exportEligible: response.exportEligible, draft, pvp });
+  const plan = parsePvp(response.plan, kind);
+  const graph = parsePublicGraph(response.graph);
+  if ((kind === "candidate" && graph.exportEligibility !== "ineligible") || (kind === "formal" && graph.exportEligibility !== "eligible")) throw new Error("PVP preview graph eligibility is inconsistent with the preview kind");
+  if (response.exportEligible !== (kind === "formal" && plan.qaStatus === "passed")) throw new Error("PVP preview export eligibility is invalid");
+  return Object.freeze({ kind, exportEligible: response.exportEligible, draft, plan });
 }
 
 function parsePvp(value, responseKind) {
@@ -94,17 +98,35 @@ function parsePvp(value, responseKind) {
   const ports = parsePorts(pvp.ports, primitives, coordinateSpace.page);
   const connectors = parseConnectors(pvp.connectors, ports, coordinateSpace.page, styleTokens);
   const annotations = parseAnnotations(pvp.annotations, primitives, coordinateSpace.page);
-  parseRendererRequirements(pvp.rendererRequirements);
   assertDenseArray(pvp.regions, "PVP regions");
   assertDenseArray(pvp.primitiveGroups, "PVP primitiveGroups");
   assertDenseArray(pvp.profileApplications, "PVP profileApplications");
-  assertDenseArray(pvp.sourceMappings, "PVP sourceMappings");
-  plainRecord(pvp.lineage, "PVP lineage is invalid");
   plainRecord(pvp.legend, "PVP legend is invalid");
-  plainRecord(pvp.updateIdentity, "PVP update identity is invalid");
   const hasCandidateVisual = primitives.some(hasCandidateVisualSemantic);
   if (hasCandidateVisual && (responseKind !== "candidate" || eligibility.qaStatus === "passed")) throw new Error("Candidate visual semantics are invalid");
   return Object.freeze({ identity: Object.freeze({ planId: identity.planId, canonicalHash: identity.canonicalHash }), qaStatus: eligibility.qaStatus, coordinateSpace, primitives, ports, connectors, annotations });
+}
+
+function parsePublicGraph(value) {
+  const graph = plainRecord(value, "PVP public graph is invalid");
+  assertExactKeys(graph, ["version", "graphId", "detail", "exportEligibility", "components", "relations", "semanticRegions", "layoutOrder"], "PVP public graph");
+  if (graph.version !== 1 || !identifier(graph.graphId) || !["overview", "architecture", "operator_detail"].includes(graph.detail) || !["eligible", "ineligible"].includes(graph.exportEligibility)) throw new Error("PVP public graph is invalid");
+  for (const field of ["components", "relations", "semanticRegions", "layoutOrder"]) assertDenseArray(graph[field], `PVP public graph ${field}`);
+  assertNoForbiddenPublicFields(graph);
+  return Object.freeze({ graphId: graph.graphId, exportEligibility: graph.exportEligibility });
+}
+
+function assertNoForbiddenPublicFields(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) assertNoForbiddenPublicFields(item);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const record = plainRecord(value, "PVP public graph is invalid");
+  for (const [key, item] of Object.entries(record)) {
+    if (FORBIDDEN_PUBLIC_FIELDS.has(key) || /^(source|evidence|worker|visio|native)/i.test(key)) throw new Error("PVP public graph contains forbidden fields");
+    assertNoForbiddenPublicFields(item);
+  }
 }
 
 function parseDraft(value) {
@@ -144,6 +166,7 @@ function parsePrimitives(value, page, styleTokens) {
     const bounds = parseBounds(primitive.bounds, "PVP primitive bounds", false);
     if (!contains(page, bounds)) throw new Error("PVP primitive is outside page bounds");
     const visual = parseVisual(primitive.visual, primitive.kind, bounds);
+    assertRenderableBounds(primitive.kind, bounds, visual);
     ids.add(primitive.primitiveId);
     return Object.freeze({ primitiveId: primitive.primitiveId, kind: primitive.kind, bounds, label: primitive.label || "", styles, visual });
   }));
@@ -155,10 +178,9 @@ function parseVisual(value, kind, primitiveBounds) {
     return null;
   }
   const visual = plainRecord(value, "PVP primitive visual is invalid");
-  assertExactKeys(visual, ["regionRole", "nativeSupport", "geometry"], "PVP primitive visual");
-  if (!VISUAL_REGION_ROLES.has(visual.regionRole) || !["supported", "restricted"].includes(visual.nativeSupport)) throw new Error("PVP primitive visual is invalid");
+  assertExactKeys(visual, ["regionRole", "geometry"], "PVP primitive visual");
+  if (!VISUAL_REGION_ROLES.has(visual.regionRole)) throw new Error("PVP primitive visual is invalid");
   if (kind === "CandidateCallout" && visual.regionRole !== "candidate_feedback") throw new Error("CandidateCallout visual is invalid");
-  if (visual.regionRole === "candidate_feedback" && visual.nativeSupport !== "restricted") throw new Error("Candidate visual is invalid");
   const geometry = parseVisualGeometry(visual.geometry, kind, primitiveBounds);
   return Object.freeze({ regionRole: visual.regionRole, geometry });
 }
@@ -188,6 +210,7 @@ function parseFace(value, primitiveBounds, label) {
   if (value.length !== 4) throw new Error(`${label} is invalid`);
   const face = value.map((point) => parsePoint(point, label));
   if (face.some((point) => !contains(primitiveBounds, { x: point.x, y: point.y, width: 0, height: 0 }))) throw new Error(`${label} is invalid`);
+  if (new Set(face.map((point) => `${point.x},${point.y}`)).size !== 4 || Math.abs(polygonAreaTwice(face)) === 0 || polygonSelfIntersects(face) || hasCollinearAdjacentVertices(face)) throw new Error(`${label} is degenerate`);
   return Object.freeze(face);
 }
 
@@ -203,7 +226,65 @@ function parseOrderedCells(value, primitiveBounds) {
     ids.add(cell.cellId);
     return Object.freeze({ cellId: cell.cellId, order: cell.order, bounds });
   });
+  for (let index = 1; index < cells.length; index += 1) {
+    const previous = cells[index - 1].bounds;
+    const current = cells[index].bounds;
+    if (overlaps(previous, current) || previous.x + previous.width > current.x) throw new Error("PVP token cells are not readable in order");
+  }
   return Object.freeze(cells);
+}
+
+function assertRenderableBounds(kind, bounds, visual) {
+  if ((kind === "InputTerminal" || kind === "OutputTerminal" || kind === "Input" || kind === "Output") && (bounds.width < 32 || bounds.height < 16)) throw new Error("PVP terminal bounds cannot render safely");
+  if (kind === "TensorStage") {
+    const inset = Math.max(8, Math.floor(bounds.height / 5));
+    if (bounds.width < inset * 2 || bounds.height < 8) throw new Error("PVP tensor stage bounds cannot render safely");
+  }
+  if ((kind === "AddMarker" || kind === "ConcatMarker" || kind === "MergeAdd" || kind === "MergeConcat") && Math.min(bounds.width, bounds.height) < 24) throw new Error("PVP merge marker bounds cannot render safely");
+  if (kind === "AttentionRelation" && (bounds.width < 24 || bounds.height < 24)) throw new Error("PVP attention relation bounds cannot render safely");
+  if (kind === "TensorVolume" && (!visual || visual.geometry.kind !== "tensor_volume" || samePolygon(visual.geometry.frontFace, visual.geometry.depthFace))) throw new Error("PVP tensor volume geometry is degenerate");
+}
+
+function polygonAreaTwice(points) {
+  return points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * next.y - point.y * next.x;
+  }, 0);
+}
+
+function polygonSelfIntersects(points) {
+  return segmentsIntersect(points[0], points[1], points[2], points[3]) || segmentsIntersect(points[1], points[2], points[3], points[0]);
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const orientation = (first, second, third) => Math.sign((second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x));
+  const abC = orientation(a, b, c);
+  const abD = orientation(a, b, d);
+  const cdA = orientation(c, d, a);
+  const cdB = orientation(c, d, b);
+  return abC !== 0 && abD !== 0 && cdA !== 0 && cdB !== 0 && abC !== abD && cdA !== cdB;
+}
+
+function samePolygon(left, right) {
+  return canonicalPolygonRing(left) === canonicalPolygonRing(right);
+}
+
+function canonicalPolygonRing(points) {
+  const orientations = [points, [...points].reverse()];
+  const candidates = orientations.flatMap((orientation) => orientation.map((_point, start) => orientation.slice(start).concat(orientation.slice(0, start)).map((point) => `${point.x},${point.y}`).join("|")));
+  return candidates.sort()[0];
+}
+
+function hasCollinearAdjacentVertices(points) {
+  return points.some((point, index) => {
+    const previous = points[(index + points.length - 1) % points.length];
+    const next = points[(index + 1) % points.length];
+    return (point.x - previous.x) * (next.y - point.y) === (point.y - previous.y) * (next.x - point.x);
+  });
+}
+
+function overlaps(left, right) {
+  return left.x < right.x + right.width && left.x + left.width > right.x && left.y < right.y + right.height && left.y + left.height > right.y;
 }
 
 function parsePoint(value, label) {
@@ -423,7 +504,9 @@ function renderAttentionRelation(primitive) {
   const endX = bounds.x + bounds.width;
   const endY = bounds.y;
   const controlX = bounds.x + Math.floor(bounds.width / 2);
-  const controlY = bounds.y - Math.max(12, Math.floor(bounds.height / 3));
+  // The relation owns only its declared primitive bounds; do not synthesize a
+  // curve that escapes the verified page/layout geometry.
+  const controlY = bounds.y + Math.max(1, Math.floor(bounds.height / 4));
   return `<path class="publication-visual-plan-attention-relation" d="M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}"${styleAttributes(primitive.styles)}/>`;
 }
 
