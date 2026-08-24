@@ -4,13 +4,21 @@ import { createPublicationVisualPlan } from "../src/publication-visual-plan.js";
 import { compilePublicationVisualPlan } from "../src/publication-visual-plan-compiler.js";
 import { projectPublicationVisualPlanPreview } from "../src/publication-visual-plan-preview.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
-import { unknownDualStreamFusionUgs } from "./fixtures/universal-graph-spec.js";
+import { unknownDualStreamFusionUgs, unknownHybridSemanticRegionsCandidateUgs, unknownHybridSemanticRegionsUgs } from "./fixtures/universal-graph-spec.js";
 
 const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
 
 function compiledPlan(kind: "formal" | "candidate") {
   const source = unknownDualStreamFusionUgs();
   if (kind === "candidate") source.edges[1] = { ...source.edges[1], relation: "candidate", knowledge: "candidate" };
+  const ugs = parseUniversalGraphSpec(source);
+  const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+  const pvp = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+  return { graph, pvp };
+}
+
+function compiledSemanticPlan(kind: "formal" | "candidate") {
+  const source = kind === "formal" ? unknownHybridSemanticRegionsUgs() : unknownHybridSemanticRegionsCandidateUgs();
   const ugs = parseUniversalGraphSpec(source);
   const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
   const pvp = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
@@ -34,7 +42,7 @@ describe("projectPublicationVisualPlanPreview", () => {
       "annotations", "connectors", "coordinateSpace", "eligibility", "identity", "legend", "ports", "primitiveGroups", "primitives", "profileApplications", "regions", "styleTokens",
     ]);
     expect(Object.keys(preview.graph).sort()).toEqual([
-      "components", "detail", "exportEligibility", "graphId", "layoutOrder", "relations", "version",
+      "components", "detail", "exportEligibility", "graphId", "layoutOrder", "relations", "semanticRegions", "version",
     ]);
     expect(JSON.stringify(preview)).not.toContain("prompt text");
     expect(JSON.stringify(preview)).not.toContain("workerControl");
@@ -44,6 +52,7 @@ describe("projectPublicationVisualPlanPreview", () => {
     expect(preview.graph.components[0]).not.toHaveProperty("evidenceIds");
     expect(preview.graph.relations[0]).not.toHaveProperty("sourceEdgeIds");
     expect(preview.graph.relations[0]).not.toHaveProperty("evidenceIds");
+    expect(preview.graph.semanticRegions.every((region) => Object.keys(region).sort().join(",") === "kind,label,regionId,state")).toBe(true);
     expect(inputPvp).toEqual(originalPvp);
     expect(inputGraph).toEqual(originalGraph);
 
@@ -66,6 +75,40 @@ describe("projectPublicationVisualPlanPreview", () => {
     ]));
     expect(preview.graph.components.every((component) => !Object.hasOwn(component, "sourceNodeIds") && !Object.hasOwn(component, "sourceEdgeIds") && !Object.hasOwn(component, "evidenceIds"))).toBe(true);
     expect(preview.graph.relations.every((relation) => !Object.hasOwn(relation, "sourceEdgeIds") && !Object.hasOwn(relation, "evidenceIds"))).toBe(true);
+  });
+
+  it("projects semantic regions to safe public summaries and preserves candidate ineligibility", () => {
+    const { graph, pvp } = compiledSemanticPlan("candidate");
+    const preview = projectPublicationVisualPlanPreview({ graph, pvp });
+
+    expect(preview).toMatchObject({ kind: "candidate", exportEligible: false });
+    expect(preview.graph.semanticRegions).toEqual([
+      expect.objectContaining({ kind: "candidate_feedback", label: "Candidate topology pending confirmation", state: "candidate" }),
+    ]);
+    expect(preview.graph.semanticRegions.every((region) => Object.keys(region).sort().join(",") === "kind,label,regionId,state")).toBe(true);
+    expect(JSON.stringify(preview.graph.semanticRegions)).not.toMatch(/sourceNodeIds|sourceEdgeIds|sourceGroupIds|evidenceIds|worker|visio|native/i);
+  });
+
+  it("fails closed when semantic-region input contains unknown fields or public-shape provenance arrays", () => {
+    const { graph, pvp } = compiledSemanticPlan("formal");
+    const publicSummary = graph.semanticRegions[0]!;
+    const invalidGraphs = [
+      { ...graph, semanticRegions: graph.semanticRegions.map((region) => ({ ...region, workerControl: "run" })) },
+      {
+        ...graph,
+        semanticRegions: [{
+          regionId: publicSummary.regionId,
+          kind: publicSummary.kind,
+          label: publicSummary.label,
+          state: publicSummary.state,
+          sourceNodeIds: publicSummary.sourceNodeIds,
+        }],
+      },
+    ];
+
+    for (const invalidGraph of invalidGraphs) {
+      expect(() => projectPublicationVisualPlanPreview({ graph: invalidGraph as any, pvp })).toThrow(/semantic|graph|preview/i);
+    }
   });
 
   it("keeps a formal pending plan non-exportable and rejects contradictory formal graph eligibility", () => {

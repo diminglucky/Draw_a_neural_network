@@ -1,4 +1,5 @@
 import { type GeneralPublicationGraph } from "./general-publication-graph.js";
+import { type ComposableSemanticRegionKind } from "./composable-semantic-regions.js";
 import { parsePublicationVisualPlan, type PublicationVisualPlan } from "./publication-visual-plan.js";
 
 type PreviewRecord = Record<string, unknown>;
@@ -15,6 +16,7 @@ const MAX_STYLE_TEXT_LENGTH = 256;
 const DETAILS = ["overview", "architecture", "operator_detail"] as const;
 const COMPONENT_ROLES = ["input", "output", "generic_module", "custom_operator", "custom_module", "split", "merge_add", "merge_concat", "custom_fusion", "repeat_badge", "candidate_region"] as const;
 const RELATION_ROLES = ["flow", "skip", "merge", "condition", "feedback"] as const;
+const SEMANTIC_REGION_KINDS = ["scale_transition", "repeat_group", "add_merge", "concat_fusion", "token_attention", "custom_module", "multi_branch", "candidate_feedback"] as const satisfies readonly ComposableSemanticRegionKind[];
 const PRIMITIVE_KINDS = ["Input", "Output", "GenericModule", "CustomOperator", "CustomModule", "Split", "MergeAdd", "MergeConcat", "CustomFusion", "RepeatBadge", "CandidateRegion"] as const;
 const ANNOTATION_ROLES = ["note", "heading", "detail"] as const;
 const LEGEND_KINDS = ["swatch", "line", "shape"] as const;
@@ -45,8 +47,17 @@ export interface PublicationVisualPlanPreview {
     exportEligibility: "eligible" | "ineligible";
     components: Array<{ componentId: string; role: string; label: string; count?: number; layoutOrder: { rank: number; order: number } }>;
     relations: Array<{ relationId: string; role: string; sourceComponentId: string; targetComponentId: string }>;
+    semanticRegions: PublicSemanticRegionSummary[];
     layoutOrder: PreviewLayoutOrder[];
   };
+}
+
+/** The only semantic-region representation that crosses the public preview boundary. */
+export interface PublicSemanticRegionSummary {
+  regionId: string;
+  kind: ComposableSemanticRegionKind;
+  label: string;
+  state: "formal" | "candidate";
 }
 
 /** Rebuilds a detached public DTO and rejects malformed or extended v1 records. */
@@ -150,10 +161,11 @@ function projectProfileApplication(value: unknown): PreviewRecord {
 }
 
 function projectGraph(value: unknown): PublicationVisualPlanPreview["graph"] {
-  const graph = exactRecord(value, ["version", "graphId", "detail", "exportEligibility", "components", "relations", "sourceMappings", "layoutOrder"], "General Publication Graph");
+  const graph = exactRecord(value, ["version", "graphId", "detail", "exportEligibility", "components", "relations", "semanticRegions", "sourceMappings", "layoutOrder"], "General Publication Graph");
   if (own(graph, "version", "General Publication Graph") !== 1) throw new Error("General Publication Graph version is invalid");
   const components = array(own(graph, "components", "General Publication Graph"), "General Publication Graph components").map(projectComponent);
   const relations = array(own(graph, "relations", "General Publication Graph"), "General Publication Graph relations").map(projectRelation);
+  const semanticRegions = array(own(graph, "semanticRegions", "General Publication Graph"), "General Publication Graph semantic regions").map(projectSemanticRegion);
   const layoutOrder = array(own(graph, "layoutOrder", "General Publication Graph"), "General Publication Graph layout order").map(projectLayoutOrder);
   const componentIds = new Set(components.map((component) => component.componentId));
   if (componentIds.size !== components.length || layoutOrder.length !== components.length || new Set(layoutOrder.map((item) => item.componentId)).size !== layoutOrder.length || layoutOrder.some((item) => !componentIds.has(item.componentId))) throw new Error("General Publication Graph component layout is invalid");
@@ -162,8 +174,20 @@ function projectGraph(value: unknown): PublicationVisualPlanPreview["graph"] {
     if (!layout || layout.rank !== component.layoutOrder.rank || layout.order !== component.layoutOrder.order) throw new Error("General Publication Graph layout order is incoherent");
   }
   if (new Set(relations.map((relation) => relation.relationId)).size !== relations.length || relations.some((relation) => !componentIds.has(relation.sourceComponentId) || !componentIds.has(relation.targetComponentId) || relation.sourceComponentId === relation.targetComponentId)) throw new Error("General Publication Graph relations are invalid");
+  if (new Set(semanticRegions.map((region) => region.regionId)).size !== semanticRegions.length) throw new Error("General Publication Graph semantic regions are invalid");
   validateIgnoredSourceMappings(own(graph, "sourceMappings", "General Publication Graph"), componentIds);
-  return { version: 1, graphId: identifier(own(graph, "graphId", "General Publication Graph"), "General Publication Graph ID"), detail: enumValue(own(graph, "detail", "General Publication Graph"), DETAILS, "General Publication Graph detail"), exportEligibility: enumValue(own(graph, "exportEligibility", "General Publication Graph"), ["eligible", "ineligible"], "General Publication Graph export eligibility"), components, relations, layoutOrder };
+  return { version: 1, graphId: identifier(own(graph, "graphId", "General Publication Graph"), "General Publication Graph ID"), detail: enumValue(own(graph, "detail", "General Publication Graph"), DETAILS, "General Publication Graph detail"), exportEligibility: enumValue(own(graph, "exportEligibility", "General Publication Graph"), ["eligible", "ineligible"], "General Publication Graph export eligibility"), components, relations, semanticRegions, layoutOrder };
+}
+
+function projectSemanticRegion(value: unknown): PublicSemanticRegionSummary {
+  const region = exactRecord(value, ["regionId", "kind", "label", "state", "sourceNodeIds", "sourceEdgeIds", "sourceGroupIds", "evidenceIds"], "General Publication Graph semantic region");
+  validateIgnoredIdentifiers(region, ["sourceNodeIds", "sourceEdgeIds", "sourceGroupIds", "evidenceIds"], "General Publication Graph semantic region");
+  return {
+    regionId: identifier(own(region, "regionId", "General Publication Graph semantic region"), "General Publication Graph semantic region ID"),
+    kind: enumValue(own(region, "kind", "General Publication Graph semantic region"), SEMANTIC_REGION_KINDS, "General Publication Graph semantic region kind"),
+    label: displayText(own(region, "label", "General Publication Graph semantic region"), "General Publication Graph semantic region label"),
+    state: enumValue(own(region, "state", "General Publication Graph semantic region"), ["formal", "candidate"], "General Publication Graph semantic region state"),
+  };
 }
 
 function projectComponent(value: unknown): PublicationVisualPlanPreview["graph"]["components"][number] {

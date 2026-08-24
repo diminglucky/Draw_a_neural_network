@@ -1,4 +1,8 @@
 import { getUniversalGraphEligibility, parseUniversalGraphSpec, type UniversalGraphSpec } from "./universal-graph-spec.js";
+import {
+  deriveComposableSemanticRegions,
+  type ComposableSemanticRegion,
+} from "./composable-semantic-regions.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
 export type GeneralPublicationComponentRole = "input" | "output" | "generic_module" | "custom_operator" | "custom_module" | "split" | "merge_add" | "merge_concat" | "custom_fusion" | "repeat_badge" | "candidate_region";
@@ -30,12 +34,16 @@ export interface GeneralPublicationGraph {
   exportEligibility: "eligible" | "ineligible";
   components: GeneralPublicationComponent[];
   relations: GeneralPublicationRelation[];
+  /** Full server-side provenance. Public previews must project summaries only. */
+  semanticRegions: ComposableSemanticRegion[];
   sourceMappings: Array<{ componentId: string; sourceNodeIds: string[]; sourceEdgeIds: string[]; evidenceIds: string[] }>;
   layoutOrder: Array<{ componentId: string; rank: number; order: number }>;
 }
 
 export function composeGeneralPublicationGraph(input: UniversalGraphSpec, intent: { detail: "overview" | "architecture" | "operator_detail" }): GeneralPublicationGraph {
   const ugs = parseUniversalGraphSpec(input);
+  const semanticRegions = deriveComposableSemanticRegions(ugs);
+  assertSemanticRegionReferences(ugs, semanticRegions);
   const rankByNodeId = ranksFor(ugs);
   const nodeComponentId = (nodeId: string) => `node:${nodeId}`;
   const orderedNodes = [...ugs.nodes].sort((left, right) => rankByNodeId.get(left.nodeId)! - rankByNodeId.get(right.nodeId)! || compareCodeUnits(left.nodeId, right.nodeId));
@@ -134,7 +142,9 @@ export function composeGeneralPublicationGraph(input: UniversalGraphSpec, intent
 
   const sortedComponents = [...components].sort((left, right) => left.layoutOrder.rank - right.layoutOrder.rank || left.layoutOrder.order - right.layoutOrder.order || compareCodeUnits(left.componentId, right.componentId));
   const eligibility = getUniversalGraphEligibility(ugs);
-  const exportEligibility = candidateEdges.some((item) => item.edge.relation === "feedback") ? "ineligible" : eligibility.export;
+  const exportEligibility = eligibility.export === "ineligible" || semanticRegions.some((region) => region.state === "candidate")
+    ? "ineligible"
+    : "eligible";
   return {
     version: 1,
     graphId: ugs.graphId,
@@ -142,6 +152,16 @@ export function composeGeneralPublicationGraph(input: UniversalGraphSpec, intent
     exportEligibility,
     components: sortedComponents,
     relations,
+    semanticRegions: semanticRegions.map((region) => ({
+      regionId: region.regionId,
+      kind: region.kind,
+      label: region.label,
+      state: region.state,
+      sourceNodeIds: [...region.sourceNodeIds],
+      sourceEdgeIds: [...region.sourceEdgeIds],
+      sourceGroupIds: [...region.sourceGroupIds],
+      evidenceIds: [...region.evidenceIds],
+    })),
     sourceMappings: sortedComponents.map((component) => ({
       componentId: component.componentId,
       sourceNodeIds: [...component.sourceNodeIds],
@@ -154,6 +174,25 @@ export function composeGeneralPublicationGraph(input: UniversalGraphSpec, intent
       order: component.layoutOrder.order,
     })),
   };
+}
+
+function assertSemanticRegionReferences(ugs: UniversalGraphSpec, regions: ComposableSemanticRegion[]): void {
+  const nodeIds = new Set(ugs.nodes.map((node) => node.nodeId));
+  const edgeIds = new Set(ugs.edges.map((edge) => edge.edgeId));
+  const groupIds = new Set(ugs.groups.map((group) => group.groupId));
+  const evidenceIds = new Set(ugs.evidence.map((evidence) => evidence.evidenceId));
+  for (const region of regions) {
+    assertReferencesExist(region.sourceNodeIds, nodeIds, "node", region.regionId);
+    assertReferencesExist(region.sourceEdgeIds, edgeIds, "edge", region.regionId);
+    assertReferencesExist(region.sourceGroupIds, groupIds, "group", region.regionId);
+    assertReferencesExist(region.evidenceIds, evidenceIds, "evidence", region.regionId);
+  }
+}
+
+function assertReferencesExist(references: string[], known: Set<string>, kind: string, regionId: string): void {
+  for (const reference of references) {
+    if (!known.has(reference)) throw new Error(`Semantic region ${regionId} references unknown ${kind} ${reference}`);
+  }
 }
 
 function ranksFor(ugs: UniversalGraphSpec): Map<string, number> {

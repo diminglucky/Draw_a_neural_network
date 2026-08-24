@@ -132,6 +132,20 @@ describe("PublicationVisualPlan browser preview", () => {
     ["route endpoint mismatch", (response) => { response.pvp.connectors[0].route[0].x = 211; }],
     ["unsupported protocol", (response) => { response.pvp.rendererRequirements.protocolVersion = "pvp-renderer-2"; }],
     ["leaked source locator", (response) => { response.locator = "C:/private/model.py"; }],
+    ["leaked semantic region provenance", (response) => {
+      response.graph = {
+        semanticRegions: [{
+          regionId: "region:private",
+          kind: "custom_module",
+          label: "Private region",
+          state: "formal",
+          sourceNodeIds: ["internal-node"],
+          sourceEdgeIds: ["internal-edge"],
+          sourceGroupIds: [],
+          evidenceIds: ["internal-evidence"],
+        }],
+      };
+    }],
   ])("fails closed for %s", (_name, mutate) => {
     const response = planResponse();
     mutate(response);

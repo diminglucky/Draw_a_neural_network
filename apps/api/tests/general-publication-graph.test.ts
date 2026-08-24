@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
-import { unknownDualStreamFusionUgs, unknownRepeatedFusionStackUgs } from "./fixtures/universal-graph-spec.js";
+import {
+  unknownDualStreamFusionUgs,
+  unknownHybridSemanticRegionsCandidateUgs,
+  unknownHybridSemanticRegionsUgs,
+  unknownRepeatedFusionStackUgs,
+} from "./fixtures/universal-graph-spec.js";
 
 describe("General Publication Graph", () => {
   it("composes a deterministic publication graph for an unseen dual-stream fusion", () => {
@@ -98,5 +103,47 @@ describe("General Publication Graph", () => {
       count: 3,
       sourceNodeIds: expect.arrayContaining(["spectral_stack", "texture_mixer", "context_router", "spectral_fusion"]),
     });
+  });
+
+  it("retains one deterministic full semantic-region representation whose provenance is valid UGS evidence", () => {
+    const ugs = parseUniversalGraphSpec(unknownHybridSemanticRegionsUgs());
+    const first = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const second = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const nodeIds = new Set(ugs.nodes.map((node) => node.nodeId));
+    const edgeIds = new Set(ugs.edges.map((edge) => edge.edgeId));
+    const groupIds = new Set(ugs.groups.map((group) => group.groupId));
+    const evidenceIds = new Set(ugs.evidence.map((evidence) => evidence.evidenceId));
+
+    expect(first).toEqual(second);
+    expect(first.semanticRegions.map((region) => region.regionId)).toEqual([...first.semanticRegions.map((region) => region.regionId)].sort());
+    expect(first.semanticRegions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "scale_transition", state: "formal" }),
+      expect.objectContaining({ kind: "repeat_group", state: "formal" }),
+      expect.objectContaining({ kind: "add_merge", state: "formal" }),
+      expect.objectContaining({ kind: "concat_fusion", state: "formal" }),
+    ]));
+    for (const region of first.semanticRegions) {
+      expect(region.sourceNodeIds.every((id) => nodeIds.has(id))).toBe(true);
+      expect(region.sourceEdgeIds.every((id) => edgeIds.has(id))).toBe(true);
+      expect(region.sourceGroupIds.every((id) => groupIds.has(id))).toBe(true);
+      expect(region.evidenceIds.every((id) => evidenceIds.has(id))).toBe(true);
+    }
+  });
+
+  it("keeps known generic components while candidate semantic regions make the GPG ineligible", () => {
+    const graph = composeGeneralPublicationGraph(
+      parseUniversalGraphSpec(unknownHybridSemanticRegionsCandidateUgs()),
+      { detail: "architecture" },
+    );
+
+    expect(graph.exportEligibility).toBe("ineligible");
+    expect(graph.semanticRegions).toEqual([
+      expect.objectContaining({ kind: "candidate_feedback", state: "candidate" }),
+    ]);
+    expect(graph.components).toEqual(expect.arrayContaining([
+      expect.objectContaining({ componentId: "node:spatial_stage", role: "custom_operator" }),
+      expect.objectContaining({ componentId: "node:result_field", role: "output" }),
+    ]));
+    expect(graph.relations.some((relation) => relation.role === "flow")).toBe(true);
   });
 });
