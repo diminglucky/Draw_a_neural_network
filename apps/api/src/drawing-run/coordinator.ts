@@ -6,6 +6,7 @@ import {
   type BindExistingPageInput,
   type CancelDrawingRunInput,
   type DrawingRun,
+  type DrawingRunTrustedScope,
   DRAWING_CLARIFICATION_CONFIRMATION_HASH,
   type DrawingRunCommand,
   type DrawingRunSnapshot,
@@ -74,31 +75,34 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     const persisted = await this.store.getByStartIdempotency(input.ownerId, input.deviceId, input.idempotencyKey);
     if (persisted) {
       if (persisted.startRequestHash !== requestHash) throw new DrawingRunError("DRAWING_RUN_IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different start command");
-      return projectPublicDrawingRun(persisted);
+      const trustedScope = verifiedDrawingRunScope(persisted, { ...input, runId: persisted.runId });
+      return projectPublicDrawingRun(persisted, trustedScope);
     }
     const existing = this.startIdempotency.get(startKey);
     if (existing) {
       if (existing.requestHash !== requestHash) {
         throw new DrawingRunError("DRAWING_RUN_IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different start command");
       }
-      const replay = await this.requireRun(input.ownerId, existing.runId);
-      return projectPublicDrawingRun(replay);
+      const trustedScope = { runId: existing.runId, ownerId: input.ownerId, deviceId: input.deviceId };
+      const replay = await this.requireRun(trustedScope);
+      return projectPublicDrawingRun(replay, trustedScope);
     }
     const runId = this.createRunId();
     const run = createDrawingRun({ ...input, runId, now: this.now(), startIdempotencyKey: input.idempotencyKey, startRequestHash: requestHash });
+    const trustedScope = verifiedDrawingRunScope(run, { ...input, runId });
     await this.store.create(run);
     this.startIdempotency.set(startKey, { requestHash, runId });
     if (this.workflow) void this.scheduleWorkflow(run);
-    return projectPublicDrawingRun(run);
+    return projectPublicDrawingRun(run, trustedScope);
   }
 
   async resume(input: ResumeDrawingRunInput): Promise<DrawingRunSnapshot> {
-    const run = await this.requireRun(input.ownerId, input.runId);
-    assertDevice(run, input.deviceId);
+    const trustedScope = drawingRunTrustedScope(input);
+    const run = await this.requireRun(trustedScope);
     if (this.workflow && isWorkflowResumable(run.status)) {
       void this.scheduleWorkflow(run);
     }
-    return projectPublicDrawingRun(run);
+    return projectPublicDrawingRun(run, trustedScope);
   }
 
   async acceptInput(input: AcceptDrawingInput): Promise<DrawingRunSnapshot> {
@@ -177,7 +181,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
       if (!claimed.acquired || claimed.fencingToken === null) return;
       lease = { fencingToken: claimed.fencingToken };
       renewInterval = setInterval(() => { void renewLease(); }, renewIntervalMs);
-      await this.dispatchWorkflow(run, renewLease);
+      await this.dispatchWorkflow(run, verifiedDrawingRunScope(run, run), renewLease);
     } finally {
       if (renewInterval) clearInterval(renewInterval);
       if (lease) {
@@ -191,7 +195,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     }
   }
 
-  private async dispatchWorkflow(run: DrawingRun, leaseHeld: () => Promise<boolean>): Promise<void> {
+  private async dispatchWorkflow(run: DrawingRun, trustedScope: DrawingRunTrustedScope, leaseHeld: () => Promise<boolean>): Promise<void> {
     if (run.status === "awaiting_clarification") return;
     const expectedRevision = run.revision;
     try {
@@ -205,17 +209,15 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
         clarificationAnswerHash,
       });
       if (!(await leaseHeld())) return;
-      const current = await this.store.get(run.ownerId, run.runId);
-      if (!current || current.revision !== expectedRevision || current.status === "cancelled") return;
+      const current = await this.store.get(trustedScope.ownerId, trustedScope.runId);
+      if (!current || !isBoundToDrawingRunScope(current, trustedScope) || current.revision !== expectedRevision || current.status === "cancelled") return;
       await this.applyWorkflowResult(current, result);
     } catch (error) {
       if (!(await leaseHeld())) return;
-      const current = await this.store.get(run.ownerId, run.runId);
-      if (!current || current.revision !== expectedRevision || current.status === "cancelled") return;
+      const current = await this.store.get(trustedScope.ownerId, trustedScope.runId);
+      if (!current || !isBoundToDrawingRunScope(current, trustedScope) || current.revision !== expectedRevision || current.status === "cancelled") return;
       await this.dispatch({
-        ownerId: current.ownerId,
-        deviceId: current.deviceId,
-        runId: current.runId,
+        ...trustedScope,
         expectedRevision,
         idempotencyKey: `workflow-failure:${expectedRevision}`,
         type: "fail",
@@ -289,36 +291,42 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
 
   async get(ownerId: string, runId: string): Promise<DrawingRunSnapshot | null> {
     const run = await this.store.get(ownerId, runId);
-    return run ? projectPublicDrawingRun(run) : null;
+    if (!run) return null;
+    const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId, deviceId: run.deviceId });
+    return projectPublicDrawingRun(run, trustedScope);
   }
 
   async list(ownerId: string): Promise<DrawingRunSnapshot[]> {
-    return (await this.store.list(ownerId)).map(projectPublicDrawingRun);
+    return (await this.store.list(ownerId)).map((run) => {
+      const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId: run.runId, deviceId: run.deviceId });
+      return projectPublicDrawingRun(run, trustedScope);
+    });
   }
 
   async listEvents(ownerId: string, runId: string): Promise<PublicDrawingRunEvent[] | null> {
     const run = await this.store.get(ownerId, runId);
     if (!run) return null;
+    verifiedDrawingRunScope(run, { ownerId, runId, deviceId: run.deviceId });
     return (await this.store.listEvents(ownerId, runId)).map(projectPublicDrawingRunEvent);
   }
 
   async dispatch(command: DrawingRunCommand): Promise<DrawingRunSnapshot> {
-    const run = await this.requireRun(command.ownerId, command.runId);
-    assertDevice(run, command.deviceId);
+    const trustedScope = drawingRunTrustedScope(command);
+    const run = await this.requireRun(trustedScope);
     const requestHash = digest(command);
     const replayRevision = this.idempotency.read(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash);
     if (replayRevision !== null) {
-      const replay = await this.requireRun(command.ownerId, command.runId);
-      return projectPublicDrawingRun(replay);
+      const replay = await this.requireRun(trustedScope);
+      return projectPublicDrawingRun(replay, trustedScope);
     }
     const persistedEvent = await this.store.getEvent(command.ownerId, command.runId, command.idempotencyKey);
     if (persistedEvent) {
       if (persistedEvent.requestHash !== requestHash) throw new DrawingRunError("DRAWING_RUN_IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different command");
-      const replay = await this.requireRun(command.ownerId, command.runId);
+      const replay = await this.requireRun(trustedScope);
       this.idempotency.record(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash, persistedEvent.revision);
-      return projectPublicDrawingRun(replay);
+      return projectPublicDrawingRun(replay, trustedScope);
     }
-    const transition: DrawingRunTransition = reduceDrawingRun(run, command);
+    const transition: DrawingRunTransition = reduceDrawingRun(run, command, trustedScope);
     transition.event.requestHash = requestHash;
     const result = await this.store.commitTransition({
       ownerId: command.ownerId,
@@ -330,24 +338,42 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     if (result === "conflict") throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run changed concurrently");
     this.idempotency.record(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash, transition.next.revision);
     if (result === "replayed") {
-      const replay = await this.requireRun(command.ownerId, command.runId);
-      return projectPublicDrawingRun(replay);
+      const replay = await this.requireRun(trustedScope);
+      return projectPublicDrawingRun(replay, trustedScope);
     }
     if (this.workflow && isWorkflowResumable(transition.next.status)) {
       void this.scheduleWorkflow(transition.next);
     }
-    return projectPublicDrawingRun(transition.next);
+    return projectPublicDrawingRun(transition.next, trustedScope);
   }
 
-  private async requireRun(ownerId: string, runId: string): Promise<DrawingRun> {
-    const run = await this.store.get(ownerId, runId);
+  private async requireRun(trustedScope: DrawingRunTrustedScope): Promise<DrawingRun> {
+    const run = await this.store.get(trustedScope.ownerId, trustedScope.runId);
     if (!run) throw new DrawingRunError("DRAWING_RUN_IDENTITY_MISMATCH", "Drawing Run was not found");
+    verifiedDrawingRunScope(run, trustedScope);
     return run;
   }
 }
 
-function assertDevice(run: DrawingRun, deviceId: string): void {
-  if (run.deviceId !== deviceId) throw new DrawingRunError("DRAWING_RUN_IDENTITY_MISMATCH", "Device does not match the Drawing Run");
+function drawingRunTrustedScope(input: Pick<DrawingRunTrustedScope, "runId" | "ownerId" | "deviceId">): DrawingRunTrustedScope {
+  return { runId: input.runId, ownerId: input.ownerId, deviceId: input.deviceId };
+}
+
+function isBoundToDrawingRunScope(run: DrawingRun, trustedScope: DrawingRunTrustedScope): boolean {
+  return run.runId === trustedScope.runId
+    && run.ownerId === trustedScope.ownerId
+    && run.deviceId === trustedScope.deviceId;
+}
+
+function verifiedDrawingRunScope(
+  run: DrawingRun,
+  input: Pick<DrawingRunTrustedScope, "runId" | "ownerId" | "deviceId">,
+): DrawingRunTrustedScope {
+  const trustedScope = drawingRunTrustedScope(input);
+  if (!isBoundToDrawingRunScope(run, trustedScope)) {
+    throw new DrawingRunError("DRAWING_RUN_IDENTITY_MISMATCH", "Drawing Run identity does not match the trusted scope");
+  }
+  return trustedScope;
 }
 
 function isWorkflowResumable(status: DrawingRun["status"]): boolean {

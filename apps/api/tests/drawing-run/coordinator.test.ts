@@ -4,7 +4,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { InMemoryDrawingRunCoordinator } from "../../src/drawing-run/coordinator.js";
 import { DrawingRunError, DrawingWorkflowError } from "../../src/drawing-run/errors.js";
 import { InMemoryFoundationStore } from "../../src/store.js";
-import { FoundationDrawingRunStoreAdapter } from "../../src/drawing-run/store.js";
+import { FoundationDrawingRunStoreAdapter, InMemoryDrawingRunStore } from "../../src/drawing-run/store.js";
 import type { DrawingWorkflowRunner } from "../../src/drawing-run/langgraph-workflow.js";
 import { InMemoryPrivateReceiptStore, receiptBatchHash } from "../../src/drawing-input/private-receipt.js";
 import { InMemoryEvidencePackStore, createReceiptBoundDrawingWorkflow } from "../../src/drawing-input/intent.js";
@@ -19,7 +19,138 @@ const intent = {
   sourceKinds: ["typed_text" as const],
 };
 
+class JsonTamperingDrawingRunStore extends InMemoryDrawingRunStore {
+  tamperOwner = false;
+  tamperDevice = false;
+  captureCommits = false;
+  capturedCommitCount = 0;
+
+  override async get(ownerId: string, runId: string) {
+    return this.tamper(await super.get(ownerId, runId));
+  }
+
+  override async list(ownerId: string) {
+    return Promise.all((await super.list(ownerId)).map((run) => this.tamper(run))).then((runs) => runs.filter((run) => run !== null));
+  }
+
+  override async getByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string) {
+    return this.tamper(await super.getByStartIdempotency(ownerId, deviceId, idempotencyKey));
+  }
+
+  override async commitTransition(input: Parameters<InMemoryDrawingRunStore["commitTransition"]>[0]) {
+    if (this.captureCommits) {
+      this.capturedCommitCount += 1;
+      return "updated" as const;
+    }
+    return super.commitTransition(input);
+  }
+
+  private async tamper(run: Awaited<ReturnType<InMemoryDrawingRunStore["get"]>>) {
+    if (!run) return null;
+    const restored = JSON.parse(JSON.stringify(run)) as typeof run;
+    if (this.tamperOwner) restored.ownerId = "owner-tampered";
+    if (this.tamperDevice) restored.deviceId = "device-tampered";
+    return restored;
+  }
+}
+
 describe("Drawing Run coordinator", () => {
+  it("rejects JSON-restored identity tampering on start, get, and list projections", async () => {
+    const store = new JsonTamperingDrawingRunStore();
+    const coordinator = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-trusted-projection" });
+    const input = { ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-trusted-projection", intent };
+    await coordinator.start(input);
+
+    store.tamperOwner = true;
+    store.tamperDevice = true;
+
+    await expect(coordinator.start(input)).rejects.toBeInstanceOf(DrawingRunError);
+    await expect(coordinator.get("owner-1", "run-trusted-projection")).rejects.toBeInstanceOf(DrawingRunError);
+    await expect(coordinator.list("owner-1")).rejects.toBeInstanceOf(DrawingRunError);
+  });
+
+  it("rejects a tampered JSON-restored run on an idempotent replay projection", async () => {
+    const store = new JsonTamperingDrawingRunStore();
+    const coordinator = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-trusted-replay" });
+    const command = {
+      ownerId: "owner-1",
+      deviceId: "device-1",
+      runId: "run-trusted-replay",
+      expectedRevision: 0,
+      idempotencyKey: "cancel-trusted-replay",
+    };
+    await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-trusted-replay", intent });
+    await coordinator.cancel(command);
+
+    store.tamperOwner = true;
+
+    await expect(coordinator.cancel(command)).rejects.toBeInstanceOf(DrawingRunError);
+  });
+
+  it("does not transition a workflow result under a tampered persisted device", async () => {
+    const store = new JsonTamperingDrawingRunStore();
+    let workflowCall = 0;
+    let releaseSecondWorkflow!: () => void;
+    const secondWorkflowStarted = new Promise<void>((resolveStarted) => {
+      releaseSecondWorkflow = resolveStarted;
+    });
+    let continueSecondWorkflow!: () => void;
+    const secondWorkflowGate = new Promise<void>((resolveGate) => {
+      continueSecondWorkflow = resolveGate;
+    });
+    const hash = "a".repeat(64);
+    const workflow: DrawingWorkflowRunner = {
+      run: async (workflowInput) => {
+        workflowCall += 1;
+        if (workflowCall === 1) {
+          return {
+            runId: workflowInput.runId,
+            ownerId: workflowInput.ownerId,
+            deviceId: workflowInput.deviceId,
+            revision: workflowInput.revision,
+            phase: "awaiting_input",
+            artifactHashes: workflowInput.artifactHashes,
+            evidencePackHash: null,
+            needsInterpreter: false,
+            proposalHash: null,
+            assessment: null,
+            pvpHash: null,
+            qaHash: null,
+            pauseReason: "input_required",
+          };
+        }
+        releaseSecondWorkflow();
+        await secondWorkflowGate;
+        return {
+          runId: workflowInput.runId,
+          ownerId: workflowInput.ownerId,
+          deviceId: workflowInput.deviceId,
+          revision: workflowInput.revision,
+          phase: "composing",
+          artifactHashes: workflowInput.artifactHashes,
+          evidencePackHash: hash,
+          needsInterpreter: false,
+          proposalHash: null,
+          assessment: null,
+          pvpHash: null,
+          qaHash: null,
+          pauseReason: null,
+        };
+      },
+    };
+    const coordinator = new InMemoryDrawingRunCoordinator({ store, createRunId: () => "run-trusted-workflow", workflow });
+    const started = await coordinator.start({ ownerId: "owner-1", deviceId: "device-1", idempotencyKey: "start-trusted-workflow", intent });
+    await coordinator.acceptInput({ ownerId: "owner-1", deviceId: "device-1", runId: started.runId, expectedRevision: 0, idempotencyKey: "accept-trusted-workflow", receiptIds: ["receipt-1"], artifactHash: hash });
+    await secondWorkflowStarted;
+
+    store.tamperDevice = true;
+    store.captureCommits = true;
+    continueSecondWorkflow();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(store.capturedCommitCount).toBe(0);
+  });
+
   it("pauses on blocking structure and resumes only after explicit confirmation", async () => {
     const declaration = {
       version: 1,
