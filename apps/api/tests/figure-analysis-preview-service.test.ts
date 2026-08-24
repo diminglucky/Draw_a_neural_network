@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FigureAnalysisRecord } from "../src/figure-analysis.js";
 import { buildComposableDagPublicationPlan } from "../src/composable-dag-publication-plan.js";
-import { runComposableDagVisualQa } from "../src/composable-dag-visual-qa.js";
 import { defaultFigureIntent } from "../src/figure-intent.js";
 import { cnnGoldIr } from "./fixtures/figure-component-gold-ir.js";
 import {
@@ -42,22 +41,12 @@ function analysisRecord(overrides: Partial<FigureAnalysisRecord> = {}): FigureAn
 
 function serviceFor(records: FigureAnalysisRecord[]) {
   const byOwner = new Map(records.map((record) => [`${record.userId}:${record.id}`, record]));
-  let compileCalls = 0;
-  let qaCalls = 0;
   const service = new FigureAnalysisPreviewServiceImpl({
     store: {
       getFigureAnalysis: async (userId, id) => byOwner.get(`${userId}:${id}`) ?? null,
     },
-    compilePublicationPlan: (input) => {
-      compileCalls += 1;
-      return buildComposableDagPublicationPlan(input);
-    },
-    runVisualQa: (plan) => {
-      qaCalls += 1;
-      return runComposableDagVisualQa(plan);
-    },
   });
-  return { service, calls: () => ({ compileCalls, qaCalls }) };
+  return { service };
 }
 
 describe("FigureAnalysisPreviewService", () => {
@@ -68,7 +57,7 @@ describe("FigureAnalysisPreviewService", () => {
       blockingQuestion,
       unresolved: [blockingQuestion as never],
     });
-    const { service, calls } = serviceFor([candidate]);
+    const { service } = serviceFor([candidate]);
 
     const preview = await service.preview("user-1", "analysis-candidate");
 
@@ -78,17 +67,23 @@ describe("FigureAnalysisPreviewService", () => {
       watermark: "STRUCTURE_PENDING_CONFIRMATION",
       blockingQuestion,
     });
-    expect(calls()).toEqual({ compileCalls: 0, qaCalls: 0 });
   });
 
-  it("compiles a ready analysis through the v3 publication and QA boundaries", async () => {
-    const { service, calls } = serviceFor([analysisRecord()]);
+  it("routes a ready analysis through UGS, GPG, and public PVP without selecting the legacy compiler", async () => {
+    const { service } = serviceFor([analysisRecord()]);
 
     const preview = await service.preview("user-1", "analysis-ready");
 
-    expect(preview).toMatchObject({ version: 3, kind: "publication_plan", visualQa: { status: "pass" } });
-    expect(calls()).toEqual({ compileCalls: 1, qaCalls: 1 });
-    expect(JSON.stringify(preview)).not.toMatch(/evidenceIndex|sourceSha256|sourceRecordId|excerptDigest|locator/);
+    expect(preview).toMatchObject({
+      version: 3,
+      kind: "publication_visual_preview",
+      publicationPreview: {
+        schemaVersion: 1,
+        plan: { identity: { planId: "pvp:analysis:analysis-ready:architecture", canonicalHash: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+        graph: { graphId: "analysis:analysis-ready", detail: "architecture" },
+      },
+    });
+    expect(JSON.stringify(preview)).not.toMatch(/composable-dag-v1|evidenceIndex|sourceSha256|sourceRecordId|excerptDigest|locator/);
   });
 
   it("uses one safe not-found result for missing and foreign analyses", async () => {
@@ -105,10 +100,9 @@ describe("FigureAnalysisPreviewService", () => {
     const record = analysisRecord({
       architectureIR: { ...cnnGoldIr(), unresolved: [blockingQuestion as never] },
     });
-    const { service, calls } = serviceFor([record]);
+    const { service } = serviceFor([record]);
 
     await expect(service.preview("user-1", "analysis-ready")).rejects.toThrow(/preview/i);
-    expect(calls()).toEqual({ compileCalls: 0, qaCalls: 0 });
   });
 
   it("returns deterministic, caller-isolated ready projections", async () => {
@@ -118,7 +112,7 @@ describe("FigureAnalysisPreviewService", () => {
     const second = await service.preview("user-1", "analysis-ready");
 
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-    if (first.kind === "publication_plan") first.publicationPlan.components[0]!.id = "changed";
+    if (first.kind === "publication_visual_preview") first.publicationPreview.plan.primitives[0]!.primitiveId = "changed";
     const third = await service.preview("user-1", "analysis-ready");
     expect(JSON.stringify(third)).toBe(JSON.stringify(second));
     expect(defaultFigureIntent().version).toBe(1);

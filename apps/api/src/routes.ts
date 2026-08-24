@@ -371,9 +371,11 @@ async function auditFigureAnalysisPreview(
       capabilityVersion: preview.analysis.capabilityVersion,
       version: preview.version,
       confirmedNodeCount: 0,
-      componentCount: preview.publicationPlan.components.length,
-      connectionCount: preview.publicationPlan.connections.length,
-      qaStatus: preview.visualQa.status,
+      pvpPlanId: preview.publicationPreview.plan.identity.planId,
+      pvpPlanHash: preview.publicationPreview.plan.identity.canonicalHash,
+      gpgGraphId: preview.publicationPreview.graph.graphId,
+      gpgDetail: preview.publicationPreview.graph.detail,
+      exportEligible: preview.publicationPreview.exportEligible,
     };
   await store.createAuditRecord({
     id: randomUUID(),

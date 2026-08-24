@@ -1,18 +1,17 @@
 import { ApiErrorCode, FoundationError } from "./domain.js";
 import type { FigureAnalysisBlockingQuestion, FigureAnalysisRecord } from "./figure-analysis.js";
 import {
-  buildComposableDagPublicationPlan,
-  type ComposableDagPublicationBuildResult,
   type ComposableDagPublicationPlan,
   type ComposableDagVisualSpec,
 } from "./composable-dag-publication-plan.js";
 import type { ComposableFigureComponent, ComposableFigureConnection, FigureBounds } from "./composable-dag-figure-compiler.js";
-import { runComposableDagVisualQa } from "./composable-dag-visual-qa.js";
 import type { FigureComponentPort } from "./figure-components.js";
-import type { VisualQaResult } from "./plan-snapshot.js";
 import { defaultFigureIntent, type FigureIntent } from "./figure-intent.js";
 import { validateArchitectureIRv3 } from "./network-ir-v3.js";
+import { PublicationVisualPreviewService } from "./publication-visual-preview-service.js";
+import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
 import type { FoundationStore } from "./store.js";
+import { projectArchitectureIrV3ToUniversalGraphSpec } from "./universal-graph-spec-adapter.js";
 
 export interface PublicComposableDagPublicationPlan {
   version: 1;
@@ -29,8 +28,6 @@ export interface PublicComposableDagPublicationPlan {
 
 export interface FigureAnalysisPreviewServiceOptions {
   store: Pick<FoundationStore, "getFigureAnalysis">;
-  compilePublicationPlan?: (input: Parameters<typeof buildComposableDagPublicationPlan>[0]) => ComposableDagPublicationBuildResult;
-  runVisualQa?: typeof runComposableDagVisualQa;
 }
 
 export type FigureAnalysisPreviewResponse =
@@ -44,20 +41,13 @@ export type FigureAnalysisPreviewResponse =
     }
   | {
       version: 3;
-      kind: "publication_plan";
+      kind: "publication_visual_preview";
       analysis: { id: string; status: "ready_for_preview"; capabilityVersion: string };
-      publicationPlan: PublicComposableDagPublicationPlan;
-      visualQa: VisualQaResult;
+      publicationPreview: PublicationVisualPlanPreview;
     };
 
 export class FigureAnalysisPreviewServiceImpl {
-  private readonly compilePublicationPlan: NonNullable<FigureAnalysisPreviewServiceOptions["compilePublicationPlan"]>;
-  private readonly runVisualQa: NonNullable<FigureAnalysisPreviewServiceOptions["runVisualQa"]>;
-
-  constructor(private readonly options: FigureAnalysisPreviewServiceOptions) {
-    this.compilePublicationPlan = options.compilePublicationPlan ?? buildComposableDagPublicationPlan;
-    this.runVisualQa = options.runVisualQa ?? runComposableDagVisualQa;
-  }
+  constructor(private readonly options: FigureAnalysisPreviewServiceOptions) {}
 
   async preview(userId: string, analysisId: string): Promise<FigureAnalysisPreviewResponse> {
     const record = await this.options.store.getFigureAnalysis(userId, analysisId);
@@ -70,26 +60,29 @@ export class FigureAnalysisPreviewServiceImpl {
     const validated = validateArchitectureIRv3(record.architectureIR, undefined, { renderReady: true });
     if (!validated.valid || !validated.ir) throw invalidPreviewError();
 
-    const compiled = this.compilePublicationPlan({
-      architectureIr: validated.ir,
-      intent: defaultFigureIntent(),
-      layoutSeed: `m2-4-${record.id}`,
+    const ugs = projectArchitectureIrV3ToUniversalGraphSpec(validated.ir);
+    const compiled = new PublicationVisualPreviewService().preview({
+      ugs: { ...ugs, graphId: `analysis:${record.id}` },
+      detail: "architecture",
+      updateIdentity: {
+        ownerId: userId,
+        deviceId: "figure-analysis-preview",
+        workflowId: `figure-analysis:${record.id}`,
+        documentId: `analysis:${record.id}`,
+        pageId: "pvp-preview",
+        expectedRevision: 1,
+      },
     });
-    if (compiled.status !== "ready") throw invalidPreviewError();
-
-    const visualQa = this.runVisualQa(compiled.publicationPlan);
-    if (visualQa.status !== "pass") throw invalidPreviewError();
 
     return {
       version: 3,
-      kind: "publication_plan",
+      kind: "publication_visual_preview",
       analysis: {
         id: record.id,
         status: "ready_for_preview",
         capabilityVersion: record.capabilityVersion,
       },
-      publicationPlan: projectPublicComposableDagPublicationPlan(compiled.publicationPlan),
-      visualQa: structuredClone(visualQa),
+      publicationPreview: projectPublicationVisualPlanPreview(compiled),
     };
   }
 }

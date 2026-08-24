@@ -134,12 +134,33 @@ describe("owner-scoped v3 figure analysis preview route", () => {
 
     expect(first.statusCode).toBe(200);
     expect(first.headers["figure-version"]).toBe("3");
-    expect(first.json()).toMatchObject({ version: 3, kind: "publication_plan", visualQa: { status: "pass" } });
+    expect(first.json()).toMatchObject({
+      version: 3,
+      kind: "publication_visual_preview",
+      publicationPreview: {
+        schemaVersion: 1,
+        plan: { identity: { planId: expect.stringMatching(/^pvp:/), canonicalHash: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+        graph: { version: 1, graphId: expect.any(String), detail: "architecture" },
+      },
+    });
     expect(first.body).toBe(second.body);
-    expect(first.body).not.toMatch(/evidenceIndex|sourceSha256|sourceRecordId|sourceMappings|locator|excerpt|provider|worker|command/i);
+    expect(first.body).not.toContain("preview-ready-source");
+    expect(first.body).not.toMatch(/composable-dag-v1|evidenceIndex|sourceSha256|sourceRecordId|sourceMappings|locator|excerpt|provider|worker|command/i);
     expect(await store.listJobs()).toHaveLength(0);
     const audit = (await store.listAuditRecords()).find((record) => record.action === "figure.analysis.preview.read");
-    expect(audit).toMatchObject({ actorId: userId, targetId: analysis.id, metadata: { analysisId: analysis.id, kind: "publication_plan", version: 3, qaStatus: "pass" } });
+    expect(audit).toMatchObject({
+      actorId: userId,
+      targetId: analysis.id,
+      metadata: {
+        analysisId: analysis.id,
+        kind: "publication_visual_preview",
+        version: 3,
+        pvpPlanId: expect.stringMatching(/^pvp:/),
+        pvpPlanHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        gpgGraphId: expect.any(String),
+        gpgDetail: "architecture",
+      },
+    });
     expect(JSON.stringify(audit?.metadata)).not.toMatch(/evidence|source|provider|worker|command|path/i);
   });
 
