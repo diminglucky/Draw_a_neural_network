@@ -6,20 +6,57 @@ import pg from "pg";
 const { Client } = pg;
 const disposableDatabaseUrl = process.env.DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL;
 const ambientDatabaseUrl = process.env["DATABASE_URL"];
-const requiredDisposableName = /(smoke|test|disposable)/i;
+const requiredDedicatedDatabaseName = "draw_a_neural_network_migration_safety";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function requiredDatabaseUrl() {
-  assert(disposableDatabaseUrl, "DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL is required; this smoke never uses a shared or default PostgreSQL URL.");
-  assert(disposableDatabaseUrl !== ambientDatabaseUrl, "DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL must not equal DATABASE_URL; use a dedicated disposable database.");
+function parsePostgresDatabaseTarget(value, variableName) {
+  assert(value, `${variableName} is required; this smoke never uses a shared or default PostgreSQL URL.`);
 
-  const parsed = new URL(disposableDatabaseUrl);
-  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
-  assert(requiredDisposableName.test(databaseName), "DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL must name a disposable database containing smoke, test, or disposable.");
-  return disposableDatabaseUrl;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${variableName} must be a valid PostgreSQL connection URL.`);
+  }
+
+  assert(parsed.protocol === "postgres:" || parsed.protocol === "postgresql:", `${variableName} must use the postgres or postgresql protocol.`);
+  assert(parsed.hostname, `${variableName} must include a PostgreSQL host.`);
+  const databasePathSegments = parsed.pathname.split("/").filter(Boolean);
+  assert(databasePathSegments.length === 1, `${variableName} must identify exactly one PostgreSQL database.`);
+
+  let databaseName;
+  try {
+    databaseName = decodeURIComponent(databasePathSegments[0]);
+  } catch {
+    throw new Error(`${variableName} contains an invalid encoded database name.`);
+  }
+  assert(databaseName, `${variableName} must include a PostgreSQL database name.`);
+
+  return {
+    connectionString: value,
+    host: parsed.hostname.toLowerCase(),
+    port: parsed.port || "5432",
+    databaseName,
+  };
+}
+
+function sameDatabaseTarget(left, right) {
+  return left.host === right.host && left.port === right.port && left.databaseName === right.databaseName;
+}
+
+function requiredDatabaseUrl() {
+  const disposableTarget = parsePostgresDatabaseTarget(disposableDatabaseUrl, "DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL");
+  assert(disposableTarget.databaseName === requiredDedicatedDatabaseName, `DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL must name the exact dedicated database ${requiredDedicatedDatabaseName}.`);
+
+  if (ambientDatabaseUrl) {
+    const ambientTarget = parsePostgresDatabaseTarget(ambientDatabaseUrl, "DATABASE_URL");
+    assert(!sameDatabaseTarget(disposableTarget, ambientTarget), "DRAWING_RUN_MIGRATION_SAFETY_DATABASE_URL must not identify the same host, port, and database as DATABASE_URL.");
+  }
+
+  return disposableTarget.connectionString;
 }
 
 const migrations = {
@@ -31,6 +68,12 @@ const migrations = {
 async function resetPublicSchema(client) {
   await client.query("DROP SCHEMA public CASCADE");
   await client.query("CREATE SCHEMA public");
+}
+
+async function assertDedicatedDatabase(client) {
+  const result = await client.query("SELECT current_database() AS database_name");
+  const databaseName = result.rows[0]?.database_name;
+  assert(databaseName === requiredDedicatedDatabaseName, `Connected PostgreSQL database must be ${requiredDedicatedDatabaseName}; refusing destructive migration smoke work.`);
 }
 
 async function installFreshDrawingRuns(client) {
@@ -65,17 +108,20 @@ async function insertPrincipalAndRun(client, { status = "received", formalUgsHas
   return { ownerId, runId };
 }
 
-async function expectMigrationFailure(client, expectedMessage) {
+async function expectMigrationFailure(client, expectedMessage, expectedHint) {
   let failure;
   try {
     await client.query(migrations.formalUgsState);
   } catch (error) {
     failure = error;
+  } finally {
+    await client.query("ROLLBACK");
   }
   assert(failure, `Migration 015 unexpectedly succeeded; expected ${expectedMessage}`);
   const message = failure instanceof Error ? failure.message : String(failure);
   assert(message.includes(expectedMessage), `Migration 015 failed with unexpected evidence: ${message}`);
-  await client.query("ROLLBACK");
+  const hint = failure && typeof failure === "object" && "hint" in failure ? String(failure.hint ?? "") : "";
+  assert(hint.includes(expectedHint), `Migration 015 failed with unexpected hint: ${hint}`);
 }
 
 async function assertLegacyAwaitStateRollback(client) {
@@ -93,7 +139,7 @@ async function assertLegacyAwaitStateRollback(client) {
   );
   const legacyRun = await insertPrincipalAndRun(client, { status: "awaiting_apply_confirmation" });
 
-  await expectMigrationFailure(client, "legacy awaiting_apply_confirmation status");
+  await expectMigrationFailure(client, "legacy awaiting_apply_confirmation status", "deployed pre-015 workflow");
   const row = await client.query("SELECT status FROM drawing_runs WHERE owner_id = $1 AND run_id = $2", [legacyRun.ownerId, legacyRun.runId]);
   const constraint = await client.query("SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid = 'public.drawing_runs'::regclass AND conname = 'drawing_runs_status_check'");
   assert(row.rows[0]?.status === "awaiting_apply_confirmation", "Legacy await row was changed despite migration rollback");
@@ -107,7 +153,7 @@ async function assertInvalidHashRollback(client) {
   await client.query("ALTER TABLE drawing_runs DROP CONSTRAINT drawing_runs_formal_ugs_hash_check");
   const invalidRun = await insertPrincipalAndRun(client, { formalUgsHash: "not-a-sha-256-hash" });
 
-  await expectMigrationFailure(client, "non-SHA-256 formal_ugs_hash");
+  await expectMigrationFailure(client, "non-SHA-256 formal_ugs_hash", "Correct or remove the invalid formal_ugs_hash values");
   const row = await client.query("SELECT formal_ugs_hash FROM drawing_runs WHERE owner_id = $1 AND run_id = $2", [invalidRun.ownerId, invalidRun.runId]);
   const constraint = await client.query("SELECT COUNT(*)::int AS count FROM pg_constraint WHERE conrelid = 'public.drawing_runs'::regclass AND conname = 'drawing_runs_formal_ugs_hash_check'");
   assert(row.rows[0]?.formal_ugs_hash === "not-a-sha-256-hash", "Invalid hash was changed despite migration rollback");
@@ -119,14 +165,18 @@ async function assertNullableTextNormalization(client) {
   await resetPublicSchema(client);
   await installFreshDrawingRuns(client);
   await client.query("ALTER TABLE drawing_runs ALTER COLUMN formal_ugs_hash SET NOT NULL");
+  const existingValidHash = "b".repeat(64);
+  const existingRun = await insertPrincipalAndRun(client, { formalUgsHash: existingValidHash });
   await client.query(migrations.formalUgsState);
 
   const column = await client.query(
     "SELECT data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'drawing_runs' AND column_name = 'formal_ugs_hash'",
   );
   assert(column.rows[0]?.data_type === "text" && column.rows[0]?.is_nullable === "YES", "Migration 015 did not normalize formal_ugs_hash to nullable TEXT");
+  const preservedHash = await client.query("SELECT formal_ugs_hash FROM drawing_runs WHERE owner_id = $1 AND run_id = $2", [existingRun.ownerId, existingRun.runId]);
+  assert(preservedHash.rows[0]?.formal_ugs_hash === existingValidHash, "Existing valid formal hash was not preserved during normalization");
   await insertPrincipalAndRun(client, { formalUgsHash: null });
-  console.log("NOT NULL formal hash becomes nullable and accepts null");
+  console.log("NOT NULL formal hash becomes nullable, preserves valid hash, and accepts null");
 }
 
 async function assertIncompatibleTypeRollback(client) {
@@ -135,7 +185,7 @@ async function assertIncompatibleTypeRollback(client) {
   await client.query("ALTER TABLE drawing_runs DROP CONSTRAINT drawing_runs_formal_ugs_hash_check");
   await client.query("ALTER TABLE drawing_runs ALTER COLUMN formal_ugs_hash TYPE BIGINT USING NULL::BIGINT");
 
-  await expectMigrationFailure(client, "formal_ugs_hash has incompatible type bigint");
+  await expectMigrationFailure(client, "formal_ugs_hash has incompatible type bigint", "must use text, varchar, or char");
   const column = await client.query(
     "SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'drawing_runs' AND column_name = 'formal_ugs_hash'",
   );
@@ -159,8 +209,11 @@ async function assertFreshReruns(client) {
 }
 
 const client = new Client({ connectionString: requiredDatabaseUrl() });
+let dedicatedDatabaseVerified = false;
 try {
   await client.connect();
+  await assertDedicatedDatabase(client);
+  dedicatedDatabaseVerified = true;
   await assertLegacyAwaitStateRollback(client);
   await assertInvalidHashRollback(client);
   await assertNullableTextNormalization(client);
@@ -168,6 +221,19 @@ try {
   await assertFreshReruns(client);
   console.log("PostgreSQL Drawing Run migration safety smoke OK");
 } finally {
-  await resetPublicSchema(client).catch(() => {});
-  await client.end().catch(() => {});
+  let cleanupFailure;
+  if (dedicatedDatabaseVerified) {
+    try {
+      await resetPublicSchema(client);
+    } catch (error) {
+      cleanupFailure = error;
+    }
+  }
+  try {
+    await client.end();
+  } catch (error) {
+    if (cleanupFailure) throw new AggregateError([cleanupFailure, error], "Migration safety smoke cleanup failed");
+    throw error;
+  }
+  if (cleanupFailure) throw cleanupFailure;
 }

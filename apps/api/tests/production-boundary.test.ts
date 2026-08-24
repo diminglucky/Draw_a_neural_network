@@ -111,8 +111,38 @@ describe("production persistence boundary", () => {
     expect(smoke).toContain("DROP SCHEMA public CASCADE");
     expect(smoke).toContain("legacy await state aborts and rolls back");
     expect(smoke).toContain("invalid existing hash aborts and rolls back");
-    expect(smoke).toContain("NOT NULL formal hash becomes nullable and accepts null");
+    expect(smoke).toContain("NOT NULL formal hash becomes nullable, preserves valid hash, and accepts null");
     expect(smoke).toContain("fresh 010 plus 015 reruns safely");
+  });
+
+  it("requires and verifies one exact dedicated database before the migration smoke can drop public", () => {
+    const smoke = readFileSync(resolve(process.cwd(), "scripts/postgres-drawing-run-migration-safety-smoke.mjs"), "utf8");
+
+    expect(smoke).toContain('const requiredDedicatedDatabaseName = "draw_a_neural_network_migration_safety"');
+    expect(smoke).toContain("function parsePostgresDatabaseTarget");
+    expect(smoke).toContain("new URL(value)");
+    expect(smoke).toContain('process.env["DATABASE_URL"]');
+    expect(smoke).toContain("sameDatabaseTarget");
+    expect(smoke).toContain("SELECT current_database() AS database_name");
+    expect(smoke).toContain("await assertDedicatedDatabase(client)");
+    expect(smoke.indexOf("await assertDedicatedDatabase(client)")).toBeLessThan(smoke.indexOf("await assertLegacyAwaitStateRollback(client)"));
+    const execution = smoke.slice(smoke.indexOf("const client = new Client"));
+    expect(execution.indexOf("await assertDedicatedDatabase(client)")).toBeLessThan(execution.indexOf("await assertLegacyAwaitStateRollback(client)"));
+  });
+
+  it("rolls back each expected migration failure before inspecting it and preserves a valid existing formal hash", () => {
+    const smoke = readFileSync(resolve(process.cwd(), "scripts/postgres-drawing-run-migration-safety-smoke.mjs"), "utf8");
+    const expectedFailure = smoke.match(/async function expectMigrationFailure[\s\S]*?\n}\n\nasync function assertLegacyAwaitStateRollback/);
+
+    expect(expectedFailure?.[0]).toMatch(/finally\s*{\s*await client\.query\("ROLLBACK"\);\s*}/);
+    expect(expectedFailure?.[0].indexOf('await client.query("ROLLBACK");')).toBeLessThan(expectedFailure?.[0].indexOf("assert(failure"));
+    expect(expectedFailure?.[0].indexOf('await client.query("ROLLBACK");')).toBeLessThan(expectedFailure?.[0].indexOf("const hint"));
+    expect(expectedFailure?.[0]).toContain("Migration 015 failed with unexpected hint");
+    expect(smoke).toContain('const existingValidHash = "b".repeat(64)');
+    expect(smoke).toContain("formalUgsHash: existingValidHash");
+    expect(smoke).toContain("Existing valid formal hash was not preserved during normalization");
+    expect(smoke).not.toContain("await resetPublicSchema(client).catch(() => {})");
+    expect(smoke).not.toContain("await client.end().catch(() => {})");
   });
 
   it("contains owner/device/revision-scoped LangGraph checkpoint storage", () => {
