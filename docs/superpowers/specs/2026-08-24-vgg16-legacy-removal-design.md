@@ -1,7 +1,7 @@
 # VGG16 Legacy Removal and Universal Drawing Core Design
 
-**Status:** Approved for specification review; implementation is not yet started  
-**Date:** 2026-08-24  
+**Status:** Approved for specification review; implementation is not yet started
+**Date:** 2026-08-24
 **Scope:** Remove all VGG16-specific product code so the Agent has no model-name-driven drawing path. Preserve only generic neural-network analysis and publication-visual infrastructure.
 
 ## 1. Decision
