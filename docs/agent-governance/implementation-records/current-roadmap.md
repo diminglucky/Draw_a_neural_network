@@ -2,9 +2,9 @@
 
 **Record ID：** `IR-2026-08-20-current-roadmap`
 **对应基线：** `DB-2026-08-21-receipt-bound-harness-closure`
-**最后核对：** `2026-08-21T07:13:31.831Z`
+**最后核对：** `2026-08-23T04:13:08Z`
 **正式 ledger 焦点：** `M2.12 — Evidence-augmented architecture interpretation`
-**总体状态：** `active` — `aa9835c383aa18c804a23856893685af97443fef` 已推送至 `origin/agent`。M2.8、M2.10、M2.11 的来源边界、非执行静态分析、会话澄清与局部 PVP delta 已完成全套回归和两组独立审查，且正式证据已记录。M2.12 当前是设计和迁移盘点焦点，而非可直接编码的独立解释器：其实现必须先依赖 DrawingRun、Coordinator、idempotency/cancellation 与 EvidencePack 前置合同。现有自由文本解释器仅为兼容原型；正式实现必须使用私有回执、Coordinator 内部上下文、脱敏 Provider payload、Harness 公共证据投影与规范 ID 重键。
+**总体状态：** `active` — `aa9835c383aa18c804a23856893685af97443fef` 已推送至 `origin/agent`。M2.8、M2.10、M2.11 的来源边界、非执行静态分析、会话澄清与局部 PVP delta 已完成全套回归和两组独立审查，且正式证据已记录。M2.12 当前是设计和迁移盘点焦点，而非可直接编码的独立解释器：其实现必须先依赖 DrawingRun、Coordinator、idempotency/cancellation 与 EvidencePack 前置合同。现有自由文本解释器仅为兼容原型；正式实现必须使用私有回执、Coordinator 内部上下文、脱敏 Provider payload、Harness 公共证据投影与规范 ID 重键。最近的真实浏览器/API smoke 已验证授权、receipt 提交、状态轮询和 bounded error projection，但不改变 M2.12 的 active 状态。
 
 **修订中的产品基线：** `docs/superpowers/specs/2026-08-21-core-drawing-v1-vertical-slice-design.md` 将陌生网络理解、publication visual grammar、草图候选解析和当前 Visio 页增量更新收敛为一个可验证的 Core Drawing V1 垂直闭环。它保留 M2.11 的 UGS/GPG/PVP、静态不执行、证据谱系及 owner/device/revision 绑定；这是一份待 owner 审阅的设计提案，不增加已实现能力，不变更任何 ledger 节点状态，也不构成 Provider、草图、视觉语法、当前文档 Visio、真实主机或人工视觉验收。
 
@@ -18,7 +18,7 @@
 |---|---|---|
 | 设计 | `approved_for_staged_implementation` | 用户已确认以未知网络直绘为目标；规格和治理资产仍是未提交 working-tree 文档 |
 | 当前路线图 | `active` | M2.8、M2.10、M2.11 已接受；M2.12 是唯一 active 的设计/盘点节点，但生产代码须先完成主平台 Phase 0–2 前置。M3.2 仍因产品优先级保持 deferred，PatternLibrary 继续后置。 |
-| API | `passed` | `npx tsc --noEmit`、`npm run api:check` 通过；完整 API 套件为 125 个测试文件、820 个测试通过 |
+| API | `passed` | `npx tsc --noEmit`、`npm run api:check` 通过；完整 API 套件为 141 个测试文件、964 个测试通过；Drawing Run 公共状态包含 bounded `errorCategory`，并提供脱敏 revision/event history，前端只显示固定安全文案 |
 | Worker 单元测试 | `passed` | 234 通过、2 跳过、0 失败；跳过项不是真实 Visio 验收 |
 | 通用未知网络直绘 | `M2.12 active — design gated` | UGS 严格合同、未知模块直绘、candidate topology、结构证据、GPG/PVP、会话澄清及全套 API 证据均已接受；受限 v4 preview 已支持 typed prompt/static PyTorch → UGS → GPG → PVP。M2.12 的自由文本解释器是待迁移兼容原型，不能作为正式通用理解能力或后续视觉/Visio 权威；新 Harness 须先依赖 Phase 0–2，再完成 receipt/EvidencePack、内部 context 与外发 payload 分离、formal-only PVP 及 canonical rekeying。 |
 | 通用 Visio | `not_started` | 当前 bridge 仍是 canonical VGG16 夹具，不能作为通用导出能力 |

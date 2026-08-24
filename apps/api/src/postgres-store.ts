@@ -24,6 +24,8 @@ import {
   type FigureDraftRevisionPayload,
 } from "./figure-draft-payload.js";
 import type { FoundationStore } from "./store.js";
+import type { DrawingRun, DrawingRunEvent, DrawingRunStatus, DrawingRunTransition } from "./drawing-run/contracts.js";
+import { assertDrawingRunTransition, type DrawingRunCommitResult } from "./drawing-run/store.js";
 
 export interface QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> {
   rows: Row[];
@@ -206,6 +208,51 @@ function mapAgentUsage(row: Row): AgentUsageReservation {
     errorCode: row.error_code ?? null,
     createdAt: requiredTimestamp(row.created_at),
     finalizedAt: timestamp(row.finalized_at),
+  };
+}
+
+function drawingRunStatus(value: unknown): DrawingRunStatus {
+  const statuses: DrawingRunStatus[] = [
+    "received", "input_accepted", "analyzing", "awaiting_interpreter", "candidate_structure",
+    "awaiting_clarification", "formal_ugs", "composing_pvp", "preview_ready", "awaiting_page_binding",
+    "page_bound", "awaiting_apply_confirmation", "applying", "readback_verified", "cancelled", "rejected",
+    "failed", "conflicted",
+  ];
+  if (typeof value === "string" && statuses.includes(value as DrawingRunStatus)) return value as DrawingRunStatus;
+  throw new Error("Database row contains an invalid Drawing Run status");
+}
+
+function mapDrawingRun(row: Row): DrawingRun {
+  return {
+    runId: String(row.run_id),
+    ownerId: String(row.owner_id),
+    deviceId: String(row.device_id),
+    status: drawingRunStatus(row.status),
+    revision: Number(row.revision),
+    intent: json(row.intent, {} as DrawingRun["intent"]),
+    artifactHashes: json(row.artifact_hashes, []),
+    privateReceiptIds: json(row.private_receipt_ids, []),
+    startIdempotencyKey: String(row.start_idempotency_key),
+    startRequestHash: String(row.start_request_hash),
+    createdAt: requiredTimestamp(row.created_at),
+    updatedAt: requiredTimestamp(row.updated_at),
+    clarification: row.clarification === null || row.clarification === undefined ? null : json(row.clarification, null),
+    preview: row.preview === null || row.preview === undefined ? null : json(row.preview, null),
+    errorCategory: String(row.error_category) as DrawingRun["errorCategory"],
+  };
+}
+
+function mapDrawingRunEvent(row: Row): DrawingRunEvent {
+  return {
+    eventId: String(row.event_id),
+    runId: String(row.run_id),
+    revision: Number(row.revision),
+    status: drawingRunStatus(row.status),
+    action: row.action,
+    artifactHashes: json(row.artifact_hashes, []),
+    errorCategory: row.error_category,
+    occurredAt: requiredTimestamp(row.occurred_at),
+    ...(row.request_hash ? { requestHash: String(row.request_hash) } : {}),
   };
 }
 
@@ -900,5 +947,186 @@ export class PostgresFoundationStore implements FoundationStore {
       [input.id],
     );
     return existing.rows[0] ? mapAgentUsage(existing.rows[0]) : null;
+  }
+
+  async createDrawingRun(run: DrawingRun): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO drawing_runs
+       (run_id, owner_id, device_id, status, revision, intent, artifact_hashes, private_receipt_ids, start_idempotency_key, start_request_hash, clarification, preview, error_category, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [
+        run.runId, run.ownerId, run.deviceId, run.status, run.revision, JSON.stringify(run.intent),
+        JSON.stringify(run.artifactHashes), JSON.stringify(run.privateReceiptIds),
+        run.startIdempotencyKey, run.startRequestHash,
+        run.clarification ? JSON.stringify(run.clarification) : null,
+        run.preview ? JSON.stringify(run.preview) : null,
+        run.errorCategory, run.createdAt, run.updatedAt,
+      ],
+    );
+  }
+
+  async getDrawingRunByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null> {
+    const result = await this.pool.query(
+      "SELECT * FROM drawing_runs WHERE owner_id = $1 AND device_id = $2 AND start_idempotency_key = $3",
+      [ownerId, deviceId, idempotencyKey],
+    );
+    return result.rows[0] ? mapDrawingRun(result.rows[0]) : null;
+  }
+
+  async getDrawingRun(ownerId: string, runId: string): Promise<DrawingRun | null> {
+    const result = await this.pool.query(
+      "SELECT * FROM drawing_runs WHERE owner_id = $1 AND run_id = $2",
+      [ownerId, runId],
+    );
+    return result.rows[0] ? mapDrawingRun(result.rows[0]) : null;
+  }
+
+  async listDrawingRuns(ownerId: string): Promise<DrawingRun[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM drawing_runs
+       WHERE owner_id = $1
+       ORDER BY updated_at DESC, run_id DESC`,
+      [ownerId],
+    );
+    return result.rows.map(mapDrawingRun);
+  }
+
+  async listDrawingRunsForRecovery(): Promise<DrawingRun[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM drawing_runs
+       WHERE status NOT IN ('readback_verified', 'cancelled', 'rejected', 'failed', 'conflicted')
+       ORDER BY updated_at ASC, run_id ASC`,
+    );
+    return result.rows.map(mapDrawingRun);
+  }
+
+  async compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict"> {
+    const run = input.next;
+    const result = await this.pool.query(
+      `UPDATE drawing_runs
+       SET status = $4, revision = $5, intent = $6, artifact_hashes = $7, private_receipt_ids = $8,
+           clarification = $9, preview = $10, error_category = $11, updated_at = $12
+       WHERE owner_id = $1 AND run_id = $2 AND revision = $3
+       RETURNING *`,
+      [
+        input.ownerId, input.runId, input.expectedRevision, run.status, run.revision, JSON.stringify(run.intent),
+        JSON.stringify(run.artifactHashes), JSON.stringify(run.privateReceiptIds),
+        run.clarification ? JSON.stringify(run.clarification) : null,
+        run.preview ? JSON.stringify(run.preview) : null,
+        run.errorCategory, run.updatedAt,
+      ],
+    );
+    return result.rowCount === 1 ? "updated" : "conflict";
+  }
+
+  async commitDrawingRunTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult> {
+    assertDrawingRunTransition(input);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query(
+        "SELECT * FROM drawing_run_events WHERE owner_id = $1 AND run_id = $2 AND idempotency_key = $3",
+        [input.ownerId, input.runId, input.idempotencyKey],
+      );
+      const existingEvent = existing.rows[0] ? mapDrawingRunEvent(existing.rows[0]) : null;
+      if (existingEvent) {
+        if (existingEvent.requestHash && input.transition.event.requestHash && existingEvent.requestHash !== input.transition.event.requestHash) {
+          throw new Error("Idempotency key was reused for a different Drawing Run command");
+        }
+        await client.query("COMMIT");
+        client.release();
+        return "replayed";
+      }
+
+      const run = input.transition.next;
+      const updated = await client.query(
+        `UPDATE drawing_runs
+         SET status = $5, revision = $6, intent = $7, artifact_hashes = $8, private_receipt_ids = $9,
+             clarification = $10, preview = $11, error_category = $12, updated_at = $13
+         WHERE owner_id = $1 AND run_id = $2 AND revision = $3 AND device_id = $4
+         RETURNING run_id`,
+        [
+          input.ownerId, input.runId, input.expectedRevision, run.deviceId, run.status, run.revision,
+          JSON.stringify(run.intent), JSON.stringify(run.artifactHashes), JSON.stringify(run.privateReceiptIds),
+          run.clarification ? JSON.stringify(run.clarification) : null,
+          run.preview ? JSON.stringify(run.preview) : null,
+          run.errorCategory, run.updatedAt,
+        ],
+      );
+      if (updated.rowCount !== 1) {
+        const replay = await client.query(
+          "SELECT * FROM drawing_run_events WHERE owner_id = $1 AND run_id = $2 AND idempotency_key = $3",
+          [input.ownerId, input.runId, input.idempotencyKey],
+        );
+        await client.query("COMMIT");
+        client.release();
+        if (replay.rows[0]) {
+          const replayedEvent = mapDrawingRunEvent(replay.rows[0]);
+          if (replayedEvent.requestHash && input.transition.event.requestHash && replayedEvent.requestHash !== input.transition.event.requestHash) {
+            throw new Error("Idempotency key was reused for a different Drawing Run command");
+          }
+          return "replayed";
+        }
+        return "conflict";
+      }
+
+      await client.query(
+        `INSERT INTO drawing_run_events
+         (owner_id, run_id, event_id, revision, status, action, artifact_hashes, error_category, idempotency_key, request_hash, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          input.ownerId, input.runId, input.transition.event.eventId, input.transition.event.revision,
+          input.transition.event.status, input.transition.event.action, JSON.stringify(input.transition.event.artifactHashes),
+          input.transition.event.errorCategory, input.idempotencyKey, input.transition.event.requestHash ?? null,
+          input.transition.event.occurredAt,
+        ],
+      );
+      await client.query("COMMIT");
+      client.release();
+      return "updated";
+    } catch (error) {
+      return failFigureDraftTransaction(client, error);
+    }
+  }
+
+  async appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {
+    const inserted = await this.pool.query(
+      `INSERT INTO drawing_run_events
+       (owner_id, run_id, event_id, revision, status, action, artifact_hashes, error_category, idempotency_key, request_hash, occurred_at)
+       SELECT owner_id, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+       FROM drawing_runs WHERE owner_id = $11 AND run_id = $1
+       ON CONFLICT (owner_id, run_id, idempotency_key) DO NOTHING
+       RETURNING *`,
+      [event.runId, event.eventId, event.revision, event.status, event.action, JSON.stringify(event.artifactHashes), event.errorCategory, idempotencyKey, event.requestHash ?? null, event.occurredAt, ownerId],
+    );
+    if (inserted.rows[0]) return mapDrawingRunEvent(inserted.rows[0]);
+    const existing = await this.pool.query(
+      "SELECT * FROM drawing_run_events WHERE owner_id = $1 AND run_id = $2 AND idempotency_key = $3",
+      [ownerId, event.runId, idempotencyKey],
+    );
+    if (!existing.rows[0]) throw new Error("Drawing Run event could not be persisted");
+    return mapDrawingRunEvent(existing.rows[0]);
+  }
+
+  async getDrawingRunEvent(ownerId: string, runId: string, idempotencyKey: string): Promise<DrawingRunEvent | null> {
+    const result = await this.pool.query(
+      "SELECT e.* FROM drawing_run_events e WHERE e.owner_id = $1 AND e.run_id = $2 AND e.idempotency_key = $3",
+      [ownerId, runId, idempotencyKey],
+    );
+    return result.rows[0] ? mapDrawingRunEvent(result.rows[0]) : null;
+  }
+
+  async listDrawingRunEvents(ownerId: string, runId: string): Promise<DrawingRunEvent[]> {
+    const result = await this.pool.query(
+      "SELECT e.* FROM drawing_run_events e WHERE e.owner_id = $1 AND e.run_id = $2 ORDER BY e.revision ASC, e.occurred_at ASC, e.event_id ASC",
+      [ownerId, runId],
+    );
+    return result.rows.map(mapDrawingRunEvent);
   }
 }

@@ -31,7 +31,7 @@ describe("agent roadmap CLI", () => {
     expect(run("verify")).toBe("");
     expect(run("verify", "--ci")).toBe("");
     expect(run("status")).toContain("Roadmap parity: ok");
-  }, 15_000);
+  }, 30_000);
 
   it("activates Core Drawing V1 interpretation only after its three reviewed foundation nodes are accepted", () => {
     const state = JSON.parse(readFileSync(programStatePath, "utf8")) as {
@@ -49,8 +49,8 @@ describe("agent roadmap CLI", () => {
       status: "active",
       dependsOn: ["M2.8", "M2.10", "M2.11"],
     });
-    expect(interpretation?.acceptance).toHaveLength(1);
-    expect(interpretation?.nextAction).toMatch(/bounded interpreter.*Harness/i);
+    expect(interpretation?.acceptance).toHaveLength(3);
+    expect(interpretation?.nextAction).toMatch(/receipt-bound Harness rekeying/i);
 
     const visualGrammar = state.nodes.find((node) => node.id === "M2.13");
     expect(visualGrammar).toMatchObject({

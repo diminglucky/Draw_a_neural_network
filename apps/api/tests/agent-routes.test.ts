@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { buildApp } from "../src/app.js";
 import { FoundationError } from "../src/domain.js";
 import { InMemoryFoundationStore } from "../src/store.js";
@@ -889,5 +890,107 @@ describe("agent chat routes", () => {
       limit: 10,
     });
     expect(duplicate).toMatchObject({ duplicate: true, reservation: { state: "failed", consumed: 1 } });
+  });
+
+  it("exposes an owner-scoped Drawing Run state and controlled cancellation", async () => {
+    const { app, headers } = await createAuthorizedApp();
+    apps.add(app);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/drawing-runs",
+      headers: { ...headers, "idempotency-key": "drawing-run-start-1" },
+      payload: {
+        intent: {
+          action: "create_figure",
+          requestedDetail: "overview",
+          target: "browser_preview",
+          sourceKinds: ["typed_text"],
+        },
+      },
+    });
+    expect(start.statusCode).toBe(201);
+    expect(start.json()).toMatchObject({ status: "received", revision: 0, allowedActions: ["accept_input", "cancel"] });
+    expect(start.json()).not.toHaveProperty("privateReceiptIds");
+
+    const runId = start.json().runId as string;
+    const list = await app.inject({ method: "GET", url: "/api/drawing-runs", headers });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().runs).toEqual([start.json()]);
+    const read = await app.inject({ method: "GET", url: `/api/drawing-runs/${runId}`, headers });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual(start.json());
+
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${runId}/cancel`,
+      headers: { ...headers, "idempotency-key": "drawing-run-cancel-1" },
+      payload: { expectedRevision: 0 },
+    });
+    expect(cancel.statusCode).toBe(200);
+    expect(cancel.json()).toMatchObject({ status: "cancelled", revision: 1, allowedActions: [] });
+    await expect(app.inject({ method: "GET", url: "/api/drawing-runs", headers })).resolves.toMatchObject({ statusCode: 200 });
+    expect((await app.inject({ method: "GET", url: "/api/drawing-runs", headers })).json().runs[0]).toMatchObject({ runId, status: "cancelled" });
+
+    const events = await app.inject({ method: "GET", url: `/api/drawing-runs/${runId}/events`, headers });
+    expect(events.statusCode).toBe(200);
+    expect(events.json()).toMatchObject({ runId, events: [{ revision: 1, status: "cancelled", action: "failed", errorCategory: "cancelled" }] });
+    expect(JSON.stringify(events.json())).not.toContain("artifactHashes");
+    expect(JSON.stringify(events.json())).not.toContain("requestHash");
+
+    const missingEvents = await app.inject({ method: "GET", url: "/api/drawing-runs/unknown-run/events", headers });
+    expect(missingEvents.statusCode).toBe(404);
+  });
+
+  it("accepts validated private receipts and rejects the legacy client-supplied artifact hash", async () => {
+    const { app, headers } = await createAuthorizedApp();
+    apps.add(app);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/drawing-runs",
+      headers: { ...headers, "idempotency-key": "drawing-receipt-start-1" },
+      payload: { intent: { action: "analyze_network", requestedDetail: "architecture", target: "browser_preview", sourceKinds: ["pytorch_source"] } },
+    });
+    const runId = start.json().runId as string;
+    const source = Buffer.from("class N(nn.Module):\n", "utf8");
+    const sha256 = createHash("sha256").update(source).digest("hex");
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${runId}/input`,
+      headers: { ...headers, "idempotency-key": "drawing-receipt-input-1" },
+      payload: { expectedRevision: 0, receipts: [{ kind: "pytorch_source", mimeType: "text/x-python", data: source.toString("base64"), sha256, retention: "ephemeral" }] },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ status: "input_accepted", revision: 1 });
+    expect(JSON.stringify(accepted.json())).not.toContain("receipt:");
+
+    const legacy = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${runId}/input`,
+      headers: { ...headers, "idempotency-key": "drawing-receipt-input-legacy" },
+      payload: { expectedRevision: 1, receiptIds: ["receipt-forged"], artifactHash: "a".repeat(64) },
+    });
+    expect(legacy.statusCode).toBe(400);
+  });
+
+  it("rejects an oversized receipt from its encoded length before decoding", async () => {
+    const { app, headers } = await createAuthorizedApp();
+    apps.add(app);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/drawing-runs",
+      headers: { ...headers, "idempotency-key": "drawing-receipt-size-start-1" },
+      payload: { intent: { action: "analyze_network", requestedDetail: "architecture", target: "browser_preview", sourceKinds: ["pytorch_source"] } },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/drawing-runs/${start.json().runId}/input`,
+      headers: { ...headers, "idempotency-key": "drawing-receipt-size-input-1" },
+      payload: {
+        expectedRevision: 0,
+        receipts: [{ kind: "pytorch_source", mimeType: "text/x-python", data: "A".repeat(266672), sha256: "a".repeat(64), retention: "ephemeral" }],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toMatch(/too large/i);
   });
 });

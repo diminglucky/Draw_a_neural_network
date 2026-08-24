@@ -23,6 +23,9 @@ import {
   parseFigureDraftRevisionPayload,
   type FigureDraftRevisionPayload,
 } from "./figure-draft-payload.js";
+import type { DrawingRun, DrawingRunEvent, DrawingRunTransition } from "./drawing-run/contracts.js";
+import type { DrawingRunCommitResult } from "./drawing-run/store.js";
+import { InMemoryDrawingRunStore } from "./drawing-run/store.js";
 
 export interface FoundationStore {
   createFigureDraft(
@@ -70,6 +73,22 @@ export interface FoundationStore {
   finalizeAgentUsage(input: AgentUsageFinalizationInput): Promise<AgentUsageReservation | null>;
   createFigureAnalysisIdempotent(input: { record: FigureAnalysisRecord; sourceCode: string; idempotencyKey: string; requestHash: string }): Promise<FigureAnalysisCreationResult>;
   getFigureAnalysis(userId: string, id: string): Promise<FigureAnalysisRecord | null>;
+  createDrawingRun(run: DrawingRun): Promise<void>;
+  getDrawingRun(ownerId: string, runId: string): Promise<DrawingRun | null>;
+  listDrawingRuns(ownerId: string): Promise<DrawingRun[]>;
+  listDrawingRunsForRecovery(): Promise<DrawingRun[]>;
+  getDrawingRunByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null>;
+  compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict">;
+  commitDrawingRunTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult>;
+  appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent>;
+  getDrawingRunEvent(ownerId: string, runId: string, idempotencyKey: string): Promise<DrawingRunEvent | null>;
+  listDrawingRunEvents(ownerId: string, runId: string): Promise<DrawingRunEvent[]>;
 }
 
 export class InMemoryFoundationStore implements FoundationStore {
@@ -89,6 +108,53 @@ export class InMemoryFoundationStore implements FoundationStore {
   private readonly figureAnalyses = new Map<string, FigureAnalysisRecord>();
   private readonly figureAnalysisSources = new Map<string, { userId: string; sourceCode: string }>();
   private readonly figureAnalysesByIdempotency = new Map<string, { recordId: string; requestHash: string }>();
+  private readonly drawingRunStore = new InMemoryDrawingRunStore();
+
+  createDrawingRun(run: DrawingRun): Promise<void> {
+    return this.drawingRunStore.create(run);
+  }
+
+  getDrawingRun(ownerId: string, runId: string): Promise<DrawingRun | null> {
+    return this.drawingRunStore.get(ownerId, runId);
+  }
+
+  listDrawingRuns(ownerId: string): Promise<DrawingRun[]> {
+    return this.drawingRunStore.list(ownerId);
+  }
+
+  listDrawingRunsForRecovery(): Promise<DrawingRun[]> {
+    return this.drawingRunStore.listForRecovery();
+  }
+
+  getDrawingRunByStartIdempotency(ownerId: string, deviceId: string, idempotencyKey: string): Promise<DrawingRun | null> {
+    return this.drawingRunStore.getByStartIdempotency(ownerId, deviceId, idempotencyKey);
+  }
+
+  compareAndSetDrawingRun(input: { ownerId: string; runId: string; expectedRevision: number; next: DrawingRun }): Promise<"updated" | "conflict"> {
+    return this.drawingRunStore.compareAndSet(input);
+  }
+
+  commitDrawingRunTransition(input: {
+    ownerId: string;
+    runId: string;
+    expectedRevision: number;
+    transition: DrawingRunTransition;
+    idempotencyKey: string;
+  }): Promise<DrawingRunCommitResult> {
+    return this.drawingRunStore.commitTransition(input);
+  }
+
+  appendDrawingRunEvent(ownerId: string, event: DrawingRunEvent, idempotencyKey: string): Promise<DrawingRunEvent> {
+    return this.drawingRunStore.appendEvent(ownerId, event, idempotencyKey);
+  }
+
+  getDrawingRunEvent(ownerId: string, runId: string, idempotencyKey: string): Promise<DrawingRunEvent | null> {
+    return this.drawingRunStore.getEvent(ownerId, runId, idempotencyKey);
+  }
+
+  listDrawingRunEvents(ownerId: string, runId: string): Promise<DrawingRunEvent[]> {
+    return this.drawingRunStore.listEvents(ownerId, runId);
+  }
 
   async createFigureDraft(
     draft: Omit<FigureDraft, "currentRevision">,

@@ -7,6 +7,8 @@
     "api:test": "vitest run",
     "api:check": "tsx scripts/check-foundation.mjs",
     "api:smoke:postgres": "node scripts/postgres-smoke.mjs",
+    "api:smoke:postgres:checkpoint": "tsx scripts/postgres-checkpoint-smoke.ts",
+    "api:smoke:postgres:restart": "tsx scripts/postgres-restart-smoke.ts",
     "api:smoke:redis": "tsx scripts/redis-smoke.mjs",
     "api:smoke:admin:durable": "tsx scripts/durable-admin-control-plane-smoke.mjs",
     "agent:status": "node scripts/agent-roadmap-cli.mjs status",
@@ -18,6 +20,8 @@
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
+    "@langchain/langgraph": "^1.4.12",
+    "@langchain/langgraph-checkpoint": "^1.1.5",
     "argon2": "^0.41.1",
     "fastify": "^5.4.0",
     "jose": "^6.0.11",

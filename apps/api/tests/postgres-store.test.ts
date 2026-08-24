@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Session } from "../src/domain.js";
 import type { FigureDraftRevisionPayload } from "../src/figure-draft-payload.js";
 import type { FigureAnalysisRecord } from "../src/figure-analysis.js";
+import type { DrawingRunTransition } from "../src/drawing-run/contracts.js";
 import { PostgresFoundationStore, type PoolLike, type QueryResult } from "../src/postgres-store.js";
 import { InMemoryFoundationStore } from "../src/store.js";
 
@@ -703,5 +704,71 @@ describe("PostgresFoundationStore", () => {
     const read = calls.at(-1);
     expect(read?.text).toMatch(/FROM figure_analyses/);
     expect(read?.values).toEqual(["user-1", "analysis-1"]);
+  });
+
+  it("binds Drawing Run event insertion and idempotent readback to the owner", async () => {
+    const eventRow = {
+      owner_id: "owner-1",
+      run_id: "run-shared",
+      event_id: "run-shared:1:cancel",
+      revision: 1,
+      status: "cancelled",
+      action: "failed",
+      artifact_hashes: [],
+      error_category: "cancelled",
+      idempotency_key: "cancel-1",
+      request_hash: "a".repeat(64),
+      occurred_at: "2026-08-23T00:00:00.000Z",
+    };
+    const { pool, calls } = fakePool({ rows: [eventRow], rowCount: 1 });
+    const store = new PostgresFoundationStore(pool);
+    const event = {
+      eventId: eventRow.event_id,
+      runId: eventRow.run_id,
+      revision: eventRow.revision,
+      status: eventRow.status as "cancelled",
+      action: eventRow.action as "failed",
+      artifactHashes: [],
+      errorCategory: eventRow.error_category as "cancelled",
+      occurredAt: eventRow.occurred_at,
+      requestHash: eventRow.request_hash,
+    };
+
+    await expect(store.appendDrawingRunEvent("owner-1", event, "cancel-1")).resolves.toMatchObject(event);
+    expect(calls[0]?.text).toContain("WHERE owner_id = $11 AND run_id = $1");
+    expect(calls[0]?.values.at(-1)).toBe("owner-1");
+  });
+
+  it("commits a Drawing Run transition and event in one transaction", async () => {
+    const calls: string[] = [];
+    const client = {
+      async query(text: string) {
+        calls.push(text);
+        if (text.includes("UPDATE drawing_runs")) return { rows: [{ run_id: "run-1" }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      },
+      release() {},
+    };
+    const pool: PoolLike = { async query() { return { rows: [], rowCount: 0 }; }, async connect() { return client; } };
+    const store = new PostgresFoundationStore(pool);
+    const transition = {
+      next: {
+        runId: "run-1", ownerId: "owner-1", deviceId: "device-1", status: "cancelled" as const, revision: 1,
+        intent: { action: "create_figure" as const, requestedDetail: "overview" as const, target: "browser_preview" as const, sourceKinds: ["typed_text" as const] },
+        artifactHashes: [], privateReceiptIds: [], startIdempotencyKey: "start-1", startRequestHash: "a".repeat(64),
+        createdAt: "2026-08-23T00:00:00.000Z", updatedAt: "2026-08-23T00:00:01.000Z", clarification: null, preview: null, errorCategory: "cancelled" as const,
+      },
+      event: {
+        eventId: "run-1:1:cancel", runId: "run-1", revision: 1, status: "cancelled" as const, action: "failed" as const,
+        artifactHashes: [], errorCategory: "cancelled" as const, occurredAt: "2026-08-23T00:00:01.000Z", requestHash: "b".repeat(64),
+      },
+    } satisfies DrawingRunTransition;
+
+    await expect(store.commitDrawingRunTransition({ ownerId: "owner-1", runId: "run-1", expectedRevision: 0, transition, idempotencyKey: "cancel-1" })).resolves.toBe("updated");
+    expect(calls[0]).toBe("BEGIN");
+    expect(calls.some((text) => text.includes("SELECT * FROM drawing_run_events"))).toBe(true);
+    expect(calls.some((text) => text.includes("UPDATE drawing_runs") && text.includes("device_id = $4"))).toBe(true);
+    expect(calls.some((text) => text.includes("INSERT INTO drawing_run_events"))).toBe(true);
+    expect(calls.at(-1)).toBe("COMMIT");
   });
 });

@@ -24,6 +24,18 @@ import { publicFigureAnalysis, type FigureAnalysisRecord } from "./figure-analys
 import { FigureAnalysisPreviewServiceImpl, type FigureAnalysisPreviewResponse } from "./figure-analysis-preview-service.js";
 import { compileUniversalInputToPublicationPreview, type LegacyUniversalPreviewInput } from "./universal-input-compilation-service.js";
 import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
+import { DrawingRunError } from "./drawing-run/errors.js";
+import type { DrawingRunCoordinator } from "./drawing-run/coordinator.js";
+import type { DrawingIntent } from "./drawing-run/contracts.js";
+import {
+  assertReceiptKindAndMime,
+  PRIVATE_RECEIPT_MAX_BYTES,
+  receiptBatchHash,
+  type PrivateInputReceipt,
+  type PrivateReceiptKind,
+  type PrivateReceiptRetention,
+  type PrivateReceiptStore,
+} from "./drawing-input/private-receipt.js";
 
 const MAX_CONVERSATION_ID_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -105,6 +117,8 @@ interface RouteOptions {
   universalFigureExportRunner?: { submit(jobId: string): void | Promise<void>; cancel?(jobId: string): Promise<unknown> };
   figureAnalysisService: FigureAnalysisService;
   figureAnalysisPreviewService: FigureAnalysisPreviewServiceImpl;
+  drawingRunCoordinator: DrawingRunCoordinator;
+  privateReceiptStore: PrivateReceiptStore;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -909,6 +923,56 @@ function objectField(value: unknown, field: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function parseDrawingIntent(value: unknown): DrawingIntent {
+  const input = objectField(value, "intent");
+  assertOnlyKeys(input, ["action", "requestedDetail", "target", "sourceKinds"], "intent");
+  const action = requiredStringField(input.action, "intent.action");
+  if (action !== "analyze_network" && action !== "create_figure" && action !== "revise_figure") {
+    throw validationError("intent.action is invalid", { field: "intent.action", reason: "invalid_value" });
+  }
+  const requestedDetail = requiredStringField(input.requestedDetail, "intent.requestedDetail");
+  if (requestedDetail !== "overview" && requestedDetail !== "architecture" && requestedDetail !== "operator_detail") {
+    throw validationError("intent.requestedDetail is invalid", { field: "intent.requestedDetail", reason: "invalid_value" });
+  }
+  const target = requiredStringField(input.target, "intent.target");
+  if (target !== "browser_preview" && target !== "existing_visio_page") {
+    throw validationError("intent.target is invalid", { field: "intent.target", reason: "invalid_value" });
+  }
+  if (!Array.isArray(input.sourceKinds) || input.sourceKinds.length === 0 || input.sourceKinds.length > 4) {
+    throw validationError("intent.sourceKinds must contain one to four source kinds", { field: "intent.sourceKinds", reason: "invalid_value" });
+  }
+  const sourceKinds = input.sourceKinds.map((source, index) => {
+    const sourceKind = requiredStringField(source, `intent.sourceKinds[${index}]`);
+    if (!["typed_text", "pytorch_source", "architecture_description", "sketch"].includes(sourceKind)) {
+      throw validationError("intent.sourceKinds contains an invalid source kind", { field: `intent.sourceKinds[${index}]`, reason: "invalid_value" });
+    }
+    return sourceKind as DrawingIntent["sourceKinds"][number];
+  });
+  if (new Set(sourceKinds).size !== sourceKinds.length) {
+    throw validationError("intent.sourceKinds must not contain duplicates", { field: "intent.sourceKinds", reason: "duplicate" });
+  }
+  return { action, requestedDetail, target, sourceKinds };
+}
+
+function drawingRunCommandInput(request: FastifyRequest, runId: string, expectedRevisionValue = body(request).expectedRevision): {
+  runId: string;
+  expectedRevision: number;
+  idempotencyKey: string;
+} {
+  if (typeof expectedRevisionValue !== "number" || !Number.isSafeInteger(expectedRevisionValue) || expectedRevisionValue < 0) {
+    throw validationError("expectedRevision must be a non-negative integer", { field: "expectedRevision", reason: "invalid_value" });
+  }
+  return { runId, expectedRevision: expectedRevisionValue, idempotencyKey: idempotencyKey(request) };
+}
+
+function drawingRunError(error: unknown): FoundationError {
+  if (!(error instanceof DrawingRunError)) {
+    return error instanceof FoundationError ? error : new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Drawing Run command failed", 400);
+  }
+  const statusCode = error.code === "DRAWING_RUN_REVISION_CONFLICT" || error.code === "DRAWING_RUN_IDEMPOTENCY_CONFLICT" ? 409 : 400;
+  return new FoundationError(error.code, error.message, statusCode);
+}
+
 function parseVisioExportBody(request: FastifyRequest): { diagram: Record<string, unknown>; idempotencyKey: string } {
   const input = body(request);
   const diagram = objectField(input.diagram, "diagram");
@@ -973,6 +1037,40 @@ function requiredSha256Field(value: unknown, field: string): string {
     throw validationError(`${field} must be a SHA-256 digest`, { field, reason: "invalid_value" });
   }
   return digest;
+}
+
+async function ingestDrawingReceipts(ownerId: string, value: unknown, store: PrivateReceiptStore): Promise<PrivateInputReceipt[]> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) {
+    throw validationError("receipts must contain one to sixteen private inputs", { field: "receipts", reason: "invalid" });
+  }
+  const drafts = value.map((item, index) => {
+    const receipt = objectField(item, `receipts[${index}]`);
+    assertOnlyKeys(receipt, ["kind", "mimeType", "data", "sha256", "retention"], `receipts[${index}]`);
+    const kind = requiredStringField(receipt.kind, `receipts[${index}].kind`);
+    if (!["typed_text", "pytorch_source", "architecture_description", "sketch"].includes(kind)) throw validationError("receipt kind is invalid", { field: `receipts[${index}].kind`, reason: "invalid_value" });
+    const mimeType = requiredStringField(receipt.mimeType, `receipts[${index}].mimeType`);
+    try {
+      assertReceiptKindAndMime(kind as PrivateReceiptKind, mimeType);
+    } catch {
+      throw validationError("receipt MIME type is not allowed for its kind", { field: `receipts[${index}].mimeType`, reason: "invalid_value" });
+    }
+    const data = requiredStringField(receipt.data, `receipts[${index}].data`);
+    if (!BASE64_PATTERN.test(data) || data.length % 4 !== 0) throw validationError("receipt data must be padded base64", { field: `receipts[${index}].data`, reason: "invalid_value" });
+    const maxEncodedLength = Math.ceil(PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind] / 3) * 4;
+    if (data.length > maxEncodedLength) throw validationError("receipt is too large", { field: `receipts[${index}].data`, reason: "limit_exceeded", maxBytes: PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind] });
+    const bytes = Buffer.from(data, "base64");
+    if (bytes.toString("base64") !== data) throw validationError("receipt data must use canonical base64", { field: `receipts[${index}].data`, reason: "invalid_value" });
+    if (bytes.length > PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind]) throw validationError("receipt is too large", { field: `receipts[${index}].data`, reason: "limit_exceeded", maxBytes: PRIVATE_RECEIPT_MAX_BYTES[kind as PrivateReceiptKind] });
+    const sha256 = requiredSha256Field(receipt.sha256, `receipts[${index}].sha256`);
+    const actualHash = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length === 0 || actualHash !== sha256) throw validationError("receipt digest does not match its bytes", { field: `receipts[${index}].sha256`, reason: "digest_mismatch" });
+    const retention = receipt.retention ?? "ephemeral";
+    if (retention !== "ephemeral" && retention !== "owner_revision") throw validationError("receipt retention is invalid", { field: `receipts[${index}].retention`, reason: "invalid_value" });
+    return { kind: kind as PrivateReceiptKind, mimeType, bytes, sha256, retention: retention as PrivateReceiptRetention };
+  });
+  const receipts = await Promise.all(drafts.map((draft) => store.ingest({ ownerId, ...draft })));
+  await store.bindBatchHash(ownerId, receiptBatchHash(receipts), receipts.map((receipt) => receipt.receiptId));
+  return receipts;
 }
 
 function optionalStringField(value: unknown, field: string): string | undefined {
@@ -1076,6 +1174,143 @@ function parseAgentBody(request: FastifyRequest): { conversationId: string; hash
 
 export function registerRoutes(app: FastifyInstance, options: RouteOptions): void {
   app.get("/health", async () => ({ status: "ok" }));
+
+  app.post("/api/drawing-runs", async (request, reply) => {
+    const access = await requireUser(request, options);
+    const input = body(request);
+    assertOnlyKeys(input, ["intent"], "drawing run start");
+    try {
+      const run = await options.drawingRunCoordinator.start({
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        idempotencyKey: idempotencyKey(request),
+        intent: parseDrawingIntent(input.intent),
+      });
+      return reply.code(201).send(run);
+    } catch (error) {
+      throw drawingRunError(error);
+    }
+  });
+
+  app.get("/api/drawing-runs", async (request) => {
+    const access = await requireUser(request, options);
+    return { runs: await options.drawingRunCoordinator.list(access.user.id) };
+  });
+
+  app.get("/api/drawing-runs/:runId", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const run = await options.drawingRunCoordinator.get(access.user.id, runId);
+    if (!run) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+    return run;
+  });
+
+  app.get("/api/drawing-runs/:runId/events", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const events = await options.drawingRunCoordinator.listEvents(access.user.id, runId);
+    if (!events) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+    return { runId, events };
+  });
+
+  app.post("/api/drawing-runs/:runId/input", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision", "receipts"], "drawing run input");
+    const commandInput = drawingRunCommandInput(request, runId, input.expectedRevision);
+    const current = await options.drawingRunCoordinator.get(access.user.id, runId);
+    if (!current) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+    if (current.revision !== commandInput.expectedRevision) throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run revision is stale");
+    if (!current.allowedActions.includes("accept_input")) throw new DrawingRunError("DRAWING_RUN_TRANSITION_INVALID", "Drawing Run is not accepting input");
+    try {
+      const receipts = await ingestDrawingReceipts(access.user.id, input.receipts, options.privateReceiptStore);
+      return await options.drawingRunCoordinator.acceptInput({
+        ...commandInput,
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        receiptIds: receipts.map((receipt) => receipt.receiptId),
+        artifactHash: receiptBatchHash(receipts),
+      });
+    } catch (error) {
+      throw drawingRunError(error);
+    }
+  });
+
+  app.post("/api/drawing-runs/:runId/cancel", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision"], "drawing run cancel");
+    try {
+      return await options.drawingRunCoordinator.cancel({
+        ...drawingRunCommandInput(request, runId),
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+      });
+    } catch (error) {
+      throw drawingRunError(error);
+    }
+  });
+
+  app.post("/api/drawing-runs/:runId/clarification", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision", "clarificationId", "answer"], "drawing run clarification");
+    const clarificationId = requiredIdentifierField(input.clarificationId, "clarificationId");
+    const answer = requiredStringField(input.answer, "answer");
+    if (answer.length > 1024) throw validationError("answer is too long", { field: "answer", reason: "limit_exceeded" });
+    try {
+      return await options.drawingRunCoordinator.answerClarification({
+        ...drawingRunCommandInput(request, runId, input.expectedRevision),
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        clarificationId,
+        answer,
+      });
+    } catch (error) {
+      throw drawingRunError(error);
+    }
+  });
+
+  app.post("/api/drawing-runs/:runId/page-binding", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision", "pageTargetHandle", "ownedRegionId"], "drawing run page binding");
+    const pageTargetHandle = requiredIdentifierField(input.pageTargetHandle, "pageTargetHandle");
+    const ownedRegionId = requiredIdentifierField(input.ownedRegionId, "ownedRegionId");
+    try {
+      return await options.drawingRunCoordinator.bindExistingPage({
+        ...drawingRunCommandInput(request, runId, input.expectedRevision),
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        pageTargetHandle,
+        ownedRegionId,
+      });
+    } catch (error) {
+      throw drawingRunError(error);
+    }
+  });
+
+  app.post("/api/drawing-runs/:runId/apply", async (request) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision", "confirmationNonce"], "drawing run apply");
+    const confirmationNonce = requiredStringField(input.confirmationNonce, "confirmationNonce");
+    try {
+      return await options.drawingRunCoordinator.requestApply({
+        ...drawingRunCommandInput(request, runId, input.expectedRevision),
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        confirmationNonce,
+      });
+    } catch (error) {
+      throw drawingRunError(error);
+    }
+  });
 
   app.post("/api/universal-figure-previews", async (request, reply) => {
     universalPreviewVersion(request);

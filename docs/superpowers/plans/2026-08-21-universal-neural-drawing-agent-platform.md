@@ -419,7 +419,7 @@ Every mutating method requires `ownerId`, `deviceId`, and an idempotency key. Af
 | Electron | retain as a later shell | authenticated UI, device identity, selected Visio target UX; not topology authority |
 | .NET/C# Worker + Visio COM | retain as a narrow native boundary | opaque target discovery, attach, owned-region diff, readback, lifecycle evidence |
 
-### 5.2 Do not introduce now
+### 5.2 Current orchestration decision
 
 | Technology | Decision | Why |
 |---|---|---|
@@ -427,6 +427,8 @@ Every mutating method requires `ownerId`, `deviceId`, and an idempotency key. Af
 | CrewAI, AutoGen, unrestricted multi-agent chat | do not adopt | Natural-language inter-agent collaboration is not a trustworthy graph/Visio protocol. |
 | arbitrary vector database/RAG | do not adopt | The core task is structural interpretation and visual composition, not retrieval. Add retrieval only after a licensed, curated visual corpus has a demonstrated query need. |
 | generic workflow engine/Temporal | defer | Use durable DrawingRun rows plus existing job/lease infrastructure until real multi-hour distributed jobs require a separate orchestration platform. |
+
+LangGraph JS is adopted as the Drawing Run orchestration runtime in the 2026-08-22 runtime design. This does not move authority into LangGraph: the persisted DrawingRun reducer, CAS store, idempotency fence, EvidencePack, Structural Harness, PVP trust checks, and Visio authorization remain outside model-controlled nodes.
 
 ### 5.3 Conditional Agent-framework adoption
 
@@ -448,14 +450,7 @@ It must not own run persistence, state transitions, UGS validation, PVP emission
 
 #### LangGraph JS
 
-Adopt only when all four criteria are true:
-
-1. a Drawing Run needs durable pause/resume across multiple asynchronous operations;
-2. the Coordinator has a stable `DrawingRun` schema and state-transition test suite;
-3. a meaningful number of runs require conditional branching beyond the explicit reducer;
-4. a checkpoint store is owner/device scoped and can store only redacted/approved state.
-
-If adopted, LangGraph is an implementation of the Coordinator orchestration layer, not the source of truth. Each node invokes an existing pure service and returns an artifact envelope. The Harness remains outside/above model-controlled nodes.
+LangGraph is the implementation of the workflow orchestration port, not the source of truth. Each node invokes an existing pure service and returns only bounded hashes, phase decisions, or assessment results. The Harness remains outside and above model-controlled nodes. A production graph must receive an explicit owner/device-scoped durable checkpoint saver; `MemorySaver` is test-only.
 
 ```text
 LangGraph node: intake
@@ -1154,7 +1149,7 @@ git commit -m "feat(agent): update bound Visio pages from sealed PVP"
 
 ### Phase 9: Real-Host Acceptance, Evaluation Corpus, and Optional Observability
 
-**Outcome:** The platform has real Windows/Visio evidence across semantic families, durable evaluation fixtures, safe run tracing, and a decision record for optional LangGraph/LangSmith integration.
+**Outcome:** The platform has real Windows/Visio evidence across semantic families, durable evaluation fixtures, and safe run tracing. LangGraph orchestration is already adopted; LangSmith remains optional.
 
 **Files:**
 
@@ -1183,9 +1178,9 @@ Assert that source snippets, API keys, bearer tokens, local/UNC paths, image bas
 
 Use local structured events as the authoritative trace. Add an optional sink interface; it receives only `RedactedDrawingTraceEvent` after unit tests prove redaction.
 
-- [ ] **Step 5: Make the LangGraph/LangSmith decision with evidence.**
+- [ ] **Step 5: Review the LangGraph runtime and decide on LangSmith.**
 
-Adopt neither framework unless its documented spike proves all listed conditions: stable state schema, safe checkpoint/trace redaction, provider compatibility, owner/device isolation, no Worker/native tool exposure, and a measured operational benefit over the local coordinator/event log. Record the decision and the exact evidence.
+Review the LangGraph runtime against stable state schema, safe checkpoint/trace redaction, provider compatibility, owner/device isolation, no Worker/native tool exposure, and measured operational behavior. LangSmith remains disabled until the evaluation corpus, consent policy, and redaction evidence exist. Record the review and exact evidence.
 
 - [ ] **Step 6: Run final delivery matrix.**
 
@@ -1214,7 +1209,7 @@ git commit -m "docs(agent): record drawing platform acceptance"
 | Framework | Earliest phase | Required evidence before adoption | Explicit rejection trigger |
 |---|---:|---|---|
 | OpenAI Agents SDK | Phase 4 | dependency compatibility; strict proposal tool schema; provider redaction; test proving no native tool access | Provider can see raw private receipt bytes or invoke non-proposal tool |
-| LangGraph JS | after Phase 5 | durable run schema; owner/device checkpoint isolation; resume/cancel/idempotency tests; complex branch need shown by real runs | graph duplicates/replaces Harness validation or stores private input in checkpoint |
+| LangGraph JS | current runtime slice | durable run schema; owner/device checkpoint isolation; resume/cancel/idempotency tests; graph nodes remain bounded service adapters | graph duplicates/replaces Harness validation or stores private input in checkpoint |
 | LangSmith | after Phase 9 | evaluation corpus; consent policy; redaction tests; local audit authoritative; trace payload review | raw source/image/path/key/provider/native details reach trace sink |
 | LangChain | only as a private Provider adapter | concrete adapter requirement that existing narrow interface cannot meet | it becomes the canonical state/graph/Visio authority |
 

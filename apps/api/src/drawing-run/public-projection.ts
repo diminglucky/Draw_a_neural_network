@@ -1,26 +1,30 @@
 import {
   type DrawingRun,
   type DrawingRunCommand,
+  type DrawingRunEvent,
   type DrawingRunTrustedScope,
   type PublicDrawingRun,
+  type PublicDrawingRunEvent,
 } from "./contracts.js";
+import { snapshotDrawingRunEvent } from "./event-log.js";
 import { reconstructDrawingRunState } from "./reducer.js";
 
 const publicClarificationPrompt = "A clarification is required before continuing.";
 
-const allowedActionsByStatus: Readonly<Record<DrawingRun["status"], readonly DrawingRunCommand["type"][]>> = {
-  received: ["accept_input", "cancel", "reject", "fail", "conflict"],
-  input_accepted: ["begin_analysis", "cancel", "reject", "fail", "conflict"],
-  analyzing: ["request_interpreter", "record_candidate", "cancel", "reject", "fail", "conflict"],
-  awaiting_interpreter: ["record_candidate", "cancel", "reject", "fail", "conflict"],
-  candidate_structure: ["formalize_ugs", "request_clarification", "cancel", "reject", "fail", "conflict"],
-  awaiting_clarification: ["answer_clarification", "cancel", "reject", "fail", "conflict"],
-  formal_ugs: ["compose_pvp", "cancel", "reject", "fail", "conflict"],
-  composing_pvp: ["publish_preview", "cancel", "reject", "fail", "conflict"],
-  preview_ready: ["discover_page_target", "cancel", "reject", "fail", "conflict"],
-  awaiting_page_binding: ["bind_page", "cancel", "reject", "fail", "conflict"],
-  page_bound: ["request_apply", "cancel", "reject", "fail", "conflict"],
-  applying: ["verify_readback", "cancel", "reject", "fail", "conflict"],
+const actionsByStatus: Readonly<Record<DrawingRun["status"], readonly DrawingRunCommand["type"][]>> = {
+  received: ["accept_input", "cancel"],
+  input_accepted: ["begin_analysis", "cancel"],
+  analyzing: ["request_interpreter", "record_candidate", "cancel"],
+  awaiting_interpreter: ["record_candidate", "cancel"],
+  candidate_structure: ["formalize_ugs", "request_clarification", "cancel"],
+  awaiting_clarification: ["answer_clarification", "cancel"],
+  formal_ugs: ["compose_pvp", "cancel"],
+  composing_pvp: ["publish_preview", "cancel"],
+  preview_ready: ["discover_page_target", "cancel"],
+  awaiting_page_binding: ["bind_page", "cancel"],
+  page_bound: ["request_apply", "cancel"],
+  awaiting_apply_confirmation: [],
+  applying: ["verify_readback", "cancel"],
   readback_verified: [],
   cancelled: [],
   rejected: [],
@@ -28,24 +32,40 @@ const allowedActionsByStatus: Readonly<Record<DrawingRun["status"], readonly Dra
   conflicted: [],
 };
 
-export function projectPublicDrawingRun(state: DrawingRun, trustedScope: DrawingRunTrustedScope): PublicDrawingRun {
-  const safeState = reconstructDrawingRunState(state, trustedScope);
-
-  let clarification: PublicDrawingRun["clarification"] = null;
-  if (safeState.clarification !== null) {
-    clarification = { id: `clarification:${safeState.clarification.hash}`, prompt: publicClarificationPrompt };
-  }
-  let preview: PublicDrawingRun["preview"] = null;
-  if (safeState.preview !== null) {
-    preview = { artifactId: `preview:${safeState.preview.hash}`, hash: safeState.preview.hash };
-  }
-
+export function projectPublicDrawingRun(state: DrawingRun): PublicDrawingRun;
+export function projectPublicDrawingRun(state: DrawingRun, trustedScope: DrawingRunTrustedScope): PublicDrawingRun;
+export function projectPublicDrawingRun(
+  state: DrawingRun,
+  trustedScopeOrIndex?: DrawingRunTrustedScope | number,
+): PublicDrawingRun {
+  const trustedScope = typeof trustedScopeOrIndex === "object" && trustedScopeOrIndex !== null
+    ? trustedScopeOrIndex
+    : undefined;
+  const safe = reconstructDrawingRunState(state, trustedScope);
   return {
-    runId: safeState.runId,
-    revision: safeState.revision,
-    status: safeState.status,
-    allowedActions: [...allowedActionsByStatus[safeState.status]],
-    clarification,
-    preview,
+    runId: safe.runId,
+    revision: safe.revision,
+    status: safe.status,
+    errorCategory: safe.errorCategory,
+    allowedActions: [...actionsByStatus[safe.status]],
+    clarification: safe.clarification
+      ? { id: safe.clarification.id, prompt: publicClarificationPrompt }
+      : null,
+    preview: safe.preview
+      ? { artifactId: safe.preview.artifactId, hash: safe.preview.hash }
+      : null,
+  };
+}
+
+export function projectPublicDrawingRunEvent(event: DrawingRunEvent): PublicDrawingRunEvent {
+  const safe = snapshotDrawingRunEvent(event);
+  return {
+    eventId: safe.eventId,
+    runId: safe.runId,
+    revision: safe.revision,
+    status: safe.status,
+    action: safe.action,
+    errorCategory: safe.errorCategory,
+    occurredAt: safe.occurredAt,
   };
 }
