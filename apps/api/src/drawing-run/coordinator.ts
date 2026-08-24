@@ -33,9 +33,9 @@ export interface DrawingRunCoordinator {
   requestApply(input: RequestDrawingApplyInput): Promise<DrawingRunSnapshot>;
   cancel(input: CancelDrawingRunInput): Promise<DrawingRunSnapshot>;
   recover(): Promise<void>;
-  get(ownerId: string, runId: string): Promise<DrawingRunSnapshot | null>;
-  list(ownerId: string): Promise<DrawingRunSnapshot[]>;
-  listEvents(ownerId: string, runId: string): Promise<PublicDrawingRunEvent[] | null>;
+  get(ownerId: string, runId: string, deviceId: string): Promise<DrawingRunSnapshot | null>;
+  list(ownerId: string, deviceId: string): Promise<DrawingRunSnapshot[]>;
+  listEvents(ownerId: string, runId: string, deviceId: string): Promise<PublicDrawingRunEvent[] | null>;
 }
 
 export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
@@ -92,7 +92,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     const trustedScope = verifiedDrawingRunScope(run, { ...input, runId });
     await this.store.create(run);
     this.startIdempotency.set(startKey, { requestHash, runId });
-    if (this.workflow) void this.scheduleWorkflow(run);
+    if (this.workflow) void this.scheduleWorkflow(run, trustedScope);
     return projectPublicDrawingRun(run, trustedScope);
   }
 
@@ -100,7 +100,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     const trustedScope = drawingRunTrustedScope(input);
     const run = await this.requireRun(trustedScope);
     if (this.workflow && isWorkflowResumable(run.status)) {
-      void this.scheduleWorkflow(run);
+      void this.scheduleWorkflow(run, trustedScope);
     }
     return projectPublicDrawingRun(run, trustedScope);
   }
@@ -139,12 +139,10 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
   }
 
   async recover(): Promise<void> {
-    if (!this.workflow) return;
-    const runs = await this.store.listForRecovery();
-    await Promise.all(runs.map((run) => this.scheduleWorkflow(run)));
+    // Cold recovery has no authenticated owner/device scope, so it must not schedule persisted runs.
   }
 
-  private async scheduleWorkflow(run: DrawingRun): Promise<void> {
+  private async scheduleWorkflow(run: DrawingRun, trustedScope: DrawingRunTrustedScope): Promise<void> {
     if (!this.workflow || !isWorkflowResumable(run.status)) return;
     const key = `${run.ownerId}\u0000${run.deviceId}\u0000${run.runId}\u0000${run.revision}`;
     if (this.inFlight.has(key)) return;
@@ -181,7 +179,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
       if (!claimed.acquired || claimed.fencingToken === null) return;
       lease = { fencingToken: claimed.fencingToken };
       renewInterval = setInterval(() => { void renewLease(); }, renewIntervalMs);
-      await this.dispatchWorkflow(run, verifiedDrawingRunScope(run, run), renewLease);
+      await this.dispatchWorkflow(run, trustedScope, renewLease);
     } finally {
       if (renewInterval) clearInterval(renewInterval);
       if (lease) {
@@ -289,24 +287,24 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     }
   }
 
-  async get(ownerId: string, runId: string): Promise<DrawingRunSnapshot | null> {
+  async get(ownerId: string, runId: string, deviceId: string): Promise<DrawingRunSnapshot | null> {
     const run = await this.store.get(ownerId, runId);
     if (!run) return null;
-    const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId, deviceId: run.deviceId });
+    const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId, deviceId });
     return projectPublicDrawingRun(run, trustedScope);
   }
 
-  async list(ownerId: string): Promise<DrawingRunSnapshot[]> {
+  async list(ownerId: string, deviceId: string): Promise<DrawingRunSnapshot[]> {
     return (await this.store.list(ownerId)).map((run) => {
-      const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId: run.runId, deviceId: run.deviceId });
+      const trustedScope = verifiedDrawingRunScope(run, { ownerId, runId: run.runId, deviceId });
       return projectPublicDrawingRun(run, trustedScope);
     });
   }
 
-  async listEvents(ownerId: string, runId: string): Promise<PublicDrawingRunEvent[] | null> {
+  async listEvents(ownerId: string, runId: string, deviceId: string): Promise<PublicDrawingRunEvent[] | null> {
     const run = await this.store.get(ownerId, runId);
     if (!run) return null;
-    verifiedDrawingRunScope(run, { ownerId, runId, deviceId: run.deviceId });
+    verifiedDrawingRunScope(run, { ownerId, runId, deviceId });
     return (await this.store.listEvents(ownerId, runId)).map(projectPublicDrawingRunEvent);
   }
 
@@ -342,7 +340,7 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
       return projectPublicDrawingRun(replay, trustedScope);
     }
     if (this.workflow && isWorkflowResumable(transition.next.status)) {
-      void this.scheduleWorkflow(transition.next);
+      void this.scheduleWorkflow(transition.next, trustedScope);
     }
     return projectPublicDrawingRun(transition.next, trustedScope);
   }

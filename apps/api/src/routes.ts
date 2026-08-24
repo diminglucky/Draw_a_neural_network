@@ -1194,13 +1194,13 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
 
   app.get("/api/drawing-runs", async (request) => {
     const access = await requireUser(request, options);
-    return { runs: await options.drawingRunCoordinator.list(access.user.id) };
+    return { runs: await options.drawingRunCoordinator.list(access.user.id, access.device.id) };
   });
 
   app.get("/api/drawing-runs/:runId", async (request) => {
     const access = await requireUser(request, options);
     const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
-    const run = await options.drawingRunCoordinator.get(access.user.id, runId);
+    const run = await options.drawingRunCoordinator.get(access.user.id, runId, access.device.id);
     if (!run) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
     return run;
   });
@@ -1208,7 +1208,7 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
   app.get("/api/drawing-runs/:runId/events", async (request) => {
     const access = await requireUser(request, options);
     const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
-    const events = await options.drawingRunCoordinator.listEvents(access.user.id, runId);
+    const events = await options.drawingRunCoordinator.listEvents(access.user.id, runId, access.device.id);
     if (!events) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
     return { runId, events };
   });
@@ -1219,7 +1219,7 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     const input = body(request);
     assertOnlyKeys(input, ["expectedRevision", "receipts"], "drawing run input");
     const commandInput = drawingRunCommandInput(request, runId, input.expectedRevision);
-    const current = await options.drawingRunCoordinator.get(access.user.id, runId);
+    const current = await options.drawingRunCoordinator.get(access.user.id, runId, access.device.id);
     if (!current) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
     if (current.revision !== commandInput.expectedRevision) throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run revision is stale");
     if (!current.allowedActions.includes("accept_input")) throw new DrawingRunError("DRAWING_RUN_TRANSITION_INVALID", "Drawing Run is not accepting input");
