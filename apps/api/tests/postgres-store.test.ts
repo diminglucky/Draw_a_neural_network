@@ -739,11 +739,76 @@ describe("PostgresFoundationStore", () => {
     expect(calls[0]?.values.at(-1)).toBe("owner-1");
   });
 
+  it("persists, updates, and restores the formal UGS hash for a Drawing Run", async () => {
+    const formalUgsHash = "f".repeat(64);
+    const runRow = {
+      run_id: "run-ugs-1",
+      owner_id: "owner-1",
+      device_id: "device-1",
+      status: "formal_ugs",
+      revision: 4,
+      intent: { action: "create_figure", requestedDetail: "overview", target: "browser_preview", sourceKinds: ["typed_text"] },
+      artifact_hashes: ["a".repeat(64), "b".repeat(64), "c".repeat(64), formalUgsHash],
+      private_receipt_ids: ["receipt-1"],
+      start_idempotency_key: "start-ugs-1",
+      start_request_hash: "d".repeat(64),
+      clarification: null,
+      preview: null,
+      formal_ugs_hash: formalUgsHash,
+      error_category: "none",
+      created_at: "2026-08-24T00:00:00.000Z",
+      updated_at: "2026-08-24T00:00:04.000Z",
+    };
+    const { pool, calls } = fakePool({ rows: [runRow], rowCount: 1 });
+    const store = new PostgresFoundationStore(pool);
+    const run = {
+      runId: runRow.run_id,
+      ownerId: runRow.owner_id,
+      deviceId: runRow.device_id,
+      status: "formal_ugs" as const,
+      revision: runRow.revision,
+      intent: runRow.intent as { action: "create_figure"; requestedDetail: "overview"; target: "browser_preview"; sourceKinds: ["typed_text"] },
+      artifactHashes: runRow.artifact_hashes,
+      privateReceiptIds: runRow.private_receipt_ids,
+      startIdempotencyKey: runRow.start_idempotency_key,
+      startRequestHash: runRow.start_request_hash,
+      clarification: null,
+      preview: null,
+      errorCategory: "none" as const,
+      createdAt: runRow.created_at,
+      updatedAt: runRow.updated_at,
+      formalUgsHash,
+    };
+
+    await store.createDrawingRun(run);
+    await expect(store.compareAndSetDrawingRun({ ownerId: run.ownerId, runId: run.runId, expectedRevision: 3, next: run })).resolves.toBe("updated");
+    await expect(store.getDrawingRun(run.ownerId, run.runId)).resolves.toMatchObject({ formalUgsHash });
+
+    const writeCalls = calls.filter((call) => /INSERT INTO drawing_runs|UPDATE drawing_runs/.test(call.text));
+    expect(writeCalls).toHaveLength(2);
+    expect(writeCalls.every((call) => call.text.includes("formal_ugs_hash") && call.values.includes(formalUgsHash))).toBe(true);
+  });
+
+  it("rejects legacy apply-confirmation rows instead of treating them as a valid durable state", async () => {
+    const { pool } = fakePool({
+      rows: [{
+        run_id: "run-legacy-1", owner_id: "owner-1", device_id: "device-1", status: "awaiting_apply_confirmation", revision: 8,
+        intent: {}, artifact_hashes: [], private_receipt_ids: [], start_idempotency_key: "start-legacy-1", start_request_hash: "a".repeat(64),
+        clarification: null, preview: null, formal_ugs_hash: null, error_category: "none",
+        created_at: "2026-08-24T00:00:00.000Z", updated_at: "2026-08-24T00:00:08.000Z",
+      }],
+      rowCount: 1,
+    });
+
+    await expect(new PostgresFoundationStore(pool).getDrawingRun("owner-1", "run-legacy-1"))
+      .rejects.toThrow("invalid Drawing Run status");
+  });
+
   it("commits a Drawing Run transition and event in one transaction", async () => {
-    const calls: string[] = [];
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
     const client = {
-      async query(text: string) {
-        calls.push(text);
+      async query(text: string, values: readonly unknown[] = []) {
+        calls.push({ text, values });
         if (text.includes("UPDATE drawing_runs")) return { rows: [{ run_id: "run-1" }], rowCount: 1 };
         return { rows: [], rowCount: 0 };
       },
@@ -757,6 +822,7 @@ describe("PostgresFoundationStore", () => {
         intent: { action: "create_figure" as const, requestedDetail: "overview" as const, target: "browser_preview" as const, sourceKinds: ["typed_text" as const] },
         artifactHashes: [], privateReceiptIds: [], startIdempotencyKey: "start-1", startRequestHash: "a".repeat(64),
         createdAt: "2026-08-23T00:00:00.000Z", updatedAt: "2026-08-23T00:00:01.000Z", clarification: null, preview: null, errorCategory: "cancelled" as const,
+        formalUgsHash: "c".repeat(64),
       },
       event: {
         eventId: "run-1:1:cancel", runId: "run-1", revision: 1, status: "cancelled" as const, action: "failed" as const,
@@ -765,10 +831,10 @@ describe("PostgresFoundationStore", () => {
     } satisfies DrawingRunTransition;
 
     await expect(store.commitDrawingRunTransition({ ownerId: "owner-1", runId: "run-1", expectedRevision: 0, transition, idempotencyKey: "cancel-1" })).resolves.toBe("updated");
-    expect(calls[0]).toBe("BEGIN");
-    expect(calls.some((text) => text.includes("SELECT * FROM drawing_run_events"))).toBe(true);
-    expect(calls.some((text) => text.includes("UPDATE drawing_runs") && text.includes("device_id = $4"))).toBe(true);
-    expect(calls.some((text) => text.includes("INSERT INTO drawing_run_events"))).toBe(true);
-    expect(calls.at(-1)).toBe("COMMIT");
+    expect(calls[0]?.text).toBe("BEGIN");
+    expect(calls.some((call) => call.text.includes("SELECT * FROM drawing_run_events"))).toBe(true);
+    expect(calls.some((call) => call.text.includes("UPDATE drawing_runs") && call.text.includes("formal_ugs_hash = $10") && call.text.includes("device_id = $4") && call.values.includes("c".repeat(64)))).toBe(true);
+    expect(calls.some((call) => call.text.includes("INSERT INTO drawing_run_events"))).toBe(true);
+    expect(calls.at(-1)?.text).toBe("COMMIT");
   });
 });

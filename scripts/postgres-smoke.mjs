@@ -18,6 +18,7 @@ const drawingWorkflowCheckpointsMigration = readFileSync(resolve(process.cwd(), 
 const privateInputReceiptsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/012_private_input_receipts.sql"), "utf8");
 const drawingInputArtifactsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/013_drawing_input_artifacts.sql"), "utf8");
 const drawingArtifactsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/014_drawing_artifacts.sql"), "utf8");
+const drawingRunFormalUgsStateMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/015_drawing_run_formal_ugs_state.sql"), "utf8");
 const userId = `smoke-${randomUUID()}`;
 const email = `${userId}@example.com`;
 const deviceOneId = `device-${randomUUID()}`;
@@ -96,6 +97,7 @@ try {
   await first.query(privateInputReceiptsMigration);
   await first.query(drawingInputArtifactsMigration);
   await first.query(drawingArtifactsMigration);
+  await first.query(drawingRunFormalUgsStateMigration);
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,

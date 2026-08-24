@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "../src/config.js";
 import { buildApp } from "../src/app.js";
@@ -71,6 +71,25 @@ describe("production persistence boundary", () => {
     expect(sql).toContain("UNIQUE (owner_id, run_id, idempotency_key)");
     expect(sql).toContain("FOREIGN KEY (owner_id, run_id)");
     expect(sql).toContain("revision INTEGER NOT NULL");
+    expect(sql).toContain("formal_ugs_hash TEXT NULL");
+    expect(sql).toContain("formal_ugs_hash IS NULL OR formal_ugs_hash ~* '^[a-f0-9]{64}$'");
+    expect(sql).not.toContain("awaiting_apply_confirmation");
+  });
+
+  it("fails closed before removing the legacy Drawing Run status and formalizes the durable UGS hash", () => {
+    const migrationPath = resolve(process.cwd(), "apps/api/sql/015_drawing_run_formal_ugs_state.sql");
+    expect(existsSync(migrationPath)).toBe(true);
+    if (!existsSync(migrationPath)) return;
+
+    const migration = readFileSync(migrationPath, "utf8");
+    expect(migration).toContain("Migration 015 blocked");
+    expect(migration).toContain("awaiting_apply_confirmation");
+    expect(migration).toMatch(/RAISE EXCEPTION[\s\S]*awaiting_apply_confirmation/i);
+    expect(migration).not.toMatch(/UPDATE\s+drawing_runs\s+SET\s+status/i);
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS formal_ugs_hash TEXT NULL");
+    expect(migration).toContain("drawing_runs_formal_ugs_hash_check");
+    expect(migration).toContain("drawing_runs_status_check");
+    expect(migration).toContain("'page_bound', 'applying'");
   });
 
   it("contains owner/device/revision-scoped LangGraph checkpoint storage", () => {

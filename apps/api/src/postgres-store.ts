@@ -215,7 +215,7 @@ function drawingRunStatus(value: unknown): DrawingRunStatus {
   const statuses: DrawingRunStatus[] = [
     "received", "input_accepted", "analyzing", "awaiting_interpreter", "candidate_structure",
     "awaiting_clarification", "formal_ugs", "composing_pvp", "preview_ready", "awaiting_page_binding",
-    "page_bound", "awaiting_apply_confirmation", "applying", "readback_verified", "cancelled", "rejected",
+    "page_bound", "applying", "readback_verified", "cancelled", "rejected",
     "failed", "conflicted",
   ];
   if (typeof value === "string" && statuses.includes(value as DrawingRunStatus)) return value as DrawingRunStatus;
@@ -239,6 +239,11 @@ function mapDrawingRun(row: Row): DrawingRun {
     clarification: row.clarification === null || row.clarification === undefined ? null : json(row.clarification, null),
     preview: row.preview === null || row.preview === undefined ? null : json(row.preview, null),
     errorCategory: String(row.error_category) as DrawingRun["errorCategory"],
+    formalUgsHash: row.formal_ugs_hash === undefined
+      ? undefined
+      : row.formal_ugs_hash === null
+        ? null
+        : String(row.formal_ugs_hash),
   };
 }
 
@@ -952,12 +957,13 @@ export class PostgresFoundationStore implements FoundationStore {
   async createDrawingRun(run: DrawingRun): Promise<void> {
     await this.pool.query(
       `INSERT INTO drawing_runs
-       (run_id, owner_id, device_id, status, revision, intent, artifact_hashes, private_receipt_ids, start_idempotency_key, start_request_hash, clarification, preview, error_category, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+       (run_id, owner_id, device_id, status, revision, intent, artifact_hashes, private_receipt_ids, start_idempotency_key, start_request_hash, formal_ugs_hash, clarification, preview, error_category, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
         run.runId, run.ownerId, run.deviceId, run.status, run.revision, JSON.stringify(run.intent),
         JSON.stringify(run.artifactHashes), JSON.stringify(run.privateReceiptIds),
         run.startIdempotencyKey, run.startRequestHash,
+        run.formalUgsHash ?? null,
         run.clarification ? JSON.stringify(run.clarification) : null,
         run.preview ? JSON.stringify(run.preview) : null,
         run.errorCategory, run.createdAt, run.updatedAt,
@@ -1005,12 +1011,13 @@ export class PostgresFoundationStore implements FoundationStore {
     const result = await this.pool.query(
       `UPDATE drawing_runs
        SET status = $4, revision = $5, intent = $6, artifact_hashes = $7, private_receipt_ids = $8,
-           clarification = $9, preview = $10, error_category = $11, updated_at = $12
+           formal_ugs_hash = $9, clarification = $10, preview = $11, error_category = $12, updated_at = $13
        WHERE owner_id = $1 AND run_id = $2 AND revision = $3
        RETURNING *`,
       [
         input.ownerId, input.runId, input.expectedRevision, run.status, run.revision, JSON.stringify(run.intent),
         JSON.stringify(run.artifactHashes), JSON.stringify(run.privateReceiptIds),
+        run.formalUgsHash ?? null,
         run.clarification ? JSON.stringify(run.clarification) : null,
         run.preview ? JSON.stringify(run.preview) : null,
         run.errorCategory, run.updatedAt,
@@ -1048,12 +1055,13 @@ export class PostgresFoundationStore implements FoundationStore {
       const updated = await client.query(
         `UPDATE drawing_runs
          SET status = $5, revision = $6, intent = $7, artifact_hashes = $8, private_receipt_ids = $9,
-             clarification = $10, preview = $11, error_category = $12, updated_at = $13
+             formal_ugs_hash = $10, clarification = $11, preview = $12, error_category = $13, updated_at = $14
          WHERE owner_id = $1 AND run_id = $2 AND revision = $3 AND device_id = $4
          RETURNING run_id`,
         [
           input.ownerId, input.runId, input.expectedRevision, run.deviceId, run.status, run.revision,
           JSON.stringify(run.intent), JSON.stringify(run.artifactHashes), JSON.stringify(run.privateReceiptIds),
+          run.formalUgsHash ?? null,
           run.clarification ? JSON.stringify(run.clarification) : null,
           run.preview ? JSON.stringify(run.preview) : null,
           run.errorCategory, run.updatedAt,

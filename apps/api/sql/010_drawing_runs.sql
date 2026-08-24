@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS drawing_runs (
   status TEXT NOT NULL CHECK (status IN (
     'received', 'input_accepted', 'analyzing', 'awaiting_interpreter', 'candidate_structure',
     'awaiting_clarification', 'formal_ugs', 'composing_pvp', 'preview_ready', 'awaiting_page_binding',
-    'page_bound', 'awaiting_apply_confirmation', 'applying', 'readback_verified', 'cancelled',
+    'page_bound', 'applying', 'readback_verified', 'cancelled',
     'rejected', 'failed', 'conflicted'
   )),
   revision INTEGER NOT NULL CHECK (revision >= 0),
@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS drawing_runs (
   private_receipt_ids JSONB NOT NULL,
   start_idempotency_key TEXT NOT NULL,
   start_request_hash TEXT NOT NULL CHECK (start_request_hash ~* '^[a-f0-9]{64}$'),
+  formal_ugs_hash TEXT NULL CHECK (formal_ugs_hash IS NULL OR formal_ugs_hash ~* '^[a-f0-9]{64}$'),
   clarification JSONB NULL,
   preview JSONB NULL,
   error_category TEXT NOT NULL CHECK (error_category IN (
