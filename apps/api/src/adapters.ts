@@ -352,7 +352,6 @@ class LocalDeterministicAgentProvider implements AgentProvider {
     const codeAttachments = input.attachments.filter((attachment) => attachment.kind === "code");
     const imageAttachments = input.attachments.filter((attachment) => attachment.kind === "image");
     const layerKinds = collectLayerKinds([input.message, ...codeAttachments.map((attachment) => decodeCodeAttachment(attachment.data))].join("\n"));
-    const preset = detectPublicationPreset(input.message);
     const sourceByKind = new Map(input.evidenceSources.map((source) => [source.kind, source]));
     const sourceFor = (kind: EvidenceSource["kind"]) => sourceByKind.get(kind) ?? input.evidenceSources[0];
     const evidence = [
@@ -367,7 +366,7 @@ class LocalDeterministicAgentProvider implements AgentProvider {
       detail: fact.value,
       confidence: fact.confidence,
     }));
-    const nodes = buildNodes(layerKinds, candidateEvidence, preset).map(stripLegacyPresentationFields);
+    const nodes = buildNodes(layerKinds, candidateEvidence);
     const proposal = parseAnalysisProposal({
       provider: "local-deterministic",
       responseText: imageAttachments.length > 0
@@ -378,9 +377,9 @@ class LocalDeterministicAgentProvider implements AgentProvider {
       taskIntentSuggestion: {},
       evidence,
       networkCandidate: {
-        figure: { id: "figure-deterministic", title: publicationPresetMeta(preset).title, description: publicationPresetMeta(preset).description },
+        figure: { id: "figure-deterministic", title: "Neural Network Architecture", description: "A source-derived structural draft." },
         nodes,
-        edges: buildEdges(nodes, preset),
+        edges: buildEdges(nodes),
         groups: [],
       },
       unresolved: [],
@@ -420,9 +419,7 @@ class LocalDeterministicAgentProvider implements AgentProvider {
       })),
     ];
     const layerKinds = collectLayerKinds([input.message, ...codeAttachments.map((attachment) => decodeCodeAttachment(attachment.data))].join("\n"));
-    const preset = detectPublicationPreset(input.message);
-    const nodes = buildNodes(layerKinds, evidence, preset);
-    const presetMeta = publicationPresetMeta(preset);
+    const nodes = buildNodes(layerKinds, evidence);
     const responseFragments = ["deterministic draft generated from text and code patterns."];
     if (imageAttachments.length > 0) {
       responseFragments.push("Image attachments were treated as low-confidence reference evidence only.");
@@ -437,12 +434,12 @@ class LocalDeterministicAgentProvider implements AgentProvider {
       diagramIntent: input.canvas && buildLocalCanvasActions(input.message, input.canvas).actions.length > 0 ? "modify" : "replace",
       actions: buildLocalCanvasActions(input.message, input.canvas),
       networkIR: {
-        figure: { id: "figure-deterministic", title: presetMeta.title, description: presetMeta.description },
+        figure: { id: "figure-deterministic", title: "Neural Network Architecture", description: "A source-derived structural draft." },
         nodes,
-        edges: buildEdges(nodes, preset),
+        edges: buildEdges(nodes),
         groups: [],
         annotations: [],
-        style: { paletteName: "dopamine", journal: true, blackAndWhiteSafe: true, preset },
+        style: { paletteName: "dopamine", journal: true, blackAndWhiteSafe: true, preset: "source-derived" },
         layout: { algorithm: "publication-v1" },
       },
     };
@@ -652,11 +649,6 @@ function legacyDraftFromProposal(proposal: AnalysisProposal, input: AgentDraftIn
   };
 }
 
-function stripLegacyPresentationFields(node: LocalNode): LocalNode {
-  const { visualRole: _visualRole, layerRole: _layerRole, repeatCount: _repeatCount, channelCount: _channelCount, depth: _depth, perspective: _perspective, color: _color, visualEncoding: _visualEncoding, metadata: _metadata, ...structural } = node;
-  return structural;
-}
-
 function collectLayerKinds(text: string): string[] {
   const lower = text.toLowerCase();
   const matches: string[] = [];
@@ -717,37 +709,17 @@ function buildLocalCanvasActions(message: string, canvas?: CanvasSnapshot): Canv
   return { actions };
 }
 
-type PublicationPreset = "generic" | "resnet" | "unet" | "vit" | "vgg16";
 type LocalEvidence = { type: string; value: string; locator: null; excerpt: string };
-type LocalVisualEncoding = { visiblePlaneCount: number; extrusionDepthFu: number; projection: "flat" | "oblique-3d"; spatialShape: number[] };
-type LocalNode = { id: string; kind: string; label: string; subtitle?: string; stage: number; confidence: number; sourceEvidence: LocalEvidence[]; tensor?: { shape: Array<number | string>; dtype: string }; visualRole?: string; layerRole?: string; repeatCount?: number; channelCount?: number; depth?: number; perspective?: boolean; color?: string | null; visualEncoding?: LocalVisualEncoding; metadata?: { contains: string[] } };
+type LocalNode = { id: string; kind: string; label: string; subtitle?: string; stage: number; confidence: number; sourceEvidence: LocalEvidence[]; tensor?: { shape: Array<number | string>; dtype: string } };
 type LocalEdge = { source: string; target: string; kind: string; label?: string; skip?: boolean };
 
-function detectPublicationPreset(message: string): PublicationPreset {
-  const lower = message.toLowerCase();
-  if (/\bu[- ]?net\b|segmentation|encoder.{0,24}decoder/.test(lower)) return "unet";
-  if (/vision transformer|\bvit\b|patch embedding|multi-head attention/.test(lower)) return "vit";
-  if (/\bvgg[ -]?16\b|vgg16/.test(lower)) return "vgg16";
-  if (/\b(resnet|residual network)\b|\bskip connection/.test(lower)) return "resnet";
-  return "generic";
-}
-
-function publicationPresetMeta(preset: PublicationPreset): { title: string; description: string } {
-  if (preset === "resnet") return { title: "Residual Network Architecture", description: "A publication-style residual CNN with identity shortcuts and stage-aware tensor flow." };
-  if (preset === "unet") return { title: "U-Net Encoder-Decoder Architecture", description: "A publication-style biomedical segmentation network with symmetric skip fusion." };
-  if (preset === "vit") return { title: "Vision Transformer Architecture", description: "A publication-style token pipeline with patch embedding, attention, and transformer blocks." };
-  if (preset === "vgg16") return { title: "VGG16 Architecture", description: "A publication-style VGG16 convolutional backbone with feature-map stacks, pooling transitions, and a three-layer classifier." };
-  return { title: "Neural Network Architecture", description: "A deterministic publication-style network draft." };
-}
-
-function buildNodes(layerKinds: string[], evidence: AgentEvidence[], preset: PublicationPreset = "generic"): LocalNode[] {
+function buildNodes(layerKinds: string[], evidence: AgentEvidence[]): LocalNode[] {
   const sourceEvidence = evidence.map((item) => ({
     type: item.kind,
     value: item.label,
     locator: null,
     excerpt: item.detail,
   }));
-  if (preset !== "generic") return buildPresetNodes(preset, sourceEvidence);
   const inputNode: LocalNode = {
     id: "node-input",
     kind: "input",
@@ -775,80 +747,8 @@ function buildNodes(layerKinds: string[], evidence: AgentEvidence[], preset: Pub
   return [inputNode, ...middleNodes, outputNode];
 }
 
-function buildPresetNodes(preset: Exclude<PublicationPreset, "generic">, sourceEvidence: LocalEvidence[]): LocalNode[] {
-  const node = (id: string, kind: string, label: string, stage: number, subtitle: string, shape?: Array<number | string>, visual?: Partial<Pick<LocalNode, "visualRole" | "layerRole" | "repeatCount" | "channelCount" | "depth" | "perspective" | "color" | "visualEncoding" | "metadata">>): LocalNode => ({
-    id, kind, label, subtitle, stage, confidence: 0.84, sourceEvidence,
-    ...(shape ? { tensor: { shape, dtype: "float32" } } : {}),
-    ...visual,
-  });
-  if (preset === "resnet") return [
-    node("input", "input", "Input image", 0, "224 x 224 x 3", [224, 224, 3]),
-    node("stem-conv", "conv", "7x7 Conv", 1, "64 channels / stride 2"),
-    node("stem-norm", "normalization", "BatchNorm", 1, "stable feature scale"),
-    node("stem-act", "activation", "ReLU", 1, "non-linearity"),
-    node("res2", "residual", "Residual block", 2, "64 channels"),
-    node("add2", "add", "Identity add", 2, "skip fusion"),
-    node("res3", "residual", "Residual block", 3, "128 channels / stride 2"),
-    node("add3", "add", "Identity add", 3, "skip fusion"),
-    node("res4", "residual", "Residual block", 4, "256 channels / stride 2"),
-    node("pool", "pool", "Global average pool", 5, "1 x 1 x 256"),
-    node("classifier", "classifier", "Linear classifier", 6, "1000 classes"),
-    node("output", "output", "Logits", 7, "1000-way prediction"),
-  ];
-  if (preset === "unet") return [
-    node("input", "input", "Input image", 0, "512 x 512 x 3", [512, 512, 3]),
-    node("enc1", "conv", "Encoder I", 1, "64 channels"),
-    node("enc1-pool", "pool", "Downsample I", 2, "256 x 256"),
-    node("enc2", "conv", "Encoder II", 3, "128 channels"),
-    node("enc2-pool", "pool", "Downsample II", 4, "128 x 128"),
-    node("bottleneck", "conv", "Bottleneck", 5, "256 channels"),
-    node("up2", "upsample", "Upsample II", 6, "256 x 256"),
-    node("concat2", "concat", "Skip concat II", 7, "128 + 128 channels"),
-    node("dec2", "conv", "Decoder II", 8, "128 channels"),
-    node("up1", "upsample", "Upsample I", 9, "512 x 512"),
-    node("concat1", "concat", "Skip concat I", 10, "64 + 64 channels"),
-    node("dec1", "conv", "Decoder I", 11, "64 channels"),
-    node("classifier", "classifier", "1x1 projection", 12, "class logits"),
-    node("output", "output", "Segmentation mask", 13, "512 x 512 x classes"),
-  ];
-  if (preset === "vgg16") return [
-    node("input", "input", "Input image", 0, "224 x 224 x 3", [224, 224, 3], { visualRole: "feature-map-stack", layerRole: "input", channelCount: 3, depth: 3, perspective: true, color: "#9bb7d4", visualEncoding: { visiblePlaneCount: 3, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [224, 224] } }),
-    node("block-1", "conv", "Conv + ReLU", 1, "224 x 224 x 64", [224, 224, 64], { visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 2, channelCount: 64, depth: 8, perspective: true, color: "#4f86c6", visualEncoding: { visiblePlaneCount: 6, extrusionDepthFu: 24, projection: "oblique-3d", spatialShape: [224, 224] } }),
-    node("pool-1", "pool", "MaxPool 2x2", 2, "112 x 112", [112, 112, 64], { visualRole: "pooling-block", layerRole: "max-pooling", channelCount: 64, depth: 2, perspective: true, color: "#c65b5b", visualEncoding: { visiblePlaneCount: 1, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [112, 112] } }),
-    node("block-2", "conv", "Conv + ReLU", 3, "112 x 112 x 128", [112, 112, 128], { visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 2, channelCount: 128, depth: 8, perspective: true, color: "#4f86c6", visualEncoding: { visiblePlaneCount: 6, extrusionDepthFu: 24, projection: "oblique-3d", spatialShape: [112, 112] } }),
-    node("pool-2", "pool", "MaxPool 2x2", 4, "56 x 56", [56, 56, 128], { visualRole: "pooling-block", layerRole: "max-pooling", channelCount: 128, depth: 2, perspective: true, color: "#c65b5b", visualEncoding: { visiblePlaneCount: 1, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [56, 56] } }),
-    node("block-3", "conv", "Conv + ReLU", 5, "56 x 56 x 256", [56, 56, 256], { visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 3, channelCount: 256, depth: 10, perspective: true, color: "#4f86c6", visualEncoding: { visiblePlaneCount: 6, extrusionDepthFu: 24, projection: "oblique-3d", spatialShape: [56, 56] } }),
-    node("pool-3", "pool", "MaxPool 2x2", 6, "28 x 28", [28, 28, 256], { visualRole: "pooling-block", layerRole: "max-pooling", channelCount: 256, depth: 2, perspective: true, color: "#c65b5b", visualEncoding: { visiblePlaneCount: 1, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [28, 28] } }),
-    node("block-4", "conv", "Conv + ReLU", 7, "28 x 28 x 512", [28, 28, 512], { visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 3, channelCount: 512, depth: 10, perspective: true, color: "#4f86c6", visualEncoding: { visiblePlaneCount: 6, extrusionDepthFu: 24, projection: "oblique-3d", spatialShape: [28, 28] } }),
-    node("pool-4", "pool", "MaxPool 2x2", 8, "14 x 14", [14, 14, 512], { visualRole: "pooling-block", layerRole: "max-pooling", channelCount: 512, depth: 2, perspective: true, color: "#c65b5b", visualEncoding: { visiblePlaneCount: 1, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [14, 14] } }),
-    node("block-5", "conv", "Conv + ReLU", 9, "14 x 14 x 512", [14, 14, 512], { visualRole: "feature-map-stack", layerRole: "convolution-relu", repeatCount: 3, channelCount: 512, depth: 10, perspective: true, color: "#4f86c6", visualEncoding: { visiblePlaneCount: 6, extrusionDepthFu: 24, projection: "oblique-3d", spatialShape: [14, 14] } }),
-    node("pool-5", "pool", "MaxPool 2x2", 10, "7 x 7", [7, 7, 512], { visualRole: "pooling-block", layerRole: "max-pooling", channelCount: 512, depth: 2, perspective: true, color: "#c65b5b", visualEncoding: { visiblePlaneCount: 1, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [7, 7] } }),
-    node("fc-1", "dense", "Fully Connected", 11, "1 x 1 x 4096", [1, 1, 4096], { visualRole: "fully-connected", layerRole: "fully-connected-relu", channelCount: 4096, depth: 3, perspective: true, color: "#58a6a6", visualEncoding: { visiblePlaneCount: 3, extrusionDepthFu: 14, projection: "oblique-3d", spatialShape: [1, 1] } }),
-    node("fc-2", "dense", "Fully Connected", 12, "1 x 1 x 4096", [1, 1, 4096], { visualRole: "fully-connected", layerRole: "fully-connected-relu", channelCount: 4096, depth: 3, perspective: true, color: "#58a6a6", visualEncoding: { visiblePlaneCount: 3, extrusionDepthFu: 14, projection: "oblique-3d", spatialShape: [1, 1] } }),
-    node("softmax", "classifier", "Softmax", 13, "1 x 1 x 1000", [1, 1, 1000], { visualRole: "softmax-block", layerRole: "softmax", channelCount: 1000, depth: 2, perspective: true, color: "#c9a34e", visualEncoding: { visiblePlaneCount: 2, extrusionDepthFu: 10, projection: "oblique-3d", spatialShape: [1, 1] }, metadata: { contains: ["fc8-logits", "softmax"] } }),
-  ];
-  return [
-    node("input", "input", "Image", 0, "224 x 224 x 3", [224, 224, 3]),
-    node("patch-embed", "embedding", "Patch embedding", 1, "14 x 14 patches / 768 dim"),
-    node("cls-token", "token", "[CLS] token", 2, "197 tokens"),
-    node("encoder-1", "transformer-block", "Transformer block 1", 3, "12 heads / 768 dim"),
-    node("attention-1", "attention", "Multi-head attention", 4, "12 heads"),
-    node("encoder-2", "transformer-block", "Transformer block 2", 5, "MLP ratio 4"),
-    node("classifier", "classifier", "CLS head", 6, "1000 classes"),
-    node("output", "output", "Class logits", 7, "1000-way prediction"),
-  ];
-}
-
-function buildEdges(nodes: LocalNode[], preset: PublicationPreset): LocalEdge[] {
+function buildEdges(nodes: LocalNode[]): LocalEdge[] {
   const edges: LocalEdge[] = nodes.slice(0, -1).map((node, index) => ({ source: node.id, target: nodes[index + 1]!.id, kind: "flow", label: "feature flow" }));
-  if (preset === "resnet") edges.push(
-    { source: "stem-act", target: "add2", kind: "skip", label: "identity", skip: true },
-    { source: "res2", target: "add3", kind: "skip", label: "projection shortcut", skip: true },
-  );
-  if (preset === "unet") edges.push(
-    { source: "enc2", target: "concat2", kind: "skip", label: "encoder features", skip: true },
-    { source: "enc1", target: "concat1", kind: "skip", label: "encoder features", skip: true },
-  );
   return edges;
 }
 

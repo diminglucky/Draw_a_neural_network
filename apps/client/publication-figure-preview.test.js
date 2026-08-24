@@ -3,7 +3,7 @@ import { previewSummary, renderPublicationFigurePreview } from "../../publicatio
 
 function previewFixture() {
   return {
-    draft: { id: "draft-vgg", revision: 1, status: "ready_for_preview" },
+    draft: { id: "draft-structural", revision: 1, status: "ready_for_preview" },
     grammar: { id: "cnn-classifier", version: 1 },
     qa: { blocking: [], warnings: [{ code: "annotation-density", message: "Reduce labels", objectIds: ["note-1"] }] },
     plan: {

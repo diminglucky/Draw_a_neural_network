@@ -496,9 +496,9 @@ describe("agent service orchestration", () => {
 
     const result = await service.chat({
       userId: "user-1",
-      message: "把 conv1 改成 128 channels，并把标题改成 ResNet-50 revision",
+      message: "把 conv1 改成 128 channels，并把标题改成 Architecture revision",
       canvas: {
-        figure: { title: "ResNet" },
+        figure: { title: "Current draft" },
         paletteName: "dopamine",
         nodes: [
           { id: "input", type: "tensor", x: 100, y: 100, w: 120, h: 180, label: "Input", subtitle: "224 x 224 x 3", stage: 0, color: "#00e5ff" },
@@ -511,15 +511,11 @@ describe("agent service orchestration", () => {
     expect(result.diagramIntent).toBe("modify");
     expect(result.actions.actions).toEqual(expect.arrayContaining([
       { type: "update_node", id: "conv1", patch: { subtitle: "128 channels" } },
-      { type: "update_figure", patch: { title: "ResNet-50 revision" } },
+      { type: "update_figure", patch: { title: "Architecture revision" } },
     ]));
   });
 
-  it.each([
-    { name: "ResNet", message: "Draw a ResNet-50 residual CNN with skip connections.", requiredKinds: ["add", "residual", "classifier"], requireSkip: true },
-    { name: "U-Net", message: "Draw a U-Net for biomedical segmentation with encoder decoder skip connections.", requiredKinds: ["concat", "upsample", "conv"], requireSkip: true },
-    { name: "ViT", message: "Draw a Vision Transformer with patch embedding, multi-head attention and MLP blocks.", requiredKinds: ["embedding", "attention", "transformer-block"], requireSkip: false },
-  ])("builds a publication topology preset for $name", async ({ message, requiredKinds, requireSkip }) => {
+  it("derives a local structural draft from attached code evidence without a runtime preset", async () => {
     const [{ AgentService }, { createLocalDeterministicAgentProvider }] = await Promise.all([
       loadAgentServiceModule(),
       loadAdaptersModule(),
@@ -529,43 +525,29 @@ describe("agent service orchestration", () => {
       ...createNetworkIrHarness(),
     });
 
-    const result = await service.chat({ userId: "user-1", message, attachments: [] });
-    const ir = result.networkIR as { nodes: Array<{ kind: string }>; edges: Array<{ kind?: string; skip?: boolean }> };
-    const kinds = new Set(ir.nodes.map((node) => node.kind));
-    for (const kind of requiredKinds) expect(kinds.has(kind)).toBe(true);
-    if (requireSkip) expect(ir.edges.some((edge) => edge.kind === "skip" || edge.skip === true)).toBe(true);
+    const result = await service.chat({
+      userId: "user-1",
+      message: "Analyze the attached implementation and produce a structural draft.",
+      attachments: [{
+        kind: "code",
+        name: "model.py",
+        mimeType: "text/x-python",
+        data: "self.stem = nn.Conv2d(3, 24, 3)\nself.gate = SpectralGate()\nself.head = nn.Linear(24, 4)",
+      }],
+    });
+
+    const ir = result.networkIR as {
+      figure: { description: string | null };
+      nodes: Array<{ kind: string; subtitle?: string }>;
+      style: { preset: string };
+    };
+    expect(ir.nodes.map((node) => node.kind)).toEqual(expect.arrayContaining(["conv", "dense"]));
+    expect(JSON.stringify(ir)).not.toContain("224 x 224");
+    expect(ir.figure.description).toBe("A source-derived structural draft.");
+    expect(ir.style.preset).toBe("source-derived");
+    expect(result.response.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "code", label: "model.py" }),
+    ]));
   });
 
-  it("builds the canonical VGG16 preset with publication visual metadata", async () => {
-    const [{ createLocalDeterministicAgentProvider }] = await Promise.all([loadAdaptersModule()]);
-    const provider = createLocalDeterministicAgentProvider();
-    const result = await provider.buildDraft({
-      userId: "user-1",
-      conversationId: "vgg16-1",
-      message: "Draw VGG16 with publication-quality feature map stacks.",
-      attachments: [],
-    });
-    const ir = result.networkIR as { figure: { title: string }; nodes: Array<Record<string, any>>; edges: Array<Record<string, any>> };
-    expect(ir.figure.title).toBe("VGG16 Architecture");
-    expect(ir.nodes.filter((node) => node.kind === "conv")).toHaveLength(5);
-    expect(ir.nodes.filter((node) => node.kind === "pool")).toHaveLength(5);
-    expect(ir.nodes.filter((node) => node.kind === "dense")).toHaveLength(2);
-    expect(ir.nodes.filter((node) => node.kind === "classifier")).toHaveLength(1);
-    expect(ir.nodes.filter((node) => node.kind === "conv").map((node) => [node.repeatCount, node.tensor?.shape])).toEqual([
-      [2, [224, 224, 64]],
-      [2, [112, 112, 128]],
-      [3, [56, 56, 256]],
-      [3, [28, 28, 512]],
-      [3, [14, 14, 512]],
-    ]);
-    expect(ir.nodes.at(-1)?.visualRole).toBe("softmax-block");
-    expect(ir.nodes.find((node) => node.id === "block-3")?.visualEncoding).toEqual({
-      visiblePlaneCount: 6,
-      extrusionDepthFu: 24,
-      projection: "oblique-3d",
-      spatialShape: [56, 56],
-    });
-    expect(ir.nodes.at(-1)?.metadata).toEqual({ contains: ["fc8-logits", "softmax"] });
-    expect(ir.edges.length).toBeGreaterThanOrEqual(ir.nodes.length - 1);
-  });
 });
