@@ -15,7 +15,7 @@ public interface ISelectedPageVisioComOperations
     SelectedPageTarget? AttachActiveSelection();
     void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan);
     void SaveSelectedDocument(SelectedPageTarget target);
-    SelectedPageReadback ReadSelectedPage(SelectedPageTarget target);
+    SelectedPageReadback ReadSelectedPage(SelectedPageTarget target, string ownershipNamespace);
     void ReleaseSession(SelectedPageTarget target);
 }
 
@@ -83,15 +83,19 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, CancellationToken cancellationToken = default)
+    public async Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(target);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
         return await InvokeAsync(() =>
         {
             EnsureSameTarget(target, RequireActiveTarget());
-            var readback = _operations.ReadSelectedPage(target);
-            EnsureSameTarget(target, readback.Target);
+            var readback = _operations.ReadSelectedPage(target, ownershipNamespace);
+            if (!readback.Matches(target) || !string.Equals(readback.OwnershipNamespace, ownershipNamespace, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("The selected Visio readback did not match the requested ownership namespace.");
+            }
             return readback;
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -183,9 +187,7 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         ThrowIfDisposed();
         if (_application is null)
         {
-            // Starting Visio is allowed solely to let the user open and select an existing page.
-            // No Documents.Add or Pages.Add call exists anywhere in this selected-page adapter.
-            _application = VisioComEngine.ConnectVisio(_options with { AttachToRunning = true, Visible = true }, out _);
+            _application = VisioComEngine.ConnectRunningVisio();
         }
         VisioComEngine.TrySet(() => _application.Visible = true);
     }
@@ -241,7 +243,7 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         DeleteOwnedShapes(_page!, ownershipNamespace);
         var existingShapeIds = ReadShapeIds(_page!);
         VisioComEngine.DrawSelectedPageRegion(_page!, plan);
-        TagNewShapes(_page!, existingShapeIds, ownershipNamespace);
+        TagNewShapes(_page!, existingShapeIds, ownershipNamespace, plan);
     }
 
     public void SaveSelectedDocument(SelectedPageTarget target)
@@ -258,13 +260,12 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
-    public SelectedPageReadback ReadSelectedPage(SelectedPageTarget target)
+    public SelectedPageReadback ReadSelectedPage(SelectedPageTarget target, string ownershipNamespace)
     {
         ThrowIfDisposed();
         RequireTarget(target);
-        var ownedPrimitiveIds = new List<string>();
         var userShapeCount = 0;
-        var ownedShapeCount = 0;
+        var ownedShapes = new List<SelectedPageReadbackShape>();
         dynamic? shapes = null;
         try
         {
@@ -282,9 +283,13 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
                         userShapeCount++;
                         continue;
                     }
-                    ownedShapeCount++;
-                    var primitiveId = VisioComEngine.TryReadShapeData(shape, "synapse.primitiveId");
-                    if (!string.IsNullOrWhiteSpace(primitiveId)) ownedPrimitiveIds.Add(primitiveId);
+                    if (!string.Equals(marker, ownershipNamespace, StringComparison.Ordinal)) continue;
+                    IReadOnlyList<string> semanticIds = ReadSourceMappingSemanticIds((object)shape);
+                    if (semanticIds.Count == 0)
+                    {
+                        throw new WorkerProtocolException("Selected-page owned shape is missing its source mapping semantic IDs.");
+                    }
+                    ownedShapes.Add(new SelectedPageReadbackShape(NativeShapeId((object)shape), ownershipNamespace, semanticIds));
                 }
                 finally
                 {
@@ -297,7 +302,17 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
             VisioComEngine.ReleaseCom(shapes);
         }
 
-        return new SelectedPageReadback(target, userShapeCount, ownedShapeCount, ownedPrimitiveIds);
+        return new SelectedPageReadback(
+            Valid: true,
+            target.DocumentId,
+            target.PageId,
+            target.DocumentFingerprint,
+            target.PageFingerprint,
+            target.ExpectedRevision,
+            ownershipNamespace,
+            userShapeCount,
+            ownedShapes,
+            UnclassifiedShapeCount: 0);
     }
 
     public void ReleaseSession(SelectedPageTarget target)
@@ -384,19 +399,16 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
 
     private static string TryPageMetric(dynamic page, string cellName)
     {
-        dynamic? cell = null;
         try
         {
-            cell = page.PageSheet.CellsU(cellName);
-            return Convert.ToString(cell.ResultIU, CultureInfo.InvariantCulture) ?? string.Empty;
+            var value = VisioComEngine.ReadSelectedPageMetric((object)page, cellName, double.NaN);
+            return double.IsFinite(value) && value > 0
+                ? value.ToString("R", CultureInfo.InvariantCulture)
+                : string.Empty;
         }
         catch
         {
             return string.Empty;
-        }
-        finally
-        {
-            VisioComEngine.ReleaseCom(cell);
         }
     }
 
@@ -469,7 +481,7 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
-    private static void TagNewShapes(dynamic page, IReadOnlySet<int> existingShapeIds, string ownershipNamespace)
+    private static void TagNewShapes(dynamic page, IReadOnlySet<int> existingShapeIds, string ownershipNamespace, DiagramDocument plan)
     {
         dynamic? shapes = null;
         try
@@ -489,6 +501,16 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
                     {
                         throw new WorkerProtocolException("Selected-page ownership marker was not persisted on a created shape.");
                     }
+                    IReadOnlyList<string> semanticIds = SourceMappingSemanticIds((object)shape, plan);
+                    if (semanticIds.Count == 0)
+                    {
+                        throw new WorkerProtocolException("Selected-page created shape cannot be mapped to a source semantic ID.");
+                    }
+                    VisioComEngine.SetRequiredShapeData(shape, "synapse.sourceMappingSemanticIds", string.Join(",", semanticIds));
+                    if (!ReadSourceMappingSemanticIds((object)shape).SequenceEqual(semanticIds, StringComparer.Ordinal))
+                    {
+                        throw new WorkerProtocolException("Selected-page source mapping semantic IDs were not persisted on a created shape.");
+                    }
                 }
                 finally
                 {
@@ -500,6 +522,55 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         {
             VisioComEngine.ReleaseCom(shapes);
         }
+    }
+
+    private static string NativeShapeId(object shape)
+    {
+        dynamic nativeShape = shape;
+        return Convert.ToString(nativeShape.ID, CultureInfo.InvariantCulture)
+            ?? throw new WorkerProtocolException("Selected-page owned shape has no native shape ID.");
+    }
+
+    private static IReadOnlyList<string> ReadSourceMappingSemanticIds(object shape)
+    {
+        var raw = VisioComEngine.ReadShapeDataOrNullStrict(shape, "synapse.sourceMappingSemanticIds");
+        return string.IsNullOrWhiteSpace(raw)
+            ? []
+            : raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+    }
+
+    private static IReadOnlyList<string> SourceMappingSemanticIds(object shape, DiagramDocument plan)
+    {
+        var componentId = VisioComEngine.ReadShapeDataOrNullStrict(shape, "pvp.componentId");
+        if (!string.IsNullOrWhiteSpace(componentId)) return [componentId];
+
+        dynamic nativeShape = shape;
+        var name = Convert.ToString(nativeShape.NameU, CultureInfo.InvariantCulture) ?? string.Empty;
+        foreach (var node in plan.Nodes)
+        {
+            var semanticId = node.ShapeData.TryGetValue("pvp.componentId", out var value) ? value : node.Id;
+            var nodeName = "synapse.node." + VisioComEngine.SanitizeName(node.Id);
+            var labelName = "synapse.label." + VisioComEngine.SanitizeName(node.Id);
+            if (string.Equals(name, labelName, StringComparison.Ordinal) || name.StartsWith(nodeName + ".plane.", StringComparison.Ordinal)) return [semanticId];
+        }
+
+        foreach (var connector in plan.Connectors)
+        {
+            var connectorName = "synapse.edge." + VisioComEngine.SanitizeName(connector.Id);
+            if (!string.Equals(name, connectorName, StringComparison.Ordinal)) continue;
+            return plan.Nodes
+                .Where(node => string.Equals(node.Id, connector.Source, StringComparison.Ordinal) || string.Equals(node.Id, connector.Target, StringComparison.Ordinal))
+                .Select(node => node.ShapeData.TryGetValue("pvp.componentId", out var value) ? value : node.Id)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        return plan.Nodes
+            .Select(node => node.ShapeData.TryGetValue("pvp.componentId", out var value) ? value : node.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
     }
 
     private void ReleaseAttachedReferences()

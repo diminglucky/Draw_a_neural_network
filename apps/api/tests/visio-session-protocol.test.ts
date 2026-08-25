@@ -211,4 +211,33 @@ describe("selected-current-page Visio session protocol", () => {
       selectedPage: binding,
     }, binding, readCommand)).toThrow(/readback|readSelectedPage/i);
   });
+
+  it("accepts the public readback emitted by the selected-page Worker", () => {
+    const readCommand = {
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: "request-worker-readback",
+      command: "readSelectedPage" as const,
+      binding,
+    };
+    const observedWorkerReadback = {
+      valid: true,
+      documentId: binding.documentId,
+      pageId: binding.pageId,
+      documentFingerprint: binding.documentFingerprint,
+      pageFingerprint: binding.pageFingerprint,
+      expectedRevision: binding.expectedRevision,
+      ownershipNamespace: binding.ownershipNamespace,
+      userOwnedShapeCount: 1,
+      agentOwnedShapes: [{ nativeShapeId: "shape-1", ownershipNamespace: binding.ownershipNamespace, sourceMappingSemanticIds: ["semantic-1"] }],
+      unclassifiedShapeCount: 0,
+    };
+
+    expect(() => parseSelectedPageVisioSessionResponse({
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: readCommand.requestId,
+      status: "succeeded",
+      selectedPage: binding,
+      readback: observedWorkerReadback,
+    }, binding, readCommand)).not.toThrow();
+  });
 });

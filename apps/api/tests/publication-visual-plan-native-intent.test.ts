@@ -146,14 +146,24 @@ describe("PublicationVisualPlan native intent", () => {
       const source = sourcePrimitives.get(primitive.primitiveId);
       expect(source).toBeDefined();
       expect(primitive.componentId).toBe(source!.componentId);
+      expect(primitive.visualKind).toBe(source!.kind);
+      expect(primitive.zIndex).toBe(source!.zIndex);
       expect(primitive.bounds).toEqual(source!.bounds);
       expect(primitive.styleTokenIds).toEqual(source!.styleTokenIds);
+      expect(primitive.visual).toEqual(source!.visual);
+      expect(primitive.style.fill).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(primitive.style.stroke).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(primitive.style.strokeWidthPt).toBeGreaterThan(0);
     }
     for (const connector of first.connectors) {
       const source = sourceConnectors.get(connector.connectorId);
       expect(source).toBeDefined();
+      expect(connector.zIndex).toBe(source!.zIndex);
       expect(connector.route).toEqual(source!.route);
       expect(connector.styleTokenIds).toEqual(source!.styleTokenIds);
+      expect(connector.style).not.toHaveProperty("fill");
+      expect(connector.style.stroke).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(connector.style.strokeWidthPt).toBeGreaterThan(0);
     }
     expect(Object.isFrozen(first.primitives)).toBe(true);
     expect(Object.isFrozen(first.primitives[0])).toBe(true);

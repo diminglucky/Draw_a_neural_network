@@ -197,6 +197,19 @@ describe("PublicationVisualPlan QA", () => {
     expect(result.checks).toContainEqual(expect.objectContaining({ code: "style-token-reference", status: "failed" }));
   });
 
+  it("does not apply text clipping to symbol-only semantic markers", () => {
+    const draft = structuredClone(semanticPlan()) as any;
+    const symbolOnlyKinds = new Set(["SplitMarker", "AddMarker", "ConcatMarker", "AttentionRelation"]);
+    for (const primitive of draft.primitives) {
+      if (symbolOnlyKinds.has(primitive.kind)) primitive.label = "semantic marker label that is intentionally not rendered inside the marker";
+    }
+    const plan = createPublicationVisualPlan(draft);
+
+    const result = evaluatePublicationVisualPlanQa(plan);
+
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "label-clipping", status: "passed" }));
+  });
+
   it("blocks malformed semantic geometry, containment, merge ports, token order, clipping, and grayscale role collisions", () => {
     const cases: Array<[string, (draft: any) => void, string]> = [
       ["tensor depth", (draft) => {
@@ -213,7 +226,9 @@ describe("PublicationVisualPlan QA", () => {
         const primitive = draft.primitives.find((item: any) => item.kind === "AttentionTokenStrip");
         primitive.visual.geometry.orderedCells.reverse();
       }, "token-cell-order"],
-      ["label clipping", (draft) => { draft.primitives[0].label = "x".repeat(512); }, "label-clipping"],
+      ["label clipping", (draft) => {
+        draft.primitives.find((item: any) => item.kind === "InputTerminal").label = "x".repeat(512);
+      }, "label-clipping"],
       ["grayscale collision", (draft) => {
         for (const token of draft.styleTokens.tokens) token.values.fill = "#808080";
       }, "grayscale-role-collision"],

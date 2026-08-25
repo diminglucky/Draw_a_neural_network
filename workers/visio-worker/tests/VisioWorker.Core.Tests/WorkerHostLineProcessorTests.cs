@@ -495,6 +495,36 @@ public sealed class WorkerHostLineProcessorTests
     }
 
     [Fact]
+    public async Task V3_diagnostics_error_is_bounded_to_the_public_protocol_limit()
+    {
+        const string environmentName = "SYNAPSE_VISIO_WORKER_DIAGNOSTICS";
+        var previous = Environment.GetEnvironmentVariable(environmentName);
+        Environment.SetEnvironmentVariable(environmentName, "1");
+        try
+        {
+            using var fixture = new HostFixture();
+            var selectedBackend = new RecordingSelectedPageBackend
+            {
+                AttachFailure = new InvalidOperationException(new string('x', 2_500)),
+            };
+            await using var processor = new WorkerHostLineProcessor(fixture.CreateOptions(selectedPageBackend: selectedBackend));
+
+            var response = Assert.IsType<SelectedPageWorkerResponse>(await processor.ProcessLineAsync(SelectedPageAttachJson()));
+
+            Assert.Equal("failed", response.Status);
+            Assert.Equal("request-attach", response.RequestId);
+            Assert.NotNull(response.Error);
+            Assert.InRange(response.Error!.Length, 1, 2_000);
+            Assert.StartsWith("InvalidOperationException:", response.Error);
+            Assert.EndsWith("[diagnostics truncated]", response.Error);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(environmentName, previous);
+        }
+    }
+
+    [Fact]
     public async Task V3_host_rejects_a_hash_mismatched_raw_apply_before_the_injected_selected_page_backend_can_mutate()
     {
         using var fixture = new HostFixture();
@@ -533,14 +563,19 @@ public sealed class WorkerHostLineProcessorTests
     private sealed class RecordingSelectedPageBackend : ISelectedPageSessionBackend
     {
         public SelectedPageTarget? ActiveTarget { get; set; }
+        public Exception? AttachFailure { get; set; }
         public int EnsureVisibleApplicationCalls { get; private set; }
         public int AttachActiveSelectionCalls { get; private set; }
         public int ApplyCalls { get; private set; }
         public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) { EnsureVisibleApplicationCalls++; return Task.CompletedTask; }
-        public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) { AttachActiveSelectionCalls++; return Task.FromResult(ActiveTarget); }
+        public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default)
+        {
+            AttachActiveSelectionCalls++;
+            return AttachFailure is null ? Task.FromResult(ActiveTarget) : Task.FromException<SelectedPageTarget?>(AttachFailure);
+        }
         public Task ApplyOwnedRegionAsync(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default) { ApplyCalls++; return Task.CompletedTask; }
         public Task SaveSelectedDocumentAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.FromResult(new SelectedPageReadback(target, 0, 0, []));
+        public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default) => Task.FromResult(new SelectedPageReadback(true, target.DocumentId, target.PageId, target.DocumentFingerprint, target.PageFingerprint, target.ExpectedRevision, ownershipNamespace, 0, [], 0));
         public Task ReleaseSessionAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 

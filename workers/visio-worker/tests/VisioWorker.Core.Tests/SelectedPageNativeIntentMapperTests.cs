@@ -19,6 +19,65 @@ public sealed class SelectedPageNativeIntentMapperTests
         Assert.Single(document.Connectors);
         Assert.Equal("input-1", document.Nodes[0].Id);
         Assert.Equal("flow-1", document.Connectors[0].Id);
+        var plan = Assert.IsType<VisioFigurePlan>(document.FigurePlan);
+        Assert.Empty(plan.Labels!);
+        Assert.Equal("Input", Assert.Single(plan.PrimitiveGroups, group => group.Id == "input-1").InlineLabel);
+        Assert.Equal("Conv", Assert.Single(plan.PrimitiveGroups, group => group.Id == "module-1").InlineLabel);
+    }
+
+    [Fact]
+    public void Preserves_page_visual_kind_style_labels_and_routes_in_a_rich_figure_plan()
+    {
+        var value = Fixture();
+        var primitive = value["primitives"]![1]!.AsObject();
+        primitive["visualKind"] = "TensorVolume";
+        primitive["zIndex"] = 3;
+        primitive["style"] = JsonNode.Parse("""{"fill":"#7dd3fc","stroke":"#1e293b","strokeWidthPt":2}""");
+        primitive["visual"] = JsonNode.Parse("""{"regionRole":"scale_transition","nativeSupport":"supported","geometry":{"kind":"tensor_volume","frontFace":[{"x":240,"y":40},{"x":320,"y":40},{"x":320,"y":100},{"x":240,"y":100}],"depthFace":[{"x":320,"y":40},{"x":340,"y":20},{"x":340,"y":80},{"x":320,"y":100}]}}""");
+        var connector = value["connectors"]![0]!.AsObject();
+        connector["zIndex"] = 0;
+        connector["style"] = JsonNode.Parse("""{"stroke":"#475569","strokeWidthPt":2}""");
+
+        var document = Map(value);
+
+        var plan = Assert.IsType<VisioFigurePlan>(document.FigurePlan);
+        Assert.Equal(1, plan.PageWidthInches, 3);
+        Assert.Equal(0.6, plan.PageHeightInches, 3);
+        var volume = Assert.Single(plan.PrimitiveGroups, group => group.Id == "module-1");
+        Assert.Equal("pvp-tensor-volume", volume.Kind);
+        Assert.Equal(["module-1.front", "module-1.top", "module-1.side"], volume.PrimitiveIds);
+        Assert.Equal("#7dd3fc", volume.Style!.FillColor);
+        Assert.Equal("#1e293b", volume.Style.StrokeColor);
+        Assert.Equal(2, volume.Style.StrokeWidthPoints);
+        Assert.Contains(plan.Labels!, label => label.GroupId == "module-1" && label.Text == "Conv");
+        Assert.Equal("#475569", Assert.Single(plan.Connectors).Style!.StrokeColor);
+        Assert.DoesNotContain("Convolution + ReLU", plan.Labels!.Select(label => label.Text));
+    }
+
+    [Fact]
+    public void Uses_symbol_only_merge_markers_and_an_inline_repeat_badge_label()
+    {
+        var value = Fixture();
+        var marker = value["primitives"]![0]!.AsObject();
+        marker["nativeKind"] = "merge-add";
+        marker["visualKind"] = "AddMarker";
+        marker["zIndex"] = 2;
+        marker["label"] = "Residual merge";
+        marker["style"] = JsonNode.Parse("""{"fill":"#fee2e2","stroke":"#1e293b","strokeWidthPt":1.4}""");
+        marker["visual"] = JsonNode.Parse("""{"regionRole":"merge_add","nativeSupport":"supported","geometry":{"kind":"none"}}""");
+        var repeat = value["primitives"]![1]!.AsObject();
+        repeat["nativeKind"] = "repeat-badge";
+        repeat["visualKind"] = "RepeatBadge";
+        repeat["zIndex"] = 3;
+        repeat["label"] = "shared × N";
+        repeat["style"] = JsonNode.Parse("""{"fill":"#fef3c7","stroke":"#1e293b","strokeWidthPt":1.2}""");
+        repeat["visual"] = JsonNode.Parse("""{"regionRole":"repeat_group","nativeSupport":"supported","geometry":{"kind":"none"}}""");
+
+        var plan = Assert.IsType<VisioFigurePlan>(Map(value).FigurePlan);
+
+        Assert.Null(Assert.Single(plan.PrimitiveGroups, group => group.Id == "input-1").InlineLabel);
+        Assert.Equal("shared × N", Assert.Single(plan.PrimitiveGroups, group => group.Id == "module-1").InlineLabel);
+        Assert.DoesNotContain(plan.Labels!, label => label.GroupId is "input-1" or "module-1");
     }
 
     [Fact]

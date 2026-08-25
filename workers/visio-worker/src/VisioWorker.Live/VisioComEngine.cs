@@ -262,6 +262,16 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return created;
     }
 
+    internal static dynamic ConnectRunningVisio()
+    {
+        var visioType = Type.GetTypeFromProgID("Visio.Application", throwOnError: false)
+            ?? throw new WorkerProtocolException("Visio.Application is not registered");
+        return RequireRunningVisioApplication(TryGetActiveObject(visioType.GUID, out var active) ? active : null);
+    }
+
+    internal static object RequireRunningVisioApplication(object? activeApplication) =>
+        activeApplication ?? throw new WorkerProtocolException("No running Visio application is available. Open the target document and select its page before drawing.");
+
     internal static dynamic ConnectVisio(
         VisioComEngineOptions options,
         IVisioProcessWindowAdapter processWindowAdapter,
@@ -297,7 +307,114 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
     /// </summary>
     internal static void DrawSelectedPageRegion(dynamic page, DiagramDocument document)
     {
-        ConfigureAndDraw(page, document, resizePage: false);
+        ArgumentNullException.ThrowIfNull(document);
+        if (document.FigurePlan is null)
+            throw new WorkerProtocolException("Selected-page rendering requires a complete figure plan and cannot use the legacy fallback.");
+        var pageWidth = ReadSelectedPageMetric((object)page, "PageWidth", document.FigurePlan.PageWidthInches);
+        var pageHeight = ReadSelectedPageMetric((object)page, "PageHeight", document.FigurePlan.PageHeightInches);
+        ConfigureAndDraw(page, FitSelectedPageDocument(document, pageWidth, pageHeight), resizePage: false);
+    }
+
+    internal static DiagramDocument FitSelectedPageDocument(DiagramDocument document, double pageWidthInches, double pageHeightInches)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        var plan = document.FigurePlan ?? throw new WorkerProtocolException("Selected-page fitting requires a complete figure plan.");
+        if (!double.IsFinite(pageWidthInches) || !double.IsFinite(pageHeightInches) || pageWidthInches <= 0 || pageHeightInches <= 0
+            || !double.IsFinite(plan.PageWidthInches) || !double.IsFinite(plan.PageHeightInches) || plan.PageWidthInches <= 0 || plan.PageHeightInches <= 0)
+            throw new WorkerProtocolException("Selected-page dimensions are invalid.");
+
+        var contentBounds = ContentBounds(plan);
+        var margin = Math.Min(0.3, Math.Min(pageWidthInches, pageHeightInches) * 0.08);
+        var availableWidth = pageWidthInches - margin * 2;
+        var availableHeight = pageHeightInches - margin * 2;
+        if (availableWidth <= 0 || availableHeight <= 0) throw new WorkerProtocolException("Selected page is too small for a bounded drawing region.");
+        var scale = Math.Min(availableWidth / contentBounds.WidthInches, availableHeight / contentBounds.HeightInches);
+        var hasReadableText = plan.Labels is { Count: > 0 }
+            || plan.PrimitiveGroups.Any(group => !string.IsNullOrWhiteSpace(group.InlineLabel));
+        if (hasReadableText && scale < 0.45)
+            throw new WorkerProtocolException("Selected page cannot preserve readable publication labels without a reviewed page-aware reflow.");
+        var offsetX = (pageWidthInches - contentBounds.WidthInches * scale) / 2 - contentBounds.XInches * scale;
+        var offsetY = (pageHeightInches - contentBounds.HeightInches * scale) / 2 - contentBounds.YInches * scale;
+        VisioBounds FitBounds(VisioBounds value) => new(
+            offsetX + value.XInches * scale,
+            offsetY + value.YInches * scale,
+            value.WidthInches * scale,
+            value.HeightInches * scale);
+        DiagramPoint FitPoint(DiagramPoint value) => new(offsetX + value.X * scale, offsetY + value.Y * scale);
+
+        var fittedPlan = new VisioFigurePlan(
+            pageWidthInches,
+            pageHeightInches,
+            plan.PrimitiveGroups.Select(group => group with
+            {
+                Bounds = FitBounds(group.Bounds),
+                ExtrusionDepthInches = group.ExtrusionDepthInches * scale,
+                SkewXInches = group.SkewXInches * scale,
+                SkewYInches = group.SkewYInches * scale,
+            }).ToArray(),
+            plan.Connectors.Select(connector => connector with { Points = connector.Points.Select(FitPoint).ToArray() }).ToArray(),
+            plan.Labels?.Select(label => label with
+            {
+                XInches = offsetX + label.XInches * scale,
+                YInches = offsetY + label.YInches * scale,
+                WidthInches = label.WidthInches * scale,
+                HeightInches = Math.Max(0.12, label.HeightInches * scale),
+                FontSizePt = Math.Clamp(label.FontSizePt * Math.Sqrt(scale), 8, 11),
+            }).ToArray());
+        return document with { FigurePlan = fittedPlan };
+    }
+
+    private static VisioBounds ContentBounds(VisioFigurePlan plan)
+    {
+        var left = double.PositiveInfinity;
+        var top = double.PositiveInfinity;
+        var right = double.NegativeInfinity;
+        var bottom = double.NegativeInfinity;
+        void Include(double x1, double y1, double x2, double y2)
+        {
+            left = Math.Min(left, Math.Min(x1, x2));
+            top = Math.Min(top, Math.Min(y1, y2));
+            right = Math.Max(right, Math.Max(x1, x2));
+            bottom = Math.Max(bottom, Math.Max(y1, y2));
+        }
+
+        foreach (var group in plan.PrimitiveGroups)
+        {
+            var extraX = Math.Max(Math.Abs(group.ExtrusionDepthInches), Math.Abs(group.SkewXInches));
+            var extraY = Math.Abs(group.SkewYInches);
+            Include(group.Bounds.XInches, group.Bounds.YInches, group.Bounds.XInches + group.Bounds.WidthInches + extraX, group.Bounds.YInches + group.Bounds.HeightInches + extraY);
+        }
+        foreach (var connector in plan.Connectors)
+        {
+            foreach (var point in connector.Points) Include(point.X, point.Y, point.X, point.Y);
+        }
+        if (plan.Labels is not null)
+        {
+            foreach (var label in plan.Labels) Include(label.XInches, label.YInches, label.XInches + label.WidthInches, label.YInches + label.HeightInches);
+        }
+        if (!double.IsFinite(left) || !double.IsFinite(top) || !double.IsFinite(right) || !double.IsFinite(bottom) || right <= left || bottom <= top)
+            throw new WorkerProtocolException("Selected-page figure content bounds are invalid.");
+        return new VisioBounds(left, top, right - left, bottom - top);
+    }
+
+    internal static double ReadSelectedPageMetric(object pageObject, string cellName, double fallback)
+    {
+        dynamic page = pageObject;
+        dynamic? cell = null;
+        try
+        {
+            cell = page.PageSheet.CellsU[cellName];
+            var value = Convert.ToDouble(cell.ResultIU, System.Globalization.CultureInfo.InvariantCulture);
+            return double.IsFinite(value) && value > 0 ? value : fallback;
+        }
+        catch
+        {
+            return fallback;
+        }
+        finally
+        {
+            ReleaseCom(cell);
+        }
     }
 
     private static void ConfigureAndDraw(dynamic page, DiagramDocument document, bool resizePage)
@@ -319,16 +436,18 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
         foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveGroup(page, group, pageHeight);
         foreach (var connector in figurePlan.Connectors) DrawConnector(page, connector, pageHeight);
-        if (figurePlan.Labels is { Count: > 0 })
+        if (figurePlan.Labels is not null)
         {
             foreach (var label in figurePlan.Labels) DrawFigurePlanLabel(page, label, pageHeight);
         }
-        else
+        else if (UsesLegacyFallbackLabels(figurePlan))
         {
             foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveLabel(page, group, group.Bounds.XInches, pageHeight - group.Bounds.YInches + 0.05, group.Bounds.XInches + group.Bounds.WidthInches, pageHeight - group.Bounds.YInches + 0.34);
         }
-        DrawTitle(page, document.Title, pageHeight, figurePlan.PageWidthInches);
+        if (!string.IsNullOrWhiteSpace(document.Title)) DrawTitle(page, document.Title, pageHeight, figurePlan.PageWidthInches);
     }
+
+    private static bool UsesLegacyFallbackLabels(VisioFigurePlan plan) => plan.Labels is null;
 
     private static void DrawNode(dynamic page, VisioNode node)
     {
@@ -418,7 +537,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         var y1 = pageHeight - group.Bounds.YInches - group.Bounds.HeightInches;
         var x2 = x1 + group.Bounds.WidthInches;
         var y2 = y1 + group.Bounds.HeightInches;
-        var (fill, lineWeight) = group.Kind switch
+        var (fallbackFill, fallbackLineWeight) = group.Kind switch
         {
             "feature-map-stack" => (PublicationRenderPalette.FeatureMapFrontFill, 1.15),
             "downsample-transition" => (PublicationRenderPalette.TransitionFill, 1.0),
@@ -428,8 +547,47 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             "score-vector-layer" => (PublicationRenderPalette.ScoreFill, 1.0),
             _ => (PublicationRenderPalette.FeatureMapFrontFill, 1.0),
         };
+        var fill = group.Style is null
+            ? fallbackFill
+            : ParseColor(group.Style.FillColor, fallbackFill.R, fallbackFill.G, fallbackFill.B);
+        var stroke = group.Style is null
+            ? ((int R, int G, int B)?)null
+            : ParseColor(group.Style.StrokeColor, 30, 41, 59);
+        var lineWeight = group.Style?.StrokeWidthPoints ?? fallbackLineWeight;
 
-        if (string.Equals(group.Kind, "input-rgb-tile", StringComparison.Ordinal))
+        if (string.Equals(group.Kind, "pvp-input-terminal", StringComparison.Ordinal)
+            || string.Equals(group.Kind, "pvp-output-terminal", StringComparison.Ordinal))
+        {
+            dynamic shape = page.DrawRectangle(x1, y1, x2, y2);
+            ApplyFill(shape, fill, lineWeight, stroke);
+            TrySet(() => shape.CellsU("Rounding").FormulaU = "0.08 in");
+            ApplyInlineLabel(shape, group);
+            NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
+        }
+        else if (string.Equals(group.Kind, "pvp-tensor-stage", StringComparison.Ordinal))
+        {
+            var inset = Math.Min((y2 - y1) * 0.22, Math.Max(0.02, (x2 - x1) * 0.08));
+            dynamic shape = DrawClosedPolygon(page, new double[] { x1, y1, x2, y1 + inset, x2, y2 - inset, x1, y2, x1, y1 });
+            ApplyFill(shape, fill, lineWeight, stroke);
+            ApplyInlineLabel(shape, group);
+            NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
+        }
+        else if (string.Equals(group.Kind, "pvp-attention-token-strip", StringComparison.Ordinal))
+        {
+            DrawTokenStrip(page, group, x1, y1, x2, y2, fill, lineWeight, stroke);
+        }
+        else if (string.Equals(group.Kind, "pvp-split-marker", StringComparison.Ordinal)
+            || string.Equals(group.Kind, "pvp-add-marker", StringComparison.Ordinal)
+            || string.Equals(group.Kind, "pvp-concat-marker", StringComparison.Ordinal)
+            || string.Equals(group.Kind, "pvp-attention-relation", StringComparison.Ordinal))
+        {
+            dynamic shape = page.DrawOval(x1, y1, x2, y2);
+            ApplyFill(shape, fill, lineWeight, stroke);
+            if (string.Equals(group.Kind, "pvp-add-marker", StringComparison.Ordinal)) ApplyMarkerGlyph(shape, "+");
+            if (string.Equals(group.Kind, "pvp-concat-marker", StringComparison.Ordinal)) ApplyMarkerGlyph(shape, "C");
+            NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
+        }
+        else if (string.Equals(group.Kind, "input-rgb-tile", StringComparison.Ordinal))
         {
             DrawInputRgbTile(page, group, x1, y1, x2, y2);
         }
@@ -464,10 +622,53 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         else
         {
             dynamic shape = page.DrawRectangle(x1, y1, x2, y2);
-            ApplyFill(shape, fill, lineWeight);
+            ApplyFill(shape, fill, lineWeight, stroke);
+            if (string.Equals(group.Kind, "pvp-repeat-badge", StringComparison.Ordinal)) TrySet(() => shape.CellsU("Rounding").FormulaU = "0.05 in");
+            ApplyInlineLabel(shape, group);
             NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
         }
 
+    }
+
+    private static void DrawTokenStrip(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, (int R, int G, int B)? stroke)
+    {
+        var width = (x2 - x1) / group.PrimitiveIds.Count;
+        for (var index = 0; index < group.PrimitiveIds.Count; index++)
+        {
+            dynamic cell = page.DrawRectangle(x1 + width * index, y1, x1 + width * (index + 1), y2);
+            ApplyFill(cell, index % 2 == 0 ? fill : Shade(fill, 0.92), lineWeight, stroke);
+            NameAndAnnotatePrimitive(cell, group, group.PrimitiveIds[index]);
+        }
+    }
+
+    private static void ApplyInlineLabel(dynamic shape, VisioPrimitiveGroup group)
+    {
+        if (string.IsNullOrWhiteSpace(group.InlineLabel)) return;
+        shape.Text = group.InlineLabel;
+        var fontSize = string.Equals(group.Kind, "pvp-repeat-badge", StringComparison.Ordinal) ? 8 : 9;
+        TrySet(() => shape.CellsU("Char.Font").FormulaU = "FONT(\"Arial\")");
+        TrySet(() => shape.CellsU("Char.Size").FormulaU = $"{fontSize} pt");
+        TrySet(() => shape.CellsU("Para.HorzAlign").FormulaU = "1");
+        TrySet(() => shape.CellsU("VerticalAlign").FormulaU = "1");
+        TrySet(() => shape.CellsU("LeftMargin").FormulaU = "0.04 in");
+        TrySet(() => shape.CellsU("RightMargin").FormulaU = "0.04 in");
+        TrySet(() => shape.CellsU("TopMargin").FormulaU = "0.02 in");
+        TrySet(() => shape.CellsU("BottomMargin").FormulaU = "0.02 in");
+    }
+
+    private static void ApplyMarkerGlyph(dynamic shape, string glyph)
+    {
+        shape.Text = glyph;
+        TrySet(() => shape.CellsU("Char.Font").FormulaU = "FONT(\"Arial\")");
+        TrySet(() => shape.CellsU("Char.Size").FormulaU = "9 pt");
+        TrySet(() => shape.CellsU("Char.Style").FormulaU = "1");
+        TrySet(() => shape.CellsU("Char.Color").FormulaU = "RGB(30,41,59)");
+        TrySet(() => shape.CellsU("Para.HorzAlign").FormulaU = "1");
+        TrySet(() => shape.CellsU("VerticalAlign").FormulaU = "1");
+        TrySet(() => shape.CellsU("LeftMargin").FormulaU = "0 in");
+        TrySet(() => shape.CellsU("RightMargin").FormulaU = "0 in");
+        TrySet(() => shape.CellsU("TopMargin").FormulaU = "0 in");
+        TrySet(() => shape.CellsU("BottomMargin").FormulaU = "0 in");
     }
 
     private static dynamic DrawClosedPolygon(dynamic page, double[] points)
@@ -775,11 +976,12 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void ApplyFill(dynamic shape, (int R, int G, int B) color, double lineWeight)
+    private static void ApplyFill(dynamic shape, (int R, int G, int B) color, double lineWeight, (int R, int G, int B)? stroke = null)
     {
+        var line = stroke ?? (Math.Max(0, color.R - 35), Math.Max(0, color.G - 35), Math.Max(0, color.B - 35));
         TrySet(() => shape.CellsU("FillPattern").FormulaU = "1");
         TrySet(() => shape.CellsU("FillForegnd").FormulaU = $"RGB({color.R},{color.G},{color.B})");
-        TrySet(() => shape.CellsU("LineColor").FormulaU = $"RGB({Math.Max(0, color.R - 35)},{Math.Max(0, color.G - 35)},{Math.Max(0, color.B - 35)})");
+        TrySet(() => shape.CellsU("LineColor").FormulaU = $"RGB({line.R},{line.G},{line.B})");
         TrySet(() => shape.CellsU("LineWeight").FormulaU = $"{lineWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)} pt");
     }
 
@@ -806,11 +1008,15 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
     private static void DrawConnector(dynamic page, VisioConnector connector, double pageHeight)
     {
-        var points = connector.Points.SelectMany(point => new[] { point.X, pageHeight - point.Y }).Cast<object>().ToArray();
+        var points = FlattenConnectorPoints(connector, pageHeight);
         dynamic shape;
         try
         {
             shape = page.DrawPolyline(points, 0);
+        }
+        catch (Exception error) when (connector.Points.Count > 2)
+        {
+            throw new WorkerProtocolException($"Visio could not preserve the planned orthogonal route for connector {connector.Id}.", error);
         }
         catch
         {
@@ -820,9 +1026,14 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
         TrySet(() => shape.NameU = $"synapse.edge.{SanitizeName(connector.Id)}");
         TrySet(() => shape.CellsU("EndArrow").FormulaU = "4");
-        TrySet(() => shape.CellsU("LineColor").FormulaU = "RGB(75, 91, 120)");
-        TrySet(() => shape.CellsU("LineWeight").FormulaU = "1.2 pt");
+        var stroke = connector.Style is null ? (75, 91, 120) : ParseColor(connector.Style.StrokeColor, 75, 91, 120);
+        var lineWeight = connector.Style?.StrokeWidthPoints ?? 1.2;
+        TrySet(() => shape.CellsU("LineColor").FormulaU = $"RGB({stroke.Item1},{stroke.Item2},{stroke.Item3})");
+        TrySet(() => shape.CellsU("LineWeight").FormulaU = $"{lineWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)} pt");
     }
+
+    private static double[] FlattenConnectorPoints(VisioConnector connector, double pageHeight) =>
+        connector.Points.SelectMany(point => new[] { point.X, pageHeight - point.Y }).ToArray();
 
     internal static int CountNamedShapes(dynamic page, string prefix)
     {

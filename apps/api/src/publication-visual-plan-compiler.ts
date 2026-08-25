@@ -11,6 +11,9 @@ const HEIGHT = 320;
 const COLUMN_GAP = 360;
 const LANE_GAP = 120;
 const ATTACHMENT_GAP = 16;
+const SPLIT_MARKER_SIZE = 120;
+const ADD_MARKER_SIZE = 220;
+const CONCAT_MARKER_SIZE = 240;
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
@@ -42,12 +45,7 @@ export function compileGeneralPublicationVisualPlan(input: { ugs: UniversalGraph
   if (digestGenericPlanSnapshotValue(input.graph) !== digestGenericPlanSnapshotValue(canonicalGraph)) throw new Error("General Publication Graph must match canonical UGS projection");
   const visualCompilation = compileComposableRegionVisuals(canonicalGraph);
   const descriptors = compactDeterministicLayout(visualCompilation.descriptors);
-  const boundsByPrimitive = new Map<string, Bounds>(descriptors.filter((descriptor) => descriptor.attachment === null).map((descriptor) => [descriptor.primitiveId, {
-    x: MARGIN + descriptor.layout.rank * (WIDTH + COLUMN_GAP),
-    y: MARGIN + descriptor.layout.lane * (HEIGHT + LANE_GAP),
-    width: WIDTH,
-    height: HEIGHT,
-  }]));
+  const boundsByPrimitive = new Map<string, Bounds>(descriptors.filter((descriptor) => descriptor.attachment === null).map((descriptor) => [descriptor.primitiveId, primaryBounds(descriptor)]));
   const attachmentsByCorridor = new Map<string, ComposableRegionVisualDescriptor[]>();
   for (const descriptor of descriptors.filter((item) => item.attachment !== null)) {
     const corridor = attachmentCorridor(descriptor);
@@ -78,7 +76,7 @@ export function compileGeneralPublicationVisualPlan(input: { ugs: UniversalGraph
     coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: { x: 0, y: 0, width: pageWidth, height: pageHeight }, safeMargins: { x: MARGIN, y: MARGIN, width: pageWidth - MARGIN * 2, height: pageHeight - MARGIN * 2 } },
     regions: [{ regionId: "region:main", bounds: { x: MARGIN, y: MARGIN, width: pageWidth - MARGIN * 2, height: pageHeight - MARGIN * 2 }, role: "main", zIndex: 0 }],
     primitiveGroups: visualCompilation.groups.map((group) => ({ ...group, zIndex: 1 })),
-    primitives, ports, connectors, annotations: [], legend: { entries: [], styleTokenIds: [] }, styleTokens: { tokenSetVersion: "pvp-style-1", tokens: styleTokensFor(descriptors) }, profileApplications: [],
+    primitives, ports, connectors, annotations: [], legend: { entries: [], styleTokenIds: [] }, styleTokens: { tokenSetVersion: "pvp-style-1", tokens: styleTokensFor(descriptors, connectors) }, profileApplications: [],
     sourceMappings: descriptors.map((descriptor) => ({ visualId: descriptor.primitiveId, ugsIds: [...descriptor.sourceNodeIds].sort(compareCodeUnits), evidenceIds: [...descriptor.evidenceIds].sort(compareCodeUnits) })),
     rendererRequirements: { protocolVersion: "pvp-renderer-1", requiredCapabilities: ["native-text", "orthogonal-route", "shape-data"], optionalCapabilities: [] }, updateIdentity: input.updateIdentity,
   });
@@ -90,6 +88,7 @@ function connectorsFor(graph: GeneralPublicationGraph, descriptors: readonly Com
   for (const relation of graph.relations) incomingByComponent.set(relation.targetComponentId, [...(incomingByComponent.get(relation.targetComponentId) ?? []), relation.relationId]);
   const ports: Record<string, unknown>[] = [];
   const connectors: Record<string, unknown>[] = [];
+  const skipRelations = graph.relations.filter((relation) => relation.role === "skip").sort((left, right) => compareCodeUnits(left.relationId, right.relationId));
   for (const relation of [...graph.relations].sort((left, right) => compareCodeUnits(left.relationId, right.relationId))) {
     const source = primitiveByComponentId.get(relation.sourceComponentId);
     const target = primitiveByComponentId.get(relation.targetComponentId);
@@ -105,11 +104,14 @@ function connectorsFor(graph: GeneralPublicationGraph, descriptors: readonly Com
     const sourcePoint = anchor(sourceBounds, "right", 500);
     const targetPoint = anchor(targetBounds, "left", targetOffset);
     const middleX = Math.max(sourcePoint.x + 80, Math.floor((sourcePoint.x + targetPoint.x) / 2));
+    const route = relation.role === "skip"
+      ? skipRoute(sourcePoint, targetPoint, sourceBounds, targetBounds, Math.max(0, skipRelations.indexOf(relation)))
+      : [sourcePoint, { x: middleX, y: sourcePoint.y }, { x: middleX, y: targetPoint.y }, targetPoint];
     ports.push(
       { portId: sourcePortId, primitiveId: source.primitiveId, role: "output", anchor: { side: "right", offset: 500 }, order: 0, semanticPortId: `${relation.relationId}:source` },
       { portId: targetPortId, primitiveId: target.primitiveId, role: "input", anchor: { side: "left", offset: targetOffset }, order: targetIndex, semanticPortId: `${relation.relationId}:target` },
     );
-    connectors.push({ connectorId: `connector:${relation.relationId}`, sourcePortId, targetPortId, relation: relation.role, route: [sourcePoint, { x: middleX, y: sourcePoint.y }, { x: middleX, y: targetPoint.y }, targetPoint], styleTokenIds: ["style:relation"], zIndex: 0 });
+    connectors.push({ connectorId: `connector:${relation.relationId}`, sourcePortId, targetPortId, relation: relation.role, route, styleTokenIds: [relation.role === "skip" ? "style:skip" : "style:relation"], zIndex: 0 });
   }
   return { ports, connectors };
 }
@@ -129,16 +131,59 @@ function visualFor(descriptor: ComposableRegionVisualDescriptor, bounds: { x: nu
   return { regionRole: descriptor.regionRole, nativeSupport: descriptor.nativeSupport, geometry: { kind: "none" } };
 }
 
-function styleTokensFor(descriptors: readonly ComposableRegionVisualDescriptor[]): Array<{ tokenId: string; values: Record<string, string | number> }> {
+function styleTokensFor(descriptors: readonly ComposableRegionVisualDescriptor[], connectors: readonly Record<string, unknown>[]): Array<{ tokenId: string; values: Record<string, string | number> }> {
   const fills: Record<string, string> = {
-    "style:terminal": "#e0f2fe", "style:tensor-stage": "#bae6fd", "style:tensor-volume": "#7dd3fc", "style:operator": "#eef2ff", "style:module": "#dcfce7", "style:repeat": "#fef3c7", "style:split": "#fce7f3", "style:add": "#fee2e2", "style:concat": "#ede9fe", "style:attention": "#e0e7ff", "style:candidate": "#ffedd5", "style:relation": "#475569",
+    "style:terminal": "#e0f2fe", "style:tensor-stage": "#bae6fd", "style:tensor-volume": "#7dd3fc", "style:operator": "#eef2ff", "style:module": "#dcfce7", "style:repeat": "#fef3c7", "style:add": "#fee2e2", "style:concat": "#ede9fe", "style:attention": "#e0e7ff", "style:candidate": "#ffedd5", "style:relation": "#475569",
   };
-  return [...new Set(descriptors.flatMap((descriptor) => descriptor.styleTokenIds).concat(["style:relation"]))].sort(compareCodeUnits).map((tokenId) => ({ tokenId, values: { fill: fills[tokenId] ?? "#ffffff", stroke: "#1e293b", strokeWidth: "2" } }));
+  const connectorTokens = connectors.flatMap((connector) => connector.styleTokenIds as string[]);
+  return [...new Set(descriptors.flatMap((descriptor) => descriptor.styleTokenIds).concat(connectorTokens))].sort(compareCodeUnits).map((tokenId) => ({
+    tokenId,
+    values: tokenId === "style:relation"
+      ? { fill: fills[tokenId] ?? "#ffffff", stroke: "#475569", strokeWidth: "1.2" }
+      : tokenId === "style:skip"
+        ? { fill: "#ffffff", stroke: "#64748b", strokeWidth: "1.2" }
+        : tokenId === "style:split"
+          ? { fill: "#334155", stroke: "#334155", strokeWidth: "1.2" }
+          : { fill: fills[tokenId] ?? "#ffffff", stroke: "#1e293b", strokeWidth: "1.2" },
+  }));
 }
 
 function anchor(bounds: { x: number; y: number; width: number; height: number }, side: "left" | "right", offset: number): { x: number; y: number } {
   const y = Math.round(bounds.y + bounds.height * offset / 1000);
   return side === "left" ? { x: bounds.x, y } : { x: bounds.x + bounds.width, y };
+}
+
+function primaryBounds(descriptor: ComposableRegionVisualDescriptor): Bounds {
+  const markerSize = markerSizeFor(descriptor.kind);
+  const width = markerSize ?? WIDTH;
+  const height = markerSize ?? HEIGHT;
+  return {
+    x: MARGIN + descriptor.layout.rank * (WIDTH + COLUMN_GAP) + Math.floor((WIDTH - width) / 2),
+    y: MARGIN + descriptor.layout.lane * (HEIGHT + LANE_GAP) + Math.floor((HEIGHT - height) / 2),
+    width,
+    height,
+  };
+}
+
+function markerSizeFor(kind: ComposableRegionVisualDescriptor["kind"]): number | null {
+  if (kind === "SplitMarker") return SPLIT_MARKER_SIZE;
+  if (kind === "AddMarker") return ADD_MARKER_SIZE;
+  if (kind === "ConcatMarker") return CONCAT_MARKER_SIZE;
+  return null;
+}
+
+function skipRoute(source: { x: number; y: number }, target: { x: number; y: number }, sourceBounds: Bounds, targetBounds: Bounds, laneIndex: number): Array<{ x: number; y: number }> {
+  const sourceExitX = source.x + 80;
+  const targetEntryX = target.x - 80;
+  const laneY = Math.max(40, Math.min(sourceBounds.y, targetBounds.y) - 120 - laneIndex * 60);
+  return [
+    source,
+    { x: sourceExitX, y: source.y },
+    { x: sourceExitX, y: laneY },
+    { x: targetEntryX, y: laneY },
+    { x: targetEntryX, y: target.y },
+    target,
+  ];
 }
 
 function packAttachments(primaryBoundsById: ReadonlyMap<string, Bounds>, descriptors: readonly ComposableRegionVisualDescriptor[]): Map<string, Bounds> {
@@ -152,7 +197,7 @@ function packAttachments(primaryBoundsById: ReadonlyMap<string, Bounds>, descrip
   for (const descriptor of [...descriptors].sort((left, right) => left.layout.lane - right.layout.lane || attachmentPriority(left) - attachmentPriority(right) || compareCodeUnits(left.primitiveId, right.primitiveId))) {
     const primary = primaryBoundsById.get(descriptor.attachment!.primaryPrimitiveId);
     if (!primary) throw new Error(`Attached visual primitive lacks stable primary bounds: ${descriptor.attachment!.primaryPrimitiveId}`);
-    const preferred = preferredAttachmentBounds(primary, descriptor.attachment!);
+    const preferred = preferredAttachmentBounds(primary, descriptor);
     let bounds = preferred;
     let collision = allocated.find((item) => boundsOverlap(bounds, item));
     while (collision) {
@@ -170,19 +215,23 @@ function attachmentCorridor(descriptor: ComposableRegionVisualDescriptor): strin
   return `${descriptor.layout.rank}\u0000right`;
 }
 
-function preferredAttachmentBounds(primary: Bounds, attachment: NonNullable<ComposableRegionVisualDescriptor["attachment"]>): Bounds {
+function preferredAttachmentBounds(primary: Bounds, descriptor: ComposableRegionVisualDescriptor): Bounds {
+  const attachment = descriptor.attachment!;
   const x = primary.x + primary.width + ATTACHMENT_GAP;
   if (attachment.placement === "corner_top_right") return { x, y: primary.y + ATTACHMENT_GAP, width: 180, height: 48 };
-  if (attachment.placement === "output_side") return { x, y: primary.y + Math.floor(primary.height / 2) - 24, width: 300, height: 48 };
+  if (attachment.placement === "output_side") {
+    const size = markerSizeFor(descriptor.kind) ?? SPLIT_MARKER_SIZE;
+    return { x, y: primary.y + Math.floor((primary.height - size) / 2), width: size, height: size };
+  }
   if (attachment.placement === "adjacent_right_top") return { x, y: primary.y + 80, width: 300, height: 88 };
   return { x, y: primary.y + 236, width: 300, height: 68 };
 }
 
 function attachmentPriority(descriptor: ComposableRegionVisualDescriptor): number {
+  if (descriptor.kind === "SplitMarker") return 5;
   if (descriptor.kind === "RepeatBadge") return 10;
   if (descriptor.kind === "TensorStage") return 20;
   if (descriptor.kind === "TensorVolume") return 30;
-  if (descriptor.kind === "SplitMarker") return 40;
   if (descriptor.kind === "AttentionTokenStrip") return 50;
   if (descriptor.kind === "AttentionRelation") return 60;
   return 100;

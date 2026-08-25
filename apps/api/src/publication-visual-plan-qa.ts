@@ -97,7 +97,11 @@ export function evaluatePublicationVisualPlanQa(input: PublicationVisualPlan): P
   checks.push(check("source-mapping-coverage", uncoveredPrimitiveIds.length === 0, uncoveredPrimitiveIds));
   checks.push(check("unmapped-primitive", uncoveredPrimitiveIds.length === 0, uncoveredPrimitiveIds));
 
-  const clippedPrimitiveIds = primitives.filter((primitive) => typeof primitive.label !== "string" || primitive.label.length * 12 > asBounds(primitive.bounds).width).map((primitive) => String(primitive.primitiveId));
+  const symbolOnlyKinds = new Set(["SplitMarker", "AddMarker", "ConcatMarker", "AttentionRelation"]);
+  const clippedPrimitiveIds = primitives
+    .filter((primitive) => !symbolOnlyKinds.has(String(primitive.kind)))
+    .filter((primitive) => typeof primitive.label !== "string" || primitive.label.length * 12 > asBounds(primitive.bounds).width)
+    .map((primitive) => String(primitive.primitiveId));
   checks.push(check("label-clipping", clippedPrimitiveIds.length === 0, clippedPrimitiveIds));
 
   const invalidAnnotationIds: string[] = [];

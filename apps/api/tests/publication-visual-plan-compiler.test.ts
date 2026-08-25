@@ -3,7 +3,7 @@ import { assertPublicationVisualPlanRendererCapabilities, compilePublicationVisu
 import { evaluatePublicationVisualPlanQa } from "../src/publication-visual-plan-qa.js";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
-import { unknownDualStreamFusionUgs, unknownHybridSemanticRegionsCandidateUgs, unknownHybridSemanticRegionsUgs } from "./fixtures/universal-graph-spec.js";
+import { unknownDualStreamFusionUgs, unknownHybridSemanticRegionsCandidateUgs, unknownHybridSemanticRegionsUgs, unknownResidualMultiBranchUgs } from "./fixtures/universal-graph-spec.js";
 
 const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
 
@@ -22,6 +22,44 @@ describe("PublicationVisualPlan compiler", () => {
       expect(connector.route).toHaveLength(4);
       expect(connector.route[0]).not.toEqual(connector.route.at(-1));
     }
+  });
+
+  it("uses compact semantic markers and routes skip relations outside the main node corridor", () => {
+    const ugs = parseUniversalGraphSpec(unknownResidualMultiBranchUgs());
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const plan = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const primitives = plan.primitives as any[];
+    const split = primitives.find((primitive) => primitive.kind === "SplitMarker");
+    const add = primitives.find((primitive) => primitive.kind === "AddMarker");
+    const skip = (plan.connectors as any[]).find((connector) => connector.relation === "skip");
+    const primaryTop = Math.min(...primitives.filter((primitive) => primitive.kind !== "RepeatBadge").map((primitive) => primitive.bounds.y));
+
+    expect(split.bounds.width).toBe(split.bounds.height);
+    expect(add.bounds.width).toBe(add.bounds.height);
+    expect(split.bounds).toMatchObject({ width: 120, height: 120 });
+    expect(add.bounds).toMatchObject({ width: 220, height: 220 });
+    expect(split.bounds.width).toBeLessThan(add.bounds.width);
+    const splitStyle = (plan.styleTokens as any).tokens.find((token: any) => token.tokenId === "style:split");
+    expect(splitStyle.values).toMatchObject({ fill: "#334155", strokeWidth: "1.2" });
+    expect(skip.styleTokenIds).toContain("style:skip");
+    expect(skip.route.length).toBeGreaterThanOrEqual(6);
+    expect(skip.route.slice(1, -1).some((point: any) => point.y < primaryTop)).toBe(true);
+    for (let index = 1; index < skip.route.length; index += 1) {
+      expect(skip.route[index].x === skip.route[index - 1].x || skip.route[index].y === skip.route[index - 1].y).toBe(true);
+    }
+  });
+
+  it("uses restrained model-neutral stroke weights for publication primitives", () => {
+    const ugs = parseUniversalGraphSpec(unknownResidualMultiBranchUgs());
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const plan = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const tokens = new Map((plan.styleTokens as any).tokens.map((token: any) => [token.tokenId, token.values]));
+
+    expect(tokens.get("style:terminal")).toMatchObject({ strokeWidth: "1.2" });
+    expect(tokens.get("style:operator")).toMatchObject({ strokeWidth: "1.2" });
+    expect(tokens.get("style:add")).toMatchObject({ strokeWidth: "1.2" });
+    expect(tokens.get("style:relation")).toMatchObject({ strokeWidth: "1.2" });
+    expect(tokens.get("style:skip")).toMatchObject({ strokeWidth: "1.2" });
   });
 
   it("keeps ambiguous topology as a non-exportable candidate plan", () => {
@@ -114,19 +152,20 @@ describe("PublicationVisualPlan compiler", () => {
     });
     expect(split.bounds).toMatchObject({
       x: primary.bounds.x + primary.bounds.width + 16,
-      y: primary.bounds.y + 184,
-      width: 300,
-      height: 48,
+      y: primary.bounds.y + (primary.bounds.height - 120) / 2,
+      width: 120,
+      height: 120,
     });
+    expect(split.bounds.y + split.bounds.height / 2).toBe(primary.bounds.y + primary.bounds.height / 2);
     expect(stage.bounds).toMatchObject({
       x: primary.bounds.x + primary.bounds.width + 16,
-      y: primary.bounds.y + 80,
+      y: primary.bounds.y + 236,
       width: 300,
       height: 88,
     });
     expect(volume.bounds).toMatchObject({
       x: primary.bounds.x + primary.bounds.width + 16,
-      y: primary.bounds.y + 236,
+      y: primary.bounds.y + 340,
       width: 300,
       height: 68,
     });

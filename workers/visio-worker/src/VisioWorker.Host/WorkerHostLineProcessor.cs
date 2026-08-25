@@ -34,6 +34,8 @@ internal sealed record WorkerHostLineResult(WorkerHostProtocol Protocol, object 
 public sealed class WorkerHostLineProcessor : IAsyncDisposable
 {
     private const int MaximumLineLength = 8 * 1024 * 1024;
+    private const int MaximumPublicErrorLength = 2_000;
+    private const string DiagnosticsTruncationMarker = "\n[diagnostics truncated]";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -128,10 +130,19 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
             return await (await GetOrCreateV3RuntimeAsync().ConfigureAwait(false)).ProcessAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception)
+        catch (Exception error)
         {
-            return new SelectedPageWorkerResponse(3, request?.RequestId ?? "unknown", "failed", Error: "Invalid or failed Worker v3 request.");
+            var publicError = string.Equals(Environment.GetEnvironmentVariable("SYNAPSE_VISIO_WORKER_DIAGNOSTICS"), "1", StringComparison.Ordinal)
+                ? BoundPublicError($"{error.GetType().Name}: {error.Message}\n{error.StackTrace}")
+                : "Invalid or failed Worker v3 request.";
+            return new SelectedPageWorkerResponse(3, request?.RequestId ?? "unknown", "failed", Error: publicError);
         }
+    }
+
+    private static string BoundPublicError(string value)
+    {
+        if (value.Length <= MaximumPublicErrorLength) return value;
+        return value[..(MaximumPublicErrorLength - DiagnosticsTruncationMarker.Length)] + DiagnosticsTruncationMarker;
     }
 
     private Task<SelectedPageWorkerRuntime> GetOrCreateV3RuntimeAsync()

@@ -8,25 +8,29 @@ public sealed class SelectedPageSessionManager
 {
     private readonly ISelectedPageSessionBackend _backend;
     private SelectedPageTarget? _attachedTarget;
+    private string? _attachedOwnershipNamespace;
 
     public SelectedPageSessionManager(ISelectedPageSessionBackend backend)
     {
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
     }
 
-    public async Task<SelectedPageSessionResult> AttachAsync(SelectedPageTarget expectedTarget, CancellationToken cancellationToken = default)
+    public async Task<SelectedPageSessionResult> AttachAsync(SelectedPageTarget expectedTarget, string ownershipNamespace, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(expectedTarget);
+        if (string.IsNullOrWhiteSpace(ownershipNamespace)) throw new ArgumentException("Ownership namespace is required.", nameof(ownershipNamespace));
         cancellationToken.ThrowIfCancellationRequested();
         await _backend.EnsureVisibleApplicationAsync(cancellationToken).ConfigureAwait(false);
         var actualTarget = await _backend.AttachActiveSelectionAsync(cancellationToken).ConfigureAwait(false);
         if (actualTarget is null)
         {
             _attachedTarget = null;
+            _attachedOwnershipNamespace = null;
             return new SelectedPageSessionResult(SelectedPageSessionStatus.WaitingForSelection, null);
         }
         EnsureSameTarget(expectedTarget, actualTarget);
         _attachedTarget = actualTarget;
+        _attachedOwnershipNamespace = ownershipNamespace;
         return new SelectedPageSessionResult(SelectedPageSessionStatus.Attached, actualTarget);
     }
 
@@ -52,6 +56,7 @@ public sealed class SelectedPageSessionManager
         if (string.IsNullOrWhiteSpace(ownershipNamespace)) throw new ArgumentException("Ownership namespace is required.", nameof(ownershipNamespace));
         ArgumentNullException.ThrowIfNull(plan);
         var target = await RevalidateAttachedTargetAsync(cancellationToken).ConfigureAwait(false);
+        EnsureAttachedOwnershipNamespace(ownershipNamespace);
         await _backend.ApplyOwnedRegionAsync(target, ownershipNamespace, plan, cancellationToken).ConfigureAwait(false);
     }
 
@@ -61,11 +66,16 @@ public sealed class SelectedPageSessionManager
         await _backend.SaveSelectedDocumentAsync(target, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<SelectedPageReadback> ReadSelectedPageAsync(CancellationToken cancellationToken = default)
+    public async Task<SelectedPageReadback> ReadSelectedPageAsync(string ownershipNamespace, CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(ownershipNamespace)) throw new ArgumentException("Ownership namespace is required.", nameof(ownershipNamespace));
         var target = await RevalidateAttachedTargetAsync(cancellationToken).ConfigureAwait(false);
-        var readback = await _backend.ReadSelectedPageAsync(target, cancellationToken).ConfigureAwait(false);
-        EnsureSameTarget(target, readback.Target);
+        EnsureAttachedOwnershipNamespace(ownershipNamespace);
+        var readback = await _backend.ReadSelectedPageAsync(target, ownershipNamespace, cancellationToken).ConfigureAwait(false);
+        if (!readback.Valid || !readback.Matches(target) || !string.Equals(readback.OwnershipNamespace, ownershipNamespace, StringComparison.Ordinal) || readback.UnclassifiedShapeCount != 0)
+        {
+            throw new InvalidOperationException("Selected Visio readback does not match the attached target and ownership namespace.");
+        }
         return readback;
     }
 
@@ -74,6 +84,7 @@ public sealed class SelectedPageSessionManager
         if (_attachedTarget is null) return;
         var target = _attachedTarget;
         _attachedTarget = null;
+        _attachedOwnershipNamespace = null;
         await _backend.ReleaseSessionAsync(target, cancellationToken).ConfigureAwait(false);
     }
 
@@ -92,6 +103,14 @@ public sealed class SelectedPageSessionManager
         if (!EqualityComparer<SelectedPageTarget>.Default.Equals(expected, actual))
         {
             throw new InvalidOperationException("The selected Visio document or page changed before the operation could run.");
+        }
+    }
+
+    private void EnsureAttachedOwnershipNamespace(string ownershipNamespace)
+    {
+        if (!string.Equals(_attachedOwnershipNamespace, ownershipNamespace, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The selected Visio ownership namespace changed before the operation could run.");
         }
     }
 }

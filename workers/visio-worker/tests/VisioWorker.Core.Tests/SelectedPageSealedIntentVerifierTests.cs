@@ -59,7 +59,8 @@ public sealed class SelectedPageSealedIntentVerifierTests
         Assert.NotEqual(new string('c', 64), envelopeDocument.RootElement.GetProperty("planHash").GetString());
         Assert.Equal(1, backend.ApplyCalls);
         Assert.NotNull(backend.AppliedPlan);
-        Assert.Equal("plan-1", backend.AppliedPlan.Title);
+        Assert.Equal(string.Empty, backend.AppliedPlan.Title);
+        Assert.NotNull(backend.AppliedPlan.FigurePlan);
         Assert.Equal("input-1", Assert.Single(backend.AppliedPlan.Nodes).Id);
     }
 
@@ -205,7 +206,7 @@ public sealed class SelectedPageSealedIntentVerifierTests
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(ActiveTarget);
         public Task ApplyOwnedRegionAsync(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default) { ApplyCalls++; AppliedPlan = plan; return Task.CompletedTask; }
         public Task SaveSelectedDocumentAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.FromResult(new SelectedPageReadback(target, 0, 0, []));
+        public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default) => Task.FromResult(new SelectedPageReadback(true, target.DocumentId, target.PageId, target.DocumentFingerprint, target.PageFingerprint, target.ExpectedRevision, ownershipNamespace, 0, [], 0));
         public Task ReleaseSessionAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

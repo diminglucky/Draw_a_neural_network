@@ -4,6 +4,7 @@ namespace VisioWorker.Core.Tests;
 
 public sealed class SelectedPageSessionManagerTests
 {
+    private const string OwnershipNamespace = "agent-region-1";
     private static readonly SelectedPageTarget Target = new(
         "document-1",
         "page-1",
@@ -34,7 +35,7 @@ public sealed class SelectedPageSessionManagerTests
         var backend = new RecordingBackend { ActiveTarget = null };
         var manager = new SelectedPageSessionManager(backend);
 
-        var result = await manager.AttachAsync(Target);
+        var result = await manager.AttachAsync(Target, OwnershipNamespace);
 
         Assert.Equal(SelectedPageSessionStatus.WaitingForSelection, result.Status);
         Assert.Null(result.Target);
@@ -49,13 +50,13 @@ public sealed class SelectedPageSessionManagerTests
     {
         var backend = new RecordingBackend { ActiveTarget = Target, UserShapeCount = 3, ExistingOwnedShapeCount = 4 };
         var manager = new SelectedPageSessionManager(backend);
-        await manager.AttachAsync(Target);
+        await manager.AttachAsync(Target, OwnershipNamespace);
 
-        await manager.ApplyOwnedRegionAsync("agent-region-1", Plan());
+        await manager.ApplyOwnedRegionAsync(OwnershipNamespace, Plan());
 
         Assert.Equal(2, backend.AttachActiveSelectionCalls);
         Assert.Equal(1, backend.ApplyCalls);
-        Assert.Equal("agent-region-1", backend.LastOwnershipNamespace);
+        Assert.Equal(OwnershipNamespace, backend.LastOwnershipNamespace);
         Assert.Equal(3, backend.UserShapeCount);
         Assert.Equal(4, backend.ExistingOwnedShapeCount);
     }
@@ -65,7 +66,7 @@ public sealed class SelectedPageSessionManagerTests
     {
         var backend = new RecordingBackend { ActiveTarget = Target };
         var manager = new SelectedPageSessionManager(backend);
-        await manager.AttachAsync(Target);
+        await manager.AttachAsync(Target, OwnershipNamespace);
         backend.ActiveTarget = Target with { PageFingerprint = new string('c', 64) };
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => manager.ApplyOwnedRegionAsync("agent-region-1", Plan()));
@@ -79,15 +80,16 @@ public sealed class SelectedPageSessionManagerTests
     {
         var backend = new RecordingBackend { ActiveTarget = Target, UserShapeCount = 2 };
         var manager = new SelectedPageSessionManager(backend);
-        await manager.AttachAsync(Target);
+        await manager.AttachAsync(Target, OwnershipNamespace);
 
         await manager.SaveSelectedDocumentAsync();
-        var readback = await manager.ReadSelectedPageAsync();
+        var readback = await manager.ReadSelectedPageAsync(OwnershipNamespace);
 
         Assert.Equal(1, backend.SaveCalls);
         Assert.Equal(Target, backend.LastSavedTarget);
-        Assert.Equal(Target, readback.Target);
-        Assert.Equal(2, readback.UserShapeCount);
+        Assert.Equal(Target.DocumentId, readback.DocumentId);
+        Assert.Equal(2, readback.UserOwnedShapeCount);
+        Assert.Equal(OwnershipNamespace, backend.LastReadOwnershipNamespace);
     }
 
     private static DiagramDocument Plan() => new("Current page test", [], [], []);
@@ -103,6 +105,7 @@ public sealed class SelectedPageSessionManagerTests
         public int UserShapeCount { get; set; }
         public int ExistingOwnedShapeCount { get; set; }
         public string? LastOwnershipNamespace { get; private set; }
+        public string? LastReadOwnershipNamespace { get; private set; }
         public SelectedPageTarget? LastSavedTarget { get; private set; }
 
         public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default)
@@ -131,8 +134,23 @@ public sealed class SelectedPageSessionManagerTests
             return Task.CompletedTask;
         }
 
-        public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new SelectedPageReadback(target, UserShapeCount, ExistingOwnedShapeCount, []));
+        public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default)
+        {
+            LastReadOwnershipNamespace = ownershipNamespace;
+            return Task.FromResult(new SelectedPageReadback(
+                true,
+                target.DocumentId,
+                target.PageId,
+                target.DocumentFingerprint,
+                target.PageFingerprint,
+                target.ExpectedRevision,
+                ownershipNamespace,
+                UserShapeCount,
+                Enumerable.Range(1, ExistingOwnedShapeCount)
+                    .Select(index => new SelectedPageReadbackShape($"shape-{index}", ownershipNamespace, ["semantic-1"]))
+                    .ToArray(),
+                0));
+        }
 
         public Task ReleaseSessionAsync(SelectedPageTarget target, CancellationToken cancellationToken = default)
         {

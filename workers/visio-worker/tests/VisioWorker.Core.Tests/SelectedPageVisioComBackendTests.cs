@@ -5,6 +5,7 @@ namespace VisioWorker.Core.Tests;
 
 public sealed class SelectedPageVisioComBackendTests
 {
+    private const string OwnershipNamespace = "agent.region.one";
     private static readonly SelectedPageTarget Target = new(
         "document-1",
         "page-1",
@@ -41,17 +42,29 @@ public sealed class SelectedPageVisioComBackendTests
         await using var backend = new SelectedPageVisioComBackend(operations);
 
         var attached = await backend.AttachActiveSelectionAsync();
-        await backend.ApplyOwnedRegionAsync(attached!, "agent.region.one", Plan());
-        var readback = await backend.ReadSelectedPageAsync(Target);
+        await backend.ApplyOwnedRegionAsync(attached!, OwnershipNamespace, Plan());
+        var readback = await backend.ReadSelectedPageAsync(Target, OwnershipNamespace);
 
         Assert.Equal(Target, attached);
         Assert.Equal(1, operations.ApplyOwnedRegionCalls);
-        Assert.Equal("agent.region.one", operations.LastOwnershipNamespace);
-        Assert.Equal(3, readback.UserShapeCount);
-        Assert.Equal(4, readback.AgentOwnedShapeCount);
+        Assert.Equal(OwnershipNamespace, operations.LastOwnershipNamespace);
+        Assert.Equal(3, readback.UserOwnedShapeCount);
+        Assert.Equal(4, readback.AgentOwnedShapes.Count);
         Assert.Equal(0, operations.DocumentsAddCalls);
         Assert.Equal(0, operations.PagesAddCalls);
         Assert.Equal(0, operations.SaveAsCalls);
+    }
+
+    [Fact]
+    public async Task Readback_requests_only_the_attached_ownership_namespace()
+    {
+        var operations = new RecordingOperations { ActiveTarget = Target };
+        await using var backend = new SelectedPageVisioComBackend(operations);
+        await backend.AttachActiveSelectionAsync();
+
+        await backend.ReadSelectedPageAsync(Target, OwnershipNamespace);
+
+        Assert.Equal(OwnershipNamespace, operations.LastReadOwnershipNamespace);
     }
 
     [Fact]
@@ -63,7 +76,7 @@ public sealed class SelectedPageVisioComBackendTests
         operations.ActiveTarget = Target with { PageFingerprint = new string('c', 64) };
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => backend.ApplyOwnedRegionAsync(Target, "agent.region.one", Plan()));
+            () => backend.ApplyOwnedRegionAsync(Target, OwnershipNamespace, Plan()));
 
         Assert.Contains("changed", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, operations.ApplyOwnedRegionCalls);
@@ -118,6 +131,7 @@ public sealed class SelectedPageVisioComBackendTests
         public int UserShapeCount { get; set; }
         public int ExistingOwnedShapeCount { get; set; }
         public string? LastOwnershipNamespace { get; private set; }
+        public string? LastReadOwnershipNamespace { get; private set; }
 
         public void EnsureVisibleApplication() => EnsureVisibleApplicationCalls++;
 
@@ -135,8 +149,23 @@ public sealed class SelectedPageVisioComBackendTests
 
         public void SaveSelectedDocument(SelectedPageTarget target) => SaveCalls++;
 
-        public SelectedPageReadback ReadSelectedPage(SelectedPageTarget target) =>
-            new(target, UserShapeCount, ExistingOwnedShapeCount, []);
+        public SelectedPageReadback ReadSelectedPage(SelectedPageTarget target, string ownershipNamespace)
+        {
+            LastReadOwnershipNamespace = ownershipNamespace;
+            return new SelectedPageReadback(
+                true,
+                target.DocumentId,
+                target.PageId,
+                target.DocumentFingerprint,
+                target.PageFingerprint,
+                target.ExpectedRevision,
+                ownershipNamespace,
+                UserShapeCount,
+                Enumerable.Range(1, ExistingOwnedShapeCount)
+                    .Select(index => new SelectedPageReadbackShape($"shape-{index}", ownershipNamespace, ["semantic-1"]))
+                    .ToArray(),
+                0);
+        }
 
         public void ReleaseSession(SelectedPageTarget target) => ReleaseSessionCalls++;
 

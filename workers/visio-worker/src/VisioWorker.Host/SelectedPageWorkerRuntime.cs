@@ -37,7 +37,7 @@ public sealed class SelectedPageWorkerRuntime : IAsyncDisposable
                     : new SelectedPageWorkerResponse(3, request.RequestId, "failed", Error: "waiting_for_selected_page");
             case SelectedPageWorkerCommand.AttachSelectedPage:
                 var target = Target(request);
-                var attached = await _session.AttachAsync(target, cancellationToken).ConfigureAwait(false);
+                var attached = await _session.AttachAsync(target, request.Binding!.OwnershipNamespace, cancellationToken).ConfigureAwait(false);
                 return attached.Status == SelectedPageSessionStatus.Attached
                     ? new SelectedPageWorkerResponse(3, request.RequestId, "succeeded", request.Binding)
                     : new SelectedPageWorkerResponse(3, request.RequestId, "failed", Error: "waiting_for_selected_page");
@@ -45,7 +45,7 @@ public sealed class SelectedPageWorkerRuntime : IAsyncDisposable
                 await _session.SaveSelectedDocumentAsync(cancellationToken).ConfigureAwait(false);
                 return new SelectedPageWorkerResponse(3, request.RequestId, "succeeded", request.Binding);
             case SelectedPageWorkerCommand.ReadSelectedPage:
-                var readback = await _session.ReadSelectedPageAsync(cancellationToken).ConfigureAwait(false);
+                var readback = await _session.ReadSelectedPageAsync(request.Binding!.OwnershipNamespace, cancellationToken).ConfigureAwait(false);
                 return new SelectedPageWorkerResponse(3, request.RequestId, "succeeded", request.Binding, readback);
             case SelectedPageWorkerCommand.CloseSession:
                 await _session.CloseAsync(cancellationToken).ConfigureAwait(false);

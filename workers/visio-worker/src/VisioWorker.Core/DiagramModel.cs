@@ -149,7 +149,8 @@ public sealed record VisioConnector(
     string Source,
     string Target,
     string Kind,
-    IReadOnlyList<DiagramPoint> Points);
+    IReadOnlyList<DiagramPoint> Points,
+    VisioLineStyle? Style = null);
 
 public sealed record VisioFigurePlan(
     double PageWidthInches,
@@ -166,7 +167,18 @@ public sealed record VisioPrimitiveGroup(
     double SkewXInches,
     double SkewYInches,
     IReadOnlyList<string> PrimitiveIds,
-    IReadOnlyDictionary<string, string> ShapeData);
+    IReadOnlyDictionary<string, string> ShapeData,
+    VisioPrimitiveStyle? Style = null,
+    string? InlineLabel = null);
+
+public sealed record VisioPrimitiveStyle(
+    string FillColor,
+    string StrokeColor,
+    double StrokeWidthPoints);
+
+public sealed record VisioLineStyle(
+    string StrokeColor,
+    double StrokeWidthPoints);
 
 public readonly record struct VisioBounds(double XInches, double YInches, double WidthInches, double HeightInches);
 
