@@ -5,16 +5,20 @@ import {
   type AcceptDrawingInput,
   type BindExistingPageInput,
   type CancelDrawingRunInput,
+  type DiscoverPageTargetInput,
   type DrawingRun,
   type DrawingRunTrustedScope,
   DRAWING_CLARIFICATION_CONFIRMATION_HASH,
   type DrawingRunCommand,
   type DrawingRunSnapshot,
+  type FailDrawingRunInput,
   type PublicDrawingRunEvent,
   type DrawingRunTransition,
   type RequestDrawingApplyInput,
+  type RequestDrawingApplyResult,
   type ResumeDrawingRunInput,
   type StartDrawingRunInput,
+  type VerifyDrawingReadbackInput,
 } from "./contracts.js";
 import { classifyDrawingWorkflowFailure, DrawingRunError } from "./errors.js";
 import { DrawingRunIdempotency } from "./idempotency.js";
@@ -29,8 +33,11 @@ export interface DrawingRunCoordinator {
   acceptInput(input: AcceptDrawingInput): Promise<DrawingRunSnapshot>;
   resume(input: ResumeDrawingRunInput): Promise<DrawingRunSnapshot>;
   answerClarification(input: AnswerClarificationInput): Promise<DrawingRunSnapshot>;
+  discoverPageTarget(input: DiscoverPageTargetInput): Promise<DrawingRunSnapshot>;
   bindExistingPage(input: BindExistingPageInput): Promise<DrawingRunSnapshot>;
-  requestApply(input: RequestDrawingApplyInput): Promise<DrawingRunSnapshot>;
+  requestApply(input: RequestDrawingApplyInput): Promise<RequestDrawingApplyResult>;
+  verifyReadback(input: VerifyDrawingReadbackInput): Promise<DrawingRunSnapshot>;
+  fail(input: FailDrawingRunInput): Promise<DrawingRunSnapshot>;
   cancel(input: CancelDrawingRunInput): Promise<DrawingRunSnapshot>;
   recover(): Promise<void>;
   get(ownerId: string, runId: string, deviceId: string): Promise<DrawingRunSnapshot | null>;
@@ -125,6 +132,14 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     });
   }
 
+  async discoverPageTarget(input: DiscoverPageTargetInput): Promise<DrawingRunSnapshot> {
+    return this.dispatch({
+      ...input,
+      type: "discover_page_target",
+      discoveryHash: digest(input.discoveryIdentity),
+    });
+  }
+
   async bindExistingPage(input: BindExistingPageInput): Promise<DrawingRunSnapshot> {
     return this.dispatch({
       ...input,
@@ -133,8 +148,16 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     });
   }
 
-  async requestApply(input: RequestDrawingApplyInput): Promise<DrawingRunSnapshot> {
-    return this.dispatch({ ...input, type: "request_apply", authorizationHash: digest(input.confirmationNonce) });
+  async requestApply(input: RequestDrawingApplyInput): Promise<RequestDrawingApplyResult> {
+    return this.dispatchWithReplay({ ...input, type: "request_apply", authorizationHash: digest(input.confirmationNonce) });
+  }
+
+  async verifyReadback(input: VerifyDrawingReadbackInput): Promise<DrawingRunSnapshot> {
+    return this.dispatch({ ...input, type: "verify_readback", readbackHash: digest(input.readback) });
+  }
+
+  async fail(input: FailDrawingRunInput): Promise<DrawingRunSnapshot> {
+    return this.dispatch({ ...input, type: "fail", errorCategory: input.errorCategory });
   }
 
   async cancel(input: CancelDrawingRunInput): Promise<DrawingRunSnapshot> {
@@ -313,20 +336,24 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
   }
 
   async dispatch(command: DrawingRunCommand): Promise<DrawingRunSnapshot> {
+    return (await this.dispatchWithReplay(command)).run;
+  }
+
+  private async dispatchWithReplay(command: DrawingRunCommand): Promise<RequestDrawingApplyResult> {
     const trustedScope = drawingRunTrustedScope(command);
     const run = await this.requireRun(trustedScope);
     const requestHash = digest(command);
     const replayRevision = this.idempotency.read(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash);
     if (replayRevision !== null) {
       const replay = await this.requireRun(trustedScope);
-      return projectPublicDrawingRun(replay, trustedScope);
+      return { run: projectPublicDrawingRun(replay, trustedScope), replayed: true };
     }
     const persistedEvent = await this.store.getEvent(command.ownerId, command.runId, command.idempotencyKey);
     if (persistedEvent) {
       if (persistedEvent.requestHash !== requestHash) throw new DrawingRunError("DRAWING_RUN_IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different command");
       const replay = await this.requireRun(trustedScope);
       this.idempotency.record(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash, persistedEvent.revision);
-      return projectPublicDrawingRun(replay, trustedScope);
+      return { run: projectPublicDrawingRun(replay, trustedScope), replayed: true };
     }
     const transition: DrawingRunTransition = reduceDrawingRun(run, command, trustedScope);
     transition.event.requestHash = requestHash;
@@ -341,12 +368,12 @@ export class InMemoryDrawingRunCoordinator implements DrawingRunCoordinator {
     this.idempotency.record(command.ownerId, command.deviceId, command.runId, command.idempotencyKey, requestHash, transition.next.revision);
     if (result === "replayed") {
       const replay = await this.requireRun(trustedScope);
-      return projectPublicDrawingRun(replay, trustedScope);
+      return { run: projectPublicDrawingRun(replay, trustedScope), replayed: true };
     }
     if (this.workflow && isWorkflowResumable(transition.next.status)) {
       void this.scheduleWorkflow(transition.next, trustedScope);
     }
-    return projectPublicDrawingRun(transition.next, trustedScope);
+    return { run: projectPublicDrawingRun(transition.next, trustedScope), replayed: false };
   }
 
   private async requireRun(trustedScope: DrawingRunTrustedScope): Promise<DrawingRun> {

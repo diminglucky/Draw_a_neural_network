@@ -56,9 +56,7 @@ describe("GenericPlanSnapshotService", () => {
       source.edges.push({ edgeId: "feedback", sourcePortId: "spectral_fusion:out", targetPortId: "texture_mixer:in", relation: "feedback", knowledge: "proven", evidenceIds: ["e-fusion"] });
       const ugs = parseUniversalGraphSpec(source);
       const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
-      const pending = compilePublicationVisualPlan({ ugs, graph, updateIdentity: { ownerId: owner.userId, deviceId: owner.deviceId, workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 } });
-      const forgedFormal = createPublicationVisualPlan({ ...structuredClone(pending), eligibility: { kind: "formal", formalReasons: ["topology-complete"], blockingReasons: [], qaStatus: "passed" } });
-      return request({ ugs, graph, publicationVisualPlan: forgedFormal });
+      return request({ ugs, graph, publicationVisualPlan: compilePublicationVisualPlan({ ugs, graph, updateIdentity: { ownerId: owner.userId, deviceId: owner.deviceId, workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 } }) });
     }],
     ["forged lineage", () => {
       const value = fixture();
@@ -95,6 +93,23 @@ describe("GenericPlanSnapshotService", () => {
     const insert = vi.spyOn(store, "insert");
     const service = new GenericPlanSnapshotService({ store });
     await expect(service.create(build())).rejects.toThrow();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects an input UGS revision that differs from the parsed UGS before inserting", async () => {
+    const store = new InMemoryGenericPlanSnapshotStore();
+    const insert = vi.spyOn(store, "insert");
+    const service = new GenericPlanSnapshotService({ store });
+    const value = fixture();
+
+    await expect(service.create({
+      owner,
+      ugsRevision: value.ugs.revision + 1,
+      ugs: value.ugs,
+      graph: value.graph,
+      publicationVisualPlan: value.pvp,
+      createdAt: "2026-08-20T00:00:00.000Z",
+    })).rejects.toThrow(/input UGS revision does not match parsed UGS revision/i);
     expect(insert).not.toHaveBeenCalled();
   });
 });

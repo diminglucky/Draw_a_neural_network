@@ -11,6 +11,8 @@ import { InMemoryDrawingArtifactStore } from "../src/drawing-input/drawing-artif
 import { PostgresDrawingArtifactStore } from "../src/drawing-input/postgres-drawing-artifacts.js";
 import { PostgresDrawingWorkflowCheckpointSaver } from "../src/drawing-run/postgres-checkpoint-saver.js";
 import { MemorySaver } from "@langchain/langgraph";
+import { InMemoryGenericPlanSnapshotStore } from "../src/generic-plan-snapshot-store.js";
+import { PostgresGenericPlanSnapshotStore } from "../src/postgres-generic-plan-snapshot-store.js";
 
 describe("foundation store factory", () => {
   it("selects the memory store only for an explicit memory configuration", async () => {
@@ -21,6 +23,7 @@ describe("foundation store factory", () => {
     expect(handle.localProposalStore).toBeInstanceOf(InMemoryLocalProposalStore);
     expect(handle.drawingArtifactStore).toBeInstanceOf(InMemoryDrawingArtifactStore);
     expect(handle.drawingWorkflowCheckpointer).toBeInstanceOf(MemorySaver);
+    expect(handle.genericPlanSnapshotStore).toBeInstanceOf(InMemoryGenericPlanSnapshotStore);
     await handle.close();
   });
 
@@ -37,6 +40,7 @@ describe("foundation store factory", () => {
     expect(handle.localProposalStore).toBeInstanceOf(PostgresLocalProposalStore);
     expect(handle.drawingArtifactStore).toBeInstanceOf(PostgresDrawingArtifactStore);
     expect(handle.drawingWorkflowCheckpointer).toBeInstanceOf(PostgresDrawingWorkflowCheckpointSaver);
+    expect(handle.genericPlanSnapshotStore).toBeInstanceOf(PostgresGenericPlanSnapshotStore);
     await handle.close();
   });
 });

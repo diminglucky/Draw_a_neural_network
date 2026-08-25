@@ -47,7 +47,7 @@ public sealed class WorkerHostLineProcessorTests
         yield return ProtocolCase("single-null", "\"protocolVersion\":null", false);
         yield return ProtocolCase("single-string", "\"protocolVersion\":\"bad\"", false);
         yield return ProtocolCase("single-overflow", "\"protocolVersion\":2147483648", false);
-        yield return ProtocolCase("single-unsupported", "\"protocolVersion\":3", false);
+        yield return ProtocolCase("single-unsupported", "\"protocolVersion\":4", false);
 
         // JSON Number values mathematically equal to two are v2 candidates even when the
         // strict v2 parser later rejects their non-integer representation.
@@ -476,6 +476,74 @@ public sealed class WorkerHostLineProcessorTests
         Assert.Equal(1, fixture.Backend.CloseCalls);
     }
 
+    [Fact]
+    public async Task V3_attach_uses_its_own_selected_page_runtime_and_never_initializes_the_v2_export_backend()
+    {
+        using var fixture = new HostFixture();
+        var selectedBackend = new RecordingSelectedPageBackend { ActiveTarget = SelectedPageTargetForTests };
+        var options = fixture.CreateOptions(selectedPageBackend: selectedBackend);
+        await using var processor = new WorkerHostLineProcessor(options);
+
+        var response = await processor.ProcessLineAsync(SelectedPageAttachJson());
+
+        var v3 = Assert.IsType<SelectedPageWorkerResponse>(response);
+        Assert.Equal("succeeded", v3.Status);
+        Assert.Equal("request-attach", v3.RequestId);
+        Assert.Equal(1, selectedBackend.EnsureVisibleApplicationCalls);
+        Assert.Equal(1, selectedBackend.AttachActiveSelectionCalls);
+        Assert.Equal(0, fixture.Backend.OpenOrCreateCalls);
+    }
+
+    [Fact]
+    public async Task V3_host_rejects_a_hash_mismatched_raw_apply_before_the_injected_selected_page_backend_can_mutate()
+    {
+        using var fixture = new HostFixture();
+        var selectedBackend = new RecordingSelectedPageBackend { ActiveTarget = SelectedPageTargetForTests };
+        var options = fixture.CreateOptions(selectedPageBackend: selectedBackend);
+        await using var processor = new WorkerHostLineProcessor(options);
+
+        var response = Assert.IsType<SelectedPageWorkerResponse>(await processor.ProcessLineAsync(SelectedPageHashMismatchedApplyJson()));
+
+        Assert.Equal("failed", response.Status);
+        Assert.Equal("unknown", response.RequestId);
+        Assert.Equal(0, selectedBackend.ApplyCalls);
+        Assert.Equal(0, selectedBackend.AttachActiveSelectionCalls);
+        Assert.Equal(0, fixture.Backend.OpenOrCreateCalls);
+    }
+
+    private static readonly SelectedPageTarget SelectedPageTargetForTests = new(
+        "document-1", "page-1", new string('a', 64), new string('b', 64), 7);
+
+    private static string SelectedPageAttachJson() => JsonSerializer.Serialize(new
+    {
+        protocolVersion = 3,
+        requestId = "request-attach",
+        command = "attachSelectedPage",
+        binding = new
+        {
+            jobId = "job-1", tenantId = "tenant-1", userId = "user-1", deviceId = "device-1", workflowId = "workflow-1",
+            documentId = SelectedPageTargetForTests.DocumentId, pageId = SelectedPageTargetForTests.PageId,
+            documentFingerprint = SelectedPageTargetForTests.DocumentFingerprint, pageFingerprint = SelectedPageTargetForTests.PageFingerprint,
+            expectedRevision = SelectedPageTargetForTests.ExpectedRevision, ownershipNamespace = "agent-region-1",
+        },
+    });
+
+    private static string SelectedPageHashMismatchedApplyJson() => "{\"protocolVersion\":3,\"requestId\":\"request-invalid-apply\",\"command\":\"applyOwnedRegion\",\"binding\":{\"jobId\":\"job-1\",\"tenantId\":\"tenant-1\",\"userId\":\"user-1\",\"deviceId\":\"device-1\",\"workflowId\":\"workflow-1\",\"documentId\":\"document-1\",\"pageId\":\"page-1\",\"documentFingerprint\":\"" + new string('a', 64) + "\",\"pageFingerprint\":\"" + new string('b', 64) + "\",\"expectedRevision\":7,\"ownershipNamespace\":\"agent-region-1\"},\"ownershipNamespace\":\"agent-region-1\",\"sealedNativeIntent\":{\"version\":2,\"jobId\":\"job-1\",\"tenantId\":\"tenant-1\",\"userId\":\"user-1\",\"deviceId\":\"device-1\",\"workflowId\":\"workflow-1\",\"documentId\":\"document-1\",\"pageId\":\"page-1\",\"documentFingerprint\":\"" + new string('a', 64) + "\",\"pageFingerprint\":\"" + new string('b', 64) + "\",\"expectedRevision\":7,\"ownershipNamespace\":\"agent-region-1\",\"planId\":\"plan-1\",\"planHash\":\"" + new string('a', 64) + "\",\"canonicalPlanBase64\":\"e30\",\"expiresAt\":\"2030-01-01T00:00:00.000Z\",\"signature\":\"signature\"}}";
+
+    private sealed class RecordingSelectedPageBackend : ISelectedPageSessionBackend
+    {
+        public SelectedPageTarget? ActiveTarget { get; set; }
+        public int EnsureVisibleApplicationCalls { get; private set; }
+        public int AttachActiveSelectionCalls { get; private set; }
+        public int ApplyCalls { get; private set; }
+        public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) { EnsureVisibleApplicationCalls++; return Task.CompletedTask; }
+        public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) { AttachActiveSelectionCalls++; return Task.FromResult(ActiveTarget); }
+        public Task ApplyOwnedRegionAsync(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default) { ApplyCalls++; return Task.CompletedTask; }
+        public Task SaveSelectedDocumentAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.FromResult(new SelectedPageReadback(target, 0, 0, []));
+        public Task ReleaseSessionAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
     private sealed class HostFixture : IDisposable
     {
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -495,7 +563,7 @@ public sealed class WorkerHostLineProcessorTests
 
         public WorkerHostLineProcessor CreateLineProcessor() => new(CreateOptions());
 
-        public WorkerHostLineProcessorOptions CreateOptions(IWorkerClock? clock = null, string mode = "mock", bool injectBackend = true) => new()
+        public WorkerHostLineProcessorOptions CreateOptions(IWorkerClock? clock = null, string mode = "mock", bool injectBackend = true, ISelectedPageSessionBackend? selectedPageBackend = null) => new()
         {
             OutputRoot = _root,
             Mode = mode,
@@ -504,6 +572,7 @@ public sealed class WorkerHostLineProcessorTests
             Clock = clock ?? new SystemWorkerClock(),
             CheckpointInterval = TimeSpan.FromMinutes(15),
             Capacity = 4,
+            SelectedPageBackend = selectedPageBackend,
         };
 
         public string OpenJson(string requestId = "open-request") => JsonSerializer.Serialize(new

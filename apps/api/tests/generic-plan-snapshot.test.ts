@@ -62,6 +62,17 @@ describe("GenericPlanSnapshot", () => {
     expect(() => canonicalGenericPlanSnapshotJson([1, , 2])).toThrow(/sparse|array/i);
   });
 
+  it("accepts numeric-leading authenticated owner identities without broadening structural identifiers", () => {
+    const snapshot = createGenericPlanSnapshot(input({
+      tenantId: "1b5a4fa9-4d91-4f3f-b9b2-5d1aee9a4162",
+      userId: "7f9a7a9e-1bce-44a8-bf2c-1f2a9cd8d70a",
+      deviceId: "4e5b1c57-99cf-4d1f-9d12-8c2a6d5f4e40",
+    }));
+
+    expect(snapshot.userId).toBe("7f9a7a9e-1bce-44a8-bf2c-1f2a9cd8d70a");
+    expect(() => createGenericPlanSnapshot(input({ graphId: "7graph" }))).toThrow(/graphId|identifier/i);
+  });
+
   it("deep-freezes a clone-isolated PVP and exposes no legacy Figure Plan or renderer payload fields", () => {
     const source = input();
     const snapshot = createGenericPlanSnapshot(source);

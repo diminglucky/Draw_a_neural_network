@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
 import { loadConfig, type AppConfig } from "./config.js";
 import { AdminService } from "./admin-service.js";
@@ -30,6 +31,15 @@ import type { LocalProposalStore } from "./drawing-input/structural-harness.js";
 import { createPublicationDrawingWorkflowComposer } from "./drawing-run/publication-composer.js";
 import type { DrawingArtifactStore } from "./drawing-input/drawing-artifacts.js";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
+import type { SelectedPageDrawingJob } from "./selected-page-drawing-job.js";
+import type { SelectedPageLeaseService } from "./selected-page-lease.js";
+import { SelectedPageDrawingJob as DefaultSelectedPageDrawingJob } from "./selected-page-drawing-job.js";
+import { InMemorySelectedPageLeaseStore, SelectedPageLeaseService as DefaultSelectedPageLeaseService } from "./selected-page-lease.js";
+import { CurrentPageSelectionCapture } from "./current-page-selection-capture.js";
+import { CurrentPageVisioAdapter } from "./current-page-visio-adapter.js";
+import { PublicationVisualNativeIntentService } from "./publication-visual-plan-native-intent.js";
+import type { GenericPlanSnapshotStore } from "./generic-plan-snapshot-store.js";
+import { SelectedPagePreviewReviewService } from "./selected-page-preview-review.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -53,6 +63,11 @@ export interface BuildAppOptions {
   localProposalStore?: LocalProposalStore;
   drawingArtifactStore?: DrawingArtifactStore;
   drawingWorkflowCheckpointer?: BaseCheckpointSaver;
+  selectedPageLeaseService?: Pick<SelectedPageLeaseService, "capture">;
+  selectedPageDrawingJob?: Pick<SelectedPageDrawingJob, "draw">;
+  selectedPagePreviewReviewService?: Pick<SelectedPagePreviewReviewService, "confirm">;
+  genericPlanSnapshotStore?: GenericPlanSnapshotStore;
+  selectedPageWorkerClient?: Pick<VisioWorkerClient, "createSelectedPageCaptureTransport" | "createSelectedPageTransport">;
 }
 
 export interface UniversalFigureExportRunnerContract {
@@ -75,8 +90,25 @@ function createVisioExecutorForConfig(config: AppConfig): VisioExecutor {
   });
 }
 
+function createSelectedPageWorkerClientForConfig(config: AppConfig): VisioWorkerClient | null {
+  if (!config.visioWorkerPath || !config.visioOutputRoot) return null;
+  return new VisioWorkerClient({
+    workerPath: config.visioWorkerPath,
+    outputRoot: config.visioOutputRoot,
+    mode: config.visioWorkerMode,
+    timeoutMs: config.visioWorkerTimeoutMs,
+    visible: true,
+    attachToRunning: true,
+    selectedPageSealingSecret: config.selectedPageSealingSecret,
+  });
+}
+
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const config = options.config ?? loadConfig({ NODE_ENV: "test", SESSION_SECRET: options.sessionSecret ?? "test-session-secret-test-session-secret", STORAGE_DRIVER: "memory" });
+  const hasInjectedSelectedPageService = Boolean(options.selectedPageLeaseService) || Boolean(options.selectedPageDrawingJob);
+  if (hasInjectedSelectedPageService && (!options.selectedPageLeaseService || !options.selectedPageDrawingJob || !options.genericPlanSnapshotStore)) {
+    throw new Error("Selected-page dependencies must be injected as one complete set");
+  }
   if (!options.store && config.storageDriver !== "memory") {
     throw new Error("A FoundationStore must be injected when a durable storage driver is configured");
   }
@@ -118,6 +150,49 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     leaseCoordinator: options.leaseCoordinator,
   });
   const privateReceiptStore = options.privateReceiptStore ?? new InMemoryPrivateReceiptStore();
+  const selectedPagePreviewReviewService = options.selectedPagePreviewReviewService
+    ?? (options.drawingArtifactStore && options.genericPlanSnapshotStore
+      ? new SelectedPagePreviewReviewService({
+        artifacts: options.drawingArtifactStore,
+        snapshots: options.genericPlanSnapshotStore,
+      })
+      : undefined);
+  let selectedPageLeaseService = options.selectedPageLeaseService;
+  let selectedPageDrawingJob = options.selectedPageDrawingJob;
+  if (!selectedPageLeaseService && !selectedPageDrawingJob && config.selectedPageSealingSecret && options.genericPlanSnapshotStore) {
+    const workerClient = options.selectedPageWorkerClient ?? createSelectedPageWorkerClientForConfig(config);
+    if (workerClient) {
+      const leases = new DefaultSelectedPageLeaseService({
+        store: new InMemorySelectedPageLeaseStore(),
+        capture: {
+          capture: (owner) => new CurrentPageSelectionCapture(
+            workerClient.createSelectedPageCaptureTransport(),
+            randomUUID,
+          ).capture(owner),
+        },
+      });
+      const nativeIntentService = new PublicationVisualNativeIntentService({ snapshotStore: options.genericPlanSnapshotStore });
+      selectedPageLeaseService = leases;
+      selectedPageDrawingJob = new DefaultSelectedPageDrawingJob({
+        leases,
+        compileNativeIntent: (input) => nativeIntentService.compile({
+          owner: {
+            tenantId: input.owner.tenantId,
+            userId: input.owner.userId,
+            deviceId: input.owner.deviceId,
+          },
+          graphId: input.graphId,
+          ugsRevision: input.ugsRevision,
+          snapshotId: input.snapshotId,
+        }),
+        executor: {
+          draw: (input) => new CurrentPageVisioAdapter(workerClient.createSelectedPageTransport()).draw(input),
+        },
+        sealedPlanSecret: config.selectedPageSealingSecret,
+        jobIdFactory: randomUUID,
+      });
+    }
+  }
   const app = Fastify({ logger: false });
   app.register(cors, { origin: true });
   registerRoutes(app, {
@@ -138,6 +213,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     figureAnalysisPreviewService,
     drawingRunCoordinator,
     privateReceiptStore,
+    selectedPageLeaseService,
+    selectedPageDrawingJob,
+    selectedPagePreviewReviewService,
+    genericPlanSnapshotStore: options.genericPlanSnapshotStore,
   });
   app.addHook("onReady", async () => {
     await visioJobRunner.recoverJobs();
@@ -189,6 +268,7 @@ export async function buildDefaultApp(): Promise<FastifyInstance> {
         localProposalStore: storage.localProposalStore,
         drawingArtifactStore: storage.drawingArtifactStore,
         drawingWorkflowCheckpointer: storage.drawingWorkflowCheckpointer,
+        genericPlanSnapshotStore: storage.genericPlanSnapshotStore,
         leaseCoordinator: lease.coordinator,
         admin: { email: process.env.ADMIN_EMAIL ?? "admin@example.com", passwordHash: await hashPassword(adminPassword ?? "development-admin-password-change-me") },
         agentService: createAgentServiceForConfig(config),

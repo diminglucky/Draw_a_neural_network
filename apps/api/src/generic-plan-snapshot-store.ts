@@ -3,10 +3,15 @@ import {
   type GenericPlanSnapshot,
   type GenericPlanSnapshotOwner,
 } from "./generic-plan-snapshot.js";
+import { isPublicationVisualPlanQaPromotionReason } from "./publication-visual-plan-qa-promotion.js";
+
+const QA_PROMOTION_PREFIX = "visual-qa:pvp-qa-1:";
 
 export interface GenericPlanSnapshotStore {
   insert(owner: GenericPlanSnapshotOwner, snapshot: GenericPlanSnapshot): Promise<GenericPlanSnapshot>;
   get(owner: GenericPlanSnapshotOwner, graphId: string, ugsRevision: number, snapshotId: string): Promise<GenericPlanSnapshot | null>;
+  getByPublicationVisualPlanHash(owner: GenericPlanSnapshotOwner, hash: string): Promise<GenericPlanSnapshot | null>;
+  getByConfirmedPreviewHash(owner: GenericPlanSnapshotOwner, pendingPreviewHash: string): Promise<GenericPlanSnapshot | null>;
 }
 
 export class GenericPlanSnapshotStoreConflictError extends Error {
@@ -32,12 +37,52 @@ export class InMemoryGenericPlanSnapshotStore implements GenericPlanSnapshotStor
 
   async get(owner: GenericPlanSnapshotOwner, graphId: string, ugsRevision: number, snapshotId: string): Promise<GenericPlanSnapshot | null> {
     assertOwner(owner);
-    assertIdentifier(graphId, "graphId");
+    assertStructuralIdentifier(graphId, "graphId");
     if (!Number.isSafeInteger(ugsRevision) || ugsRevision <= 0) throw new Error("ugsRevision must be a positive safe integer");
-    assertIdentifier(snapshotId, "snapshotId");
+    assertStructuralIdentifier(snapshotId, "snapshotId");
     const snapshot = this.snapshots.get(snapshotKey(owner, graphId, ugsRevision, snapshotId));
     return snapshot ? cloneGenericPlanSnapshot(snapshot) : null;
   }
+
+  async getByPublicationVisualPlanHash(owner: GenericPlanSnapshotOwner, hash: string): Promise<GenericPlanSnapshot | null> {
+    assertOwner(owner);
+    const canonicalHash = canonicalDigest(hash, "publicationVisualPlanHash");
+    let match: GenericPlanSnapshot | null = null;
+    for (const snapshot of this.snapshots.values()) {
+      if (!sameOwner(owner, snapshot) || snapshot.publicationVisualPlanHash !== canonicalHash) continue;
+      if (match) throw new Error("GenericPlanSnapshot resolution is ambiguous for this owner, device, and PVP hash");
+      match = snapshot;
+    }
+    return match ? cloneGenericPlanSnapshot(match) : null;
+  }
+
+  async getByConfirmedPreviewHash(owner: GenericPlanSnapshotOwner, pendingPreviewHash: string): Promise<GenericPlanSnapshot | null> {
+    assertOwner(owner);
+    const canonicalHash = canonicalDigest(pendingPreviewHash, "pendingPreviewHash");
+    let match: GenericPlanSnapshot | null = null;
+    for (const snapshot of this.snapshots.values()) {
+      if (!sameOwner(owner, snapshot)) continue;
+      const confirmedPreviewHashes = confirmedPreviewHashesForSnapshot(snapshot);
+      if (!confirmedPreviewHashes.includes(canonicalHash)) continue;
+      if (confirmedPreviewHashes.length !== 1) throw new Error("GenericPlanSnapshot has ambiguous trusted QA promotion reasons");
+      if (match) throw new Error("GenericPlanSnapshot resolution is ambiguous for this owner, device, and confirmed preview hash");
+      match = snapshot;
+    }
+    return match ? cloneGenericPlanSnapshot(match) : null;
+  }
+}
+
+export function confirmedPreviewHashForSnapshot(snapshot: GenericPlanSnapshot): string | null {
+  const confirmedPreviewHashes = confirmedPreviewHashesForSnapshot(snapshot);
+  if (confirmedPreviewHashes.length === 0) return null;
+  if (confirmedPreviewHashes.length !== 1) throw new Error("GenericPlanSnapshot has ambiguous trusted QA promotion reasons");
+  return confirmedPreviewHashes[0]!;
+}
+
+function confirmedPreviewHashesForSnapshot(snapshot: GenericPlanSnapshot): string[] {
+  return snapshot.publicationVisualPlan.eligibility.formalReasons
+    .filter(isPublicationVisualPlanQaPromotionReason)
+    .map((reason) => reason.slice(QA_PROMOTION_PREFIX.length));
 }
 
 function snapshotKey(owner: GenericPlanSnapshotOwner, graphId: string, ugsRevision: number, snapshotId: string): string {
@@ -49,11 +94,20 @@ function sameOwner(owner: GenericPlanSnapshotOwner, snapshot: GenericPlanSnapsho
 }
 
 function assertOwner(owner: GenericPlanSnapshotOwner): void {
-  assertIdentifier(owner.tenantId, "tenantId");
-  assertIdentifier(owner.userId, "userId");
-  assertIdentifier(owner.deviceId, "deviceId");
+  assertAuthenticatedIdentifier(owner.tenantId, "tenantId");
+  assertAuthenticatedIdentifier(owner.userId, "userId");
+  assertAuthenticatedIdentifier(owner.deviceId, "deviceId");
 }
 
-function assertIdentifier(value: string, field: string): void {
+function assertAuthenticatedIdentifier(value: string, field: string): void {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) || value.length > 128) throw new Error(`${field} must be a stable identifier`);
+}
+
+function assertStructuralIdentifier(value: string, field: string): void {
   if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9._:-]*$/.test(value) || value.length > 128) throw new Error(`${field} must be a stable identifier`);
+}
+
+function canonicalDigest(value: string, field: string): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)) throw new Error(`${field} must be a SHA-256 digest`);
+  return value.toLowerCase();
 }

@@ -840,6 +840,29 @@ export class PostgresFoundationStore implements FoundationStore {
     return mapAudit(result.rows[0]);
   }
 
+  async createAuditRecordIfAbsent(record: AuditRecord): Promise<{ record: AuditRecord; created: boolean }> {
+    const result = await this.pool.query(
+      `INSERT INTO audit_logs (id, actor_type, actor_id, action, target_type, target_id, reason, metadata, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id, actor_type, actor_id, action, target_type, target_id, reason, metadata, created_at`,
+      [record.id, record.actorType, record.actorId, record.action, record.targetType, record.targetId, record.reason, JSON.stringify(record.metadata), record.createdAt],
+    );
+    if (result.rows[0]) return { record: mapAudit(result.rows[0]), created: true };
+    const existing = await this.getAuditRecord(record.id);
+    if (!existing) throw new Error("Audit idempotency conflict did not return the existing record");
+    return { record: existing, created: false };
+  }
+
+  async getAuditRecord(id: string): Promise<AuditRecord | null> {
+    const result = await this.pool.query(
+      `SELECT id, actor_type, actor_id, action, target_type, target_id, reason, metadata, created_at
+       FROM audit_logs WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapAudit(result.rows[0]) : null;
+  }
+
   async listAuditRecords(): Promise<AuditRecord[]> {
     const result = await this.pool.query(
       `SELECT id, actor_type, actor_id, action, target_type, target_id, reason, metadata, created_at

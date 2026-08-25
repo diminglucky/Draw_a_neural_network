@@ -125,4 +125,144 @@ describe("analyzeStaticPyTorchSource", () => {
       locator: expect.objectContaining({ kind: "code", startLine: 4 }),
     }));
   });
+
+  it("expands nested static Sequential containers and named submodule composition", () => {
+    const source = [
+      "import torch.nn as nn",
+      "class StagedNetwork(nn.Module):",
+      "    def __init__(self):",
+      "        widths = [16, 32]",
+      "        self.features = nn.Sequential(",
+      "            nn.Conv2d(3, widths[0], 3),",
+      "            nn.Sequential(nn.ReLU(), nn.Conv2d(widths[0], widths[1], 3)),",
+      "        )",
+      "        self.classifier = nn.Sequential(nn.Flatten(), nn.Linear(widths[1], 4))",
+      "    def forward(self, x):",
+      "        x = self.features(x)",
+      "        return self.classifier(x)",
+    ].join("\n");
+
+    const result = analyze("nested-static-containers", source);
+
+    expect(result.modules.map((module) => [module.id, module.constructor])).toEqual([
+      ["features.0", "Conv2d"],
+      ["features.1.0", "ReLU"],
+      ["features.1.1", "Conv2d"],
+      ["classifier.0", "Flatten"],
+      ["classifier.1", "Linear"],
+    ]);
+    expect(result.calls.map((call) => call.moduleId)).toEqual([
+      "features.0", "features.1.0", "features.1.1", "classifier.0", "classifier.1",
+    ]);
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it("unrolls a construction loop over a constant configuration list", () => {
+    const source = [
+      "import torch.nn as nn",
+      "class RepeatedStages(nn.Module):",
+      "    def __init__(self):",
+      "        widths = [8, 16, 32]",
+      "        self.features = nn.Sequential()",
+      "        for width in widths:",
+      "            self.features.append(nn.Linear(width, width))",
+      "            self.features.append(nn.ReLU())",
+      "        self.classifier = nn.Sequential(nn.Linear(32, 2))",
+      "    def forward(self, x):",
+      "        x = self.features(x)",
+      "        return self.classifier(x)",
+    ].join("\n");
+
+    const result = analyze("static-construction-loop", source);
+
+    expect(result.modules.map((module) => [module.id, module.constructor])).toEqual([
+      ["features.0", "Linear"], ["features.1", "ReLU"],
+      ["features.2", "Linear"], ["features.3", "ReLU"],
+      ["features.4", "Linear"], ["features.5", "ReLU"],
+      ["classifier.0", "Linear"],
+    ]);
+    expect(result.calls.map((call) => call.moduleId)).toEqual([
+      "features.0", "features.1", "features.2", "features.3", "features.4", "features.5", "classifier.0",
+    ]);
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it("blocks a construction loop whose iteration source is not statically provable", () => {
+    const source = [
+      "import torch.nn as nn",
+      "class RuntimeBoundStages(nn.Module):",
+      "    def __init__(self):",
+      "        self.features = nn.Sequential()",
+      "        for index in range(runtime_depth):",
+      "            self.features.append(nn.Linear(4, 4))",
+      "    def forward(self, x):",
+      "        return self.features(x)",
+    ].join("\n");
+
+    const result = analyze("dynamic-construction-loop", source);
+
+    expect(result.unresolved).toContainEqual(expect.objectContaining({
+      code: "unsupported-static-loop",
+      severity: "blocking",
+    }));
+    expect(result.evidence.facts).toEqual([]);
+  });
+
+  it("unrolls a linear forward loop over a known static Sequential container", () => {
+    const source = [
+      "import torch.nn as nn",
+      "class ContainerIteration(nn.Module):",
+      "    def __init__(self):",
+      "        self.features = nn.Sequential(nn.Linear(4, 4), nn.ReLU())",
+      "    def forward(self, x):",
+      "        for layer in self.features:",
+      "            x = layer(x)",
+      "        return x",
+    ].join("\n");
+
+    const result = analyze("static-forward-loop", source);
+
+    expect(result.calls.map((call) => call.moduleId)).toEqual(["features.0", "features.1"]);
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it("does not treat a static-looking construction loop inside a runtime branch as unconditional topology", () => {
+    const source = [
+      "import torch.nn as nn",
+      "class ConditionalStages(nn.Module):",
+      "    def __init__(self, enabled):",
+      "        widths = [8, 16]",
+      "        self.features = nn.Sequential()",
+      "        if enabled:",
+      "            for width in widths:",
+      "                self.features.append(nn.Linear(width, width))",
+      "    def forward(self, x):",
+      "        return self.features(x)",
+    ].join("\n");
+
+    const result = analyze("conditional-static-loop", source);
+
+    expect(result.unresolved).toContainEqual(expect.objectContaining({ code: "unsupported-static-loop", severity: "blocking" }));
+    expect(result.evidence.facts).toEqual([]);
+  });
+
+  it("does not trust a configuration list that is declared only on a runtime branch", () => {
+    const source = [
+      "import torch.nn as nn",
+      "class ConditionalConfiguration(nn.Module):",
+      "    def __init__(self, enabled):",
+      "        self.features = nn.Sequential()",
+      "        if enabled:",
+      "            widths = [8, 16]",
+      "        for width in widths:",
+      "            self.features.append(nn.Linear(width, width))",
+      "    def forward(self, x):",
+      "        return self.features(x)",
+    ].join("\n");
+
+    const result = analyze("conditional-static-list", source);
+
+    expect(result.unresolved).toContainEqual(expect.objectContaining({ code: "unsupported-static-loop", severity: "blocking" }));
+    expect(result.evidence.facts).toEqual([]);
+  });
 });

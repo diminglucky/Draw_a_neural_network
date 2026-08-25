@@ -19,6 +19,7 @@ const environmentSchema = z.object({
   VISIO_ATTACH_TO_RUNNING: z.enum(["true", "false"]).optional(),
   VISIO_WORKER_TIMEOUT_MS: z.coerce.number().int().min(1000).max(600000).default(120000),
   VISIO_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(1),
+  SYNAPSE_SELECTED_PAGE_SEALING_SECRET: z.string().min(32).optional(),
 });
 
 export interface AppConfig {
@@ -37,6 +38,7 @@ export interface AppConfig {
   visioAttachToRunning: boolean;
   visioWorkerTimeoutMs: number;
   visioMaxConcurrency: number;
+  selectedPageSealingSecret?: string;
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): AppConfig {
@@ -62,7 +64,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
   const visioWorkerPath = parsed.VISIO_WORKER_PATH?.trim() || autoWorkerPath;
   const visioWorkerMode = parsed.VISIO_WORKER_MODE || (parsed.NODE_ENV === "test" ? "mock" : visioWorkerPath ? "live" : "mock");
   const visioOutputRoot = parsed.VISIO_OUTPUT_ROOT?.trim() || (autoWorkerPath ? join(tmpdir(), "synapse-studio-visio") : undefined);
-
   return {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
@@ -79,5 +80,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv | Record<string, strin
     visioAttachToRunning: parsed.VISIO_ATTACH_TO_RUNNING === "true",
     visioWorkerTimeoutMs: parsed.VISIO_WORKER_TIMEOUT_MS,
     visioMaxConcurrency: parsed.VISIO_MAX_CONCURRENCY,
+    selectedPageSealingSecret: parsed.SYNAPSE_SELECTED_PAGE_SEALING_SECRET,
   };
 }

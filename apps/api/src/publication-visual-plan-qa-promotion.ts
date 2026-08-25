@@ -2,7 +2,7 @@ import { createPublicationVisualPlan, parsePublicationVisualPlan, type Publicati
 import { evaluatePublicationVisualPlanQa } from "./publication-visual-plan-qa.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
-const REVIEWER_ID = /^[A-Za-z][A-Za-z0-9._:-]{0,191}$/;
+const REVIEWER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const PROMOTION_PREFIX = "visual-qa:pvp-qa-1:";
 

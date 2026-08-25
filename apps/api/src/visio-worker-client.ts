@@ -23,6 +23,9 @@ import {
   type VisioSessionCommand,
   type VisioSessionResponse,
 } from "./visio-session-protocol.js";
+import type { SelectedPageWorkerTransport } from "./current-page-visio-adapter.js";
+import type { SelectedPageCaptureTransport } from "./current-page-selection-capture.js";
+import type { SelectedPageCaptureCommand } from "./visio-session-protocol.js";
 
 export interface VisioWorkerClientOptions {
   workerPath: string;
@@ -33,6 +36,7 @@ export interface VisioWorkerClientOptions {
   visible?: boolean;
   attachToRunning?: boolean;
   maxPersistentSessions?: number;
+  selectedPageSealingSecret?: string;
 }
 
 interface NormalizedFigurePlan {
@@ -129,6 +133,34 @@ export class VisioWorkerClient implements VisioExecutor {
 
   async close(): Promise<void> {
     await Promise.allSettled([...this.sessions.values()].map((session) => this.closeSession(session.identity)));
+  }
+
+  /** Creates a dedicated v3 JSON-lines channel. It deliberately does not share the v2 export session map. */
+  createSelectedPageTransport(): SelectedPageWorkerTransport & { close(): Promise<void> } {
+    return new PersistentSelectedPageWorkerTransport({
+      workerPath: this.options.workerPath,
+      workerArgs: this.workerArgs,
+      outputRoot: this.outputRoot,
+      mode: this.options.mode,
+      visible: true,
+      attachToRunning: true,
+      timeoutMs: this.timeoutMs,
+      selectedPageSealingSecret: this.options.selectedPageSealingSecret,
+    });
+  }
+
+  /** Creates an isolated, read-only v3 channel used only before a selected-page lease exists. */
+  createSelectedPageCaptureTransport(): SelectedPageCaptureTransport & { close(): Promise<void> } {
+    return new PersistentSelectedPageWorkerTransport({
+      workerPath: this.options.workerPath,
+      workerArgs: this.workerArgs,
+      outputRoot: this.outputRoot,
+      mode: this.options.mode,
+      visible: true,
+      attachToRunning: true,
+      timeoutMs: this.timeoutMs,
+      selectedPageSealingSecret: this.options.selectedPageSealingSecret,
+    });
   }
 
   private async executeOneShot(input: { jobId: string; diagram?: unknown }, options: { signal?: AbortSignal } = {}): Promise<{ path: string; readback: VisioReadback }> {
@@ -484,6 +516,84 @@ export function buildVisioWorkerArguments(options: {
     ...(options.visible ? ["--visible"] : []),
     ...(options.attachToRunning ? ["--attach-to-running"] : []),
   ];
+}
+
+class PersistentSelectedPageWorkerTransport implements SelectedPageWorkerTransport, SelectedPageCaptureTransport {
+  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly pending = new Map<string, { resolve(value: unknown): void; reject(error: FoundationError): void; timer: ReturnType<typeof setTimeout> }>();
+  private stdout = "";
+  private stderr = "";
+  private closed = false;
+
+  constructor(private readonly options: { workerPath: string; workerArgs: string[]; outputRoot: string; mode: "mock" | "live"; visible: boolean; attachToRunning: boolean; timeoutMs: number; selectedPageSealingSecret?: string }) {
+    this.child = spawn(options.workerPath, buildVisioWorkerArguments(options), {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env: options.selectedPageSealingSecret
+        ? { ...process.env, SYNAPSE_SELECTED_PAGE_SEALING_SECRET: options.selectedPageSealingSecret }
+        : process.env,
+    });
+    this.child.stdout.setEncoding("utf8");
+    this.child.stderr.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk: string) => this.receive(chunk));
+    this.child.stderr.on("data", (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-MAX_SESSION_STDIO_BYTES); });
+    this.child.once("error", (error) => this.failAll("Selected-page Worker could not be started", { cause: error.message }));
+    this.child.stdin.on("error", (error) => this.failAll("Selected-page Worker input could not be written", { cause: error.message }));
+    this.child.once("close", (code) => {
+      this.closed = true;
+      if (this.pending.size) this.failAll("Selected-page Worker ended before all commands completed", { exitCode: code, stderr: this.stderr.trim().slice(0, 2000) });
+    });
+  }
+
+  execute(command: SelectedPageVisioSessionCommand | SelectedPageCaptureCommand): Promise<unknown> {
+    if (this.closed) return Promise.reject(new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Selected-page Worker is closed", 502));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(command.requestId);
+        const error = new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Selected-page Worker command timed out", 504, { requestId: command.requestId, timeoutMs: this.options.timeoutMs });
+        reject(error);
+        void this.close();
+      }, this.options.timeoutMs);
+      this.pending.set(command.requestId, { resolve, reject, timer });
+      this.child.stdin.write(`${JSON.stringify(command)}\n`, (error) => {
+        if (error) this.failAll("Selected-page Worker input could not be written", { cause: error.message });
+      });
+    });
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.child.stdin.end();
+    await new Promise<void>((resolve) => this.child.once("close", () => resolve()));
+  }
+
+  private receive(chunk: string): void {
+    this.stdout += chunk;
+    if (this.stdout.length > MAX_SESSION_STDIO_BYTES) return this.failAll("Selected-page Worker stdout exceeded the limit");
+    let newline: number;
+    while ((newline = this.stdout.indexOf("\n")) >= 0) {
+      const line = this.stdout.slice(0, newline).trim();
+      this.stdout = this.stdout.slice(newline + 1);
+      if (!line) continue;
+      let response: { requestId?: unknown };
+      try { response = JSON.parse(line) as { requestId?: unknown }; }
+      catch (error) { return this.failAll("Selected-page Worker returned invalid JSON", { cause: error instanceof Error ? error.message : String(error) }); }
+      if (typeof response.requestId !== "string") return this.failAll("Selected-page Worker response has no request ID");
+      const pending = this.pending.get(response.requestId);
+      if (!pending) return this.failAll("Selected-page Worker returned an unknown response", { requestId: response.requestId });
+      this.pending.delete(response.requestId);
+      clearTimeout(pending.timer);
+      pending.resolve(response);
+    }
+  }
+
+  private failAll(message: string, details: Record<string, unknown> = {}): void {
+    const error = new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, message, 502, details);
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+    this.pending.clear();
+    if (!this.child.killed) this.child.kill();
+  }
 }
 
 export function normalizeVisioDiagram(value: unknown): NormalizedVisioDiagram {

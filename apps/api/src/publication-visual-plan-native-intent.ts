@@ -6,8 +6,20 @@ import { parsePublicationVisualPlan, type PublicationVisualPlan } from "./public
 import { evaluatePublicationVisualPlanQa } from "./publication-visual-plan-qa.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
-const ID = /^[A-Za-z][A-Za-z0-9._:-]*$/;
+const STRUCTURAL_ID = /^[A-Za-z][A-Za-z0-9._:-]*$/;
+const AUTHENTICATED_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SHAPE_KINDS = new Map<string, NativeShapeKind>([
+  ["InputTerminal", "terminal"],
+  ["OutputTerminal", "terminal"],
+  ["TensorStage", "module"],
+  ["TensorVolume", "module"],
+  ["OperatorFrame", "module"],
+  ["ModuleFrame", "module"],
+  ["SplitMarker", "split"],
+  ["AddMarker", "merge-add"],
+  ["ConcatMarker", "merge-concat"],
+  ["AttentionTokenStrip", "module"],
+  ["AttentionRelation", "module"],
   ["Input", "terminal"],
   ["Output", "terminal"],
   ["GenericModule", "module"],
@@ -241,11 +253,11 @@ function parseUpdateIdentity(value: unknown): PublicationVisualNativeIntent["upd
   const expectedRevision = identity.expectedRevision;
   if (!integer(expectedRevision) || expectedRevision <= 0) throw new Error("PVP native expected revision is invalid");
   return {
-    ownerId: identifier(identity.ownerId, "PVP native owner ID is invalid"),
-    deviceId: identifier(identity.deviceId, "PVP native device ID is invalid"),
-    workflowId: identifier(identity.workflowId, "PVP native workflow ID is invalid"),
-    documentId: identifier(identity.documentId, "PVP native document ID is invalid"),
-    pageId: identifier(identity.pageId, "PVP native page ID is invalid"),
+    ownerId: authenticatedIdentifier(identity.ownerId, "PVP native owner ID is invalid"),
+    deviceId: authenticatedIdentifier(identity.deviceId, "PVP native device ID is invalid"),
+    workflowId: authenticatedIdentifier(identity.workflowId, "PVP native workflow ID is invalid"),
+    documentId: authenticatedIdentifier(identity.documentId, "PVP native document ID is invalid"),
+    pageId: authenticatedIdentifier(identity.pageId, "PVP native page ID is invalid"),
     expectedRevision,
   };
 }
@@ -272,7 +284,7 @@ function bounds(value: unknown, message: string): NativeIntentBounds {
 }
 
 function styleTokenIds(value: unknown): readonly string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !ID.test(item))) throw new Error("PVP native style token IDs are invalid");
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !STRUCTURAL_ID.test(item))) throw new Error("PVP native style token IDs are invalid");
   return [...value];
 }
 
@@ -284,7 +296,13 @@ function label(value: unknown): string {
 
 function identifier(value: unknown, message: string): string {
   const result = stringValue(value, message);
-  if (!ID.test(result) || result.length > 192) throw new Error(message);
+  if (!STRUCTURAL_ID.test(result) || result.length > 192) throw new Error(message);
+  return result;
+}
+
+function authenticatedIdentifier(value: unknown, message: string): string {
+  const result = stringValue(value, message);
+  if (!AUTHENTICATED_ID.test(result) || result.length > 192) throw new Error(message);
   return result;
 }
 

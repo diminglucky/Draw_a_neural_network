@@ -2,6 +2,8 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiErrorCode } from "../src/domain.js";
+import { CurrentPageVisioAdapter } from "../src/current-page-visio-adapter.js";
+import { CurrentPageSelectionCapture } from "../src/current-page-selection-capture.js";
 import { buildSelectedPageVisioSessionCommands, buildVisioWorkerArguments, normalizeVisioDiagram, VisioWorkerClient } from "../src/visio-worker-client.js";
 import { createSelectedPageSealedPlan } from "../src/visio-universal-protocol.js";
 import { completeVisioReadback } from "./fixtures/visio-readback.js";
@@ -43,6 +45,17 @@ afterEach(async () => {
 });
 
 describe("VisioWorkerClient", () => {
+  it("uses a dedicated Worker channel to capture the current page before any drawing binding exists", async () => {
+    const workerScript = path.join(process.cwd(), "apps/api/tests/fixtures/visio-worker-v3-session-fake.mjs");
+    const client = new VisioWorkerClient({ workerPath: process.execPath, workerArgs: [workerScript], outputRoot, mode: "live", timeoutMs: 10_000 });
+
+    const result = await new CurrentPageSelectionCapture(client.createSelectedPageCaptureTransport(), () => "request-capture").capture({ tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", workflowId: "workflow-1" });
+
+    expect(result).toMatchObject({ status: "captured", target: { documentId: "document-captured", pageId: "page-captured", expectedRevision: 0 } });
+    await waitFor(async () => (await readSessionTrace()).some((entry) => entry.event === "eof"));
+    expect((await readSessionTrace()).filter((entry) => typeof entry.command === "string").map((entry) => entry.command)).toEqual(["captureSelectedPage"]);
+  });
+
   it("builds only the sealed selected-page command sequence and rejects a mismatched binding", () => {
     const binding = {
       jobId: "job-1",
@@ -73,6 +86,119 @@ describe("VisioWorkerClient", () => {
       sealedPlanSecret,
       now: new Date("2026-08-24T12:00:00.000Z"),
     })).toThrow(/pageId|binding/i);
+  });
+
+  it("keeps every selected-page command in one Worker process and releases it after the verified readback", async () => {
+    const workerScript = path.join(process.cwd(), "apps/api/tests/fixtures/visio-worker-v3-session-fake.mjs");
+    const client = new VisioWorkerClient({
+      workerPath: process.execPath,
+      workerArgs: [workerScript],
+      outputRoot,
+      mode: "live",
+      visible: true,
+      timeoutMs: 10_000,
+    });
+    const binding = {
+      jobId: "job-v3-transport-1",
+      tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", workflowId: "workflow-1",
+      documentId: "document-1", pageId: "page-1", documentFingerprint: "a".repeat(64), pageFingerprint: "b".repeat(64),
+      expectedRevision: 4, ownershipNamespace: "agent-region-1",
+    };
+    const secret = "selected-page-v3-transport-test-secret";
+    const sealedNativeIntent = createSelectedPageSealedPlan({
+      ...binding,
+      planId: "plan-v3-1",
+      canonicalPlanBytes: Buffer.from('{"version":"pvp-native-intent-1"}', "utf8"),
+      expiresAt: "2030-08-24T12:00:00.000Z",
+    }, secret);
+
+    const result = await new CurrentPageVisioAdapter(client.createSelectedPageTransport()).draw({
+      binding,
+      sealedNativeIntent,
+      sealedPlanSecret: secret,
+      now: new Date("2026-08-24T12:00:00.000Z"),
+      requestIdFactory: (suffix) => `request-v3-${suffix}`,
+    });
+
+    expect(result.status).toBe("succeeded");
+    await waitFor(async () => (await readSessionTrace()).some((entry) => entry.event === "eof"));
+    const trace = await readSessionTrace();
+    expect(trace.filter((entry) => typeof entry.command === "string").map((entry) => entry.command)).toEqual([
+      "attachSelectedPage", "applyOwnedRegion", "saveSelectedDocument", "readSelectedPage", "closeSession",
+    ]);
+    expect(new Set(trace.filter((entry) => typeof entry.command === "string").map((entry) => entry.pid))).toEqual(new Set([trace[0]?.pid]));
+  });
+
+  it("releases the selected-page Worker without applying when Visio is waiting for a user-selected page", async () => {
+    const workerScript = path.join(process.cwd(), "apps/api/tests/fixtures/visio-worker-v3-session-fake.mjs");
+    const client = new VisioWorkerClient({
+      workerPath: process.execPath,
+      workerArgs: [workerScript, "--waiting-for-selected-page"],
+      outputRoot,
+      mode: "live",
+      visible: true,
+      timeoutMs: 10_000,
+    });
+    const binding = {
+      jobId: "job-v3-waiting-1",
+      tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", workflowId: "workflow-1",
+      documentId: "document-1", pageId: "page-1", documentFingerprint: "a".repeat(64), pageFingerprint: "b".repeat(64),
+      expectedRevision: 4, ownershipNamespace: "agent-region-1",
+    };
+    const secret = "selected-page-v3-waiting-test-secret";
+    const sealedNativeIntent = createSelectedPageSealedPlan({
+      ...binding,
+      planId: "plan-v3-waiting-1",
+      canonicalPlanBytes: Buffer.from('{"version":"pvp-native-intent-1"}', "utf8"),
+      expiresAt: "2030-08-24T12:00:00.000Z",
+    }, secret);
+
+    await expect(new CurrentPageVisioAdapter(client.createSelectedPageTransport()).draw({
+      binding,
+      sealedNativeIntent,
+      sealedPlanSecret: secret,
+      now: new Date("2026-08-24T12:00:00.000Z"),
+      requestIdFactory: (suffix) => `request-v3-waiting-${suffix}`,
+    })).resolves.toEqual({ status: "waiting_for_selected_page" });
+
+    await waitFor(async () => (await readSessionTrace()).some((entry) => entry.event === "eof"));
+    expect((await readSessionTrace()).filter((entry) => typeof entry.command === "string").map((entry) => entry.command)).toEqual(["attachSelectedPage"]);
+  });
+
+  it("fails closed and releases the selected-page Worker when attach times out", async () => {
+    const workerScript = path.join(process.cwd(), "apps/api/tests/fixtures/visio-worker-v3-session-fake.mjs");
+    const client = new VisioWorkerClient({
+      workerPath: process.execPath,
+      workerArgs: [workerScript, "--hang-on-attach"],
+      outputRoot,
+      mode: "live",
+      visible: true,
+      timeoutMs: 50,
+    });
+    const binding = {
+      jobId: "job-v3-timeout-1",
+      tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", workflowId: "workflow-1",
+      documentId: "document-1", pageId: "page-1", documentFingerprint: "a".repeat(64), pageFingerprint: "b".repeat(64),
+      expectedRevision: 4, ownershipNamespace: "agent-region-1",
+    };
+    const secret = "selected-page-v3-timeout-test-secret";
+    const sealedNativeIntent = createSelectedPageSealedPlan({
+      ...binding,
+      planId: "plan-v3-timeout-1",
+      canonicalPlanBytes: Buffer.from('{"version":"pvp-native-intent-1"}', "utf8"),
+      expiresAt: "2030-08-24T12:00:00.000Z",
+    }, secret);
+
+    await expect(new CurrentPageVisioAdapter(client.createSelectedPageTransport()).draw({
+      binding,
+      sealedNativeIntent,
+      sealedPlanSecret: secret,
+      now: new Date("2026-08-24T12:00:00.000Z"),
+      requestIdFactory: (suffix) => `request-v3-timeout-${suffix}`,
+    })).rejects.toMatchObject({ code: ApiErrorCode.VISIO_EXECUTION_FAILED, statusCode: 504, message: "Selected-page Worker command timed out" });
+
+    await waitFor(async () => (await readSessionTrace()).some((entry) => entry.event === "eof"));
+    expect((await readSessionTrace()).filter((entry) => typeof entry.command === "string").map((entry) => entry.command)).toEqual(["attachSelectedPage"]);
   });
 
   it("passes live visibility and attach flags to the Worker process", () => {

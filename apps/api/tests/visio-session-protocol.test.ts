@@ -3,6 +3,8 @@ import {
   SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
   VISIO_SESSION_PROTOCOL_VERSION,
   parseVisioSessionCommand,
+  parseSelectedPageCaptureCommand,
+  parseSelectedPageCaptureResponse,
   parseSelectedPageVisioSessionCommand,
   parseSelectedPageVisioSessionResponse,
 } from "../src/visio-session-protocol.js";
@@ -42,6 +44,34 @@ function attachCommand(requestId = "request-1") {
 }
 
 describe("selected-current-page Visio session protocol", () => {
+  it("permits a read-only selection capture with no client-supplied target and requires a Worker-captured target on success", () => {
+    const command = parseSelectedPageCaptureCommand({
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: "request-capture",
+      command: "captureSelectedPage",
+    });
+    expect(command.command).toBe("captureSelectedPage");
+    expect(() => parseSelectedPageCaptureCommand({ ...command, binding })).toThrow(/unrecognized|binding/i);
+
+    expect(parseSelectedPageCaptureResponse({
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: "request-capture",
+      status: "succeeded",
+      capturedTarget: {
+        documentId: binding.documentId,
+        pageId: binding.pageId,
+        documentFingerprint: binding.documentFingerprint,
+        pageFingerprint: binding.pageFingerprint,
+        expectedRevision: 0,
+      },
+    }, command)).toMatchObject({ status: "succeeded", requestId: "request-capture" });
+    expect(() => parseSelectedPageCaptureResponse({
+      protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+      requestId: "request-capture",
+      status: "succeeded",
+    }, command)).toThrow(/capturedTarget/i);
+  });
+
   it("retains the legacy v2 parser without allowing it to masquerade as v3", () => {
     expect(parseVisioSessionCommand({
       protocolVersion: VISIO_SESSION_PROTOCOL_VERSION,

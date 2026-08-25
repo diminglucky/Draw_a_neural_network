@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { ApiErrorCode, FoundationError, type FigureDraft, type FigureDraftRevision, type User } from "./domain.js";
+import { ApiErrorCode, FoundationError, type AuditRecord, type FigureDraft, type FigureDraftRevision, type User } from "./domain.js";
 import { AdminService } from "./admin-service.js";
 import { JobService } from "./job-service.js";
 import { SessionService } from "./session-service.js";
@@ -25,7 +25,13 @@ import { compileUniversalInputToPublicationPreview, type LegacyUniversalPreviewI
 import { projectPublicationVisualPlanPreview, type PublicationVisualPlanPreview } from "./publication-visual-plan-preview.js";
 import { DrawingRunError } from "./drawing-run/errors.js";
 import type { DrawingRunCoordinator } from "./drawing-run/coordinator.js";
+import type { SelectedPageDrawingJob } from "./selected-page-drawing-job.js";
+import type { SelectedPageLeaseService } from "./selected-page-lease.js";
+import { confirmedPreviewHashForSnapshot, type GenericPlanSnapshotStore } from "./generic-plan-snapshot-store.js";
+import type { SelectedPagePreviewReviewService } from "./selected-page-preview-review.js";
+import { parseSelectedPageVisioReadback } from "./visio-readback.js";
 import type { DrawingIntent } from "./drawing-run/contracts.js";
+import { reconstructDrawingRunState } from "./drawing-run/reducer.js";
 import {
   assertReceiptKindAndMime,
   PRIVATE_RECEIPT_MAX_BYTES,
@@ -117,6 +123,10 @@ interface RouteOptions {
   figureAnalysisPreviewService: FigureAnalysisPreviewServiceImpl;
   drawingRunCoordinator: DrawingRunCoordinator;
   privateReceiptStore: PrivateReceiptStore;
+  selectedPageLeaseService?: Pick<SelectedPageLeaseService, "capture">;
+  selectedPageDrawingJob?: Pick<SelectedPageDrawingJob, "draw">;
+  selectedPagePreviewReviewService?: Pick<SelectedPagePreviewReviewService, "confirm">;
+  genericPlanSnapshotStore?: Pick<GenericPlanSnapshotStore, "getByConfirmedPreviewHash">;
 }
 
 function body(request: FastifyRequest): Record<string, any> {
@@ -987,12 +997,165 @@ function drawingRunCommandInput(request: FastifyRequest, runId: string, expected
   return { runId, expectedRevision: expectedRevisionValue, idempotencyKey: idempotencyKey(request) };
 }
 
+function derivedDrawingRunIdempotencyKey(parent: string, stage: "discover" | "bind" | "readback" | "worker-failure"): string {
+  return `selected-page:${stage}:${createHash("sha256").update(JSON.stringify([parent, stage]), "utf8").digest("hex")}`;
+}
+
+function selectedPageIdentityDigest(parts: readonly unknown[]): string {
+  return createHash("sha256").update(JSON.stringify(parts), "utf8").digest("hex");
+}
+
+function selectedPageConflict(message: string): FoundationError {
+  return new FoundationError("DRAWING_RUN_REVISION_CONFLICT", message, 409);
+}
+
+async function requireConfirmedSelectedPagePreview(
+  options: RouteOptions,
+  owner: { tenantId: string; userId: string; deviceId: string },
+  workflowId: string,
+  expectedUgsHash: string,
+  pendingPreviewHash: string,
+) {
+  if (!options.genericPlanSnapshotStore) throw selectedPageRouteUnavailable();
+  const snapshot = await options.genericPlanSnapshotStore.getByConfirmedPreviewHash(owner, pendingPreviewHash);
+  const updateIdentity = snapshot ? record(snapshot.publicationVisualPlan.updateIdentity) : null;
+  if (!snapshot
+    || snapshot.tenantId !== owner.tenantId
+    || snapshot.userId !== owner.userId
+    || snapshot.deviceId !== owner.deviceId
+    || snapshot.ugsCanonicalHash !== expectedUgsHash
+    || confirmedPreviewHashForSnapshot(snapshot) !== pendingPreviewHash
+    || updateIdentity?.ownerId !== owner.userId
+    || updateIdentity.deviceId !== owner.deviceId
+    || updateIdentity.workflowId !== workflowId
+    || updateIdentity.documentId !== "browser-preview"
+    || updateIdentity.pageId !== "browser-preview"
+    || updateIdentity.expectedRevision !== snapshot.ugsRevision) {
+    throw selectedPageConflict("Selected-page preview has not been confirmed for this Drawing Run");
+  }
+  const confirmationAudit = await options.store.getAuditRecord(selectedPageConfirmationAuditId("confirmed", owner, workflowId, pendingPreviewHash));
+  const confirmationMetadata = confirmationAudit ? record(confirmationAudit.metadata) : null;
+  const snapshotLocator = confirmationMetadata ? record(confirmationMetadata.snapshotLocator) : null;
+  if (!confirmationAudit
+    || confirmationAudit.actorType !== "user"
+    || confirmationAudit.actorId !== owner.userId
+    || confirmationAudit.action !== "drawing-run.selected-page-preview.confirmed"
+    || confirmationAudit.targetType !== "drawing-run"
+    || confirmationAudit.targetId !== workflowId
+    || confirmationMetadata?.pendingPreviewHash !== pendingPreviewHash
+    || confirmationMetadata.expectedUgsHash !== expectedUgsHash
+    || confirmationMetadata.promotedPlanHash !== snapshot.publicationVisualPlanHash
+    || snapshotLocator?.graphId !== snapshot.graphId
+    || snapshotLocator.ugsRevision !== snapshot.ugsRevision
+    || snapshotLocator.snapshotId !== snapshot.snapshotId) {
+    throw selectedPageConflict("Selected-page confirmation audit does not match the immutable snapshot");
+  }
+  return snapshot;
+}
+
+function selectedPageConfirmationAuditId(
+  kind: "request" | "confirmed",
+  owner: { userId: string; deviceId: string },
+  runId: string,
+  discriminator: string,
+): string {
+  return `selected-page-${kind}-${selectedPageIdentityDigest([owner.userId, owner.deviceId, runId, discriminator]).slice(0, 48)}`;
+}
+
+function assertSelectedPageConfirmationAudit(
+  audit: AuditRecord,
+  expected: {
+    action: "drawing-run.selected-page-preview.requested" | "drawing-run.selected-page-preview.confirmed";
+    userId: string;
+    runId: string;
+    requestHash: string;
+  },
+): void {
+  const metadata = record(audit.metadata);
+  if (audit.actorType !== "user"
+    || audit.actorId !== expected.userId
+    || audit.action !== expected.action
+    || audit.targetType !== "drawing-run"
+    || audit.targetId !== expected.runId
+    || metadata?.requestHash !== expected.requestHash) {
+    throw new DrawingRunError("DRAWING_RUN_IDEMPOTENCY_CONFLICT", "Selected-page preview confirmation key was reused for a different request");
+  }
+}
+
 function drawingRunError(error: unknown): FoundationError {
   if (!(error instanceof DrawingRunError)) {
     return error instanceof FoundationError ? error : new FoundationError(ApiErrorCode.VALIDATION_FAILED, "Drawing Run command failed", 400);
   }
   const statusCode = error.code === "DRAWING_RUN_REVISION_CONFLICT" || error.code === "DRAWING_RUN_IDEMPOTENCY_CONFLICT" ? 409 : 400;
   return new FoundationError(error.code, error.message, statusCode);
+}
+
+async function requireOwnedDrawingRun(
+  options: RouteOptions,
+  ownerId: string,
+  deviceId: string,
+  runId: string,
+): Promise<Awaited<ReturnType<DrawingRunCoordinator["get"]>> extends infer T ? Exclude<T, null> : never> {
+  const run = await options.drawingRunCoordinator.get(ownerId, runId, deviceId);
+  if (!run) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+  return run;
+}
+
+async function requireMatchingPersistedDrawingRun(
+  options: RouteOptions,
+  ownerId: string,
+  deviceId: string,
+  runId: string,
+  projected: { revision: number; status: string; preview: { artifactId: string; hash: string } | null },
+) {
+  const persisted = await options.store.getDrawingRun(ownerId, runId);
+  if (!persisted) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+  const current = reconstructDrawingRunState(persisted, { ownerId, deviceId, runId });
+  if (current.revision !== projected.revision
+    || current.status !== projected.status
+    || current.preview?.artifactId !== projected.preview?.artifactId
+    || current.preview?.hash !== projected.preview?.hash
+    || !current.formalUgsHash) {
+    throw selectedPageConflict("Drawing Run persisted source binding does not match its current state");
+  }
+  return current;
+}
+
+function selectedPageRouteUnavailable(): FoundationError {
+  return new FoundationError(ApiErrorCode.VISIO_EXECUTOR_NOT_CONFIGURED, "Selected-page Visio drawing is not configured", 503);
+}
+
+function selectedPageExecutionFailed(): FoundationError {
+  return new FoundationError(ApiErrorCode.VISIO_EXECUTION_FAILED, "Selected-page Visio drawing failed", 502);
+}
+
+function parseSuccessfulSelectedPageDrawingResult(value: unknown): {
+  trustedReadback: ReturnType<typeof parseSelectedPageVisioReadback>;
+  publicReadback: {
+    valid: true;
+    userOwnedShapeCount: number;
+    agentOwnedShapeCount: number;
+    sourceMappingSemanticIds: string[];
+  };
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw selectedPageExecutionFailed();
+  const result = value as Record<string, unknown>;
+  if (result.status !== "succeeded") throw selectedPageExecutionFailed();
+  let readback;
+  try {
+    readback = parseSelectedPageVisioReadback(result.readback);
+  } catch {
+    throw selectedPageExecutionFailed();
+  }
+  return {
+    trustedReadback: readback,
+    publicReadback: {
+      valid: true,
+      userOwnedShapeCount: readback.userOwnedShapeCount,
+      agentOwnedShapeCount: readback.agentOwnedShapes.length,
+      sourceMappingSemanticIds: [...new Set(readback.agentOwnedShapes.flatMap((shape) => shape.sourceMappingSemanticIds))].sort(),
+    },
+  };
 }
 
 function parseVisioExportBody(request: FastifyRequest): { diagram: Record<string, unknown>; idempotencyKey: string } {
@@ -1247,6 +1410,296 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
     }
   });
 
+  app.post("/api/drawing-runs/:runId/confirm-selected-page-preview", async (request, reply) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    if (!options.selectedPagePreviewReviewService) throw selectedPageRouteUnavailable();
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision"], "selected-page preview confirmation");
+    const commandInput = drawingRunCommandInput(request, runId, input.expectedRevision);
+    try {
+      const persisted = await options.store.getDrawingRun(access.user.id, runId);
+      if (!persisted) throw new FoundationError(ApiErrorCode.NOT_FOUND, "Drawing Run was not found", 404);
+      const current = reconstructDrawingRunState(persisted, {
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        runId,
+      });
+      if (current.revision !== commandInput.expectedRevision) {
+        throw new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run revision is stale");
+      }
+      if (current.intent.target !== "existing_visio_page"
+        || current.status !== "preview_ready"
+        || !current.preview
+        || !current.formalUgsHash
+        || current.preview.artifactId !== `preview:${current.preview.hash}`) {
+        throw selectedPageConflict("Drawing Run is not ready to confirm a selected-page preview");
+      }
+      const owner = {
+        tenantId: `tenant-${access.user.id}`,
+        userId: access.user.id,
+        deviceId: access.device.id,
+      };
+      const requestHash = selectedPageIdentityDigest([
+        owner.tenantId,
+        owner.userId,
+        owner.deviceId,
+        runId,
+        current.revision,
+        current.formalUgsHash,
+        current.preview.hash,
+      ]);
+      const confirmedAuditId = selectedPageConfirmationAuditId("confirmed", owner, runId, current.preview.hash);
+      const existingConfirmation = await options.store.getAuditRecord(confirmedAuditId);
+      if (existingConfirmation) {
+        assertSelectedPageConfirmationAudit(existingConfirmation, {
+          action: "drawing-run.selected-page-preview.confirmed",
+          userId: access.user.id,
+          runId,
+          requestHash,
+        });
+        await requireConfirmedSelectedPagePreview(options, owner, runId, current.formalUgsHash, current.preview.hash);
+        return reply.code(200).send({ status: "confirmed", runId, revision: current.revision });
+      }
+      const requestAudit = await options.store.createAuditRecordIfAbsent({
+        id: selectedPageConfirmationAuditId("request", owner, runId, commandInput.idempotencyKey),
+        actorType: "user",
+        actorId: access.user.id,
+        action: "drawing-run.selected-page-preview.requested",
+        targetType: "drawing-run",
+        targetId: runId,
+        reason: null,
+        metadata: {
+          requestHash,
+          runId,
+          revision: current.revision,
+          pendingPreviewHash: current.preview.hash,
+          expectedUgsHash: current.formalUgsHash,
+          idempotencyDigest: selectedPageIdentityDigest([
+            access.user.id,
+            access.device.id,
+            runId,
+            commandInput.idempotencyKey,
+          ]),
+        },
+        createdAt: new Date().toISOString(),
+      });
+      assertSelectedPageConfirmationAudit(requestAudit.record, {
+        action: "drawing-run.selected-page-preview.requested",
+        userId: access.user.id,
+        runId,
+        requestHash,
+      });
+      const confirmation = await options.selectedPagePreviewReviewService.confirm({
+        owner,
+        workflowId: runId,
+        expectedUgsHash: current.formalUgsHash,
+        pendingPreviewHash: current.preview.hash,
+      });
+      const confirmedAudit = await options.store.createAuditRecordIfAbsent({
+        id: confirmedAuditId,
+        actorType: "user",
+        actorId: access.user.id,
+        action: "drawing-run.selected-page-preview.confirmed",
+        targetType: "drawing-run",
+        targetId: runId,
+        reason: null,
+        metadata: {
+          requestHash,
+          runId,
+          revision: current.revision,
+          pendingPreviewHash: current.preview.hash,
+          expectedUgsHash: current.formalUgsHash,
+          promotedPlanHash: confirmation.snapshot.publicationVisualPlanHash,
+          snapshotLocator: {
+            graphId: confirmation.snapshot.graphId,
+            ugsRevision: confirmation.snapshot.ugsRevision,
+            snapshotId: confirmation.snapshot.snapshotId,
+          },
+          replayed: confirmation.replayed,
+          reviewerId: confirmation.decision.reviewerId,
+          reviewedAt: confirmation.decision.reviewedAt,
+          idempotencyDigest: selectedPageIdentityDigest([
+            access.user.id,
+            access.device.id,
+            runId,
+            commandInput.idempotencyKey,
+          ]),
+        },
+        createdAt: new Date().toISOString(),
+      });
+      assertSelectedPageConfirmationAudit(confirmedAudit.record, {
+        action: "drawing-run.selected-page-preview.confirmed",
+        userId: access.user.id,
+        runId,
+        requestHash,
+      });
+      return reply.code(confirmedAudit.created && !confirmation.replayed ? 201 : 200).send({
+        status: "confirmed",
+        runId,
+        revision: current.revision,
+      });
+    } catch (error) {
+      if (error instanceof DrawingRunError) throw drawingRunError(error);
+      if (error instanceof FoundationError) throw error;
+      throw selectedPageConflict("Selected-page preview confirmation failed");
+    }
+  });
+
+  app.post("/api/drawing-runs/:runId/selected-page-lease", async (request, reply) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    if (!options.selectedPageLeaseService) throw selectedPageRouteUnavailable();
+    const current = await requireOwnedDrawingRun(options, access.user.id, access.device.id, runId);
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision"], "selected-page lease");
+    const commandInput = drawingRunCommandInput(request, runId, input.expectedRevision);
+    if (current.revision !== commandInput.expectedRevision) {
+      throw drawingRunError(new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run revision is stale"));
+    }
+    if (current.status !== "preview_ready" || !current.allowedActions.includes("discover_page_target") || !current.preview) {
+      throw selectedPageConflict("Drawing Run is not ready to bind a selected page");
+    }
+    const persisted = await requireMatchingPersistedDrawingRun(options, access.user.id, access.device.id, runId, current);
+    await requireConfirmedSelectedPagePreview(options, {
+      tenantId: `tenant-${access.user.id}`,
+      userId: access.user.id,
+      deviceId: access.device.id,
+    }, runId, persisted.formalUgsHash!, current.preview.hash);
+    try {
+      const result = await options.selectedPageLeaseService.capture({
+        tenantId: `tenant-${access.user.id}`,
+        userId: access.user.id,
+        deviceId: access.device.id,
+        workflowId: runId,
+      });
+      if (result.status !== "issued") return reply.send(result);
+      const identity = selectedPageIdentityDigest([
+        access.user.id,
+        access.device.id,
+        runId,
+        result.leaseId,
+        result.expiresAt,
+      ]);
+      const discovered = await options.drawingRunCoordinator.discoverPageTarget({
+        ...commandInput,
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        idempotencyKey: derivedDrawingRunIdempotencyKey(commandInput.idempotencyKey, "discover"),
+        discoveryIdentity: `selected-page:${identity}`,
+      });
+      if (discovered.status !== "awaiting_page_binding" || discovered.revision !== commandInput.expectedRevision + 1) {
+        throw selectedPageConflict("Drawing Run did not enter selected-page binding");
+      }
+      const run = await options.drawingRunCoordinator.bindExistingPage({
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        runId,
+        expectedRevision: discovered.revision,
+        idempotencyKey: derivedDrawingRunIdempotencyKey(commandInput.idempotencyKey, "bind"),
+        pageTargetHandle: `selected-page:${identity}`,
+        ownedRegionId: `agent-region:${identity}`,
+      });
+      if (run.status !== "page_bound" || run.revision !== commandInput.expectedRevision + 2) {
+        throw selectedPageConflict("Drawing Run did not bind the selected page");
+      }
+      return reply.code(201).send({ ...result, run });
+    } catch (error) {
+      if (error instanceof DrawingRunError) throw drawingRunError(error);
+      if (error instanceof FoundationError) throw error;
+      throw selectedPageExecutionFailed();
+    }
+  });
+
+  app.post("/api/drawing-runs/:runId/apply-selected-page", async (request, reply) => {
+    const access = await requireUser(request, options);
+    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    if (!options.selectedPageDrawingJob || !options.genericPlanSnapshotStore) throw selectedPageRouteUnavailable();
+    const current = await requireOwnedDrawingRun(options, access.user.id, access.device.id, runId);
+    const input = body(request);
+    assertOnlyKeys(input, ["expectedRevision", "confirmationNonce", "leaseId"], "selected-page apply");
+    const commandInput = drawingRunCommandInput(request, runId, input.expectedRevision);
+    const confirmationNonce = requiredStringField(input.confirmationNonce, "confirmationNonce");
+    const leaseId = requiredIdentifierField(input.leaseId, "leaseId");
+    if (current.revision !== commandInput.expectedRevision) {
+      throw drawingRunError(new DrawingRunError("DRAWING_RUN_REVISION_CONFLICT", "Drawing Run revision is stale"));
+    }
+    if (current.status !== "page_bound" || !current.allowedActions.includes("request_apply") || !current.preview) {
+      throw selectedPageConflict("Drawing Run is not ready to apply the selected-page plan");
+    }
+    const persisted = await requireMatchingPersistedDrawingRun(options, access.user.id, access.device.id, runId, current);
+    const snapshot = await requireConfirmedSelectedPagePreview(options, {
+      tenantId: `tenant-${access.user.id}`,
+      userId: access.user.id,
+      deviceId: access.device.id,
+    }, runId, persisted.formalUgsHash!, current.preview.hash);
+    let applyingRevision: number | null = null;
+    try {
+      const boundConfirmationNonce = selectedPageIdentityDigest([
+        confirmationNonce,
+        leaseId,
+        snapshot.graphId,
+        snapshot.ugsRevision,
+        snapshot.snapshotId,
+        current.preview.hash,
+      ]);
+      const applyRequest = await options.drawingRunCoordinator.requestApply({
+        ...commandInput,
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        confirmationNonce: boundConfirmationNonce,
+      });
+      if (applyRequest.replayed) {
+        if (applyRequest.run.status === "applying" && applyRequest.run.revision === commandInput.expectedRevision + 1) {
+          return reply.code(202).send({ status: "applying", run: applyRequest.run });
+        }
+        throw selectedPageConflict("Drawing Run apply replay is no longer in flight");
+      }
+      const applying = applyRequest.run;
+      if (applying.status !== "applying" || applying.revision !== commandInput.expectedRevision + 1) {
+        throw selectedPageConflict("Drawing Run did not enter the applying state");
+      }
+      applyingRevision = applying.revision;
+      const result = await options.selectedPageDrawingJob.draw({
+        tenantId: `tenant-${access.user.id}`,
+        userId: access.user.id,
+        deviceId: access.device.id,
+        workflowId: runId,
+        leaseId,
+        graphId: snapshot.graphId,
+        ugsRevision: snapshot.ugsRevision,
+        snapshotId: snapshot.snapshotId,
+      });
+      const projected = parseSuccessfulSelectedPageDrawingResult(result);
+      const run = await options.drawingRunCoordinator.verifyReadback({
+        ownerId: access.user.id,
+        deviceId: access.device.id,
+        runId,
+        expectedRevision: applying.revision,
+        idempotencyKey: derivedDrawingRunIdempotencyKey(commandInput.idempotencyKey, "readback"),
+        readback: projected.trustedReadback,
+      });
+      if (run.status !== "readback_verified" || run.revision !== applying.revision + 1) {
+        throw selectedPageConflict("Drawing Run did not verify the selected-page readback");
+      }
+      return { status: "succeeded", run, readback: projected.publicReadback };
+    } catch (error) {
+      if (error instanceof DrawingRunError) throw drawingRunError(error);
+      if (applyingRevision !== null) {
+        await options.drawingRunCoordinator.fail({
+          ownerId: access.user.id,
+          deviceId: access.device.id,
+          runId,
+          expectedRevision: applyingRevision,
+          idempotencyKey: derivedDrawingRunIdempotencyKey(commandInput.idempotencyKey, "worker-failure"),
+          errorCategory: "worker",
+        }).catch(() => undefined);
+      }
+      if (error instanceof FoundationError) throw error;
+      throw selectedPageExecutionFailed();
+    }
+  });
+
   app.post("/api/drawing-runs/:runId/resume", async (request) => {
     const access = await requireUser(request, options);
     const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
@@ -1325,41 +1778,15 @@ export function registerRoutes(app: FastifyInstance, options: RouteOptions): voi
   });
 
   app.post("/api/drawing-runs/:runId/page-binding", async (request) => {
-    const access = await requireUser(request, options);
-    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
-    const input = body(request);
-    assertOnlyKeys(input, ["expectedRevision", "pageTargetHandle", "ownedRegionId"], "drawing run page binding");
-    const pageTargetHandle = requiredIdentifierField(input.pageTargetHandle, "pageTargetHandle");
-    const ownedRegionId = requiredIdentifierField(input.ownedRegionId, "ownedRegionId");
-    try {
-      return await options.drawingRunCoordinator.bindExistingPage({
-        ...drawingRunCommandInput(request, runId, input.expectedRevision),
-        ownerId: access.user.id,
-        deviceId: access.device.id,
-        pageTargetHandle,
-        ownedRegionId,
-      });
-    } catch (error) {
-      throw drawingRunError(error);
-    }
+    await requireUser(request, options);
+    requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    throw validationError("Browser-supplied page binding is retired; use selected-page-lease", { reason: "retired_endpoint" });
   });
 
   app.post("/api/drawing-runs/:runId/apply", async (request) => {
-    const access = await requireUser(request, options);
-    const runId = requiredIdentifierField((request.params as { runId: string }).runId, "runId");
-    const input = body(request);
-    assertOnlyKeys(input, ["expectedRevision", "confirmationNonce"], "drawing run apply");
-    const confirmationNonce = requiredStringField(input.confirmationNonce, "confirmationNonce");
-    try {
-      return await options.drawingRunCoordinator.requestApply({
-        ...drawingRunCommandInput(request, runId, input.expectedRevision),
-        ownerId: access.user.id,
-        deviceId: access.device.id,
-        confirmationNonce,
-      });
-    } catch (error) {
-      throw drawingRunError(error);
-    }
+    await requireUser(request, options);
+    requiredIdentifierField((request.params as { runId: string }).runId, "runId");
+    throw validationError("State-only apply is retired; use apply-selected-page", { reason: "retired_endpoint" });
   });
 
   app.post("/api/universal-figure-previews", async (request, reply) => {

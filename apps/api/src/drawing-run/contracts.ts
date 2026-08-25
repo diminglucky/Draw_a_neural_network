@@ -171,6 +171,10 @@ export interface AcceptDrawingInput extends DrawingRunCommandInput {
 
 export type ResumeDrawingRunInput = DrawingRunCommandInput;
 
+export interface DiscoverPageTargetInput extends DrawingRunCommandInput {
+  discoveryIdentity: string;
+}
+
 export interface AnswerClarificationInput extends DrawingRunCommandInput {
   clarificationId: string;
   answer: string;
@@ -183,6 +187,19 @@ export interface BindExistingPageInput extends DrawingRunCommandInput {
 
 export interface RequestDrawingApplyInput extends DrawingRunCommandInput {
   confirmationNonce: string;
+}
+
+export interface RequestDrawingApplyResult {
+  run: DrawingRunSnapshot;
+  replayed: boolean;
+}
+
+export interface VerifyDrawingReadbackInput extends DrawingRunCommandInput {
+  readback: unknown;
+}
+
+export interface FailDrawingRunInput extends DrawingRunCommandInput {
+  errorCategory: DrawingRunFailureCategory;
 }
 
 export type CancelDrawingRunInput = DrawingRunCommandInput;

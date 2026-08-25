@@ -604,4 +604,34 @@ describe("Drawing Run coordinator", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(calls).toBe(callsAtPreview);
   });
+
+  it("reports whether request_apply is a fresh transition or an idempotent replay", async () => {
+    const hash = "c".repeat(64);
+    const coordinator = new InMemoryDrawingRunCoordinator({ createRunId: () => "run-apply-replay" });
+    const started = await coordinator.start({
+      ownerId: "owner-1",
+      deviceId: "device-1",
+      idempotencyKey: "start-apply-replay",
+      intent: { ...intent, target: "existing_visio_page" },
+    });
+    const base = { ownerId: "owner-1", deviceId: "device-1", runId: started.runId };
+
+    await coordinator.acceptInput({ ...base, expectedRevision: 0, idempotencyKey: "accept-apply-replay", receiptIds: ["receipt-1"], artifactHash: hash });
+    await coordinator.dispatch({ ...base, expectedRevision: 1, idempotencyKey: "begin-apply-replay", type: "begin_analysis", policyHash: hash });
+    await coordinator.dispatch({ ...base, expectedRevision: 2, idempotencyKey: "candidate-apply-replay", type: "record_candidate", candidateHash: hash });
+    await coordinator.dispatch({ ...base, expectedRevision: 3, idempotencyKey: "formal-apply-replay", type: "formalize_ugs", ugsHash: hash });
+    await coordinator.dispatch({ ...base, expectedRevision: 4, idempotencyKey: "compose-apply-replay", type: "compose_pvp", ugsHash: hash });
+    await coordinator.dispatch({ ...base, expectedRevision: 5, idempotencyKey: "preview-apply-replay", type: "publish_preview", pvpHash: hash, qaHash: hash });
+    await coordinator.discoverPageTarget({ ...base, expectedRevision: 6, idempotencyKey: "discover-apply-replay", discoveryIdentity: "discovery-1" });
+    await coordinator.bindExistingPage({ ...base, expectedRevision: 7, idempotencyKey: "bind-apply-replay", pageTargetHandle: "target-1", ownedRegionId: "region-1" });
+
+    const command = { ...base, expectedRevision: 8, idempotencyKey: "request-apply-replay", confirmationNonce: "confirmation-1" };
+    const fresh = await coordinator.requestApply(command);
+    const replay = await coordinator.requestApply(command);
+
+    expect(fresh).toMatchObject({ replayed: false, run: { status: "applying", revision: 9 } });
+    expect(replay).toMatchObject({ replayed: true, run: { status: "applying", revision: 9 } });
+    await expect(coordinator.requestApply({ ...command, confirmationNonce: "confirmation-2" }))
+      .rejects.toMatchObject({ code: "DRAWING_RUN_IDEMPOTENCY_CONFLICT" });
+  });
 });

@@ -68,6 +68,8 @@ export interface FoundationStore {
   listJobs(): Promise<Job[]>;
   updateJob(job: Job): Promise<Job>;
   createAuditRecord(record: AuditRecord): Promise<AuditRecord>;
+  createAuditRecordIfAbsent(record: AuditRecord): Promise<{ record: AuditRecord; created: boolean }>;
+  getAuditRecord(id: string): Promise<AuditRecord | null>;
   listAuditRecords(): Promise<AuditRecord[]>;
   reserveAgentUsage(input: AgentUsageReservationInput): Promise<AgentUsageReservation | AgentUsageDuplicate | null>;
   finalizeAgentUsage(input: AgentUsageFinalizationInput): Promise<AgentUsageReservation | null>;
@@ -353,6 +355,19 @@ export class InMemoryFoundationStore implements FoundationStore {
   async createAuditRecord(record: AuditRecord): Promise<AuditRecord> {
     this.audits.push(record);
     return record;
+  }
+
+  async createAuditRecordIfAbsent(record: AuditRecord): Promise<{ record: AuditRecord; created: boolean }> {
+    const existing = this.audits.find((candidate) => candidate.id === record.id);
+    if (existing) return { record: structuredClone(existing), created: false };
+    const stored = structuredClone(record);
+    this.audits.push(stored);
+    return { record: structuredClone(stored), created: true };
+  }
+
+  async getAuditRecord(id: string): Promise<AuditRecord | null> {
+    const record = this.audits.find((candidate) => candidate.id === id);
+    return record ? structuredClone(record) : null;
   }
 
   async listAuditRecords(): Promise<AuditRecord[]> {

@@ -92,4 +92,25 @@ describe("Universal Visio Worker protocol", () => {
         .toThrow(/unrecognized|outputPath|create/i);
     }
   });
+
+  it("uses lowercase SHA-256 fields as the selected-page sealed-plan wire canonical form", () => {
+    const binding = {
+      jobId: "job-1", tenantId: "tenant-1", userId: "user-1", deviceId: "device-1", workflowId: "workflow-1",
+      documentId: "document-1", pageId: "page-1", documentFingerprint: "a".repeat(64), pageFingerprint: "b".repeat(64),
+      expectedRevision: 0, ownershipNamespace: "agent-region-1", planId: "plan-1",
+    };
+    const sealedPlan = createSelectedPageSealedPlan({
+      ...binding,
+      canonicalPlanBytes: Buffer.from("{}", "utf8"),
+      expiresAt: "2026-08-14T00:15:00.000Z",
+    }, "worker-secret");
+
+    expect(() => parseSelectedPageUniversalVisioWorkerRequest({
+      protocolVersion: 2,
+      requestId: "request-1",
+      jobId: binding.jobId,
+      mode: "mock",
+      sealedPlan: { ...sealedPlan, planHash: sealedPlan.planHash.toUpperCase() },
+    })).toThrow(/planHash|invalid/i);
+  });
 });

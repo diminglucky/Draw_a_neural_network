@@ -25,6 +25,7 @@ export class GenericPlanSnapshotService {
     const copied = structuredClone(input);
     const ugs = parseUniversalGraphSpec(copied.ugs);
     if (!Number.isSafeInteger(copied.ugsRevision) || copied.ugsRevision < 1) throw new Error("UGS revision is invalid");
+    if (copied.ugsRevision !== ugs.revision) throw new Error("Input UGS revision does not match parsed UGS revision");
     const graph = composeGeneralPublicationGraph(ugs, { detail: copied.graph.detail });
     if (digestGenericPlanSnapshotValue(copied.graph) !== digestGenericPlanSnapshotValue(graph)) throw new Error("General Publication Graph does not match canonical UGS projection");
     if (getUniversalGraphEligibility(ugs).preview !== "renderable" || graph.exportEligibility !== "eligible") throw new Error("UGS/GPG is not eligible for Snapshot");

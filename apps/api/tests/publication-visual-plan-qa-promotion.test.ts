@@ -38,6 +38,15 @@ describe("trusted PVP QA promotion", () => {
     expect(Object.isFrozen(promoted.decision)).toBe(true);
   });
 
+  it("accepts a numeric-leading stable reviewer ID from the trusted review service", () => {
+    const pending = formalPendingPlan();
+
+    expect(promotePublicationVisualPlanAfterTrustedReview({
+      plan: pending,
+      review: reviewFor(pending, { reviewerId: "9ef7d40a-d6b5-4c91-9d5a-05a597c9668f" }),
+    }).decision.reviewerId).toBe("9ef7d40a-d6b5-4c91-9d5a-05a597c9668f");
+  });
+
   it.each([
     ["candidate PVP", () => {
       const source = unknownDualStreamFusionUgs();

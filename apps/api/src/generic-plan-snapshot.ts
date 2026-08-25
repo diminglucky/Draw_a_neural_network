@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { parsePublicationVisualPlan, type PublicationVisualPlan } from "./publication-visual-plan.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
-const IDENTIFIER = /^[A-Za-z][A-Za-z0-9._:-]*$/;
+const AUTHENTICATED_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const STRUCTURAL_ID = /^[A-Za-z][A-Za-z0-9._:-]*$/;
 const DIGEST = /^[a-f0-9]{64}$/i;
 const INPUT_FIELDS = ["tenantId", "userId", "deviceId", "graphId", "ugsRevision", "ugsCanonicalHash", "generalPublicationGraphHash", "publicationVisualPlan", "createdAt"];
 const SNAPSHOT_FIELDS = ["version", "snapshotId", "tenantId", "userId", "deviceId", "graphId", "ugsRevision", "ugsCanonicalHash", "generalPublicationGraphHash", "publicationVisualPlanId", "publicationVisualPlanHash", "sourceHashes", "publicationVisualPlan", "createdAt", "immutable"];
@@ -93,10 +94,10 @@ function parseCreateInput(input: CreateGenericPlanSnapshotInput): CreateGenericP
   const copied = structuredClone(input) as unknown;
   const value = plainRecord(copied, "GenericPlanSnapshot input must be a plain object");
   assertExactKeys(value, INPUT_FIELDS, "GenericPlanSnapshot input");
-  assertIdentifier(value.tenantId, "tenantId");
-  assertIdentifier(value.userId, "userId");
-  assertIdentifier(value.deviceId, "deviceId");
-  assertIdentifier(value.graphId, "graphId");
+  assertAuthenticatedIdentifier(value.tenantId, "tenantId");
+  assertAuthenticatedIdentifier(value.userId, "userId");
+  assertAuthenticatedIdentifier(value.deviceId, "deviceId");
+  assertStructuralIdentifier(value.graphId, "graphId");
   if (!Number.isSafeInteger(value.ugsRevision) || (value.ugsRevision as number) <= 0) throw new Error("ugsRevision must be a positive safe integer");
   assertDigest(value.ugsCanonicalHash, "ugsCanonicalHash");
   assertDigest(value.generalPublicationGraphHash, "generalPublicationGraphHash");
@@ -165,8 +166,12 @@ function assertExactKeys(value: Record<string, unknown>, expected: readonly stri
   if (actual.length !== sortedExpected.length || actual.some((key, index) => key !== sortedExpected[index])) throw new Error(`${label} has unsupported fields`);
 }
 
-function assertIdentifier(value: unknown, field: string): void {
-  if (typeof value !== "string" || !IDENTIFIER.test(value) || value.length > 128) throw new Error(`${field} must be a stable identifier`);
+function assertAuthenticatedIdentifier(value: unknown, field: string): void {
+  if (typeof value !== "string" || !AUTHENTICATED_ID.test(value) || value.length > 128) throw new Error(`${field} must be a stable identifier`);
+}
+
+function assertStructuralIdentifier(value: unknown, field: string): void {
+  if (typeof value !== "string" || !STRUCTURAL_ID.test(value) || value.length > 128) throw new Error(`${field} must be a stable identifier`);
 }
 
 function assertDigest(value: unknown, field: string): void {

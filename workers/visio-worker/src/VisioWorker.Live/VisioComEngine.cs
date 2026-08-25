@@ -288,10 +288,24 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
     internal static void ConfigureAndDrawDocument(dynamic page, DiagramDocument document)
     {
+        ConfigureAndDraw(page, document, resizePage: true);
+    }
+
+    /// <summary>
+    /// Draws only the Agent-owned region on a user-selected existing page. Unlike export rendering,
+    /// this deliberately leaves the user's page dimensions and scale untouched.
+    /// </summary>
+    internal static void DrawSelectedPageRegion(dynamic page, DiagramDocument document)
+    {
+        ConfigureAndDraw(page, document, resizePage: false);
+    }
+
+    private static void ConfigureAndDraw(dynamic page, DiagramDocument document, bool resizePage)
+    {
         ArgumentNullException.ThrowIfNull(document);
         var figurePlan = document.FigurePlan;
         var pageHeight = figurePlan?.PageHeightInches ?? PageHeightInches;
-        TrySetPageSize(page, figurePlan?.PageWidthInches ?? 26, pageHeight);
+        if (resizePage) TrySetPageSize(page, figurePlan?.PageWidthInches ?? 26, pageHeight);
 
         if (figurePlan is null)
         {

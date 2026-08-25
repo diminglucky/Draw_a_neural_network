@@ -12,6 +12,8 @@ public sealed class WorkerHostLineProcessorOptions
     public bool Visible { get; init; }
     public bool AttachToRunning { get; init; }
     public IVisioSessionBackend? SessionBackend { get; init; }
+    public ISelectedPageSessionBackend? SelectedPageBackend { get; init; }
+    public string? SelectedPageSealingSecret { get; init; }
     public ISessionRecoveryManifestStore? ManifestStore { get; init; }
     public IWorkerClock? Clock { get; init; }
     public TimeSpan CheckpointInterval { get; init; } = TimeSpan.FromMinutes(15);
@@ -24,6 +26,7 @@ internal enum WorkerHostProtocol
 {
     V1,
     V2,
+    V3,
 }
 
 internal sealed record WorkerHostLineResult(WorkerHostProtocol Protocol, object Response);
@@ -40,6 +43,8 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
     private readonly WorkerHostLineProcessorOptions _options;
     private readonly WorkerRequestProcessor _v1Processor;
     private LongLivedWorkerRuntime? _v2Runtime;
+    private SelectedPageWorkerRuntime? _v3Runtime;
+    private IAsyncDisposable? _v3OwnedBackend;
     private IAsyncDisposable? _ownedEngine;
     private bool _disposed;
 
@@ -77,6 +82,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         {
             WorkerHostProtocol.V1 => new WorkerHostLineResult(WorkerHostProtocol.V1, await ProcessV1Async(line, cancellationToken).ConfigureAwait(false)),
             WorkerHostProtocol.V2 => new WorkerHostLineResult(WorkerHostProtocol.V2, await ProcessV2Async(line, cancellationToken).ConfigureAwait(false)),
+            WorkerHostProtocol.V3 => new WorkerHostLineResult(WorkerHostProtocol.V3, await ProcessV3Async(line, cancellationToken).ConfigureAwait(false)),
             _ => FailedV1Result(),
         };
     }
@@ -93,6 +99,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         try
         {
             if (_v2Runtime is not null) await _v2Runtime.DisposeAsync().ConfigureAwait(false);
+            if (_v3Runtime is not null) await _v3Runtime.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception error)
         {
@@ -102,6 +109,7 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         try
         {
             if (_ownedEngine is not null) await _ownedEngine.DisposeAsync().ConfigureAwait(false);
+            if (_v3OwnedBackend is not null) await _v3OwnedBackend.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception engineFailure) when (runtimeFailure is not null)
         {
@@ -109,6 +117,34 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
         }
 
         if (runtimeFailure is not null) throw runtimeFailure;
+    }
+
+    private async Task<SelectedPageWorkerResponse> ProcessV3Async(string line, CancellationToken cancellationToken)
+    {
+        SelectedPageWorkerRequest? request = null;
+        try
+        {
+            request = SelectedPageWorkerRequestParser.Parse(line);
+            return await (await GetOrCreateV3RuntimeAsync().ConfigureAwait(false)).ProcessAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception)
+        {
+            return new SelectedPageWorkerResponse(3, request?.RequestId ?? "unknown", "failed", Error: "Invalid or failed Worker v3 request.");
+        }
+    }
+
+    private Task<SelectedPageWorkerRuntime> GetOrCreateV3RuntimeAsync()
+    {
+        if (_v3Runtime is not null) return Task.FromResult(_v3Runtime);
+        var backend = _options.SelectedPageBackend;
+        var verifier = string.IsNullOrWhiteSpace(_options.SelectedPageSealingSecret) ? null : new SelectedPageSealedIntentVerifier(_options.SelectedPageSealingSecret);
+        if (backend is not null) return Task.FromResult(_v3Runtime = new SelectedPageWorkerRuntime(backend, verifier));
+        if (!_options.Mode.Equals("live", StringComparison.OrdinalIgnoreCase))
+            throw new WorkerProtocolException("Protocol v3 requires live mode or an injected selected-page backend.");
+        var created = new SelectedPageVisioComBackend(new VisioComEngineOptions(AttachToRunning: true, Visible: true, OutputRoot: _options.OutputRoot));
+        _v3OwnedBackend = created;
+        return Task.FromResult(_v3Runtime = new SelectedPageWorkerRuntime(created, verifier));
     }
 
     private async Task<WorkerResponse> ProcessV1Async(string line, CancellationToken cancellationToken)
@@ -262,6 +298,8 @@ public sealed class WorkerHostLineProcessor : IAsyncDisposable
 
         // Any numeric v2 marker stays in the strict v2 parser, even if another discriminator is malformed.
         // Every other duplicate is rejected before the case-insensitive legacy v1 deserializer can observe it.
+        if (discriminators.Any(value => value.ValueKind == JsonValueKind.Number && value.GetRawText() == "3"))
+            return new ProtocolClassification(WorkerHostProtocol.V3, RequiresSafeV1Failure: false);
         if (discriminators.Any(IsMathematicallyTwo))
             return new ProtocolClassification(WorkerHostProtocol.V2, RequiresSafeV1Failure: false);
         if (discriminators.Count != 1)

@@ -72,12 +72,54 @@ function storeReturning(snapshot: unknown): GenericPlanSnapshotStore {
   return {
     insert: async () => { throw new Error("insert is not expected"); },
     get: async () => snapshot as GenericPlanSnapshot,
+    getByPublicationVisualPlanHash: async () => snapshot as GenericPlanSnapshot,
+    getByConfirmedPreviewHash: async () => snapshot as GenericPlanSnapshot,
   };
 }
 
 describe("PublicationVisualPlan native intent", () => {
   it("exports no raw PublicationVisualPlan-to-native-intent entry point", () => {
     expect(nativeIntentModule).not.toHaveProperty("compilePublicationVisualPlanToNativeIntent");
+  });
+
+  it("flows numeric-leading authenticated and native binding identities through trusted review, snapshot storage, and compilation", async () => {
+    const numericOwner = {
+      tenantId: "1b5a4fa9-4d91-4f3f-b9b2-5d1aee9a4162",
+      userId: "7f9a7a9e-1bce-44a8-bf2c-1f2a9cd8d70a",
+      deviceId: "4e5b1c57-99cf-4d1f-9d12-8c2a6d5f4e40",
+    };
+    const numericUpdateIdentity = {
+      ownerId: numericOwner.userId,
+      deviceId: numericOwner.deviceId,
+      workflowId: "3ca58d96-4c6d-4a79-a8d2-9d8db9cf0be2",
+      documentId: "5d8a8ac9-2b4c-4e8d-84a1-11c1d8b5d0f3",
+      pageId: "6e1e866c-0b1b-4f66-8d60-4178be0f0cab",
+      expectedRevision: 1,
+    };
+    const ugs = parseUniversalGraphSpec(unknownCustomSpatialBackboneUgs());
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const pending = compilePublicationVisualPlan({ ugs, graph, updateIdentity: numericUpdateIdentity });
+    const plan = promotePublicationVisualPlanAfterTrustedReview({
+      plan: pending,
+      review: { authority: "trusted-human", reviewerId: "9ef7d40a-d6b5-4c91-9d5a-05a597c9668f", reviewedAt: "2026-08-21T12:00:00.000Z", approval: "approved", expectedPlanHash: pending.identity.canonicalHash },
+    }).plan;
+    const snapshots = new InMemoryGenericPlanSnapshotStore();
+    const snapshot = await new GenericPlanSnapshotService({ store: snapshots }).create({
+      owner: numericOwner,
+      ugsRevision: ugs.revision,
+      ugs,
+      graph,
+      publicationVisualPlan: plan,
+      createdAt: "2026-08-21T12:00:00.000Z",
+    });
+
+    await expect(snapshots.get(numericOwner, snapshot.graphId, snapshot.ugsRevision, snapshot.snapshotId)).resolves.toEqual(snapshot);
+    await expect(new PublicationVisualNativeIntentService({ snapshotStore: snapshots }).compile({
+      owner: numericOwner,
+      graphId: snapshot.graphId,
+      ugsRevision: snapshot.ugsRevision,
+      snapshotId: snapshot.snapshotId,
+    })).resolves.toMatchObject({ updateIdentity: numericUpdateIdentity });
   });
 
   it.each(fixtureFamilies)("maps trusted zero-template %s Snapshots deterministically through the allowlist", async (_name, creator) => {

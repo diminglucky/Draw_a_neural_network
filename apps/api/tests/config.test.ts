@@ -22,6 +22,7 @@ describe("storage configuration", () => {
       VISIO_MAX_CONCURRENCY: "2",
       VISIO_VISIBLE: "true",
       VISIO_ATTACH_TO_RUNNING: "true",
+      SYNAPSE_SELECTED_PAGE_SEALING_SECRET: "selected-page-sealing-secret-at-least-32",
     })).toMatchObject({
       visioWorkerPath: "C:\\tools\\visio-worker.exe",
       visioOutputRoot: "C:\\exports",
@@ -30,7 +31,20 @@ describe("storage configuration", () => {
       visioMaxConcurrency: 2,
       visioVisible: true,
       visioAttachToRunning: true,
+      selectedPageSealingSecret: "selected-page-sealing-secret-at-least-32",
     });
+  });
+
+  it("keeps selected-page drawing disabled when its distinct production secret is absent", () => {
+    expect(loadConfig({
+      NODE_ENV: "production",
+      STORAGE_DRIVER: "postgres",
+      DATABASE_URL: "postgres://synapse:secret@127.0.0.1:5432/synapse",
+      SESSION_SECRET: "production-session-secret-production-secret",
+      VISIO_WORKER_PATH: "C:\\tools\\visio-worker.exe",
+      VISIO_OUTPUT_ROOT: "C:\\exports",
+      VISIO_WORKER_MODE: "live",
+    }).selectedPageSealingSecret).toBeUndefined();
   });
 
   it("defaults Visio execution to mock mode with a bounded timeout", () => {

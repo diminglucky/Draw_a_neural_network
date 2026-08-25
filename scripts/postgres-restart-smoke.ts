@@ -6,8 +6,8 @@ import pg from "pg";
 
 const { Client } = pg;
 const databaseUrl = process.env.DATABASE_URL || "postgres://synapse:synapse-local-only@127.0.0.1:54329/synapse_studio";
-const migrations = Array.from({ length: 15 }, (_, index) => readFileSync(resolve(process.cwd(), "apps/api/sql", `${String(index + 1).padStart(3, "0")}_${[
-  "foundation", "session_fencing", "device_challenges", "agent_usage_ledger", "visio_job_idempotency", "figure_drafts", "universal_figure_export_jobs", "universal_figure_state", "figure_analyses", "drawing_runs", "drawing_workflow_checkpoints", "private_input_receipts", "drawing_input_artifacts", "drawing_artifacts", "drawing_run_formal_ugs_state",
+const migrations = Array.from({ length: 17 }, (_, index) => readFileSync(resolve(process.cwd(), "apps/api/sql", `${String(index + 1).padStart(3, "0")}_${[
+  "foundation", "session_fencing", "device_challenges", "agent_usage_ledger", "visio_job_idempotency", "figure_drafts", "universal_figure_export_jobs", "universal_figure_state", "figure_analyses", "drawing_runs", "drawing_workflow_checkpoints", "private_input_receipts", "drawing_input_artifacts", "drawing_artifacts", "drawing_run_formal_ugs_state", "generic_plan_snapshots", "generic_plan_snapshot_confirmed_previews",
 ][index]}.sql`), "utf8"));
 const ownerId = `restart-smoke-owner-${randomUUID()}`;
 const deviceId = `restart-smoke-device-${randomUUID()}`;
@@ -77,6 +77,8 @@ if (process.argv.includes("--child")) {
     const schema = await client.query("SELECT to_regclass('public.users') AS users_table");
     if (!schema.rows[0]?.users_table) {
       for (const migration of migrations) await client.query(migration);
+    } else {
+      for (const migration of migrations.slice(15)) await client.query(migration);
     }
     await client.query(
       `INSERT INTO users (id, email, password_hash, status, roles, created_at)

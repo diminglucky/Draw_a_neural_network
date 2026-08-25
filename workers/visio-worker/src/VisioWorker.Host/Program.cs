@@ -45,6 +45,7 @@ internal static class Program
             Mode = mode,
             Visible = HasFlag(args, "--visible"),
             AttachToRunning = HasFlag(args, "--attach-to-running"),
+            SelectedPageSealingSecret = Environment.GetEnvironmentVariable("SYNAPSE_SELECTED_PAGE_SEALING_SECRET"),
         }).ConfigureAwait(false);
     }
 

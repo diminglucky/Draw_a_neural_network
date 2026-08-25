@@ -5,20 +5,9 @@ import pg from "pg";
 
 const { Client } = pg;
 const databaseUrl = process.env.DATABASE_URL || "postgres://synapse:synapse-local-only@127.0.0.1:54329/synapse_studio";
-const migration = readFileSync(resolve(process.cwd(), "apps/api/sql/001_foundation.sql"), "utf8");
-const fencingMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/002_session_fencing.sql"), "utf8");
-const challengeMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/003_device_challenges.sql"), "utf8");
-const usageMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/004_agent_usage_ledger.sql"), "utf8");
-const visioJobIdempotencyMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/005_visio_job_idempotency.sql"), "utf8");
-const figureDraftMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/006_figure_drafts.sql"), "utf8");
-const universalFigureExportJobsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/007_universal_figure_export_jobs.sql"), "utf8");
-const universalFigureStateMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/008_universal_figure_state.sql"), "utf8");
-const drawingRunsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/010_drawing_runs.sql"), "utf8");
-const drawingWorkflowCheckpointsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/011_drawing_workflow_checkpoints.sql"), "utf8");
-const privateInputReceiptsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/012_private_input_receipts.sql"), "utf8");
-const drawingInputArtifactsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/013_drawing_input_artifacts.sql"), "utf8");
-const drawingArtifactsMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/014_drawing_artifacts.sql"), "utf8");
-const drawingRunFormalUgsStateMigration = readFileSync(resolve(process.cwd(), "apps/api/sql/015_drawing_run_formal_ugs_state.sql"), "utf8");
+const migrations = Array.from({ length: 17 }, (_, index) => readFileSync(resolve(process.cwd(), "apps/api/sql", `${String(index + 1).padStart(3, "0")}_${[
+  "foundation", "session_fencing", "device_challenges", "agent_usage_ledger", "visio_job_idempotency", "figure_drafts", "universal_figure_export_jobs", "universal_figure_state", "figure_analyses", "drawing_runs", "drawing_workflow_checkpoints", "private_input_receipts", "drawing_input_artifacts", "drawing_artifacts", "drawing_run_formal_ugs_state", "generic_plan_snapshots", "generic_plan_snapshot_confirmed_previews",
+][index]}.sql`), "utf8"));
 const userId = `smoke-${randomUUID()}`;
 const email = `${userId}@example.com`;
 const deviceOneId = `device-${randomUUID()}`;
@@ -83,21 +72,11 @@ let second;
 try {
   first = await connect();
   const schema = await first.query("SELECT to_regclass('public.users') AS users_table");
-  if (!schema.rows[0]?.users_table) await first.query(migration);
-  await first.query(fencingMigration);
-  await first.query(challengeMigration);
-  const usageSchema = await first.query("SELECT to_regclass('public.agent_usage_ledger') AS usage_table");
-  if (!usageSchema.rows[0]?.usage_table) await first.query(usageMigration);
-  await first.query(visioJobIdempotencyMigration);
-  await first.query(figureDraftMigration);
-  await first.query(universalFigureExportJobsMigration);
-  await first.query(universalFigureStateMigration);
-  await first.query(drawingRunsMigration);
-  await first.query(drawingWorkflowCheckpointsMigration);
-  await first.query(privateInputReceiptsMigration);
-  await first.query(drawingInputArtifactsMigration);
-  await first.query(drawingArtifactsMigration);
-  await first.query(drawingRunFormalUgsStateMigration);
+  if (!schema.rows[0]?.users_table) {
+    for (const migration of migrations) await first.query(migration);
+  } else {
+    for (const migration of migrations.slice(15)) await first.query(migration);
+  }
   await first.query(
     `INSERT INTO users (id, email, password_hash, status, roles, created_at)
      VALUES ($1, $2, 'smoke-hash', 'active', '["user"]'::jsonb, NOW())`,

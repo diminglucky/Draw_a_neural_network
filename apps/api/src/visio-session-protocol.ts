@@ -49,6 +49,18 @@ const selectedPageBase = {
   requestId: identifier,
   binding: selectedPageBindingSchema,
 };
+const selectedPageCaptureCommandSchema = z.object({
+  protocolVersion: z.literal(SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION),
+  requestId: identifier,
+  command: z.literal("captureSelectedPage"),
+}).strict();
+const selectedPageTargetSchema = z.object({
+  documentId: identifier,
+  pageId: identifier,
+  documentFingerprint: fingerprint,
+  pageFingerprint: fingerprint,
+  expectedRevision,
+}).strict();
 
 const commandSchema = z.discriminatedUnion("command", [
   z.object({ ...base, command: z.literal("open"), outputPath }).strict(),
@@ -103,6 +115,20 @@ const selectedPageResponseSchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["error"], message: "failed selected-page response requires an error" });
   }
 });
+const selectedPageCaptureResponseSchema = z.object({
+  protocolVersion: z.literal(SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION),
+  requestId: identifier,
+  status: z.enum(["succeeded", "failed"]),
+  capturedTarget: selectedPageTargetSchema.optional(),
+  error: z.string().trim().min(1).max(2_000).optional(),
+}).strict().superRefine((value, context) => {
+  if (value.status === "succeeded" && (!value.capturedTarget || value.error)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "successful selected-page capture requires capturedTarget and no error" });
+  }
+  if (value.status === "failed" && !value.error) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["error"], message: "failed selected-page capture requires an error" });
+  }
+});
 
 export interface TrustedVisioSessionIdentity { tenantId: string; userId: string; deviceId: string; workflowId: string; }
 export type TrustedSelectedPageBinding = z.infer<typeof selectedPageBindingSchema>;
@@ -116,6 +142,8 @@ export type VisioSessionCommand = z.infer<typeof commandSchema>;
 export type VisioSessionResponse = z.infer<typeof responseSchema>;
 export type SelectedPageVisioSessionCommand = z.infer<typeof selectedPageCommandSchema>;
 export type SelectedPageVisioSessionResponse = z.infer<typeof selectedPageResponseSchema>;
+export type SelectedPageCaptureCommand = z.infer<typeof selectedPageCaptureCommandSchema>;
+export type SelectedPageCaptureResponse = z.infer<typeof selectedPageCaptureResponseSchema>;
 
 export function parseVisioSessionCommand(value: unknown): VisioSessionCommand { return parse(commandSchema, value, "request"); }
 export function parseVisioSessionResponse(value: unknown): VisioSessionResponse { return parse(responseSchema, value, "response"); }
@@ -126,6 +154,12 @@ export function parseSelectedPageVisioSessionCommand(value: unknown, verificatio
   if (!sameBinding(command.binding, verification.binding)) throw new Error("Invalid Visio session selected-page request: selected page binding does not match trusted request");
   verifySelectedPageSealedPlan(command.sealedNativeIntent, { ...command.binding, planId: command.sealedNativeIntent.planId }, verification.sealedPlanSecret, verification.now);
   return command;
+}
+export function parseSelectedPageCaptureCommand(value: unknown): SelectedPageCaptureCommand { return parse(selectedPageCaptureCommandSchema, value, "selected-page capture request"); }
+export function parseSelectedPageCaptureResponse(value: unknown, expected: SelectedPageCaptureCommand): SelectedPageCaptureResponse {
+  const response = parse(selectedPageCaptureResponseSchema, value, "selected-page capture response");
+  if (response.requestId !== expected.requestId) throw new Error("Invalid Visio selected-page capture response: request ID does not match the capture request");
+  return response;
 }
 export function parseSelectedPageVisioSessionResponse(value: unknown, expected: TrustedSelectedPageBinding, expectedCommand: SelectedPageVisioSessionCommand): SelectedPageVisioSessionResponse {
   const response = parse(selectedPageResponseSchema, value, "selected-page response");

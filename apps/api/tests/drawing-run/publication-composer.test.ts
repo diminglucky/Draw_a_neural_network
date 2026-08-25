@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createPublicationDrawingWorkflowComposer } from "../../src/drawing-run/publication-composer.js";
 import { digestDrawingArtifact, InMemoryDrawingArtifactStore } from "../../src/drawing-input/drawing-artifacts.js";
-import type { UniversalGraphSpec } from "../../src/universal-graph-spec.js";
+import { parseUniversalGraphSpec, type UniversalGraphSpec } from "../../src/universal-graph-spec.js";
 
 const ugs: UniversalGraphSpec = {
   version: 1,
@@ -28,15 +28,19 @@ const ugs: UniversalGraphSpec = {
 };
 
 describe("Drawing Run publication composer", () => {
-  it("compiles and stores a real formal PVP and QA result", async () => {
+  it("binds the PVP revision to the intrinsic UGS revision while retaining the Drawing Run workflow ID", async () => {
     const artifacts = new InMemoryDrawingArtifactStore();
-    const ugsHash = digestDrawingArtifact(ugs);
-    await artifacts.putUgs("owner-1", ugsHash, ugs);
+    const parsedUgs = parseUniversalGraphSpec(ugs);
+    const ugsHash = digestDrawingArtifact(parsedUgs);
+    await artifacts.putUgs("owner-1", ugsHash, parsedUgs);
     const result = await createPublicationDrawingWorkflowComposer(artifacts).compose({ runId: "run-1", ownerId: "owner-1", deviceId: "device-1", revision: 4, ugsHash });
 
     expect(result.pvpHash).toMatch(/^[a-f0-9]{64}$/);
     expect(result.qaHash).toMatch(/^[a-f0-9]{64}$/);
-    expect((await artifacts.getPvp("owner-1", result.pvpHash))?.eligibility).toMatchObject({ kind: "formal", qaStatus: "pending" });
+    expect(await artifacts.getPvp("owner-1", result.pvpHash)).toMatchObject({
+      eligibility: { kind: "formal", qaStatus: "pending" },
+      updateIdentity: { workflowId: "run-1", expectedRevision: parsedUgs.revision },
+    });
     expect(await artifacts.getQa("owner-1", result.qaHash)).toMatchObject({ status: "passed", planHash: result.pvpHash });
     expect(await artifacts.getPvp("owner-2", result.pvpHash)).toBeNull();
   });

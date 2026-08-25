@@ -3,6 +3,7 @@ import { compilePublicationVisualPlan } from "../publication-visual-plan-compile
 import { evaluatePublicationVisualPlanQa } from "../publication-visual-plan-qa.js";
 import type { DrawingWorkflowComposer } from "./langgraph-workflow.js";
 import { digestDrawingArtifact, type DrawingArtifactStore } from "../drawing-input/drawing-artifacts.js";
+import { parseUniversalGraphSpec } from "../universal-graph-spec.js";
 
 /**
  * Composes only from a Harness-persisted formal UGS. The browser preview has
@@ -14,11 +15,12 @@ export function createPublicationDrawingWorkflowComposer(artifacts: DrawingArtif
     async compose(input) {
       const ugs = await artifacts.getUgs(input.ownerId, input.ugsHash);
       if (!ugs) throw new Error("Formal UGS is unavailable for composition");
-      if (digestDrawingArtifact(ugs) !== input.ugsHash.toLowerCase()) throw new Error("Formal UGS hash does not match its contents");
+      const parsedUgs = parseUniversalGraphSpec(ugs);
+      if (digestDrawingArtifact(parsedUgs) !== input.ugsHash.toLowerCase()) throw new Error("Formal UGS hash does not match its contents");
 
-      const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+      const graph = composeGeneralPublicationGraph(parsedUgs, { detail: "architecture" });
       const pvp = compilePublicationVisualPlan({
-        ugs,
+        ugs: parsedUgs,
         graph,
         updateIdentity: {
           ownerId: input.ownerId,
@@ -26,7 +28,7 @@ export function createPublicationDrawingWorkflowComposer(artifacts: DrawingArtif
           workflowId: input.runId,
           documentId: "browser-preview",
           pageId: "browser-preview",
-          expectedRevision: input.revision,
+          expectedRevision: parsedUgs.revision,
         },
       });
       const qa = evaluatePublicationVisualPlanQa(pvp);

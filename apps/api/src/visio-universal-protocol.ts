@@ -128,7 +128,7 @@ export interface SelectedPageUniversalVisioWorkerRequest {
 }
 
 const identifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
-const hash = z.string().regex(/^[a-f0-9]{64}$/i);
+const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const revision = z.number().int().nonnegative();
 const sealedPlanSchema = z.object({
   version: z.literal(1),

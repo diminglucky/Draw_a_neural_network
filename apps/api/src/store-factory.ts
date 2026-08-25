@@ -12,6 +12,8 @@ import { InMemoryDrawingArtifactStore, type DrawingArtifactStore } from "./drawi
 import { PostgresDrawingArtifactStore } from "./drawing-input/postgres-drawing-artifacts.js";
 import { PostgresDrawingWorkflowCheckpointSaver, PostgresDrawingWorkflowCheckpointStore } from "./drawing-run/postgres-checkpoint-saver.js";
 import { MemorySaver, type BaseCheckpointSaver } from "@langchain/langgraph";
+import { InMemoryGenericPlanSnapshotStore, type GenericPlanSnapshotStore } from "./generic-plan-snapshot-store.js";
+import { PostgresGenericPlanSnapshotStore } from "./postgres-generic-plan-snapshot-store.js";
 
 export interface FoundationStoreHandle {
   store: FoundationStore;
@@ -20,6 +22,7 @@ export interface FoundationStoreHandle {
   localProposalStore: LocalProposalStore;
   drawingArtifactStore: DrawingArtifactStore;
   drawingWorkflowCheckpointer: BaseCheckpointSaver;
+  genericPlanSnapshotStore: GenericPlanSnapshotStore;
   close(): Promise<void>;
 }
 
@@ -32,6 +35,7 @@ export async function createFoundationStore(config: AppConfig): Promise<Foundati
       localProposalStore: new InMemoryLocalProposalStore(),
       drawingArtifactStore: new InMemoryDrawingArtifactStore(),
       drawingWorkflowCheckpointer: new MemorySaver(),
+      genericPlanSnapshotStore: new InMemoryGenericPlanSnapshotStore(),
       close: async () => {},
     };
   }
@@ -48,6 +52,7 @@ export async function createFoundationStore(config: AppConfig): Promise<Foundati
     localProposalStore: new PostgresLocalProposalStore(pool as unknown as PoolLike),
     drawingArtifactStore: new PostgresDrawingArtifactStore(pool as unknown as PoolLike),
     drawingWorkflowCheckpointer: new PostgresDrawingWorkflowCheckpointSaver(checkpointStore),
+    genericPlanSnapshotStore: new PostgresGenericPlanSnapshotStore(pool as unknown as PoolLike),
     close: () => store.close(),
   };
 }
