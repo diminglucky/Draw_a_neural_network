@@ -235,7 +235,7 @@ public sealed class SelectedPageVisioComBackendTests
         using var native = new SelectedPageVisioComNative(new VisioComEngineOptions());
         SetPrivateField(native, "_application", application);
         var attached = Assert.IsType<SelectedPageTarget>(native.AttachActiveSelection());
-        application.ActiveWindow.Page = changedPage;
+        application.ActiveWindow!.Page = changedPage;
 
         var error = Assert.Throws<WorkerProtocolException>(() =>
             ((ISelectedPageShapeMutation)native).RevalidateActiveTarget(attached));
@@ -312,8 +312,10 @@ public sealed class SelectedPageVisioComBackendTests
     public void Native_readback_rejects_an_empty_final_namespace_when_a_promoted_entry_is_expected()
     {
         using var fixture = CreateNativeReadbackFixture(new FakeShape(10));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
 
         Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+        Assert.Equal([1], fixture.Page.Shapes.VisitedIndices);
     }
 
     [Fact]
@@ -423,16 +425,146 @@ public sealed class SelectedPageVisioComBackendTests
         Assert.Equal(1, fixture.Document.SaveCalls);
     }
 
+    [Fact]
+    public void Native_same_target_reattach_revokes_successful_pre_save_authorization()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+
+        var reattached = fixture.Native.AttachActiveSelection();
+
+        Assert.Equal(fixture.Target, reattached);
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public void Native_null_selection_attach_revokes_successful_pre_save_authorization()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        fixture.Application.ActiveWindow = null;
+
+        Assert.Null(fixture.Native.AttachActiveSelection());
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public void Native_failed_attach_revokes_successful_pre_save_authorization()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        fixture.Application.ActiveWindowError = new InvalidOperationException("Visio active window failed");
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.AttachActiveSelection());
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public void Native_blank_namespace_apply_revokes_successful_pre_save_authorization()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+
+        Assert.Throws<ArgumentException>(() => fixture.Native.ApplyOwnedRegion(
+            fixture.Target,
+            " ",
+            new PreparedSelectedPageRegion(fixture.Target, Plan())));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public void Native_prepared_target_mismatch_apply_revokes_successful_pre_save_authorization()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        var differentTarget = fixture.Target with { PageId = "page-other" };
+
+        Assert.Throws<InvalidOperationException>(() => fixture.Native.ApplyOwnedRegion(
+            fixture.Target,
+            OwnershipNamespace,
+            new PreparedSelectedPageRegion(differentTarget, Plan())));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public void Native_failed_pre_save_read_cannot_authorize_save()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        fixture.Shape!.SetShapeData("synapse.sourceMappingSemanticIds", "semantic:other");
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public void Native_pre_save_authorization_is_single_use()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+
+        fixture.Native.SaveSelectedDocument(fixture.Target);
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(1, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public void Native_failed_post_save_read_preserves_the_saved_manifest_hash()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        fixture.Native.SaveSelectedDocument(fixture.Target);
+        fixture.Shape!.SetShapeData("synapse.sourceMappingSemanticIds", "semantic:other");
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+
+        Assert.NotNull(GetPrivateField(fixture.Native, "_savedManifestHash"));
+    }
+
+    [Fact]
+    public void Native_successful_post_save_read_does_not_create_new_pre_save_authorization()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        fixture.Native.SaveSelectedDocument(fixture.Target);
+
+        var readback = fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace);
+
+        Assert.True(readback.Valid);
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(1, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Backend_active_target_revalidation_does_not_revoke_native_pre_save_authorization()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        await using var backend = new SelectedPageVisioComBackend(fixture.Native);
+
+        await backend.SaveSelectedDocumentAsync(fixture.Target);
+
+        Assert.Equal(1, fixture.Document.SaveCalls);
+    }
+
     private static DiagramDocument Plan() => new("Selected page test", [], [], []);
 
     private static NativeReadbackFixture CreateNativeReadbackFixture(params FakeShape[] shapes)
     {
         var document = new FakeDocument("101", "drawing.vsdx");
         var page = new FakePage("1", "Architecture", document, new FakeShapes(shapes));
+        var application = new FakeApplication(page);
         var native = new SelectedPageVisioComNative(new VisioComEngineOptions());
-        SetPrivateField(native, "_application", new FakeApplication(page));
+        SetPrivateField(native, "_application", application);
         var target = Assert.IsType<SelectedPageTarget>(native.AttachActiveSelection());
-        return new NativeReadbackFixture(native, target, document);
+        return new NativeReadbackFixture(native, target, document, page, application, shapes.FirstOrDefault());
+    }
+
+    private static NativeReadbackFixture CreatePreSaveVerifiedFixture()
+    {
+        var fixture = CreateNativeReadbackFixture(OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+        fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace);
+        return fixture;
     }
 
     private static FakeShape OwnedShape(int id, IReadOnlyList<string> semanticIds, SelectedPageShapeRole role) =>
@@ -468,8 +600,20 @@ public sealed class SelectedPageVisioComBackendTests
 
     public sealed class FakeApplication(FakePage page)
     {
+        private FakeWindow? _activeWindow = new(page);
+
         public bool Visible { get; set; }
-        public FakeWindow ActiveWindow { get; } = new(page);
+        public Exception? ActiveWindowError { get; set; }
+
+        public FakeWindow? ActiveWindow
+        {
+            get
+            {
+                if (ActiveWindowError is not null) throw ActiveWindowError;
+                return _activeWindow;
+            }
+            set => _activeWindow = value;
+        }
     }
 
     public sealed class FakeWindow(FakePage page)
@@ -530,7 +674,9 @@ public sealed class SelectedPageVisioComBackendTests
     public sealed class FakeShape(int id, Exception? deleteError = null, IReadOnlyDictionary<string, string>? shapeData = null)
     {
         private List<FakeShape>? _owner;
-        private readonly IReadOnlyDictionary<string, string> _shapeData = shapeData ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _shapeData = shapeData is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(shapeData, StringComparer.Ordinal);
 
         public int ID { get; } = id;
 
@@ -541,6 +687,8 @@ public sealed class SelectedPageVisioComBackendTests
             if (deleteError is not null) throw deleteError;
             _owner!.Remove(this);
         }
+
+        public void SetShapeData(string key, string value) => _shapeData[key] = value;
 
         public int CellExistsU(string name, int section) => FindShapeDataKey(name) is null ? 0 : 1;
 
@@ -564,11 +712,20 @@ public sealed class SelectedPageVisioComBackendTests
         public string[] ResultStr { get; } = [value];
     }
 
-    private sealed class NativeReadbackFixture(SelectedPageVisioComNative native, SelectedPageTarget target, FakeDocument document) : IDisposable
+    private sealed class NativeReadbackFixture(
+        SelectedPageVisioComNative native,
+        SelectedPageTarget target,
+        FakeDocument document,
+        FakePage page,
+        FakeApplication application,
+        FakeShape? shape) : IDisposable
     {
         public SelectedPageVisioComNative Native { get; } = native;
         public SelectedPageTarget Target { get; } = target;
         public FakeDocument Document { get; } = document;
+        public FakePage Page { get; } = page;
+        public FakeApplication Application { get; } = application;
+        public FakeShape? Shape { get; } = shape;
         public void Dispose() => Native.Dispose();
     }
 
@@ -601,6 +758,16 @@ public sealed class SelectedPageVisioComBackendTests
         {
             AttachActiveSelectionCalls++;
             return ActiveTarget;
+        }
+
+        public void RevalidateActiveSelection(SelectedPageTarget target)
+        {
+            var actual = AttachActiveSelection()
+                ?? throw new InvalidOperationException("The selected Visio page is no longer active.");
+            if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, actual))
+            {
+                throw new InvalidOperationException("The selected Visio document or page changed before the operation could run.");
+            }
         }
 
         public PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan)

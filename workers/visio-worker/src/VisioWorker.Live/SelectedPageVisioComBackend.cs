@@ -14,6 +14,7 @@ internal interface ISelectedPageVisioComOperations
 {
     void EnsureVisibleApplication();
     SelectedPageTarget? AttachActiveSelection();
+    void RevalidateActiveSelection(SelectedPageTarget target);
     PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan);
     void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, PreparedSelectedPageRegion preparedRegion);
     void SaveSelectedDocument(SelectedPageTarget target);
@@ -83,14 +84,14 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         ArgumentNullException.ThrowIfNull(plan);
         await InvokeAsync(() =>
         {
-            EnsureSameTarget(target, RequireActiveTarget());
+            _operations.RevalidateActiveSelection(target);
             var preparedRegion = _operations.PrepareOwnedRegion(target, plan);
             ArgumentNullException.ThrowIfNull(preparedRegion);
             if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, preparedRegion.Target))
             {
                 throw new InvalidOperationException("The prepared Visio region does not match the requested selected-page target.");
             }
-            EnsureSameTarget(target, RequireActiveTarget());
+            _operations.RevalidateActiveSelection(target);
             _operations.ApplyOwnedRegion(target, ownershipNamespace, preparedRegion);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -101,7 +102,7 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         ArgumentNullException.ThrowIfNull(target);
         await InvokeAsync(() =>
         {
-            EnsureSameTarget(target, RequireActiveTarget());
+            _operations.RevalidateActiveSelection(target);
             _operations.SaveSelectedDocument(target);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -113,7 +114,7 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
         return await InvokeAsync(() =>
         {
-            EnsureSameTarget(target, RequireActiveTarget());
+            _operations.RevalidateActiveSelection(target);
             var readback = _operations.ReadSelectedPage(target, ownershipNamespace);
             if (!readback.Matches(target) || !string.Equals(readback.OwnershipNamespace, ownershipNamespace, StringComparison.Ordinal))
             {
@@ -157,9 +158,6 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         }
     }
 
-    private SelectedPageTarget RequireActiveTarget() =>
-        _operations.AttachActiveSelection() ?? throw new InvalidOperationException("The selected Visio page is no longer active.");
-
     private async Task InvokeAsync(Action action, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -178,13 +176,6 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
 
-    private static void EnsureSameTarget(SelectedPageTarget expected, SelectedPageTarget actual)
-    {
-        if (!EqualityComparer<SelectedPageTarget>.Default.Equals(expected, actual))
-        {
-            throw new InvalidOperationException("The selected Visio document or page changed before the operation could run.");
-        }
-    }
 }
 
 /// <summary>
@@ -198,7 +189,6 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     private dynamic? _window;
     private dynamic? _document;
     private dynamic? _page;
-    private SelectedPageTarget? _attachedTarget;
     private SelectedPagePromotedRegionManifest? _expectedPromotedManifest;
     private string? _preSaveVerifiedHash;
     private string? _savedManifestHash;
@@ -222,6 +212,7 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     public SelectedPageTarget? AttachActiveSelection()
     {
         ThrowIfDisposed();
+        ResetVerificationState();
         EnsureVisibleApplication();
         dynamic? window = null;
         dynamic? page = null;
@@ -236,15 +227,10 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
             if (document is null) return null;
 
             var target = ReadTarget(document, page);
-            if (!EqualityComparer<SelectedPageTarget>.Default.Equals(_attachedTarget, target))
-            {
-                ResetVerificationState();
-            }
             ReleaseAttachedReferences();
             _window = window;
             _page = page;
             _document = document;
-            _attachedTarget = target;
             window = null;
             page = null;
             document = null;
@@ -266,6 +252,13 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
+    public void RevalidateActiveSelection(SelectedPageTarget target)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(target);
+        RevalidateActiveTarget(target);
+    }
+
     public PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan)
     {
         ThrowIfDisposed();
@@ -278,13 +271,13 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     {
         ThrowIfDisposed();
         RequireTarget(target);
+        ResetVerificationState();
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
         ArgumentNullException.ThrowIfNull(preparedRegion);
         if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, preparedRegion.Target))
         {
             throw new InvalidOperationException("The prepared Visio region does not match the requested selected-page target.");
         }
-        ResetVerificationState();
         try
         {
             var manifest = SelectedPageOwnedRegionReplacement.Execute(
@@ -409,7 +402,6 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         ThrowIfDisposed();
         RequireTarget(target);
         ResetVerificationState();
-        _attachedTarget = null;
         ReleaseAttachedReferences();
     }
 
@@ -417,7 +409,6 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     {
         if (_disposed) return;
         ResetVerificationState();
-        _attachedTarget = null;
         ReleaseAttachedReferences();
         VisioComEngine.ReleaseCom(_application);
         _application = null;
@@ -458,10 +449,12 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
         catch (WorkerProtocolException)
         {
+            ResetVerificationState();
             throw;
         }
         catch (Exception error)
         {
+            ResetVerificationState();
             throw new WorkerProtocolException($"Final selected-page target revalidation failed: {error.Message}", error);
         }
         finally
