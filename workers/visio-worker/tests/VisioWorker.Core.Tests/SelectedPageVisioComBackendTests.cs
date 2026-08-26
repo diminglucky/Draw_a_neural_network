@@ -237,6 +237,31 @@ public sealed class SelectedPageVisioComBackendTests
     }
 
     [Fact]
+    public void Native_exact_id_deletion_classifies_all_uncertain_ids_as_failed_after_incomplete_enumeration()
+    {
+        var shapes = new FakeShapes(
+            new FakeShape(99),
+            new FakeShape(11),
+            new FakeShape(10))
+        {
+            ThrowOnItemIndex = 2,
+        };
+        var page = new FakeDeletionPage(shapes);
+        var method = typeof(SelectedPageVisioComNative).GetMethod(
+            "DeleteShapes",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var outcome = Assert.IsType<SelectedPageShapeDeletionOutcome>(
+            method.Invoke(null, [page, new HashSet<int> { 10, 11, 12 }]));
+
+        Assert.Equal([10], outcome.DeletedShapeIds.Order());
+        Assert.Empty(outcome.MissingShapeIds);
+        Assert.Equal([11, 12], outcome.FailedShapeIds.Order());
+        Assert.Equal([3, 2, 1], shapes.VisitedIndices);
+    }
+
+    [Fact]
     public void Staging_namespace_is_stable_target_bound_and_distinct_from_the_final_namespace()
     {
         var method = typeof(SelectedPageVisioComNative).GetMethod("StagingNamespace", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
@@ -309,10 +334,16 @@ public sealed class SelectedPageVisioComBackendTests
 
         public int Count => _shapes.Count;
 
+        public int? ThrowOnItemIndex { get; init; }
+
+        public List<int> VisitedIndices { get; } = [];
+
         public IReadOnlyList<int> ShapeIds => _shapes.Select(shape => shape.ID).ToArray();
 
         public FakeShape Item(int index)
         {
+            VisitedIndices.Add(index);
+            if (index == ThrowOnItemIndex) throw new InvalidOperationException("enumeration interrupted");
             var shape = _shapes[index - 1];
             shape.Attach(_shapes);
             return shape;
