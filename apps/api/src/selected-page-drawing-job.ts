@@ -5,7 +5,7 @@ import { SelectedPageLeaseService, type SelectedPageLeaseOwner } from "./selecte
 import type { TrustedSelectedPageBinding } from "./visio-session-protocol.js";
 
 export interface SelectedPageDrawingExecutor {
-  draw(input: { binding: TrustedSelectedPageBinding; sealedNativeIntent: ReturnType<typeof createSelectedPageSealedPlan>; sealedPlanSecret: string; now: Date; requestIdFactory: (suffix: "attach" | "apply" | "save" | "read" | "close") => string }): Promise<unknown>;
+  draw(input: { binding: TrustedSelectedPageBinding; sealedNativeIntent: ReturnType<typeof createSelectedPageSealedPlan>; sealedPlanSecret: string; now: Date; requestIdFactory: (suffix: "attach" | "apply" | "read-before-save" | "save" | "read-after-save" | "close") => string }): Promise<unknown>;
 }
 
 export interface SelectedPageDrawingJobOptions {

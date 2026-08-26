@@ -75,7 +75,7 @@ interface PersistentSession {
 }
 
 export interface BuildSelectedPageVisioSessionCommandsInput {
-  requestIdFactory: (suffix: "attach" | "apply" | "save" | "read" | "close") => string;
+  requestIdFactory: (suffix: "attach" | "apply" | "read-before-save" | "save" | "read-after-save" | "close") => string;
   binding: TrustedSelectedPageBinding;
   sealedNativeIntent: SealedSelectedPageNativeIntent;
   sealedPlanSecret: string;
