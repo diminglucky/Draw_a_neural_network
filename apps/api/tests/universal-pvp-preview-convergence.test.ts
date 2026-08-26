@@ -43,7 +43,7 @@ describe("universal PVP preview convergence", () => {
 
     expect(preview).toMatchObject({ schemaVersion: 1, kind: "formal", exportEligible: false });
     expect(preview.plan.primitives).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "CustomOperator", label: "Unseen Fusion" }),
+      expect.objectContaining({ kind: "OperatorFrame", label: "Unseen Fusion" }),
     ]));
     expect(preview.plan).not.toHaveProperty("updateIdentity");
     expect(preview.plan).not.toHaveProperty("sourceMappings");

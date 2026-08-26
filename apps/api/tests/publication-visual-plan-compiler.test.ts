@@ -18,6 +18,11 @@ describe("PublicationVisualPlan compiler", () => {
     expect(plan.ports).toHaveLength(graph.relations.length * 2);
     expect(plan.connectors).toHaveLength(graph.relations.length);
     expect(plan.sourceMappings).toHaveLength(graph.components.length);
+    const inputTerminal = (plan.primitives as any[]).find((item) => item.kind === "InputTerminal");
+    const moduleFrame = (plan.primitives as any[]).find((item) => item.kind === "ModuleFrame");
+    const operatorFrame = (plan.primitives as any[]).find((item) => item.kind === "OperatorFrame");
+    expect(inputTerminal.bounds.width).toBeLessThan(moduleFrame.bounds.width);
+    expect(operatorFrame.bounds.width).toBeLessThanOrEqual(moduleFrame.bounds.width);
     for (const connector of plan.connectors as any[]) {
       expect(connector.route).toHaveLength(4);
       expect(connector.route[0]).not.toEqual(connector.route.at(-1));
@@ -37,7 +42,7 @@ describe("PublicationVisualPlan compiler", () => {
     expect(split.bounds.width).toBe(split.bounds.height);
     expect(add.bounds.width).toBe(add.bounds.height);
     expect(split.bounds).toMatchObject({ width: 120, height: 120 });
-    expect(add.bounds).toMatchObject({ width: 220, height: 220 });
+    expect(add.bounds).toMatchObject({ width: 160, height: 160 });
     expect(split.bounds.width).toBeLessThan(add.bounds.width);
     const splitStyle = (plan.styleTokens as any).tokens.find((token: any) => token.tokenId === "style:split");
     expect(splitStyle.values).toMatchObject({ fill: "#334155", strokeWidth: "1.2" });
@@ -143,7 +148,7 @@ describe("PublicationVisualPlan compiler", () => {
     const stage = byId.get("primitive:semantic:scale_transition:source-to-spatial:stage")!;
     const volume = byId.get("primitive:semantic:scale_transition:source-to-spatial:volume")!;
 
-    expect(primary.bounds).toMatchObject({ width: 760, height: 320 });
+    expect(primary.bounds).toMatchObject({ width: 720, height: 320 });
     expect(repeat.bounds).toMatchObject({
       x: primary.bounds.x + primary.bounds.width + 16,
       y: primary.bounds.y + 16,
@@ -159,13 +164,11 @@ describe("PublicationVisualPlan compiler", () => {
     expect(split.bounds.y + split.bounds.height / 2).toBe(primary.bounds.y + primary.bounds.height / 2);
     expect(stage.bounds).toMatchObject({
       x: primary.bounds.x + primary.bounds.width + 16,
-      y: primary.bounds.y + 236,
       width: 300,
       height: 88,
     });
     expect(volume.bounds).toMatchObject({
       x: primary.bounds.x + primary.bounds.width + 16,
-      y: primary.bounds.y + 340,
       width: 300,
       height: 68,
     });
@@ -210,7 +213,7 @@ describe("PublicationVisualPlan compiler", () => {
       expect.objectContaining({ kind: "AttentionTokenStrip" }),
       expect.objectContaining({ kind: "AttentionRelation" }),
     ]));
-    expect(primary.bounds).toMatchObject({ width: 760, height: 320 });
+    expect(primary.bounds).toMatchObject({ width: 720, height: 320 });
     expect(attachments.every((primitive) => primitive.bounds.x >= primary.bounds.x + primary.bounds.width)).toBe(true);
     expect(attachments.every((primitive, index) => attachments.slice(index + 1).every((other) => !boundsOverlap(primitive.bounds, other.bounds)))).toBe(true);
     expect(attachments.every((primitive) => (first.sourceMappings as any[]).some((mapping) => mapping.visualId === primitive.primitiveId

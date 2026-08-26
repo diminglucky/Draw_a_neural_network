@@ -1,21 +1,12 @@
 import { digestGenericPlanSnapshotValue } from "./generic-plan-snapshot.js";
 import { compileComposableRegionVisuals, type ComposableRegionVisualDescriptor } from "./composable-region-visual-compiler.js";
 import { composeGeneralPublicationGraph, type GeneralPublicationGraph } from "./general-publication-graph.js";
+import { composePublicationLayout, type PublicationCompositionBounds } from "./publication-composition-kernel.js";
 import { createPublicationVisualPlan, type PublicationVisualPlan } from "./publication-visual-plan.js";
 import { getUniversalGraphEligibility, parseUniversalGraphSpec, type UniversalGraphSpec } from "./universal-graph-spec.js";
 import { compareCodeUnits } from "./stable-string-order.js";
 
-const MARGIN = 200;
-const WIDTH = 760;
-const HEIGHT = 320;
-const COLUMN_GAP = 360;
-const LANE_GAP = 120;
-const ATTACHMENT_GAP = 16;
-const SPLIT_MARKER_SIZE = 120;
-const ADD_MARKER_SIZE = 220;
-const CONCAT_MARKER_SIZE = 240;
-
-type Bounds = { x: number; y: number; width: number; height: number };
+type Bounds = PublicationCompositionBounds;
 
 export interface PublicationVisualPlanUpdateIdentity {
   ownerId: string; deviceId: string; workflowId: string; documentId: string; pageId: string; expectedRevision: number;
@@ -44,18 +35,9 @@ export function compileGeneralPublicationVisualPlan(input: { ugs: UniversalGraph
   const canonicalGraph = composeGeneralPublicationGraph(ugs, { detail: input.graph.detail });
   if (digestGenericPlanSnapshotValue(input.graph) !== digestGenericPlanSnapshotValue(canonicalGraph)) throw new Error("General Publication Graph must match canonical UGS projection");
   const visualCompilation = compileComposableRegionVisuals(canonicalGraph);
-  const descriptors = compactDeterministicLayout(visualCompilation.descriptors);
-  const boundsByPrimitive = new Map<string, Bounds>(descriptors.filter((descriptor) => descriptor.attachment === null).map((descriptor) => [descriptor.primitiveId, primaryBounds(descriptor)]));
-  const attachmentsByCorridor = new Map<string, ComposableRegionVisualDescriptor[]>();
-  for (const descriptor of descriptors.filter((item) => item.attachment !== null)) {
-    const corridor = attachmentCorridor(descriptor);
-    attachmentsByCorridor.set(corridor, [...(attachmentsByCorridor.get(corridor) ?? []), descriptor]);
-  }
-  for (const [, attachments] of [...attachmentsByCorridor.entries()].sort(([left], [right]) => compareCodeUnits(left, right))) {
-    for (const [primitiveId, bounds] of packAttachments(boundsByPrimitive, attachments)) boundsByPrimitive.set(primitiveId, bounds);
-  }
-  const pageWidth = Math.max(...[...boundsByPrimitive.values()].map((item) => item.x + item.width)) + MARGIN;
-  const pageHeight = Math.max(...[...boundsByPrimitive.values()].map((item) => item.y + item.height)) + MARGIN;
+  const composition = composePublicationLayout(visualCompilation.descriptors);
+  const descriptors = composition.descriptors;
+  const boundsByPrimitive = composition.boundsByPrimitive;
   const candidate = getUniversalGraphEligibility(ugs).preview === "candidate" || !visualCompilation.exportEligible || canonicalGraph.exportEligibility !== "eligible" || canonicalGraph.relations.some((relation) => relation.role === "feedback");
   const primitives = descriptors.map((descriptor) => ({
     primitiveId: descriptor.primitiveId,
@@ -73,8 +55,8 @@ export function compileGeneralPublicationVisualPlan(input: { ugs: UniversalGraph
     identity: { schemaVersion: 1, planId: `pvp:${ugs.graphId}:${canonicalGraph.detail}` },
     eligibility: candidate ? { kind: "candidate", formalReasons: [], blockingReasons: ["topology-candidate"], qaStatus: "pending" } : { kind: "formal", formalReasons: ["topology-complete"], blockingReasons: [], qaStatus: "pending" },
     lineage: { ugsHash: digestGenericPlanSnapshotValue(ugs), gpgHash: digestGenericPlanSnapshotValue(canonicalGraph), sourceHashes: [...ugs.sourceHashes].sort(compareCodeUnits), composerHash: digestGenericPlanSnapshotValue({ version: "gpg-visual-grammar-1", detail: canonicalGraph.detail }), profileSetHash: digestGenericPlanSnapshotValue([]) },
-    coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: { x: 0, y: 0, width: pageWidth, height: pageHeight }, safeMargins: { x: MARGIN, y: MARGIN, width: pageWidth - MARGIN * 2, height: pageHeight - MARGIN * 2 } },
-    regions: [{ regionId: "region:main", bounds: { x: MARGIN, y: MARGIN, width: pageWidth - MARGIN * 2, height: pageHeight - MARGIN * 2 }, role: "main", zIndex: 0 }],
+    coordinateSpace: { id: "pvp-du-1", origin: "top_left", axes: "x_right_y_down", unit: "du", duPerInch: 1000, page: composition.page, safeMargins: composition.safeMargins },
+    regions: [{ regionId: "region:main", bounds: composition.safeMargins, role: "main", zIndex: 0 }],
     primitiveGroups: visualCompilation.groups.map((group) => ({ ...group, zIndex: 1 })),
     primitives, ports, connectors, annotations: [], legend: { entries: [], styleTokenIds: [] }, styleTokens: { tokenSetVersion: "pvp-style-1", tokens: styleTokensFor(descriptors, connectors) }, profileApplications: [],
     sourceMappings: descriptors.map((descriptor) => ({ visualId: descriptor.primitiveId, ugsIds: [...descriptor.sourceNodeIds].sort(compareCodeUnits), evidenceIds: [...descriptor.evidenceIds].sort(compareCodeUnits) })),
@@ -82,13 +64,16 @@ export function compileGeneralPublicationVisualPlan(input: { ugs: UniversalGraph
   });
 }
 
-function connectorsFor(graph: GeneralPublicationGraph, descriptors: readonly ComposableRegionVisualDescriptor[], boundsByPrimitive: Map<string, { x: number; y: number; width: number; height: number }>): { ports: Record<string, unknown>[]; connectors: Record<string, unknown>[] } {
+function connectorsFor(graph: GeneralPublicationGraph, descriptors: readonly ComposableRegionVisualDescriptor[], boundsByPrimitive: ReadonlyMap<string, Bounds>): { ports: Record<string, unknown>[]; connectors: Record<string, unknown>[] } {
   const primitiveByComponentId = new Map(descriptors.filter((descriptor) => descriptor.topologyComponentId !== null).map((descriptor) => [descriptor.topologyComponentId!, descriptor]));
   const incomingByComponent = new Map<string, string[]>();
   for (const relation of graph.relations) incomingByComponent.set(relation.targetComponentId, [...(incomingByComponent.get(relation.targetComponentId) ?? []), relation.relationId]);
   const ports: Record<string, unknown>[] = [];
   const connectors: Record<string, unknown>[] = [];
   const skipRelations = graph.relations.filter((relation) => relation.role === "skip").sort((left, right) => compareCodeUnits(left.relationId, right.relationId));
+  const primaryTop = Math.min(...descriptors
+    .filter((descriptor) => descriptor.topologyComponentId !== null)
+    .map((descriptor) => boundsByPrimitive.get(descriptor.primitiveId)?.y ?? Number.POSITIVE_INFINITY));
   for (const relation of [...graph.relations].sort((left, right) => compareCodeUnits(left.relationId, right.relationId))) {
     const source = primitiveByComponentId.get(relation.sourceComponentId);
     const target = primitiveByComponentId.get(relation.targetComponentId);
@@ -105,7 +90,7 @@ function connectorsFor(graph: GeneralPublicationGraph, descriptors: readonly Com
     const targetPoint = anchor(targetBounds, "left", targetOffset);
     const middleX = Math.max(sourcePoint.x + 80, Math.floor((sourcePoint.x + targetPoint.x) / 2));
     const route = relation.role === "skip"
-      ? skipRoute(sourcePoint, targetPoint, sourceBounds, targetBounds, Math.max(0, skipRelations.indexOf(relation)))
+      ? skipRoute(sourcePoint, targetPoint, primaryTop, Math.max(0, skipRelations.indexOf(relation)))
       : [sourcePoint, { x: middleX, y: sourcePoint.y }, { x: middleX, y: targetPoint.y }, targetPoint];
     ports.push(
       { portId: sourcePortId, primitiveId: source.primitiveId, role: "output", anchor: { side: "right", offset: 500 }, order: 0, semanticPortId: `${relation.relationId}:source` },
@@ -153,29 +138,10 @@ function anchor(bounds: { x: number; y: number; width: number; height: number },
   return side === "left" ? { x: bounds.x, y } : { x: bounds.x + bounds.width, y };
 }
 
-function primaryBounds(descriptor: ComposableRegionVisualDescriptor): Bounds {
-  const markerSize = markerSizeFor(descriptor.kind);
-  const width = markerSize ?? WIDTH;
-  const height = markerSize ?? HEIGHT;
-  return {
-    x: MARGIN + descriptor.layout.rank * (WIDTH + COLUMN_GAP) + Math.floor((WIDTH - width) / 2),
-    y: MARGIN + descriptor.layout.lane * (HEIGHT + LANE_GAP) + Math.floor((HEIGHT - height) / 2),
-    width,
-    height,
-  };
-}
-
-function markerSizeFor(kind: ComposableRegionVisualDescriptor["kind"]): number | null {
-  if (kind === "SplitMarker") return SPLIT_MARKER_SIZE;
-  if (kind === "AddMarker") return ADD_MARKER_SIZE;
-  if (kind === "ConcatMarker") return CONCAT_MARKER_SIZE;
-  return null;
-}
-
-function skipRoute(source: { x: number; y: number }, target: { x: number; y: number }, sourceBounds: Bounds, targetBounds: Bounds, laneIndex: number): Array<{ x: number; y: number }> {
+function skipRoute(source: { x: number; y: number }, target: { x: number; y: number }, primaryTop: number, laneIndex: number): Array<{ x: number; y: number }> {
   const sourceExitX = source.x + 80;
   const targetEntryX = target.x - 80;
-  const laneY = Math.max(40, Math.min(sourceBounds.y, targetBounds.y) - 120 - laneIndex * 60);
+  const laneY = Math.max(40, primaryTop - 120 - laneIndex * 60);
   return [
     source,
     { x: sourceExitX, y: source.y },
@@ -184,77 +150,4 @@ function skipRoute(source: { x: number; y: number }, target: { x: number; y: num
     { x: targetEntryX, y: target.y },
     target,
   ];
-}
-
-function packAttachments(primaryBoundsById: ReadonlyMap<string, Bounds>, descriptors: readonly ComposableRegionVisualDescriptor[]): Map<string, Bounds> {
-  const primaryIds = [...new Set(descriptors.map((descriptor) => descriptor.attachment!.primaryPrimitiveId))].sort(compareCodeUnits);
-  const allocated: Bounds[] = primaryIds.map((primaryId) => {
-    const primary = primaryBoundsById.get(primaryId);
-    if (!primary) throw new Error(`Attached visual primitive lacks stable primary bounds: ${primaryId}`);
-    return primary;
-  });
-  const packed = new Map<string, Bounds>();
-  for (const descriptor of [...descriptors].sort((left, right) => left.layout.lane - right.layout.lane || attachmentPriority(left) - attachmentPriority(right) || compareCodeUnits(left.primitiveId, right.primitiveId))) {
-    const primary = primaryBoundsById.get(descriptor.attachment!.primaryPrimitiveId);
-    if (!primary) throw new Error(`Attached visual primitive lacks stable primary bounds: ${descriptor.attachment!.primaryPrimitiveId}`);
-    const preferred = preferredAttachmentBounds(primary, descriptor);
-    let bounds = preferred;
-    let collision = allocated.find((item) => boundsOverlap(bounds, item));
-    while (collision) {
-      bounds = { ...bounds, y: collision.y + collision.height + ATTACHMENT_GAP };
-      collision = allocated.find((item) => boundsOverlap(bounds, item));
-    }
-    allocated.push(bounds);
-    packed.set(descriptor.primitiveId, bounds);
-  }
-  return packed;
-}
-
-function attachmentCorridor(descriptor: ComposableRegionVisualDescriptor): string {
-  if (!descriptor.attachment) throw new Error(`Visual primitive is not attached: ${descriptor.primitiveId}`);
-  return `${descriptor.layout.rank}\u0000right`;
-}
-
-function preferredAttachmentBounds(primary: Bounds, descriptor: ComposableRegionVisualDescriptor): Bounds {
-  const attachment = descriptor.attachment!;
-  const x = primary.x + primary.width + ATTACHMENT_GAP;
-  if (attachment.placement === "corner_top_right") return { x, y: primary.y + ATTACHMENT_GAP, width: 180, height: 48 };
-  if (attachment.placement === "output_side") {
-    const size = markerSizeFor(descriptor.kind) ?? SPLIT_MARKER_SIZE;
-    return { x, y: primary.y + Math.floor((primary.height - size) / 2), width: size, height: size };
-  }
-  if (attachment.placement === "adjacent_right_top") return { x, y: primary.y + 80, width: 300, height: 88 };
-  return { x, y: primary.y + 236, width: 300, height: 68 };
-}
-
-function attachmentPriority(descriptor: ComposableRegionVisualDescriptor): number {
-  if (descriptor.kind === "SplitMarker") return 5;
-  if (descriptor.kind === "RepeatBadge") return 10;
-  if (descriptor.kind === "TensorStage") return 20;
-  if (descriptor.kind === "TensorVolume") return 30;
-  if (descriptor.kind === "AttentionTokenStrip") return 50;
-  if (descriptor.kind === "AttentionRelation") return 60;
-  return 100;
-}
-
-function boundsOverlap(left: Bounds, right: Bounds): boolean {
-  return left.x < right.x + right.width && left.x + left.width > right.x && left.y < right.y + right.height && left.y + left.height > right.y;
-}
-
-function compactDeterministicLayout(input: readonly ComposableRegionVisualDescriptor[]): ComposableRegionVisualDescriptor[] {
-  const byRank = new Map<number, ComposableRegionVisualDescriptor[]>();
-  for (const descriptor of input.filter((item) => item.attachment === null)) byRank.set(descriptor.layout.rank, [...(byRank.get(descriptor.layout.rank) ?? []), descriptor]);
-  const primaryLayouts = new Map([...byRank.entries()].sort(([left], [right]) => left - right).flatMap(([rank, descriptors]) => descriptors
-    .sort((left, right) => left.layout.lane - right.layout.lane || left.layout.order - right.layout.order || compareCodeUnits(left.primitiveId, right.primitiveId))
-    .map((descriptor, lane) => [descriptor.primitiveId, { rank, lane, order: lane }] as const)));
-  return input.map((descriptor) => {
-    if (!descriptor.attachment) {
-      const layout = primaryLayouts.get(descriptor.primitiveId);
-      if (!layout) throw new Error(`Visual primitive lacks compact layout: ${descriptor.primitiveId}`);
-      return { ...descriptor, layout };
-    }
-    const layout = primaryLayouts.get(descriptor.attachment.primaryPrimitiveId);
-    if (!layout) throw new Error(`Attached visual primitive lacks stable primary layout: ${descriptor.primitiveId}`);
-    return { ...descriptor, layout: { ...layout, order: layout.order + descriptor.attachment.slot + 1 } };
-  }).sort((left, right) => left.layout.rank - right.layout.rank || left.layout.lane - right.layout.lane || left.layout.order - right.layout.order || compareCodeUnits(left.primitiveId, right.primitiveId));
 }

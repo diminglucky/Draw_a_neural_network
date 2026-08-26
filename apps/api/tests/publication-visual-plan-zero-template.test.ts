@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderPublicationVisualPlanPreview } from "../../../publication-visual-plan-preview.js";
 import { compilePublicationVisualPlan } from "../src/publication-visual-plan-compiler.js";
+import { projectPublicationVisualPlanPreview } from "../src/publication-visual-plan-preview.js";
 import { evaluatePublicationVisualPlanQa } from "../src/publication-visual-plan-qa.js";
 import { composeGeneralPublicationGraph } from "../src/general-publication-graph.js";
 import { parseUniversalGraphSpec } from "../src/universal-graph-spec.js";
@@ -14,27 +15,27 @@ import {
 
 const updateIdentity = { ownerId: "owner-1", deviceId: "device-1", workflowId: "workflow-1", documentId: "document-1", pageId: "page-1", expectedRevision: 1 };
 const fixtureFamilies = [
-  ["custom spatial backbone", unknownCustomSpatialBackboneUgs, "spatial-scale"],
-  ["residual multi-branch network", unknownResidualMultiBranchUgs, "residual-branch"],
-  ["multi-scale encoder-decoder", unknownMultiScaleEncoderDecoderUgs, "encoder-decoder"],
-  ["dual-tower cross-modal fusion", unknownDualTowerCrossModalFusionUgs, "dual-tower-fusion"],
-  ["repeated fusion stack", unknownRepeatedFusionStackUgs, "repeat-collapse"],
+  ["custom spatial backbone", unknownCustomSpatialBackboneUgs],
+  ["residual multi-branch network", unknownResidualMultiBranchUgs],
+  ["multi-scale encoder-decoder", unknownMultiScaleEncoderDecoderUgs],
+  ["dual-tower cross-modal fusion", unknownDualTowerCrossModalFusionUgs],
+  ["repeated fusion stack", unknownRepeatedFusionStackUgs],
 ] as const;
 
 function compile(creator: () => any) {
   const ugs = parseUniversalGraphSpec(creator());
   const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
-  return compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+  return { graph, pvp: compilePublicationVisualPlan({ ugs, graph, updateIdentity }) };
 }
 
 function pointForPort(plan: any, portId: string) {
   const port = plan.ports.find((item: any) => item.portId === portId);
   const primitive = plan.primitives.find((item: any) => item.primitiveId === port.primitiveId);
   const { x, y, width, height } = primitive.bounds;
-  if (port.anchor.side === "left") return { x, y: y + height * port.anchor.offset / 1000 };
-  if (port.anchor.side === "right") return { x: x + width, y: y + height * port.anchor.offset / 1000 };
-  if (port.anchor.side === "top") return { x: x + width * port.anchor.offset / 1000, y };
-  return { x: x + width * port.anchor.offset / 1000, y: y + height };
+  if (port.anchor.side === "left") return { x, y: Math.round(y + height * port.anchor.offset / 1000) };
+  if (port.anchor.side === "right") return { x: x + width, y: Math.round(y + height * port.anchor.offset / 1000) };
+  if (port.anchor.side === "top") return { x: Math.round(x + width * port.anchor.offset / 1000), y };
+  return { x: Math.round(x + width * port.anchor.offset / 1000), y: y + height };
 }
 
 function assertPvpGeometry(plan: any) {
@@ -59,20 +60,19 @@ function assertPvpGeometry(plan: any) {
 }
 
 describe("zero-template universal PVP fixture matrix", () => {
-  it.each(fixtureFamilies)("renders %s through the same deterministic UGS to SVG path", (_name, creator, expectedProfileId) => {
-    const first = compile(creator);
-    const second = compile(creator);
+  it.each(fixtureFamilies)("renders %s through the same deterministic UGS to SVG path", (_name, creator) => {
+    const { graph, pvp: first } = compile(creator);
+    const { pvp: second } = compile(creator);
     const qa = evaluatePublicationVisualPlanQa(first);
+    const preview = projectPublicationVisualPlanPreview({ graph, pvp: first });
     const svg = renderPublicationVisualPlanPreview({
-      kind: "formal",
-      exportEligible: false,
+      ...preview,
       draft: { id: "draft-zero-template", revision: 1 },
-      pvp: first,
     });
 
     expect(first.identity.canonicalHash).toBe(second.identity.canonicalHash);
     expect(first.eligibility).toMatchObject({ kind: "formal", qaStatus: "pending" });
-    expect(first.profileApplications).toMatchObject([{ profileId: expectedProfileId, profileVersion: "u3-1" }]);
+    expect(first.profileApplications).toEqual([]);
     expect(qa).toMatchObject({ status: "passed", planHash: first.identity.canonicalHash });
     expect(first.sourceMappings).toHaveLength(first.primitives.length);
     assertPvpGeometry(first);
@@ -90,13 +90,12 @@ describe("zero-template universal PVP fixture matrix", () => {
   it.each(fixtureFamilies)("keeps ambiguous %s topology preview-only without a QA pass", (_name, creator) => {
     const source = creator();
     source.edges[0] = { ...source.edges[0], relation: "candidate", knowledge: "candidate" };
-    const plan = compile(() => source);
+    const { graph, pvp: plan } = compile(() => source);
     const qa = evaluatePublicationVisualPlanQa(plan);
+    const preview = projectPublicationVisualPlanPreview({ graph, pvp: plan });
     const svg = renderPublicationVisualPlanPreview({
-      kind: "candidate",
-      exportEligible: false,
+      ...preview,
       draft: { id: "draft-zero-template-candidate", revision: 1 },
-      pvp: plan,
     });
 
     expect(plan.eligibility.kind).toBe("candidate");

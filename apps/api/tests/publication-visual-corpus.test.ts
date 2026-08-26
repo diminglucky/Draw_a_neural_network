@@ -60,6 +60,16 @@ describe("anonymous PublicationVisual SVG corpus", () => {
       expect(evaluatePublicationVisualPlanQa(first.pvp).checks).toContainEqual(expect.objectContaining({ code: "grayscale-role-collision", status: "passed" }));
       expect(first.preview).toMatchObject({ kind: "formal", exportEligible: false });
       expect(first.svg).toContain("publication-visual-plan-svg");
+
+      const page = (first.pvp.coordinateSpace as any).page;
+      const primitives = first.pvp.primitives as any[];
+      expect(primitives.every((primitive) => contains(page, primitive.bounds))).toBe(true);
+      expect(primitives.every((primitive, index) => primitives.slice(index + 1).every((other) => !overlap(primitive.bounds, other.bounds)))).toBe(true);
+      expect(new Set(primitives.map((primitive) => `${primitive.bounds.width}x${primitive.bounds.height}`)).size).toBeGreaterThan(1);
+
+      const moduleWidth = Math.max(0, ...primitives.filter((primitive) => primitive.kind === "ModuleFrame").map((primitive) => primitive.bounds.width));
+      const markers = primitives.filter((primitive) => ["SplitMarker", "AddMarker", "ConcatMarker"].includes(primitive.kind));
+      if (moduleWidth > 0 && markers.length > 0) expect(markers.every((marker) => marker.bounds.width < moduleWidth)).toBe(true);
     },
   );
 
@@ -80,3 +90,17 @@ describe("anonymous PublicationVisual SVG corpus", () => {
     expect(Object.keys(result.preview.plan)).not.toEqual(expect.arrayContaining(["sourceMappings", "updateIdentity", "rendererRequirements", "nativeSupport"]));
   });
 });
+
+function overlap(left: { x: number; y: number; width: number; height: number }, right: { x: number; y: number; width: number; height: number }): boolean {
+  return left.x < right.x + right.width
+    && left.x + left.width > right.x
+    && left.y < right.y + right.height
+    && left.y + left.height > right.y;
+}
+
+function contains(outer: { x: number; y: number; width: number; height: number }, inner: { x: number; y: number; width: number; height: number }): boolean {
+  return inner.x >= outer.x
+    && inner.y >= outer.y
+    && inner.x + inner.width <= outer.x + outer.width
+    && inner.y + inner.height <= outer.y + outer.height;
+}

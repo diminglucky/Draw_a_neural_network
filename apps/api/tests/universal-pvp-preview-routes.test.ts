@@ -119,7 +119,7 @@ describe("owner-scoped v4 universal PVP preview route", () => {
     expect(response.headers["figure-version"]).toBe("4");
     expect(response.json()).toMatchObject({ schemaVersion: 1, kind: "formal", exportEligible: false });
     expect(response.json().plan.primitives).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "CustomOperator", label: "Novel Mixer" }),
+      expect.objectContaining({ kind: "OperatorFrame", label: "Novel Mixer" }),
     ]));
     expect(response.body).not.toMatch(/route-formal-source|sourceMappings|updateIdentity|rendererRequirements|workerControl|comControl|sourcePath|outputPath|prompt/i);
     expect(await store.listJobs()).toHaveLength(0);
