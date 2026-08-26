@@ -546,6 +546,48 @@ public sealed class SelectedPageVisioComBackendTests
         Assert.Equal(1, fixture.Document.SaveCalls);
     }
 
+    [Fact]
+    public async Task Backend_blank_namespace_apply_revokes_native_pre_save_authorization_before_argument_validation()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        await using var backend = new SelectedPageVisioComBackend(fixture.Native);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => backend.ApplyOwnedRegionAsync(fixture.Target, " ", Plan()));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => backend.SaveSelectedDocumentAsync(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Backend_null_plan_apply_revokes_native_pre_save_authorization_before_argument_validation()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        await using var backend = new SelectedPageVisioComBackend(fixture.Native);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => backend.ApplyOwnedRegionAsync(fixture.Target, OwnershipNamespace, null!));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => backend.SaveSelectedDocumentAsync(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Backend_cancelled_apply_revokes_native_pre_save_authorization_before_returning_cancellation()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        await using var backend = new SelectedPageVisioComBackend(fixture.Native);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => backend.ApplyOwnedRegionAsync(
+            fixture.Target,
+            OwnershipNamespace,
+            Plan(),
+            cancellation.Token));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => backend.SaveSelectedDocumentAsync(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
     private static DiagramDocument Plan() => new("Selected page test", [], [], []);
 
     private static NativeReadbackFixture CreateNativeReadbackFixture(params FakeShape[] shapes)
@@ -765,6 +807,14 @@ public sealed class SelectedPageVisioComBackendTests
             var actual = AttachActiveSelection()
                 ?? throw new InvalidOperationException("The selected Visio page is no longer active.");
             if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, actual))
+            {
+                throw new InvalidOperationException("The selected Visio document or page changed before the operation could run.");
+            }
+        }
+
+        public void BeginApply(SelectedPageTarget target)
+        {
+            if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, ActiveTarget))
             {
                 throw new InvalidOperationException("The selected Visio document or page changed before the operation could run.");
             }

@@ -15,6 +15,7 @@ internal interface ISelectedPageVisioComOperations
     void EnsureVisibleApplication();
     SelectedPageTarget? AttachActiveSelection();
     void RevalidateActiveSelection(SelectedPageTarget target);
+    void BeginApply(SelectedPageTarget target);
     PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan);
     void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, PreparedSelectedPageRegion preparedRegion);
     void SaveSelectedDocument(SelectedPageTarget target);
@@ -80,6 +81,8 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(target);
+        await BeginApplyAsync(target).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
         ArgumentNullException.ThrowIfNull(plan);
         await InvokeAsync(() =>
@@ -167,6 +170,13 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
             return true;
         }).ConfigureAwait(false);
     }
+
+    private Task BeginApplyAsync(SelectedPageTarget target) =>
+        _runner.InvokeAsync(() =>
+        {
+            _operations.BeginApply(target);
+            return true;
+        });
 
     private Task<T> InvokeAsync<T>(Func<T> action, CancellationToken cancellationToken)
     {
@@ -257,6 +267,14 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(target);
         RevalidateActiveTarget(target);
+    }
+
+    public void BeginApply(SelectedPageTarget target)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(target);
+        RequireTarget(target);
+        ResetVerificationState();
     }
 
     public PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan)
