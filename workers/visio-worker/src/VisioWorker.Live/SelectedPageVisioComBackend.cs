@@ -198,6 +198,10 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     private dynamic? _window;
     private dynamic? _document;
     private dynamic? _page;
+    private SelectedPageTarget? _attachedTarget;
+    private SelectedPagePromotedRegionManifest? _expectedPromotedManifest;
+    private string? _preSaveVerifiedHash;
+    private string? _savedManifestHash;
     private bool _disposed;
 
     public SelectedPageVisioComNative(VisioComEngineOptions options)
@@ -232,10 +236,15 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
             if (document is null) return null;
 
             var target = ReadTarget(document, page);
+            if (!EqualityComparer<SelectedPageTarget>.Default.Equals(_attachedTarget, target))
+            {
+                ResetVerificationState();
+            }
             ReleaseAttachedReferences();
             _window = window;
             _page = page;
             _document = document;
+            _attachedTarget = target;
             window = null;
             page = null;
             document = null;
@@ -275,20 +284,34 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         {
             throw new InvalidOperationException("The prepared Visio region does not match the requested selected-page target.");
         }
-        SelectedPageOwnedRegionReplacement.Execute(
-            this,
-            preparedRegion,
-            ownershipNamespace,
-            StagingNamespace(target, ownershipNamespace));
+        ResetVerificationState();
+        try
+        {
+            var manifest = SelectedPageOwnedRegionReplacement.Execute(
+                this,
+                preparedRegion,
+                ownershipNamespace,
+                StagingNamespace(target, ownershipNamespace));
+            _expectedPromotedManifest = FreezeManifest(manifest);
+        }
+        catch
+        {
+            ResetVerificationState();
+            throw;
+        }
     }
 
     public void SaveSelectedDocument(SelectedPageTarget target)
     {
         ThrowIfDisposed();
         RequireTarget(target);
+        var verifiedHash = _preSaveVerifiedHash
+            ?? throw new WorkerProtocolException("Saving the selected Visio document requires a successful exact pre-save readback.");
+        _preSaveVerifiedHash = null;
         try
         {
             _document!.Save();
+            _savedManifestHash = verifiedHash;
         }
         catch (Exception error)
         {
@@ -300,8 +323,17 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     {
         ThrowIfDisposed();
         RequireTarget(target);
+        _preSaveVerifiedHash = null;
+        var expectedManifest = _expectedPromotedManifest
+            ?? throw new WorkerProtocolException("Selected-page exact readback requires a promoted-region manifest from a successful apply.");
+        if (!EqualityComparer<SelectedPageTarget>.Default.Equals(expectedManifest.Target, target)
+            || !string.Equals(expectedManifest.OwnershipNamespace, ownershipNamespace, StringComparison.Ordinal))
+        {
+            throw new WorkerProtocolException("Selected-page exact readback did not match the promoted-region target or ownership namespace.");
+        }
         var userShapeCount = 0;
         var ownedShapes = new List<SelectedPageReadbackShape>();
+        var actualEntries = new List<SelectedPageShapeCreationEntry>();
         dynamic? shapes = null;
         try
         {
@@ -325,7 +357,14 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
                     {
                         throw new WorkerProtocolException("Selected-page owned shape is missing its source mapping semantic IDs.");
                     }
-                    ownedShapes.Add(new SelectedPageReadbackShape(NativeShapeId((object)shape), ownershipNamespace, semanticIds));
+                    var role = ReadRendererRole((object)shape);
+                    var nativeShapeId = NativeShapeId((object)shape);
+                    if (!int.TryParse(nativeShapeId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var shapeId) || shapeId <= 0)
+                    {
+                        throw new WorkerProtocolException("Selected-page owned shape has an invalid native shape ID.");
+                    }
+                    ownedShapes.Add(new SelectedPageReadbackShape(nativeShapeId, ownershipNamespace, semanticIds));
+                    actualEntries.Add(new SelectedPageShapeCreationEntry(shapeId, semanticIds, role));
                 }
                 finally
                 {
@@ -336,6 +375,20 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         finally
         {
             VisioComEngine.ReleaseCom(shapes);
+        }
+
+        VerifyExactPromotedRegion(expectedManifest, actualEntries);
+        var manifestHash = CanonicalManifestHash(target, ownershipNamespace, actualEntries);
+        if (_savedManifestHash is not null)
+        {
+            if (!string.Equals(_savedManifestHash, manifestHash, StringComparison.Ordinal))
+            {
+                throw new WorkerProtocolException("Selected-page post-save readback did not reproduce the saved promoted-region manifest.");
+            }
+        }
+        else
+        {
+            _preSaveVerifiedHash = manifestHash;
         }
 
         return new SelectedPageReadback(
@@ -355,12 +408,16 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     {
         ThrowIfDisposed();
         RequireTarget(target);
+        ResetVerificationState();
+        _attachedTarget = null;
         ReleaseAttachedReferences();
     }
 
     public void Dispose()
     {
         if (_disposed) return;
+        ResetVerificationState();
+        _attachedTarget = null;
         ReleaseAttachedReferences();
         VisioComEngine.ReleaseCom(_application);
         _application = null;
@@ -373,6 +430,7 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         var actual = ReadTarget(_document, _page);
         if (!EqualityComparer<SelectedPageTarget>.Default.Equals(expected, actual))
         {
+            ResetVerificationState();
             throw new InvalidOperationException("The selected Visio document or page changed before the operation could run.");
         }
     }
@@ -777,6 +835,92 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
 
     SelectedPageShapeDeletionOutcome ISelectedPageShapeMutation.DeleteShapes(IReadOnlySet<int> shapeIds) => DeleteShapes(_page!, shapeIds);
 
+    private static SelectedPagePromotedRegionManifest FreezeManifest(SelectedPagePromotedRegionManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        if (manifest.Entries.Count == 0
+            || manifest.Entries.Any(entry => entry.ShapeId <= 0 || entry.SemanticIds.Count == 0))
+        {
+            throw new WorkerProtocolException("Selected-page promoted-region manifest is empty or invalid.");
+        }
+
+        var entries = manifest.Entries
+            .OrderBy(entry => entry.ShapeId)
+            .Select(entry => new SelectedPageShapeCreationEntry(
+                entry.ShapeId,
+                Array.AsReadOnly(entry.SemanticIds.ToArray()),
+                entry.Role))
+            .ToArray();
+        if (entries.Select(entry => entry.ShapeId).Distinct().Count() != entries.Length)
+        {
+            throw new WorkerProtocolException("Selected-page promoted-region manifest contains duplicate native shape IDs.");
+        }
+
+        return new SelectedPagePromotedRegionManifest(
+            manifest.Target,
+            manifest.OwnershipNamespace,
+            Array.AsReadOnly(entries));
+    }
+
+    private static void VerifyExactPromotedRegion(
+        SelectedPagePromotedRegionManifest expectedManifest,
+        IReadOnlyList<SelectedPageShapeCreationEntry> actualEntries)
+    {
+        var expectedByShapeId = expectedManifest.Entries.ToDictionary(entry => entry.ShapeId);
+        if (expectedByShapeId.Count != expectedManifest.Entries.Count)
+        {
+            throw new WorkerProtocolException("Selected-page promoted-region manifest contains duplicate native shape IDs.");
+        }
+
+        var actualByShapeId = new Dictionary<int, SelectedPageShapeCreationEntry>();
+        foreach (var entry in actualEntries)
+        {
+            if (!actualByShapeId.TryAdd(entry.ShapeId, entry))
+            {
+                throw new WorkerProtocolException("Selected-page exact readback found duplicate native shape IDs in the final ownership namespace.");
+            }
+        }
+
+        if (actualByShapeId.Count != expectedByShapeId.Count)
+        {
+            throw new WorkerProtocolException("Selected-page exact readback did not reproduce the promoted-region shape set.");
+        }
+
+        foreach (var expected in expectedByShapeId)
+        {
+            if (!actualByShapeId.TryGetValue(expected.Key, out var actual)
+                || actual.Role != expected.Value.Role
+                || !actual.SemanticIds.SequenceEqual(expected.Value.SemanticIds, StringComparer.Ordinal))
+            {
+                throw new WorkerProtocolException("Selected-page exact readback did not reproduce the promoted-region shape mapping.");
+            }
+        }
+    }
+
+    private static string CanonicalManifestHash(
+        SelectedPageTarget target,
+        string ownershipNamespace,
+        IEnumerable<SelectedPageShapeCreationEntry> entries)
+    {
+        var payload = new StringBuilder()
+            .Append(target.DocumentId).Append('\n')
+            .Append(target.PageId).Append('\n')
+            .Append(target.DocumentFingerprint).Append('\n')
+            .Append(target.PageFingerprint).Append('\n')
+            .Append(target.ExpectedRevision.ToString(CultureInfo.InvariantCulture)).Append('\n')
+            .Append(ownershipNamespace).Append('\n');
+        foreach (var entry in entries.OrderBy(entry => entry.ShapeId))
+        {
+            payload
+                .Append(entry.ShapeId.ToString(CultureInfo.InvariantCulture)).Append('|')
+                .Append(entry.Role).Append('|')
+                .AppendJoin(',', entry.SemanticIds)
+                .Append('\n');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload.ToString()))).ToLowerInvariant();
+    }
+
     private static string NativeShapeId(object shape)
     {
         dynamic nativeShape = shape;
@@ -790,8 +934,29 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         return string.IsNullOrWhiteSpace(raw)
             ? []
             : raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
                 .ToArray();
+    }
+
+    private static SelectedPageShapeRole ReadRendererRole(object shape)
+    {
+        var raw = VisioComEngine.ReadShapeDataOrNullStrict(shape, "synapse.rendererRole");
+        if (string.IsNullOrWhiteSpace(raw)
+            || !Enum.TryParse<SelectedPageShapeRole>(raw, ignoreCase: false, out var role)
+            || !Enum.IsDefined(role)
+            || !string.Equals(raw, role.ToString(), StringComparison.Ordinal))
+        {
+            throw new WorkerProtocolException("Selected-page owned shape is missing or has an invalid renderer role.");
+        }
+
+        return role;
+    }
+
+    private void ResetVerificationState()
+    {
+        _expectedPromotedManifest = null;
+        _preSaveVerifiedHash = null;
+        _savedManifestHash = null;
     }
 
     private void ReleaseAttachedReferences()

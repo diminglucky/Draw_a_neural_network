@@ -308,7 +308,149 @@ public sealed class SelectedPageVisioComBackendTests
         Assert.NotEqual(first, changed);
     }
 
+    [Fact]
+    public void Native_readback_rejects_an_empty_final_namespace_when_a_promoted_entry_is_expected()
+    {
+        using var fixture = CreateNativeReadbackFixture(new FakeShape(10));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+    }
+
+    [Fact]
+    public void Native_readback_rejects_a_missing_expected_final_owned_shape()
+    {
+        using var fixture = CreateNativeReadbackFixture(OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary), Entry(11, ["semantic:b"], SelectedPageShapeRole.Label));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+    }
+
+    [Fact]
+    public void Native_readback_rejects_an_unexpected_extra_final_owned_shape()
+    {
+        using var fixture = CreateNativeReadbackFixture(
+            OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Primary),
+            OwnedShape(11, ["semantic:b"], SelectedPageShapeRole.Label));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+    }
+
+    [Fact]
+    public void Native_readback_rejects_duplicate_native_shape_ids_in_the_final_namespace()
+    {
+        using var fixture = CreateNativeReadbackFixture(
+            OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Primary),
+            OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+    }
+
+    [Fact]
+    public void Native_readback_rejects_an_empty_semantic_mapping_in_the_final_namespace()
+    {
+        using var fixture = CreateNativeReadbackFixture(OwnedShape(10, [], SelectedPageShapeRole.Primary));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+    }
+
+    [Fact]
+    public void Native_readback_rejects_a_wrong_semantic_mapping_in_the_final_namespace()
+    {
+        using var fixture = CreateNativeReadbackFixture(OwnedShape(10, ["semantic:other"], SelectedPageShapeRole.Primary));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+    }
+
+    [Fact]
+    public void Native_readback_rejects_a_wrong_renderer_role_in_the_final_namespace()
+    {
+        using var fixture = CreateNativeReadbackFixture(OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Label));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+    }
+
+    [Fact]
+    public void Native_readback_ignores_and_counts_an_unrelated_user_shape()
+    {
+        using var fixture = CreateNativeReadbackFixture(
+            new FakeShape(99),
+            OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+
+        var readback = fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace);
+
+        Assert.True(readback.Valid);
+        Assert.Equal(1, readback.UserOwnedShapeCount);
+        Assert.Single(readback.AgentOwnedShapes);
+    }
+
+    [Fact]
+    public void Native_readback_accepts_all_exact_promoted_entries()
+    {
+        using var fixture = CreateNativeReadbackFixture(
+            OwnedShape(10, ["semantic:b", "semantic:a"], SelectedPageShapeRole.Primary),
+            OwnedShape(11, ["semantic:c"], SelectedPageShapeRole.Label));
+        SetExpectedPromotedManifest(
+            fixture.Native,
+            fixture.Target,
+            Entry(10, ["semantic:a", "semantic:b"], SelectedPageShapeRole.Primary),
+            Entry(11, ["semantic:c"], SelectedPageShapeRole.Label));
+
+        var readback = fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace);
+
+        Assert.True(readback.Valid);
+        Assert.Equal(["10", "11"], readback.AgentOwnedShapes.Select(shape => shape.NativeShapeId));
+        Assert.Equal(["semantic:a", "semantic:b"], readback.AgentOwnedShapes[0].SourceMappingSemanticIds);
+    }
+
+    [Fact]
+    public void Native_save_requires_a_successful_pre_save_exact_readback()
+    {
+        using var fixture = CreateNativeReadbackFixture(OwnedShape(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+
+        SetExpectedPromotedManifest(fixture.Native, fixture.Target, Entry(10, ["semantic:a"], SelectedPageShapeRole.Primary));
+        fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace);
+        fixture.Native.SaveSelectedDocument(fixture.Target);
+
+        Assert.Equal(1, fixture.Document.SaveCalls);
+    }
+
     private static DiagramDocument Plan() => new("Selected page test", [], [], []);
+
+    private static NativeReadbackFixture CreateNativeReadbackFixture(params FakeShape[] shapes)
+    {
+        var document = new FakeDocument("101", "drawing.vsdx");
+        var page = new FakePage("1", "Architecture", document, new FakeShapes(shapes));
+        var native = new SelectedPageVisioComNative(new VisioComEngineOptions());
+        SetPrivateField(native, "_application", new FakeApplication(page));
+        var target = Assert.IsType<SelectedPageTarget>(native.AttachActiveSelection());
+        return new NativeReadbackFixture(native, target, document);
+    }
+
+    private static FakeShape OwnedShape(int id, IReadOnlyList<string> semanticIds, SelectedPageShapeRole role) =>
+        new(id, shapeData: new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["synapse.sessionOwner"] = OwnershipNamespace,
+            ["synapse.sourceMappingSemanticIds"] = string.Join(",", semanticIds),
+            ["synapse.rendererRole"] = role.ToString(),
+        });
+
+    private static SelectedPageShapeCreationEntry Entry(int id, IReadOnlyList<string> semanticIds, SelectedPageShapeRole role) =>
+        new(id, semanticIds, role);
+
+    private static void SetExpectedPromotedManifest(
+        SelectedPageVisioComNative native,
+        SelectedPageTarget target,
+        params SelectedPageShapeCreationEntry[] entries) =>
+        SetPrivateField(native, "_expectedPromotedManifest", new SelectedPagePromotedRegionManifest(target, OwnershipNamespace, entries));
 
     private static void SetPrivateField(object target, string name, object value)
     {
@@ -340,6 +482,9 @@ public sealed class SelectedPageVisioComBackendTests
         public string ID { get; } = id;
         public string Name { get; } = name;
         public FakePages Pages { get; } = new();
+        public int SaveCalls { get; private set; }
+
+        public void Save() => SaveCalls++;
     }
 
     public sealed class FakePages
@@ -347,11 +492,12 @@ public sealed class SelectedPageVisioComBackendTests
         public int Count => 2;
     }
 
-    public sealed class FakePage(string id, string name, FakeDocument document)
+    public sealed class FakePage(string id, string name, FakeDocument document, FakeShapes? shapes = null)
     {
         public string ID { get; } = id;
         public string Name { get; } = name;
         public FakeDocument Document { get; } = document;
+        public FakeShapes Shapes { get; } = shapes ?? new FakeShapes();
     }
 
     public sealed class FakeDeletionPage(FakeShapes shapes)
@@ -381,9 +527,10 @@ public sealed class SelectedPageVisioComBackendTests
         }
     }
 
-    public sealed class FakeShape(int id, Exception? deleteError = null)
+    public sealed class FakeShape(int id, Exception? deleteError = null, IReadOnlyDictionary<string, string>? shapeData = null)
     {
         private List<FakeShape>? _owner;
+        private readonly IReadOnlyDictionary<string, string> _shapeData = shapeData ?? new Dictionary<string, string>(StringComparer.Ordinal);
 
         public int ID { get; } = id;
 
@@ -394,6 +541,35 @@ public sealed class SelectedPageVisioComBackendTests
             if (deleteError is not null) throw deleteError;
             _owner!.Remove(this);
         }
+
+        public int CellExistsU(string name, int section) => FindShapeDataKey(name) is null ? 0 : 1;
+
+        public FakeCell CellsU(string name) => new(_shapeData[ShapeDataKey(name)]);
+
+        private string ShapeDataKey(string cellName) => FindShapeDataKey(cellName)
+            ?? throw new InvalidOperationException("The requested shape-data cell does not exist.");
+
+        private string? FindShapeDataKey(string cellName)
+        {
+            var rowName = cellName[5..];
+            return _shapeData.Keys.SingleOrDefault(key => string.Equals(
+                new string(key.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray()),
+                rowName,
+                StringComparison.Ordinal));
+        }
+    }
+
+    public sealed class FakeCell(string value)
+    {
+        public string[] ResultStr { get; } = [value];
+    }
+
+    private sealed class NativeReadbackFixture(SelectedPageVisioComNative native, SelectedPageTarget target, FakeDocument document) : IDisposable
+    {
+        public SelectedPageVisioComNative Native { get; } = native;
+        public SelectedPageTarget Target { get; } = target;
+        public FakeDocument Document { get; } = document;
+        public void Dispose() => Native.Dispose();
     }
 
     private sealed class RecordingOperations : ISelectedPageVisioComOperations
