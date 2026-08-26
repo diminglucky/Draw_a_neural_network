@@ -20,6 +20,15 @@
 - `readback_verified` requires an equal post-save exact-manifest readback.
 - Keep real Visio, process-termination recovery, cross-process locking, A2 cancellation, and durable leases outside this plan.
 
+## Completion Status — 2026-08-26
+
+- [x] Tasks 1–4 implementation and review fixes are committed through code HEAD `b89bcf4`.
+- [x] Task 5 focused, Worker, build, TypeScript, foundation, Git, and independent-review evidence is recorded.
+- [ ] Full API baseline is green. Five unchanged baseline failures remain across three files.
+- [ ] Real installed-Visio save/close/reopen acceptance is complete. The two live-acceptance tests remain skipped.
+- [ ] A2 native-apply cancellation, durable leases, process-termination recovery, and cross-process locking are complete.
+- [ ] Publication-aesthetic improvement or publication-quality acceptance is complete.
+
 ---
 
 ### Task 1: Replace the ID-only journal with an exact creation manifest
@@ -35,7 +44,7 @@
 - Produces: immutable `SelectedPagePromotedRegionManifest(Target, OwnershipNamespace, Entries)` returned by `SelectedPageOwnedRegionReplacement.Execute(...)`.
 - Preserves: cleanup uses only IDs in the current operation's creation journal.
 
-- [ ] **Step 1: Write failing manifest validation tests**
+- [x] **Step 1: Write failing manifest validation tests**
 
 Add tests proving duplicate Shape IDs, an empty semantic list, blank semantic IDs, and duplicate semantic IDs are rejected, while canonical ordering is stable:
 
@@ -54,7 +63,7 @@ Assert.Throws<WorkerProtocolException>(() =>
 
 Update the fake mutation to record semantic entries and assert the returned promoted manifest contains only renderer-created IDs, never externally inserted ID `40`.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -64,7 +73,7 @@ dotnet test workers/visio-worker/tests/VisioWorker.Core.Tests/VisioWorker.Core.T
 
 Expected: compilation fails because `SelectedPageShapeRole`, `SelectedPageShapeCreationEntry`, `Entries`, and the manifest return type do not exist.
 
-- [ ] **Step 3: Implement immutable journal entries and manifest return**
+- [x] **Step 3: Implement immutable journal entries and manifest return**
 
 Implement the journal around a Shape-ID keyed dictionary and freeze every public collection:
 
@@ -101,11 +110,11 @@ internal sealed class SelectedPageShapeCreationJournal
 
 Return `SelectedPagePromotedRegionManifest` only after staging and promotion verification succeed. If old-ID cleanup fails after promotion, preserve the existing typed promoted failure behavior.
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+- [x] **Step 4: Run focused tests and verify GREEN**
 
 Run the Task 1 command. Expected: all replacement tests pass, including external ID `40`, zero-shape, draw failure, staging failure, promotion failure, target switch, and partial deletion.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```powershell
 git add workers/visio-worker/src/VisioWorker.Live/SelectedPageOwnedRegionReplacement.cs workers/visio-worker/tests/VisioWorker.Core.Tests/SelectedPageOwnedRegionReplacementTests.cs
@@ -128,7 +137,7 @@ git commit -m "feat: record exact selected-page shape semantics"
 - Consumes: exact journal from Task 1.
 - Removes: `SourceMappingSemanticIds(shape, plan)` name inference and all-node fallback.
 
-- [ ] **Step 1: Write failing renderer-contract tests**
+- [x] **Step 1: Write failing renderer-contract tests**
 
 Extend the existing source contract test to require the three-argument creation callback and to reject any selected-page drawing call that lacks an explicit creation context. Add behavior tests asserting:
 
@@ -143,7 +152,7 @@ Assert.DoesNotContain(source, "SourceMappingSemanticIds(object shape, DiagramDoc
 
 Use an anonymous formal figure-plan fixture with a primitive group, group label, connector, and title. Assert every returned native Shape ID has one exact deterministic semantic mapping.
 
-- [ ] **Step 2: Run renderer/backend tests and verify RED**
+- [x] **Step 2: Run renderer/backend tests and verify RED**
 
 Run:
 
@@ -153,7 +162,7 @@ dotnet test workers/visio-worker/tests/VisioWorker.Core.Tests/VisioWorker.Core.T
 
 Expected: compilation or contract failures because the callback carries only an ID and source mapping still uses name inference/fallback.
 
-- [ ] **Step 3: Add scoped semantic creation context**
+- [x] **Step 3: Add scoped semantic creation context**
 
 Implement one creation method that binds semantic context before invoking native Visio:
 
@@ -182,7 +191,7 @@ Route `DrawRectangle`, `DrawOval`, `DrawLine`, and `DrawPolyline` through this m
 
 Do not derive semantic authority from `NameU`. Names remain diagnostic only.
 
-- [ ] **Step 4: Write Shape Data from the manifest**
+- [x] **Step 4: Write Shape Data from the manifest**
 
 Change `TagAndVerifyShapes` to consume exact manifest entries and write:
 
@@ -193,11 +202,11 @@ synapse.rendererRole=<entry.Role>
 
 Verify both values immediately. Reject a drawn Shape ID that is absent from the manifest, and reject a manifest ID that is absent from the page.
 
-- [ ] **Step 5: Run renderer/backend tests and verify GREEN**
+- [x] **Step 5: Run renderer/backend tests and verify GREEN**
 
 Run the Task 2 command. Expected: all renderer and backend tests pass and every native creation path is covered by exact semantic reporting.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```powershell
 git add workers/visio-worker/src/VisioWorker.Live/VisioComEngine.cs workers/visio-worker/src/VisioWorker.Live/SelectedPageVisioComBackend.cs workers/visio-worker/tests/VisioWorker.Core.Tests/SelectedPageRenderingContractTests.cs workers/visio-worker/tests/VisioWorker.Core.Tests/SelectedPageVisioComBackendTests.cs
@@ -220,7 +229,7 @@ git commit -m "fix: bind selected-page shapes to exact semantics"
 - Preserves: public `SelectedPageReadback` DTO and v3 JSON schema.
 - Changes: `SaveSelectedDocument` requires a current successful pre-save verification.
 
-- [ ] **Step 1: Write failing exact-readback tests**
+- [x] **Step 1: Write failing exact-readback tests**
 
 Add separate tests for:
 
@@ -246,7 +255,7 @@ native.SaveSelectedDocument(target);
 
 The first call must fail before the fake document's `Save()` counter increments.
 
-- [ ] **Step 2: Run readback/backend tests and verify RED**
+- [x] **Step 2: Run readback/backend tests and verify RED**
 
 Run:
 
@@ -256,7 +265,7 @@ dotnet test workers/visio-worker/tests/VisioWorker.Core.Tests/VisioWorker.Core.T
 
 Expected: failures because readback accepts a schema-valid subset and save has no pre-save verification gate.
 
-- [ ] **Step 3: Store and validate the expected manifest**
+- [x] **Step 3: Store and validate the expected manifest**
 
 After successful apply, store the immutable manifest in `SelectedPageVisioComNative`. In `ReadSelectedPage`, build the actual manifest only from Shapes carrying the exact final ownership namespace. Compare expected and actual by Shape ID, semantic IDs, and renderer role. Throw `WorkerProtocolException` on any missing, extra, duplicate, empty, or mismatched entry.
 
@@ -268,15 +277,15 @@ shapeId|role|semanticId1,semanticId2\n
 
 The first successful read after apply sets `_preSaveVerifiedHash`. `SaveSelectedDocument` requires that hash and clears it after save while storing `_savedManifestHash`. A read after save must reproduce `_savedManifestHash`.
 
-- [ ] **Step 4: Preserve failure truth**
+- [x] **Step 4: Preserve failure truth**
 
 Reset verification state on attach, apply start, failed apply, target mismatch, and session release. A failed pre-save read never authorizes save. A failed save never authorizes terminal verification. A failed post-save read returns failure and does not erase the fact that save may have occurred.
 
-- [ ] **Step 5: Run readback/backend tests and verify GREEN**
+- [x] **Step 5: Run readback/backend tests and verify GREEN**
 
 Run the Task 3 command. Expected: all exact readback, save-gate, session, and protocol tests pass.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```powershell
 git add workers/visio-worker/src/VisioWorker.Live/SelectedPageVisioComBackend.cs workers/visio-worker/tests/VisioWorker.Core.Tests/SelectedPageVisioComBackendTests.cs workers/visio-worker/tests/VisioWorker.Core.Tests/SelectedPageWorkerReadbackContractTests.cs workers/visio-worker/tests/VisioWorker.Core.Tests/SelectedPageSessionManagerTests.cs
@@ -299,7 +308,7 @@ git commit -m "fix: verify selected-page shapes before save"
 - Produces: two unique read request IDs.
 - Preserves: `CurrentPageVisioDrawResult` public shape; successful result returns the post-save readback.
 
-- [ ] **Step 1: Write failing command-order and failure tests**
+- [x] **Step 1: Write failing command-order and failure tests**
 
 Change the expected order to:
 
@@ -331,7 +340,7 @@ Add tests proving:
 - close runs exactly once on every attached path;
 - success returns only the post-save readback.
 
-- [ ] **Step 2: Run TypeScript selected-page tests and verify RED**
+- [x] **Step 2: Run TypeScript selected-page tests and verify RED**
 
 Run:
 
@@ -341,11 +350,11 @@ npx.cmd vitest run apps/api/tests/current-page-visio-adapter.test.ts apps/api/te
 
 Expected: order and failure tests fail because the current sequence saves before its only read and returns on the first read.
 
-- [ ] **Step 3: Build two read commands with unique identities**
+- [x] **Step 3: Build two read commands with unique identities**
 
 In `buildSelectedPageVisioSessionCommands`, create `read-before-save` and `read-after-save` commands and return the six-command sequence. Do not add a new command kind or protocol field.
 
-- [ ] **Step 4: Enforce orchestration state**
+- [x] **Step 4: Enforce orchestration state**
 
 In `CurrentPageVisioAdapter.draw`, track `attached`, `closed`, `preSaveReadback`, and `postSaveReadback`. Do not return on the first read. Before executing save, require a successful pre-save readback. Compare canonical public readback fields before accepting the second read:
 
@@ -357,11 +366,11 @@ function sameSelectedPageReadback(left: Readback, right: Readback): boolean {
 
 Return the post-save readback only after the close command succeeds. In `finally`, send close only when attach succeeded and the normal close command did not complete.
 
-- [ ] **Step 5: Run TypeScript selected-page tests and verify GREEN**
+- [x] **Step 5: Run TypeScript selected-page tests and verify GREEN**
 
 Run the Task 4 command. Expected: all selected-page command-order, lifecycle, route, timeout, and projection tests pass.
 
-- [ ] **Step 6: Commit Task 4**
+- [x] **Step 6: Commit Task 4**
 
 ```powershell
 git add apps/api/src/visio-worker-client.ts apps/api/src/current-page-visio-adapter.ts apps/api/tests/current-page-visio-adapter.test.ts apps/api/tests/visio-worker-client.test.ts apps/api/tests/selected-page-routes.test.ts
@@ -380,7 +389,7 @@ git commit -m "fix: verify selected page before and after save"
 - Consumes: Tasks 1-4.
 - Produces: exact verification evidence and remaining-boundary record.
 
-- [ ] **Step 1: Run the complete A1 focused matrix**
+- [x] **Step 1: Run the complete A1 focused matrix**
 
 Run C# and TypeScript tests sequentially where they share build outputs:
 
@@ -391,7 +400,9 @@ npx.cmd vitest run apps/api/tests/current-page-visio-adapter.test.ts apps/api/te
 
 Expected: zero failures and zero unexpected skips.
 
-- [ ] **Step 2: Run repository gates**
+- [x] **Step 2: Run repository gates**
+
+Completed with the known baseline exception: the full API suite remains non-green at `1,226 passed / 5 failed` across three A1-base-unchanged files. This step records execution and classification, not a full-suite pass.
 
 Run:
 
@@ -406,7 +417,9 @@ git diff --check
 
 Release test and build must run sequentially. Record the two installed-Visio skips separately. If the known baseline roadmap/CRLF failures remain, prove their files are unchanged from the A1 base and do not report the complete API suite as passing.
 
-- [ ] **Step 3: Request independent review**
+- [x] **Step 3: Request independent review**
+
+Final whole-branch result at `b89bcf4`: **Approved / Ready to merge for the stated A1 scope**, with `0 Critical`, `0 Important`, and `0 Minor` code findings.
 
 Require explicit review of:
 
@@ -422,11 +435,11 @@ Require explicit review of:
 
 Fix every Critical and Important finding, rerun its covering tests, and request re-review.
 
-- [ ] **Step 4: Record evidence and boundaries**
+- [x] **Step 4: Record evidence and boundaries**
 
 Append the exact RED/GREEN commands, test counts, review result, and commits to operation history. State explicitly that A1 does not implement cancellation during native apply, durable leases, process-termination recovery, save/close/reopen acceptance, or publication-aesthetic improvement.
 
-- [ ] **Step 5: Commit the record**
+- [x] **Step 5: Commit the record**
 
 ```powershell
 git add docs/agent-governance/implementation-records/operation-history.md docs/superpowers/plans/2026-08-26-selected-page-verification-a1.md
@@ -434,5 +447,7 @@ git commit -m "docs: record selected-page verification gate"
 ```
 
 - [ ] **Step 6: Push only when requested**
+
+Not requested in this phase; no push was performed.
 
 Before push, require a clean worktree and verify the remote SHA after a normal non-force push.
