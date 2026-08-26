@@ -47,6 +47,7 @@ public sealed class SelectedPageWorkerReadbackContractTests
     private sealed class RecordingBackend : ISelectedPageSessionBackend
     {
         public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task BeginAttachAttemptAsync() => Task.CompletedTask;
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) => Task.FromResult<SelectedPageTarget?>(Target);
         public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task BeginApplyAttemptAsync(SelectedPageTarget target) => Task.CompletedTask;

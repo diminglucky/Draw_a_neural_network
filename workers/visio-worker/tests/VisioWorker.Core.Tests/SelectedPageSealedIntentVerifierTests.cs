@@ -203,6 +203,7 @@ public sealed class SelectedPageSealedIntentVerifierTests
         public DiagramDocument? AppliedPlan { get; private set; }
 
         public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task BeginAttachAttemptAsync() => Task.CompletedTask;
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(ActiveTarget);
         public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task BeginApplyAttemptAsync(SelectedPageTarget target) => Task.CompletedTask;

@@ -132,6 +132,42 @@ public sealed class SelectedPageSessionManagerTests
     }
 
     [Fact]
+    public async Task Parsed_bad_hmac_apply_attempt_revokes_prior_composed_pre_save_authorization()
+    {
+        await using var fixture = await CreatePreSaveAuthorizedRuntimeAsync();
+        var invalidApply = ParsedApplyRequest(
+            fixture.Binding,
+            CanonicalPlan(fixture.Binding),
+            "wrong-composed-lifecycle-secret",
+            "bad-hmac-apply");
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => fixture.Runtime.ProcessAsync(invalidApply));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => fixture.Runtime.ProcessAsync(
+            Request("save-after-bad-hmac", SelectedPageWorkerCommand.SaveSelectedDocument, fixture.Binding)));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Parsed_native_intent_mapping_failure_revokes_prior_composed_pre_save_authorization()
+    {
+        await using var fixture = await CreatePreSaveAuthorizedRuntimeAsync();
+        var invalidPlan = CanonicalPlan(fixture.Binding)
+            .Replace("pvp-native-intent-1", "pvp-native-intent-invalid", StringComparison.Ordinal);
+        var invalidApply = ParsedApplyRequest(
+            fixture.Binding,
+            invalidPlan,
+            "composed-lifecycle-secret",
+            "invalid-native-intent-apply");
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => fixture.Runtime.ProcessAsync(invalidApply));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => fixture.Runtime.ProcessAsync(
+            Request("save-after-invalid-native-intent", SelectedPageWorkerCommand.SaveSelectedDocument, fixture.Binding)));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
     public async Task Blank_namespace_read_attempt_revokes_prior_pre_save_authorization()
     {
         var (manager, backend) = await AuthorizedManagerAsync();
@@ -192,6 +228,67 @@ public sealed class SelectedPageSessionManagerTests
         Assert.False(backend.PreSaveAuthorized);
     }
 
+    [Fact]
+    public async Task Null_target_explicit_reattach_revokes_prior_pre_save_authorization_before_validation()
+    {
+        var (manager, backend) = await AuthorizedManagerAsync();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => manager.AttachAsync(null!, OwnershipNamespace));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => manager.SaveSelectedDocumentAsync());
+        Assert.Equal(0, backend.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Blank_namespace_explicit_reattach_revokes_prior_pre_save_authorization_before_validation()
+    {
+        var (manager, backend) = await AuthorizedManagerAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => manager.AttachAsync(Target, " "));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => manager.SaveSelectedDocumentAsync());
+        Assert.Equal(0, backend.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Pre_cancelled_explicit_reattach_revokes_prior_pre_save_authorization_before_cancellation()
+    {
+        var (manager, backend) = await AuthorizedManagerAsync();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            manager.AttachAsync(Target, OwnershipNamespace, cancellation.Token));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => manager.SaveSelectedDocumentAsync());
+        Assert.Equal(0, backend.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Visibility_failure_during_explicit_reattach_revokes_prior_pre_save_authorization()
+    {
+        var (manager, backend) = await AuthorizedManagerAsync();
+        backend.VisibilityError = new InvalidOperationException("Visio visibility failed");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.AttachAsync(Target, OwnershipNamespace));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => manager.SaveSelectedDocumentAsync());
+        Assert.Equal(0, backend.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Pre_cancelled_capture_revokes_prior_pre_save_authorization_on_a_retained_backend()
+    {
+        var (manager, backend) = await AuthorizedManagerAsync();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => manager.CaptureActiveSelectionAsync(cancellation.Token));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => manager.SaveSelectedDocumentAsync());
+        Assert.Equal(0, backend.SaveCalls);
+    }
+
     private static DiagramDocument Plan() => new("Current page test", [], [], []);
 
     private static async Task<(SelectedPageSessionManager Manager, AuthorizationTrackingBackend Backend)> AuthorizedManagerAsync()
@@ -223,17 +320,26 @@ public sealed class SelectedPageSessionManagerTests
         SelectedPageWorkerBinding binding) =>
         new(requestId, command, binding);
 
-    private static SelectedPageWorkerRequest ApplyRequest(SelectedPageWorkerBinding binding)
+    private static SelectedPageWorkerRequest ApplyRequest(SelectedPageWorkerBinding binding) =>
+        ParsedApplyRequest(binding, CanonicalPlan(binding), "composed-lifecycle-secret", "apply");
+
+    private static string CanonicalPlan(SelectedPageWorkerBinding binding) =>
+        """
+        {"protocolVersion":"pvp-native-intent-1","planId":"plan-1","planHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","updateIdentity":{"ownerId":"__OWNER__","deviceId":"__DEVICE__","workflowId":"__WORKFLOW__","documentId":"__DOCUMENT__","pageId":"__PAGE__","expectedRevision":__REVISION__},"coordinateSpace":{"id":"pvp-du-1","unit":"du","duPerInch":1000,"page":{"x":0,"y":0,"width":1000,"height":600}},"primitives":[{"primitiveId":"primitive-1","componentId":"component-1","nativeKind":"terminal","label":"Input","bounds":{"x":100,"y":100,"width":300,"height":200},"styleTokenIds":[],"shapeData":{"pvp.planId":"plan-1","pvp.planHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","pvp.primitiveId":"primitive-1","pvp.componentId":"component-1","pvp.ownership":"agent"}}],"connectors":[]}
+        """
+        .Replace("__OWNER__", binding.UserId, StringComparison.Ordinal)
+        .Replace("__DEVICE__", binding.DeviceId, StringComparison.Ordinal)
+        .Replace("__WORKFLOW__", binding.WorkflowId, StringComparison.Ordinal)
+        .Replace("__DOCUMENT__", binding.DocumentId, StringComparison.Ordinal)
+        .Replace("__PAGE__", binding.PageId, StringComparison.Ordinal)
+        .Replace("__REVISION__", binding.ExpectedRevision.ToString(), StringComparison.Ordinal);
+
+    private static SelectedPageWorkerRequest ParsedApplyRequest(
+        SelectedPageWorkerBinding binding,
+        string canonicalPlan,
+        string signingSecret,
+        string requestId)
     {
-        var canonicalPlan = """
-            {"protocolVersion":"pvp-native-intent-1","planId":"plan-1","planHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","updateIdentity":{"ownerId":"__OWNER__","deviceId":"__DEVICE__","workflowId":"__WORKFLOW__","documentId":"__DOCUMENT__","pageId":"__PAGE__","expectedRevision":__REVISION__},"coordinateSpace":{"id":"pvp-du-1","unit":"du","duPerInch":1000,"page":{"x":0,"y":0,"width":1000,"height":600}},"primitives":[{"primitiveId":"primitive-1","componentId":"component-1","nativeKind":"terminal","label":"Input","bounds":{"x":100,"y":100,"width":300,"height":200},"styleTokenIds":[],"shapeData":{"pvp.planId":"plan-1","pvp.planHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","pvp.primitiveId":"primitive-1","pvp.componentId":"component-1","pvp.ownership":"agent"}}],"connectors":[]}
-            """
-            .Replace("__OWNER__", binding.UserId, StringComparison.Ordinal)
-            .Replace("__DEVICE__", binding.DeviceId, StringComparison.Ordinal)
-            .Replace("__WORKFLOW__", binding.WorkflowId, StringComparison.Ordinal)
-            .Replace("__DOCUMENT__", binding.DocumentId, StringComparison.Ordinal)
-            .Replace("__PAGE__", binding.PageId, StringComparison.Ordinal)
-            .Replace("__REVISION__", binding.ExpectedRevision.ToString(), StringComparison.Ordinal);
         var canonicalBytes = Encoding.UTF8.GetBytes(canonicalPlan);
         var envelope = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -255,14 +361,30 @@ public sealed class SelectedPageSessionManagerTests
             ["canonicalPlanBase64"] = Base64Url(canonicalBytes),
         };
         var unsignedEnvelope = JsonSerializer.SerializeToUtf8Bytes(envelope);
-        envelope["signature"] = Base64Url(HMACSHA256.HashData(Encoding.UTF8.GetBytes("composed-lifecycle-secret"), unsignedEnvelope));
-        using var document = JsonDocument.Parse(JsonSerializer.Serialize(envelope));
-        return new SelectedPageWorkerRequest(
-            "apply",
-            SelectedPageWorkerCommand.ApplyOwnedRegion,
-            binding,
-            binding.OwnershipNamespace,
-            document.RootElement.Clone());
+        envelope["signature"] = Base64Url(HMACSHA256.HashData(Encoding.UTF8.GetBytes(signingSecret), unsignedEnvelope));
+        var line = JsonSerializer.Serialize(new
+        {
+            protocolVersion = 3,
+            requestId,
+            command = "applyOwnedRegion",
+            binding = new
+            {
+                jobId = binding.JobId,
+                tenantId = binding.TenantId,
+                userId = binding.UserId,
+                deviceId = binding.DeviceId,
+                workflowId = binding.WorkflowId,
+                documentId = binding.DocumentId,
+                pageId = binding.PageId,
+                documentFingerprint = binding.DocumentFingerprint,
+                pageFingerprint = binding.PageFingerprint,
+                expectedRevision = binding.ExpectedRevision,
+                ownershipNamespace = binding.OwnershipNamespace,
+            },
+            ownershipNamespace = binding.OwnershipNamespace,
+            sealedNativeIntent = envelope,
+        });
+        return SelectedPageWorkerRequestParser.Parse(line);
     }
 
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
@@ -292,11 +414,56 @@ public sealed class SelectedPageSessionManagerTests
         field.SetValue(target, value);
     }
 
+    private static async Task<StatefulRuntimeFixture> CreatePreSaveAuthorizedRuntimeAsync()
+    {
+        var document = new StatefulDocument("101", "drawing.vsdx");
+        var page = new StatefulPage("1", "Architecture", document, width: 10, height: 6);
+        var application = new StatefulApplication(page);
+        var native = new SelectedPageVisioComNative(new VisioComEngineOptions());
+        SetPrivateField(native, "_application", application);
+        var target = TargetFor(document, page);
+        var backend = new SelectedPageVisioComBackend(native);
+        var runtime = new SelectedPageWorkerRuntime(backend, new SelectedPageSealedIntentVerifier("composed-lifecycle-secret"));
+        var fixture = new StatefulRuntimeFixture(runtime, backend, native, document, BindingFor(target));
+        try
+        {
+            await runtime.ProcessAsync(Request("attach", SelectedPageWorkerCommand.AttachSelectedPage, fixture.Binding));
+            await runtime.ProcessAsync(ApplyRequest(fixture.Binding));
+            await runtime.ProcessAsync(Request("read-before-failed-apply", SelectedPageWorkerCommand.ReadSelectedPage, fixture.Binding));
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
+    }
+
+    private sealed class StatefulRuntimeFixture(
+        SelectedPageWorkerRuntime runtime,
+        SelectedPageVisioComBackend backend,
+        SelectedPageVisioComNative native,
+        StatefulDocument document,
+        SelectedPageWorkerBinding binding) : IAsyncDisposable
+    {
+        public SelectedPageWorkerRuntime Runtime { get; } = runtime;
+        public StatefulDocument Document { get; } = document;
+        public SelectedPageWorkerBinding Binding { get; } = binding;
+
+        public async ValueTask DisposeAsync()
+        {
+            await Runtime.DisposeAsync();
+            await backend.DisposeAsync();
+            native.Dispose();
+        }
+    }
+
     private sealed class ReleaseCountingBackend(ISelectedPageSessionBackend inner) : ISelectedPageSessionBackend
     {
         public int ReleaseSessionCalls { get; private set; }
 
         public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) => inner.EnsureVisibleApplicationAsync(cancellationToken);
+        public Task BeginAttachAttemptAsync() => inner.BeginAttachAttemptAsync();
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) => inner.AttachActiveSelectionAsync(cancellationToken);
         public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => inner.RevalidateAttachedTargetAsync(target, cancellationToken);
         public Task BeginApplyAttemptAsync(SelectedPageTarget target) => inner.BeginApplyAttemptAsync(target);
@@ -414,8 +581,16 @@ public sealed class SelectedPageSessionManagerTests
     private sealed class AuthorizationTrackingBackend : ISelectedPageSessionBackend
     {
         public bool PreSaveAuthorized { get; private set; }
+        public Exception? VisibilityError { get; set; }
+        public int SaveCalls { get; private set; }
 
-        public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) =>
+            VisibilityError is null ? Task.CompletedTask : Task.FromException(VisibilityError);
+        public Task BeginAttachAttemptAsync()
+        {
+            PreSaveAuthorized = false;
+            return Task.CompletedTask;
+        }
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) => Task.FromResult<SelectedPageTarget?>(Target);
         public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task BeginApplyAttemptAsync(SelectedPageTarget target)
@@ -433,6 +608,7 @@ public sealed class SelectedPageSessionManagerTests
         {
             if (!PreSaveAuthorized) throw new WorkerProtocolException("Pre-save verification is required.");
             PreSaveAuthorized = false;
+            SaveCalls++;
             return Task.CompletedTask;
         }
         public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default)
@@ -473,6 +649,8 @@ public sealed class SelectedPageSessionManagerTests
             EnsureVisibleApplicationCalls++;
             return Task.CompletedTask;
         }
+
+        public Task BeginAttachAttemptAsync() => Task.CompletedTask;
 
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default)
         {

@@ -13,6 +13,7 @@ namespace VisioWorker.Live;
 internal interface ISelectedPageVisioComOperations
 {
     void EnsureVisibleApplication();
+    void BeginAttach();
     SelectedPageTarget? AttachActiveSelection();
     void RevalidateActiveSelection(SelectedPageTarget target);
     void BeginApply(SelectedPageTarget target);
@@ -72,10 +73,22 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         return InvokeAsync(_operations.EnsureVisibleApplication, cancellationToken);
     }
 
-    public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default)
+    public Task BeginAttachAttemptAsync()
     {
         ThrowIfDisposed();
-        return InvokeAsync(_operations.AttachActiveSelection, cancellationToken);
+        return _runner.InvokeAsync(() =>
+        {
+            _operations.BeginAttach();
+            return true;
+        });
+    }
+
+    public async Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await BeginAttachAttemptAsync().ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return await InvokeAsync(_operations.AttachActiveSelection, cancellationToken).ConfigureAwait(false);
     }
 
     public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default)
@@ -244,6 +257,12 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         VisioComEngine.TrySet(() => _application.Visible = true);
     }
 
+    public void BeginAttach()
+    {
+        ThrowIfDisposed();
+        ResetVerificationState();
+    }
+
     public SelectedPageTarget? AttachActiveSelection()
     {
         ThrowIfDisposed();
@@ -298,16 +317,16 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(target);
-        RequireTarget(target);
         ResetVerificationState();
+        RequireTarget(target);
     }
 
     public void BeginRead(SelectedPageTarget target)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(target);
-        RequireTarget(target);
         _preSaveVerifiedHash = null;
+        RequireTarget(target);
     }
 
     public PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan)
@@ -321,8 +340,8 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     public void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, PreparedSelectedPageRegion preparedRegion)
     {
         ThrowIfDisposed();
-        RequireTarget(target);
         ResetVerificationState();
+        RequireTarget(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
         ArgumentNullException.ThrowIfNull(preparedRegion);
         if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, preparedRegion.Target))
@@ -366,8 +385,8 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     public SelectedPageReadback ReadSelectedPage(SelectedPageTarget target, string ownershipNamespace)
     {
         ThrowIfDisposed();
-        RequireTarget(target);
         _preSaveVerifiedHash = null;
+        RequireTarget(target);
         var expectedManifest = _expectedPromotedManifest
             ?? throw new WorkerProtocolException("Selected-page exact readback requires a promoted-region manifest from a successful apply.");
         if (!EqualityComparer<SelectedPageTarget>.Default.Equals(expectedManifest.Target, target)

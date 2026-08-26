@@ -51,6 +51,7 @@ public sealed class SelectedPageWorkerRuntime : IAsyncDisposable
                 await _session.CloseAsync(cancellationToken).ConfigureAwait(false);
                 return new SelectedPageWorkerResponse(3, request.RequestId, "succeeded", request.Binding);
             case SelectedPageWorkerCommand.ApplyOwnedRegion:
+                await _session.BeginApplyAttemptAsync().ConfigureAwait(false);
                 if (_intentVerifier is null) throw new WorkerProtocolException("Selected-page HMAC verification is not configured.");
                 var canonicalPlan = _intentVerifier.Verify(request);
                 using (var document = JsonDocument.Parse(canonicalPlan))

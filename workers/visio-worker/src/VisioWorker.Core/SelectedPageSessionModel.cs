@@ -57,6 +57,8 @@ public sealed record SelectedPageReadbackShape(
 public interface ISelectedPageSessionBackend
 {
     Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default);
+    /// <summary>Revokes all verification state before an explicit attach or capture attempt can fail.</summary>
+    Task BeginAttachAttemptAsync();
     Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default);
     /// <summary>Checks the current active selection without replacing the attached session or its verification state.</summary>
     Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default);

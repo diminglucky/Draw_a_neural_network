@@ -17,6 +17,7 @@ public sealed class SelectedPageSessionManager
 
     public async Task<SelectedPageSessionResult> AttachAsync(SelectedPageTarget expectedTarget, string ownershipNamespace, CancellationToken cancellationToken = default)
     {
+        await _backend.BeginAttachAttemptAsync().ConfigureAwait(false);
         ArgumentNullException.ThrowIfNull(expectedTarget);
         if (string.IsNullOrWhiteSpace(ownershipNamespace)) throw new ArgumentException("Ownership namespace is required.", nameof(ownershipNamespace));
         cancellationToken.ThrowIfCancellationRequested();
@@ -37,6 +38,7 @@ public sealed class SelectedPageSessionManager
     /// <summary>Reads the currently selected existing page, then releases all retained COM references without mutation.</summary>
     public async Task<SelectedPageSessionResult> CaptureActiveSelectionAsync(CancellationToken cancellationToken = default)
     {
+        await _backend.BeginAttachAttemptAsync().ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         await _backend.EnsureVisibleApplicationAsync(cancellationToken).ConfigureAwait(false);
         var target = await _backend.AttachActiveSelectionAsync(cancellationToken).ConfigureAwait(false);
@@ -62,6 +64,10 @@ public sealed class SelectedPageSessionManager
         EnsureAttachedOwnershipNamespace(ownershipNamespace);
         await _backend.ApplyOwnedRegionAsync(target, ownershipNamespace, plan, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Revokes all apply verification state for the attached target before upstream apply validation can fail.</summary>
+    public Task BeginApplyAttemptAsync() =>
+        _attachedTarget is null ? Task.CompletedTask : _backend.BeginApplyAttemptAsync(_attachedTarget);
 
     public async Task SaveSelectedDocumentAsync(CancellationToken cancellationToken = default)
     {

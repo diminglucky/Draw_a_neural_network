@@ -504,6 +504,69 @@ public sealed class SelectedPageVisioComBackendTests
     }
 
     [Fact]
+    public void Native_begin_apply_target_read_failure_revokes_all_verification_state_before_the_failure()
+    {
+        using var fixture = CreateSavedAndPreSaveVerifiedFixture();
+        fixture.Document.IdReadFailuresRemaining = 2;
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.BeginApply(fixture.Target));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(1, fixture.Document.SaveCalls);
+        Assert.Null(GetPrivateField(fixture.Native, "_expectedPromotedManifest"));
+        Assert.Null(GetPrivateField(fixture.Native, "_preSaveVerifiedHash"));
+        Assert.Null(GetPrivateField(fixture.Native, "_savedManifestHash"));
+    }
+
+    [Fact]
+    public void Native_begin_read_target_read_failure_revokes_pre_save_authorization_but_preserves_saved_truth()
+    {
+        using var fixture = CreateSavedAndPreSaveVerifiedFixture();
+        var savedManifestHash = Assert.IsType<string>(GetPrivateField(fixture.Native, "_savedManifestHash"));
+        fixture.Document.IdReadFailuresRemaining = 2;
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.BeginRead(fixture.Target));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(1, fixture.Document.SaveCalls);
+        Assert.Null(GetPrivateField(fixture.Native, "_preSaveVerifiedHash"));
+        Assert.Equal(savedManifestHash, GetPrivateField(fixture.Native, "_savedManifestHash"));
+    }
+
+    [Fact]
+    public void Native_direct_apply_target_read_failure_revokes_all_verification_state_before_the_failure()
+    {
+        using var fixture = CreateSavedAndPreSaveVerifiedFixture();
+        fixture.Document.IdReadFailuresRemaining = 2;
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ApplyOwnedRegion(
+            fixture.Target,
+            OwnershipNamespace,
+            new PreparedSelectedPageRegion(fixture.Target, Plan())));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(1, fixture.Document.SaveCalls);
+        Assert.Null(GetPrivateField(fixture.Native, "_expectedPromotedManifest"));
+        Assert.Null(GetPrivateField(fixture.Native, "_preSaveVerifiedHash"));
+        Assert.Null(GetPrivateField(fixture.Native, "_savedManifestHash"));
+    }
+
+    [Fact]
+    public void Native_direct_read_target_read_failure_revokes_pre_save_authorization_but_preserves_saved_truth()
+    {
+        using var fixture = CreateSavedAndPreSaveVerifiedFixture();
+        var savedManifestHash = Assert.IsType<string>(GetPrivateField(fixture.Native, "_savedManifestHash"));
+        fixture.Document.IdReadFailuresRemaining = 2;
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.ReadSelectedPage(fixture.Target, OwnershipNamespace));
+
+        Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(1, fixture.Document.SaveCalls);
+        Assert.Null(GetPrivateField(fixture.Native, "_preSaveVerifiedHash"));
+        Assert.Equal(savedManifestHash, GetPrivateField(fixture.Native, "_savedManifestHash"));
+    }
+
+    [Fact]
     public void Native_null_selection_attach_revokes_successful_pre_save_authorization()
     {
         using var fixture = CreatePreSaveVerifiedFixture();
@@ -522,6 +585,20 @@ public sealed class SelectedPageVisioComBackendTests
 
         Assert.Throws<WorkerProtocolException>(() => fixture.Native.AttachActiveSelection());
         Assert.Throws<WorkerProtocolException>(() => fixture.Native.SaveSelectedDocument(fixture.Target));
+        Assert.Equal(0, fixture.Document.SaveCalls);
+    }
+
+    [Fact]
+    public async Task Backend_pre_cancelled_attach_revokes_native_pre_save_authorization_before_dispatch()
+    {
+        using var fixture = CreatePreSaveVerifiedFixture();
+        await using var backend = new SelectedPageVisioComBackend(fixture.Native);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => backend.AttachActiveSelectionAsync(cancellation.Token));
+
+        await Assert.ThrowsAsync<WorkerProtocolException>(() => backend.SaveSelectedDocumentAsync(fixture.Target));
         Assert.Equal(0, fixture.Document.SaveCalls);
     }
 
@@ -688,6 +765,15 @@ public sealed class SelectedPageVisioComBackendTests
         return fixture;
     }
 
+    private static NativeReadbackFixture CreateSavedAndPreSaveVerifiedFixture()
+    {
+        var fixture = CreatePreSaveVerifiedFixture();
+        fixture.Native.SaveSelectedDocument(fixture.Target);
+        var savedManifestHash = Assert.IsType<string>(GetPrivateField(fixture.Native, "_savedManifestHash"));
+        SetPrivateField(fixture.Native, "_preSaveVerifiedHash", savedManifestHash);
+        return fixture;
+    }
+
     private static FakeShape OwnedShape(int id, IReadOnlyList<string> semanticIds, SelectedPageShapeRole role) =>
         OwnedShapeWithRawMapping(id, string.Join(",", semanticIds), role);
 
@@ -747,9 +833,23 @@ public sealed class SelectedPageVisioComBackendTests
 
     public sealed class FakeDocument(string id, string name)
     {
-        public string ID { get; } = id;
+        private readonly string _id = id;
+
+        public string ID
+        {
+            get
+            {
+                if (IdReadFailuresRemaining > 0)
+                {
+                    IdReadFailuresRemaining--;
+                    throw new InvalidOperationException("transient document identity read failure");
+                }
+                return _id;
+            }
+        }
         public string Name { get; } = name;
         public FakePages Pages { get; } = new();
+        public int IdReadFailuresRemaining { get; set; }
         public int SaveCalls { get; private set; }
 
         public void Save() => SaveCalls++;
@@ -877,6 +977,10 @@ public sealed class SelectedPageVisioComBackendTests
         public List<string> ApplyEvents { get; } = [];
 
         public void EnsureVisibleApplication() => EnsureVisibleApplicationCalls++;
+
+        public void BeginAttach()
+        {
+        }
 
         public SelectedPageTarget? AttachActiveSelection()
         {

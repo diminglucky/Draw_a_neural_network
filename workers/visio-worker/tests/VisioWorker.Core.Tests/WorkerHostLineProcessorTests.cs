@@ -567,6 +567,7 @@ public sealed class WorkerHostLineProcessorTests
         public int EnsureVisibleApplicationCalls { get; private set; }
         public int AttachActiveSelectionCalls { get; private set; }
         public int ApplyCalls { get; private set; }
+        public Task BeginAttachAttemptAsync() => Task.CompletedTask;
         public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) { EnsureVisibleApplicationCalls++; return Task.CompletedTask; }
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default)
         {
