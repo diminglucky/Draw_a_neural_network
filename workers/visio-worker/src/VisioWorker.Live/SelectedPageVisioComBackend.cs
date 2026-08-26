@@ -16,6 +16,7 @@ internal interface ISelectedPageVisioComOperations
     SelectedPageTarget? AttachActiveSelection();
     void RevalidateActiveSelection(SelectedPageTarget target);
     void BeginApply(SelectedPageTarget target);
+    void BeginRead(SelectedPageTarget target);
     PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan);
     void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, PreparedSelectedPageRegion preparedRegion);
     void SaveSelectedDocument(SelectedPageTarget target);
@@ -77,11 +78,40 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         return InvokeAsync(_operations.AttachActiveSelection, cancellationToken);
     }
 
+    public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(target);
+        return InvokeAsync(() => _operations.RevalidateActiveSelection(target), cancellationToken);
+    }
+
+    public Task BeginApplyAttemptAsync(SelectedPageTarget target)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(target);
+        return _runner.InvokeAsync(() =>
+        {
+            _operations.BeginApply(target);
+            return true;
+        });
+    }
+
+    public Task BeginReadAttemptAsync(SelectedPageTarget target)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(target);
+        return _runner.InvokeAsync(() =>
+        {
+            _operations.BeginRead(target);
+            return true;
+        });
+    }
+
     public async Task ApplyOwnedRegionAsync(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(target);
-        await BeginApplyAsync(target).ConfigureAwait(false);
+        await BeginApplyAttemptAsync(target).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
         ArgumentNullException.ThrowIfNull(plan);
@@ -114,6 +144,8 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(target);
+        await BeginReadAttemptAsync(target).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
         return await InvokeAsync(() =>
         {
@@ -170,13 +202,6 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
             return true;
         }).ConfigureAwait(false);
     }
-
-    private Task BeginApplyAsync(SelectedPageTarget target) =>
-        _runner.InvokeAsync(() =>
-        {
-            _operations.BeginApply(target);
-            return true;
-        });
 
     private Task<T> InvokeAsync<T>(Func<T> action, CancellationToken cancellationToken)
     {
@@ -275,6 +300,14 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         ArgumentNullException.ThrowIfNull(target);
         RequireTarget(target);
         ResetVerificationState();
+    }
+
+    public void BeginRead(SelectedPageTarget target)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(target);
+        RequireTarget(target);
+        _preSaveVerifiedHash = null;
     }
 
     public PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan)
@@ -942,11 +975,22 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     private static IReadOnlyList<string> ReadSourceMappingSemanticIds(object shape)
     {
         var raw = VisioComEngine.ReadShapeDataOrNullStrict(shape, "synapse.sourceMappingSemanticIds");
-        return string.IsNullOrWhiteSpace(raw)
-            ? []
-            : raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Order(StringComparer.Ordinal)
-                .ToArray();
+        if (string.IsNullOrWhiteSpace(raw)) return [];
+
+        var semanticIds = raw
+            .Split(',', StringSplitOptions.None)
+            .Select(value => value.Trim())
+            .ToArray();
+        if (semanticIds.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new WorkerProtocolException("Selected-page source mapping semantic IDs contain a blank token.");
+        }
+        if (semanticIds.Distinct(StringComparer.Ordinal).Count() != semanticIds.Length)
+        {
+            throw new WorkerProtocolException("Selected-page source mapping semantic IDs contain a duplicate token.");
+        }
+
+        return semanticIds.Order(StringComparer.Ordinal).ToArray();
     }
 
     private static SelectedPageShapeRole ReadRendererRole(object shape)

@@ -58,6 +58,12 @@ public interface ISelectedPageSessionBackend
 {
     Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default);
     Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default);
+    /// <summary>Checks the current active selection without replacing the attached session or its verification state.</summary>
+    Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default);
+    /// <summary>Revokes all prior verification state before an apply attempt can fail validation or cancellation.</summary>
+    Task BeginApplyAttemptAsync(SelectedPageTarget target);
+    /// <summary>Revokes only pre-save authorization before a read attempt can fail validation or cancellation.</summary>
+    Task BeginReadAttemptAsync(SelectedPageTarget target);
     Task ApplyOwnedRegionAsync(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default);
     Task SaveSelectedDocumentAsync(SelectedPageTarget target, CancellationToken cancellationToken = default);
     Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default);

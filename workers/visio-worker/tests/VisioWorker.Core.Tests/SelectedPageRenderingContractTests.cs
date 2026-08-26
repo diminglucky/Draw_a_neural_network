@@ -94,6 +94,63 @@ public sealed class SelectedPageRenderingContractTests
     }
 
     [Fact]
+    public void Formal_auxiliary_oval_is_invoked_and_recorded_with_exact_context_before_shape_work()
+    {
+        var page = new OvalDrawingPage();
+        var created = new List<SelectedPageShapeCreationEntry>();
+        var group = Group(
+            "component:dense",
+            "dense-vector-layer",
+            ["component:dense.frame", "component:dense.unit-1"]);
+        var prepared = Prepared(new VisioFigurePlan(11, 7, [group], [], []));
+
+        VisioComEngine.DrawPreparedSelectedPageRegion(page, prepared, (shapeId, semanticIds, role) =>
+        {
+            created.Add(new SelectedPageShapeCreationEntry(shapeId, semanticIds, role));
+            page.Events.Add($"reported:{shapeId}");
+        });
+
+        Assert.Equal(1, page.DrawOvalCalls);
+        var oval = Assert.Single(page.Created, item => item.Kind == "oval");
+        Assert.True(oval.ShapeId > 0);
+        var entry = Assert.Single(created, item => item.ShapeId == oval.ShapeId);
+        Assert.Equal(["component:dense"], entry.SemanticIds);
+        Assert.Equal(SelectedPageShapeRole.Auxiliary, entry.Role);
+        AssertRecordedBeforeShapeWork(page.Events, oval.ShapeId);
+    }
+
+    [Fact]
+    public void Two_point_connector_falls_back_once_and_records_exact_context_before_shape_work()
+    {
+        var page = new ConnectorFallbackDrawingPage();
+        var created = new List<SelectedPageShapeCreationEntry>();
+        var source = Group("component:source", "pvp-input-terminal", ["component:source"]);
+        var target = Group("component:target", "pvp-output-terminal", ["component:target"]);
+        var connector = new VisioConnector(
+            "connector-1",
+            source.Id,
+            target.Id,
+            "flow",
+            [new DiagramPoint(1, 1), new DiagramPoint(2, 1)]);
+        var prepared = Prepared(new VisioFigurePlan(11, 7, [source, target], [connector], []));
+
+        VisioComEngine.DrawPreparedSelectedPageRegion(page, prepared, (shapeId, semanticIds, role) =>
+        {
+            created.Add(new SelectedPageShapeCreationEntry(shapeId, semanticIds, role));
+            page.Events.Add($"reported:{shapeId}");
+        });
+
+        Assert.Equal(1, page.DrawPolylineCalls);
+        Assert.Equal(1, page.DrawLineCalls);
+        var line = Assert.Single(page.Created, item => item.Kind == "line");
+        Assert.True(line.ShapeId > 0);
+        var entry = Assert.Single(created, item => item.ShapeId == line.ShapeId);
+        Assert.Equal(["component:source", "component:target"], entry.SemanticIds);
+        Assert.Equal(SelectedPageShapeRole.Connector, entry.Role);
+        AssertRecordedBeforeShapeWork(page.Events, line.ShapeId);
+    }
+
+    [Fact]
     public void Every_shape_producing_helper_requires_the_tracking_page()
     {
         var bypasses = typeof(VisioComEngine)
@@ -318,6 +375,76 @@ public sealed class SelectedPageRenderingContractTests
                 ["pvp.planId"] = "plan-1",
             },
             InlineLabel: id);
+
+    private static PreparedSelectedPageRegion Prepared(VisioFigurePlan plan) =>
+        new(
+            new SelectedPageTarget("document-1", "page-1", new string('a', 64), new string('b', 64), 1),
+            new DiagramDocument(string.Empty, [], [], [], plan));
+
+    private static void AssertRecordedBeforeShapeWork(List<string> events, int shapeId)
+    {
+        var createdIndex = events.IndexOf($"created:{shapeId}");
+        var reportedIndex = events.IndexOf($"reported:{shapeId}");
+        var firstShapeWorkIndex = events.FindIndex(item => item.StartsWith($"shape-work:{shapeId}:", StringComparison.Ordinal));
+        Assert.True(createdIndex >= 0 && reportedIndex == createdIndex + 1, $"Shape {shapeId} was not reported immediately after creation.");
+        Assert.True(firstShapeWorkIndex < 0 || reportedIndex < firstShapeWorkIndex, $"Shape {shapeId} was styled before it was reported.");
+    }
+
+    public sealed class OvalDrawingPage
+    {
+        private int _nextShapeId = 200;
+
+        public int DrawOvalCalls { get; private set; }
+        public List<(int ShapeId, string Kind)> Created { get; } = [];
+        public List<string> Events { get; } = [];
+
+        public RecordingDrawingShape DrawRectangle(double x1, double y1, double x2, double y2) => Create("rectangle");
+        public RecordingDrawingShape DrawOval(double x1, double y1, double x2, double y2)
+        {
+            DrawOvalCalls++;
+            return Create("oval");
+        }
+
+        private RecordingDrawingShape Create(string kind)
+        {
+            var shapeId = _nextShapeId++;
+            Created.Add((shapeId, kind));
+            Events.Add($"created:{shapeId}");
+            return new RecordingDrawingShape(shapeId, Events);
+        }
+    }
+
+    public sealed class ConnectorFallbackDrawingPage
+    {
+        private int _nextShapeId = 300;
+
+        public int DrawPolylineCalls { get; private set; }
+        public int DrawLineCalls { get; private set; }
+        public List<(int ShapeId, string Kind)> Created { get; } = [];
+        public List<string> Events { get; } = [];
+
+        public RecordingDrawingShape DrawRectangle(double x1, double y1, double x2, double y2) => Create("rectangle");
+
+        public RecordingDrawingShape DrawPolyline(double[] points, int flags)
+        {
+            DrawPolylineCalls++;
+            throw new InvalidOperationException("fake COM DrawPolyline failure");
+        }
+
+        public RecordingDrawingShape DrawLine(double x1, double y1, double x2, double y2)
+        {
+            DrawLineCalls++;
+            return Create("line");
+        }
+
+        private RecordingDrawingShape Create(string kind)
+        {
+            var shapeId = _nextShapeId++;
+            Created.Add((shapeId, kind));
+            Events.Add($"created:{shapeId}");
+            return new RecordingDrawingShape(shapeId, Events);
+        }
+    }
 
     public sealed class RecordingDrawingPage
     {

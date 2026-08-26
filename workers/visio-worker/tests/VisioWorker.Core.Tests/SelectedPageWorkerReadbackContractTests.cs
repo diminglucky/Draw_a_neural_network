@@ -48,6 +48,9 @@ public sealed class SelectedPageWorkerReadbackContractTests
     {
         public Task EnsureVisibleApplicationAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<SelectedPageTarget?> AttachActiveSelectionAsync(CancellationToken cancellationToken = default) => Task.FromResult<SelectedPageTarget?>(Target);
+        public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task BeginApplyAttemptAsync(SelectedPageTarget target) => Task.CompletedTask;
+        public Task BeginReadAttemptAsync(SelectedPageTarget target) => Task.CompletedTask;
         public Task ApplyOwnedRegionAsync(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task SaveSelectedDocumentAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default) =>

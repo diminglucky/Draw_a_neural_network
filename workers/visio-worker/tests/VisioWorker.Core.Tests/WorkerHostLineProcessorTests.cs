@@ -573,6 +573,9 @@ public sealed class WorkerHostLineProcessorTests
             AttachActiveSelectionCalls++;
             return AttachFailure is null ? Task.FromResult(ActiveTarget) : Task.FromException<SelectedPageTarget?>(AttachFailure);
         }
+        public Task RevalidateAttachedTargetAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task BeginApplyAttemptAsync(SelectedPageTarget target) => Task.CompletedTask;
+        public Task BeginReadAttemptAsync(SelectedPageTarget target) => Task.CompletedTask;
         public Task ApplyOwnedRegionAsync(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default) { ApplyCalls++; return Task.CompletedTask; }
         public Task SaveSelectedDocumentAsync(SelectedPageTarget target, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<SelectedPageReadback> ReadSelectedPageAsync(SelectedPageTarget target, string ownershipNamespace, CancellationToken cancellationToken = default) => Task.FromResult(new SelectedPageReadback(true, target.DocumentId, target.PageId, target.DocumentFingerprint, target.PageFingerprint, target.ExpectedRevision, ownershipNamespace, 0, [], 0));

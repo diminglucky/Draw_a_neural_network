@@ -1,8 +1,8 @@
 namespace VisioWorker.Core;
 
 /// <summary>
-/// Owns a single selected-page session. Every state-changing operation re-attaches the active
-/// Visio selection and rejects it if the document, page, fingerprints or revision have changed.
+/// Owns a single selected-page session. Every operation revalidates the active Visio selection
+/// against the attached identity without repeating the state-revoking explicit attach operation.
 /// </summary>
 public sealed class SelectedPageSessionManager
 {
@@ -53,9 +53,12 @@ public sealed class SelectedPageSessionManager
 
     public async Task ApplyOwnedRegionAsync(string ownershipNamespace, DiagramDocument plan, CancellationToken cancellationToken = default)
     {
+        var target = RequireAttachedTarget();
+        await _backend.BeginApplyAttemptAsync(target).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(ownershipNamespace)) throw new ArgumentException("Ownership namespace is required.", nameof(ownershipNamespace));
         ArgumentNullException.ThrowIfNull(plan);
-        var target = await RevalidateAttachedTargetAsync(cancellationToken).ConfigureAwait(false);
+        target = await RevalidateAttachedTargetAsync(cancellationToken).ConfigureAwait(false);
         EnsureAttachedOwnershipNamespace(ownershipNamespace);
         await _backend.ApplyOwnedRegionAsync(target, ownershipNamespace, plan, cancellationToken).ConfigureAwait(false);
     }
@@ -68,8 +71,11 @@ public sealed class SelectedPageSessionManager
 
     public async Task<SelectedPageReadback> ReadSelectedPageAsync(string ownershipNamespace, CancellationToken cancellationToken = default)
     {
+        var target = RequireAttachedTarget();
+        await _backend.BeginReadAttemptAsync(target).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(ownershipNamespace)) throw new ArgumentException("Ownership namespace is required.", nameof(ownershipNamespace));
-        var target = await RevalidateAttachedTargetAsync(cancellationToken).ConfigureAwait(false);
+        target = await RevalidateAttachedTargetAsync(cancellationToken).ConfigureAwait(false);
         EnsureAttachedOwnershipNamespace(ownershipNamespace);
         var readback = await _backend.ReadSelectedPageAsync(target, ownershipNamespace, cancellationToken).ConfigureAwait(false);
         if (!readback.Valid || !readback.Matches(target) || !string.Equals(readback.OwnershipNamespace, ownershipNamespace, StringComparison.Ordinal) || readback.UnclassifiedShapeCount != 0)
@@ -90,13 +96,14 @@ public sealed class SelectedPageSessionManager
 
     private async Task<SelectedPageTarget> RevalidateAttachedTargetAsync(CancellationToken cancellationToken)
     {
-        if (_attachedTarget is null) throw new InvalidOperationException("A selected Visio page must be attached before this operation.");
+        var target = RequireAttachedTarget();
         cancellationToken.ThrowIfCancellationRequested();
-        var actualTarget = await _backend.AttachActiveSelectionAsync(cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("The selected Visio page is no longer active.");
-        EnsureSameTarget(_attachedTarget, actualTarget);
-        return actualTarget;
+        await _backend.RevalidateAttachedTargetAsync(target, cancellationToken).ConfigureAwait(false);
+        return target;
     }
+
+    private SelectedPageTarget RequireAttachedTarget() =>
+        _attachedTarget ?? throw new InvalidOperationException("A selected Visio page must be attached before this operation.");
 
     private static void EnsureSameTarget(SelectedPageTarget expected, SelectedPageTarget actual)
     {
