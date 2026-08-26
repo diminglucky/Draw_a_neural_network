@@ -608,7 +608,7 @@ function parseIdentifierArray(value, label) {
 
 function validStyleValue(key, value) {
   if (typeof value !== "string" || value.length === 0 || value.length > 32) return false;
-  if (key === "strokeWidth") return /^[1-9][0-9]?$/.test(value);
+  if (key === "strokeWidth") return /^(?:0\.(?:0[1-9]|[1-9][0-9]?)|[1-9][0-9]?(?:\.[0-9]{1,2})?)$/.test(value);
   return /^#[0-9a-fA-F]{6}$/.test(value);
 }
 function styleAttributes(styles) {

@@ -307,6 +307,26 @@ describe("PublicationVisualPlan browser preview", () => {
     expect(svg).toContain('stroke-width="3"');
   });
 
+  it("accepts bounded decimal stroke widths emitted by the canonical PVP compiler", () => {
+    const renderWithStrokeWidth = (strokeWidth) => {
+      const raw = planResponse();
+      raw.pvp.styleTokens = {
+        tokenSetVersion: "pvp-style-1",
+        tokens: [{ tokenId: "style:stroke-width", values: { stroke: "#1d4ed8", strokeWidth } }],
+      };
+      raw.pvp.primitives[1].styleTokenIds = ["style:stroke-width"];
+      return renderPublicationVisualPlanPreview(publicPreview(raw));
+    };
+
+    for (const strokeWidth of ["0.01", "0.1", "1", "1.2", "1.25", "99", "99.99"]) {
+      expect(renderWithStrokeWidth(strokeWidth)).toContain(`stroke-width="${strokeWidth}"`);
+    }
+
+    for (const strokeWidth of ["0", "0.00", "1px", "1e2", "-1", "+1", "100", "100.0"]) {
+      expect(() => renderWithStrokeWidth(strokeWidth)).toThrow(/style token/i);
+    }
+  });
+
   it("makes candidate state visible and never advertises export", () => {
     const response = publicPreview(planResponse("candidate"));
     const svg = renderPublicationVisualPlanPreview(response);
