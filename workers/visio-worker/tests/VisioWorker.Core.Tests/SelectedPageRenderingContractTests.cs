@@ -11,12 +11,29 @@ public sealed class SelectedPageRenderingContractTests
     {
         var legacy = new DiagramDocument("legacy", [], [], []);
 
-        var method = typeof(VisioComEngine).GetMethod("DrawSelectedPageRegion", BindingFlags.NonPublic | BindingFlags.Static);
+        var method = typeof(VisioComEngine).GetMethod("PrepareSelectedPageRegion", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
         var invocation = Assert.Throws<TargetInvocationException>(() => method.Invoke(null, [new object(), legacy]));
         var error = Assert.IsType<WorkerProtocolException>(invocation.InnerException);
 
         Assert.Contains("figure plan", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Prepared_region_token_cannot_be_constructed_from_a_raw_plan_by_a_caller()
+    {
+        var publicConstructors = typeof(PreparedSelectedPageRegion).GetConstructors(BindingFlags.Public | BindingFlags.Instance);
+
+        Assert.Empty(publicConstructors);
+    }
+
+    [Fact]
+    public void Prepared_selected_page_draw_accepts_only_the_prepared_region_token()
+    {
+        var method = typeof(VisioComEngine).GetMethod("DrawPreparedSelectedPageRegion", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        Assert.Equal(typeof(PreparedSelectedPageRegion), method.GetParameters()[1].ParameterType);
     }
 
     [Fact]
@@ -73,6 +90,28 @@ public sealed class SelectedPageRenderingContractTests
         var invocation = Assert.Throws<TargetInvocationException>(() => method.Invoke(null, [source, 1d, 1d]));
         var error = Assert.IsType<WorkerProtocolException>(invocation.InnerException);
         Assert.Contains("readable", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Selected_page_preparation_fails_closed_when_actual_page_dimensions_are_unavailable()
+    {
+        var source = new DiagramDocument(
+            string.Empty,
+            [],
+            [],
+            [],
+            new VisioFigurePlan(
+                11,
+                7,
+                [new VisioPrimitiveGroup("module", "pvp-module-frame", new VisioBounds(1, 1, 8, 4), 0.1, 0.06, 0.05, ["module"], new Dictionary<string, string>(), InlineLabel: "Module")],
+                [],
+                []));
+        var method = typeof(VisioComEngine).GetMethod("PrepareSelectedPageRegion", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var invocation = Assert.Throws<TargetInvocationException>(() => method.Invoke(null, [new MissingMetricsPage(), source]));
+        var error = Assert.IsType<WorkerProtocolException>(invocation.InnerException);
+        Assert.Contains("dimensions", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -142,6 +181,21 @@ public sealed class SelectedPageRenderingContractTests
     public sealed class FakePage(double value)
     {
         public FakePageSheet PageSheet { get; } = new(value);
+    }
+
+    public sealed class MissingMetricsPage
+    {
+        public MissingMetricsPageSheet PageSheet { get; } = new();
+    }
+
+    public sealed class MissingMetricsPageSheet
+    {
+        public MissingMetricsCellCollection CellsU { get; } = new();
+    }
+
+    public sealed class MissingMetricsCellCollection
+    {
+        public FakeCell this[string _] => throw new InvalidOperationException("Page metric unavailable");
     }
 
     public sealed class FakePageSheet(double value)

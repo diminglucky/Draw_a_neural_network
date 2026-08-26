@@ -9,14 +9,29 @@ namespace VisioWorker.Live;
 /// Fixed native operation set for a user-selected existing Visio page. It has no document/page
 /// creation, opening-by-path, output-path, or SaveAs operation.
 /// </summary>
-public interface ISelectedPageVisioComOperations
+internal interface ISelectedPageVisioComOperations
 {
     void EnsureVisibleApplication();
     SelectedPageTarget? AttachActiveSelection();
-    void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan);
+    PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan);
+    void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, PreparedSelectedPageRegion preparedRegion);
     void SaveSelectedDocument(SelectedPageTarget target);
     SelectedPageReadback ReadSelectedPage(SelectedPageTarget target, string ownershipNamespace);
     void ReleaseSession(SelectedPageTarget target);
+}
+
+internal sealed class PreparedSelectedPageRegion
+{
+    internal PreparedSelectedPageRegion(SelectedPageTarget target, DiagramDocument plan)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(plan);
+        Target = target;
+        Plan = plan;
+    }
+
+    internal SelectedPageTarget Target { get; }
+    internal DiagramDocument Plan { get; }
 }
 
 /// <summary>
@@ -35,7 +50,7 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
     {
     }
 
-    public SelectedPageVisioComBackend(ISelectedPageVisioComOperations operations)
+    internal SelectedPageVisioComBackend(ISelectedPageVisioComOperations operations)
         : this(operations, new ComStaRunner(), ownsRunner: true)
     {
     }
@@ -68,7 +83,14 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
         await InvokeAsync(() =>
         {
             EnsureSameTarget(target, RequireActiveTarget());
-            _operations.ApplyOwnedRegion(target, ownershipNamespace, plan);
+            var preparedRegion = _operations.PrepareOwnedRegion(target, plan);
+            ArgumentNullException.ThrowIfNull(preparedRegion);
+            if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, preparedRegion.Target))
+            {
+                throw new InvalidOperationException("The prepared Visio region does not match the requested selected-page target.");
+            }
+            EnsureSameTarget(target, RequireActiveTarget());
+            _operations.ApplyOwnedRegion(target, ownershipNamespace, preparedRegion);
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -234,16 +256,28 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
-    public void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan)
+    public PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan)
+    {
+        ThrowIfDisposed();
+        RequireTarget(target);
+        ArgumentNullException.ThrowIfNull(plan);
+        return new PreparedSelectedPageRegion(target, VisioComEngine.PrepareSelectedPageRegion(_page!, plan));
+    }
+
+    public void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, PreparedSelectedPageRegion preparedRegion)
     {
         ThrowIfDisposed();
         RequireTarget(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
-        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(preparedRegion);
+        if (!EqualityComparer<SelectedPageTarget>.Default.Equals(target, preparedRegion.Target))
+        {
+            throw new InvalidOperationException("The prepared Visio region does not match the requested selected-page target.");
+        }
         DeleteOwnedShapes(_page!, ownershipNamespace);
         var existingShapeIds = ReadShapeIds(_page!);
-        VisioComEngine.DrawSelectedPageRegion(_page!, plan);
-        TagNewShapes(_page!, existingShapeIds, ownershipNamespace, plan);
+        VisioComEngine.DrawPreparedSelectedPageRegion(_page!, preparedRegion);
+        TagNewShapes(_page!, existingShapeIds, ownershipNamespace, preparedRegion.Plan);
     }
 
     public void SaveSelectedDocument(SelectedPageTarget target)

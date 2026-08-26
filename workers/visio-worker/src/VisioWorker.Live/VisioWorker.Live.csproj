@@ -9,4 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\VisioWorker.Core\VisioWorker.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="VisioWorker.Core.Tests" />
+  </ItemGroup>
 </Project>

@@ -46,6 +46,8 @@ public sealed class SelectedPageVisioComBackendTests
         var readback = await backend.ReadSelectedPageAsync(Target, OwnershipNamespace);
 
         Assert.Equal(Target, attached);
+        Assert.Equal(["prepare", "apply"], operations.ApplyEvents);
+        Assert.Equal(1, operations.PrepareOwnedRegionCalls);
         Assert.Equal(1, operations.ApplyOwnedRegionCalls);
         Assert.Equal(OwnershipNamespace, operations.LastOwnershipNamespace);
         Assert.Equal(3, readback.UserOwnedShapeCount);
@@ -53,6 +55,67 @@ public sealed class SelectedPageVisioComBackendTests
         Assert.Equal(0, operations.DocumentsAddCalls);
         Assert.Equal(0, operations.PagesAddCalls);
         Assert.Equal(0, operations.SaveAsCalls);
+    }
+
+    [Fact]
+    public async Task Preparation_failure_never_enters_native_reconciliation()
+    {
+        var operations = new RecordingOperations
+        {
+            ActiveTarget = Target,
+            PreparationError = new WorkerProtocolException("Selected page cannot preserve readable labels."),
+        };
+        await using var backend = new SelectedPageVisioComBackend(operations);
+        await backend.AttachActiveSelectionAsync();
+
+        var error = await Assert.ThrowsAsync<WorkerProtocolException>(
+            () => backend.ApplyOwnedRegionAsync(Target, OwnershipNamespace, Plan()));
+
+        Assert.Contains("readable", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(["prepare"], operations.ApplyEvents);
+        Assert.Equal(1, operations.PrepareOwnedRegionCalls);
+        Assert.Equal(0, operations.ApplyOwnedRegionCalls);
+    }
+
+    [Fact]
+    public async Task Prepared_region_for_a_different_target_is_rejected_before_native_reconciliation()
+    {
+        var operations = new RecordingOperations
+        {
+            ActiveTarget = Target,
+            PreparedTarget = Target with { PageFingerprint = new string('c', 64) },
+        };
+        await using var backend = new SelectedPageVisioComBackend(operations);
+        await backend.AttachActiveSelectionAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => backend.ApplyOwnedRegionAsync(Target, OwnershipNamespace, Plan()));
+
+        Assert.Contains("prepared", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(["prepare"], operations.ApplyEvents);
+        Assert.Equal(1, operations.PrepareOwnedRegionCalls);
+        Assert.Equal(0, operations.ApplyOwnedRegionCalls);
+    }
+
+    [Fact]
+    public async Task Active_selection_changed_during_preparation_is_rechecked_before_native_reconciliation()
+    {
+        var changedTarget = Target with { PageId = "page-2", PageFingerprint = new string('d', 64) };
+        var operations = new RecordingOperations
+        {
+            ActiveTarget = Target,
+            ActiveTargetAfterPrepare = changedTarget,
+        };
+        await using var backend = new SelectedPageVisioComBackend(operations);
+        await backend.AttachActiveSelectionAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => backend.ApplyOwnedRegionAsync(Target, OwnershipNamespace, Plan()));
+
+        Assert.Contains("changed", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(["prepare"], operations.ApplyEvents);
+        Assert.Equal(3, operations.AttachActiveSelectionCalls);
+        Assert.Equal(0, operations.ApplyOwnedRegionCalls);
     }
 
     [Fact]
@@ -120,6 +183,7 @@ public sealed class SelectedPageVisioComBackendTests
         public SelectedPageTarget? ActiveTarget { get; set; }
         public int EnsureVisibleApplicationCalls { get; private set; }
         public int AttachActiveSelectionCalls { get; private set; }
+        public int PrepareOwnedRegionCalls { get; private set; }
         public int ApplyOwnedRegionCalls { get; private set; }
         public int SaveCalls { get; private set; }
         public int SaveAsCalls { get; private set; }
@@ -132,6 +196,10 @@ public sealed class SelectedPageVisioComBackendTests
         public int ExistingOwnedShapeCount { get; set; }
         public string? LastOwnershipNamespace { get; private set; }
         public string? LastReadOwnershipNamespace { get; private set; }
+        public Exception? PreparationError { get; set; }
+        public SelectedPageTarget? PreparedTarget { get; set; }
+        public SelectedPageTarget? ActiveTargetAfterPrepare { get; set; }
+        public List<string> ApplyEvents { get; } = [];
 
         public void EnsureVisibleApplication() => EnsureVisibleApplicationCalls++;
 
@@ -141,9 +209,19 @@ public sealed class SelectedPageVisioComBackendTests
             return ActiveTarget;
         }
 
-        public void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, DiagramDocument plan)
+        public PreparedSelectedPageRegion PrepareOwnedRegion(SelectedPageTarget target, DiagramDocument plan)
+        {
+            PrepareOwnedRegionCalls++;
+            ApplyEvents.Add("prepare");
+            if (PreparationError is not null) throw PreparationError;
+            if (ActiveTargetAfterPrepare is not null) ActiveTarget = ActiveTargetAfterPrepare;
+            return new PreparedSelectedPageRegion(PreparedTarget ?? target, plan);
+        }
+
+        public void ApplyOwnedRegion(SelectedPageTarget target, string ownershipNamespace, PreparedSelectedPageRegion preparedRegion)
         {
             ApplyOwnedRegionCalls++;
+            ApplyEvents.Add("apply");
             LastOwnershipNamespace = ownershipNamespace;
         }
 

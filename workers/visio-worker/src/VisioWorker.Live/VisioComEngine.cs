@@ -305,14 +305,20 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
     /// Draws only the Agent-owned region on a user-selected existing page. Unlike export rendering,
     /// this deliberately leaves the user's page dimensions and scale untouched.
     /// </summary>
-    internal static void DrawSelectedPageRegion(dynamic page, DiagramDocument document)
+    internal static DiagramDocument PrepareSelectedPageRegion(dynamic page, DiagramDocument document)
     {
         ArgumentNullException.ThrowIfNull(document);
         if (document.FigurePlan is null)
             throw new WorkerProtocolException("Selected-page rendering requires a complete figure plan and cannot use the legacy fallback.");
-        var pageWidth = ReadSelectedPageMetric((object)page, "PageWidth", document.FigurePlan.PageWidthInches);
-        var pageHeight = ReadSelectedPageMetric((object)page, "PageHeight", document.FigurePlan.PageHeightInches);
-        ConfigureAndDraw(page, FitSelectedPageDocument(document, pageWidth, pageHeight), resizePage: false);
+        var pageWidth = ReadSelectedPageMetric((object)page, "PageWidth", double.NaN);
+        var pageHeight = ReadSelectedPageMetric((object)page, "PageHeight", double.NaN);
+        return FitSelectedPageDocument(document, pageWidth, pageHeight);
+    }
+
+    internal static void DrawPreparedSelectedPageRegion(dynamic page, PreparedSelectedPageRegion preparedRegion)
+    {
+        ArgumentNullException.ThrowIfNull(preparedRegion);
+        ConfigureAndDraw(page, preparedRegion.Plan, resizePage: false);
     }
 
     internal static DiagramDocument FitSelectedPageDocument(DiagramDocument document, double pageWidthInches, double pageHeightInches)
