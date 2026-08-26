@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using VisioWorker.Core;
@@ -376,19 +377,72 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
+    private void RevalidateActiveTarget(SelectedPageTarget expected)
+    {
+        ThrowIfDisposed();
+        if (_application is null) throw new InvalidOperationException("No Visio application is attached.");
+        dynamic? window = null;
+        dynamic? page = null;
+        dynamic? document = null;
+        try
+        {
+            window = _application.ActiveWindow;
+            if (window is null) throw new WorkerProtocolException("The selected Visio document or page changed before old-shape cleanup.");
+            page = window.Page;
+            if (page is null) throw new WorkerProtocolException("The selected Visio document or page changed before old-shape cleanup.");
+            document = page.Document;
+            if (document is null) throw new WorkerProtocolException("The selected Visio document or page changed before old-shape cleanup.");
+            var actual = ReadTarget(document, page);
+            if (!EqualityComparer<SelectedPageTarget>.Default.Equals(expected, actual))
+            {
+                throw new WorkerProtocolException("The selected Visio document or page changed before old-shape cleanup.");
+            }
+        }
+        catch (WorkerProtocolException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            throw new WorkerProtocolException($"Final selected-page target revalidation failed: {error.Message}", error);
+        }
+        finally
+        {
+            ReleaseTemporaryCom(document);
+            ReleaseTemporaryCom(page);
+            ReleaseTemporaryCom(window);
+        }
+    }
+
+    private static void ReleaseTemporaryCom(object? value)
+    {
+        if (value is null || !Marshal.IsComObject(value)) return;
+        try { Marshal.ReleaseComObject(value); }
+        catch { }
+    }
+
     private static SelectedPageTarget ReadTarget(dynamic document, dynamic page)
     {
-        var documentId = StableIdentifier("document", RequiredComValue(document, "ID"));
-        var pageId = StableIdentifier("page", RequiredComValue(page, "ID"));
-        var documentName = OptionalComValue(document, "Name");
-        var pageName = OptionalComValue(page, "Name");
-        var pageWidth = TryPageMetric(page, "PageWidth");
-        var pageHeight = TryPageMetric(page, "PageHeight");
-        var pageCount = OptionalComValue(document.Pages, "Count");
-        var documentFingerprint = Hash(documentId, documentName, pageCount);
-        var pageFingerprint = Hash(documentId, pageId, pageName, pageWidth, pageHeight);
-        var expectedRevision = PositiveRevision(OptionalComValue(page, "ID"));
-        return new SelectedPageTarget(documentId, pageId, documentFingerprint, pageFingerprint, expectedRevision);
+        dynamic? pages = null;
+        try
+        {
+            var documentId = StableIdentifier("document", RequiredComValue(document, "ID"));
+            var pageId = StableIdentifier("page", RequiredComValue(page, "ID"));
+            var documentName = OptionalComValue(document, "Name");
+            var pageName = OptionalComValue(page, "Name");
+            var pageWidth = TryPageMetric(page, "PageWidth");
+            var pageHeight = TryPageMetric(page, "PageHeight");
+            pages = document.Pages;
+            var pageCount = OptionalComValue(pages, "Count");
+            var documentFingerprint = Hash(documentId, documentName, pageCount);
+            var pageFingerprint = Hash(documentId, pageId, pageName, pageWidth, pageHeight);
+            var expectedRevision = PositiveRevision(OptionalComValue(page, "ID"));
+            return new SelectedPageTarget(documentId, pageId, documentFingerprint, pageFingerprint, expectedRevision);
+        }
+        finally
+        {
+            ReleaseTemporaryCom(pages);
+        }
     }
 
     private static string RequiredComValue(dynamic value, string member)
@@ -533,32 +587,73 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
-    private static void DeleteShapes(dynamic page, IReadOnlySet<int> shapeIds)
+    private static SelectedPageShapeDeletionOutcome DeleteShapes(dynamic page, IReadOnlySet<int> shapeIds)
     {
-        if (shapeIds.Count == 0) return;
+        var requested = shapeIds.ToHashSet();
+        var deleted = new HashSet<int>();
+        var missing = new HashSet<int>();
+        var failed = new HashSet<int>();
+        if (requested.Count == 0) return new SelectedPageShapeDeletionOutcome(requested, deleted, missing, failed);
         dynamic? shapes = null;
+        var completeEnumeration = true;
         try
         {
-            shapes = page.Shapes;
-            var count = Convert.ToInt32(shapes.Count, CultureInfo.InvariantCulture);
+            int count;
+            try
+            {
+                shapes = page.Shapes;
+                count = Convert.ToInt32(shapes.Count, CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                failed.UnionWith(requested);
+                return new SelectedPageShapeDeletionOutcome(requested, deleted, missing, failed);
+            }
+
+            var found = new HashSet<int>();
             for (var index = count; index >= 1; index--)
             {
                 dynamic? shape = null;
                 try
                 {
                     shape = shapes.Item(index);
-                    if (shapeIds.Contains(Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture))) shape.Delete();
+                    var id = Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture);
+                    if (!requested.Contains(id)) continue;
+                    found.Add(id);
+                    try
+                    {
+                        shape.Delete();
+                        deleted.Add(id);
+                    }
+                    catch
+                    {
+                        failed.Add(id);
+                    }
+                }
+                catch
+                {
+                    completeEnumeration = false;
                 }
                 finally
                 {
                     VisioComEngine.ReleaseCom(shape);
                 }
             }
+
+            if (completeEnumeration)
+            {
+                missing.UnionWith(requested.Except(found));
+            }
+            else
+            {
+                failed.UnionWith(requested.Except(deleted));
+            }
         }
         finally
         {
             VisioComEngine.ReleaseCom(shapes);
         }
+        return new SelectedPageShapeDeletionOutcome(requested, deleted, missing, failed);
     }
 
     private static void TagAndVerifyShapes(dynamic page, IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan)
@@ -672,7 +767,9 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     void ISelectedPageShapeMutation.PromoteAndVerifyShapes(IReadOnlySet<int> shapeIds, string stagingNamespace, string finalNamespace) =>
         PromoteAndVerifyShapes(_page!, shapeIds, stagingNamespace, finalNamespace);
 
-    void ISelectedPageShapeMutation.DeleteShapes(IReadOnlySet<int> shapeIds) => DeleteShapes(_page!, shapeIds);
+    void ISelectedPageShapeMutation.RevalidateActiveTarget(SelectedPageTarget target) => RevalidateActiveTarget(target);
+
+    SelectedPageShapeDeletionOutcome ISelectedPageShapeMutation.DeleteShapes(IReadOnlySet<int> shapeIds) => DeleteShapes(_page!, shapeIds);
 
     private static string NativeShapeId(object shape)
     {

@@ -188,6 +188,52 @@ public sealed class SelectedPageVisioComBackendTests
         Assert.Equal(
             [typeof(PreparedSelectedPageRegion), typeof(SelectedPageShapeCreationJournal)],
             draw.GetParameters().Select(parameter => parameter.ParameterType));
+        var revalidate = Assert.Single(methods, method => method.Name == "RevalidateActiveTarget");
+        Assert.Equal([typeof(SelectedPageTarget)], revalidate.GetParameters().Select(parameter => parameter.ParameterType));
+        var delete = Assert.Single(methods, method => method.Name == "DeleteShapes");
+        Assert.Equal(typeof(SelectedPageShapeDeletionOutcome), delete.ReturnType);
+    }
+
+    [Fact]
+    public void Native_target_revalidation_reads_the_active_window_page_afresh()
+    {
+        var document = new FakeDocument("101", "drawing.vsdx");
+        var originalPage = new FakePage("1", "Architecture", document);
+        var changedPage = new FakePage("2", "Other", document);
+        var application = new FakeApplication(originalPage);
+        using var native = new SelectedPageVisioComNative(new VisioComEngineOptions());
+        SetPrivateField(native, "_application", application);
+        var attached = Assert.IsType<SelectedPageTarget>(native.AttachActiveSelection());
+        application.ActiveWindow.Page = changedPage;
+
+        var error = Assert.Throws<WorkerProtocolException>(() =>
+            ((ISelectedPageShapeMutation)native).RevalidateActiveTarget(attached));
+
+        Assert.Contains("changed", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Same(originalPage, GetPrivateField(native, "_page"));
+        Assert.Same(document, GetPrivateField(native, "_document"));
+    }
+
+    [Fact]
+    public void Native_exact_id_deletion_continues_after_failure_and_classifies_missing_ids()
+    {
+        var shapes = new FakeShapes(
+            new FakeShape(10),
+            new FakeShape(11, deleteError: new InvalidOperationException("locked")));
+        var page = new FakeDeletionPage(shapes);
+        var method = typeof(SelectedPageVisioComNative).GetMethod(
+            "DeleteShapes",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var outcome = Assert.IsType<SelectedPageShapeDeletionOutcome>(
+            method.Invoke(null, [page, new HashSet<int> { 10, 11, 12 }]));
+
+        Assert.Equal([10, 11, 12], outcome.RequestedShapeIds.Order());
+        Assert.Equal([10], outcome.DeletedShapeIds.Order());
+        Assert.Equal([12], outcome.MissingShapeIds.Order());
+        Assert.Equal([11], outcome.FailedShapeIds.Order());
+        Assert.Equal([11], shapes.ShapeIds.Order());
     }
 
     [Fact]
@@ -207,6 +253,86 @@ public sealed class SelectedPageVisioComBackendTests
     }
 
     private static DiagramDocument Plan() => new("Selected page test", [], [], []);
+
+    private static void SetPrivateField(object target, string name, object value)
+    {
+        var field = target.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field.SetValue(target, value);
+    }
+
+    private static object? GetPrivateField(object target, string name)
+    {
+        var field = target.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return field.GetValue(target);
+    }
+
+    public sealed class FakeApplication(FakePage page)
+    {
+        public bool Visible { get; set; }
+        public FakeWindow ActiveWindow { get; } = new(page);
+    }
+
+    public sealed class FakeWindow(FakePage page)
+    {
+        public FakePage Page { get; set; } = page;
+    }
+
+    public sealed class FakeDocument(string id, string name)
+    {
+        public string ID { get; } = id;
+        public string Name { get; } = name;
+        public FakePages Pages { get; } = new();
+    }
+
+    public sealed class FakePages
+    {
+        public int Count => 2;
+    }
+
+    public sealed class FakePage(string id, string name, FakeDocument document)
+    {
+        public string ID { get; } = id;
+        public string Name { get; } = name;
+        public FakeDocument Document { get; } = document;
+    }
+
+    public sealed class FakeDeletionPage(FakeShapes shapes)
+    {
+        public FakeShapes Shapes { get; } = shapes;
+    }
+
+    public sealed class FakeShapes(params FakeShape[] shapes)
+    {
+        private readonly List<FakeShape> _shapes = [.. shapes];
+
+        public int Count => _shapes.Count;
+
+        public IReadOnlyList<int> ShapeIds => _shapes.Select(shape => shape.ID).ToArray();
+
+        public FakeShape Item(int index)
+        {
+            var shape = _shapes[index - 1];
+            shape.Attach(_shapes);
+            return shape;
+        }
+    }
+
+    public sealed class FakeShape(int id, Exception? deleteError = null)
+    {
+        private List<FakeShape>? _owner;
+
+        public int ID { get; } = id;
+
+        public void Attach(List<FakeShape> owner) => _owner = owner;
+
+        public void Delete()
+        {
+            if (deleteError is not null) throw deleteError;
+            _owner!.Remove(this);
+        }
+    }
 
     private sealed class RecordingOperations : ISelectedPageVisioComOperations
     {

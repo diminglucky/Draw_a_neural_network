@@ -22,6 +22,7 @@ public sealed class SelectedPageOwnedRegionReplacementTests
             "draw",
             "tag:agent.region.staging:30,31",
             "promote:agent.region.staging->agent.region.final:30,31",
+            "revalidate:page-1",
             "delete-ids:10,11",
         ], mutation.Events);
         Assert.Equal([20, 30, 31, 40], mutation.ShapeIds.Order());
@@ -71,20 +72,70 @@ public sealed class SelectedPageOwnedRegionReplacementTests
     }
 
     [Fact]
-    public void Old_shape_cleanup_failure_retains_the_promoted_replacement()
+    public void Active_target_change_after_promotion_retains_both_regions_and_skips_old_shape_deletion()
     {
-        var mutation = new RecordingMutation { FailurePoint = "delete-old" };
+        var mutation = new RecordingMutation { FailurePoint = "revalidate" };
 
-        Assert.Throws<WorkerProtocolException>(() =>
+        var error = Assert.Throws<WorkerProtocolException>(() =>
             SelectedPageOwnedRegionReplacement.Execute(mutation, Prepared(), FinalNamespace, StagingNamespace));
 
+        Assert.Contains("changed", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(10, mutation.ShapeIds);
         Assert.Contains(11, mutation.ShapeIds);
         Assert.Contains(30, mutation.ShapeIds);
         Assert.Contains(31, mutation.ShapeIds);
         Assert.Equal(FinalNamespace, mutation.OwnershipById[30]);
         Assert.Equal(FinalNamespace, mutation.OwnershipById[31]);
-        Assert.Equal(1, mutation.DeleteOldAttempts);
+        Assert.Contains("revalidate:page-1", mutation.Events);
+        Assert.DoesNotContain("delete-ids:10,11", mutation.Events);
+    }
+
+    [Fact]
+    public void Partial_old_shape_cleanup_reports_complete_outcome_and_retains_promoted_replacement()
+    {
+        var mutation = new RecordingMutation { FailedDeletionIds = new HashSet<int> { 11 } };
+
+        var error = Assert.Throws<WorkerProtocolException>(() =>
+            SelectedPageOwnedRegionReplacement.Execute(mutation, Prepared(), FinalNamespace, StagingNamespace));
+
+        var failure = Assert.IsType<SelectedPageShapeDeletionFailure>(error.InnerException);
+        Assert.True(failure.ReplacementPromoted);
+        Assert.Null(failure.PrimaryError);
+        Assert.Equal([10, 11], failure.Outcome.RequestedShapeIds.Order());
+        Assert.Equal([10], failure.Outcome.DeletedShapeIds.Order());
+        Assert.Empty(failure.Outcome.MissingShapeIds);
+        Assert.Equal([11], failure.Outcome.FailedShapeIds.Order());
+        Assert.DoesNotContain(10, mutation.ShapeIds);
+        Assert.Contains(11, mutation.ShapeIds);
+        Assert.Contains(30, mutation.ShapeIds);
+        Assert.Contains(31, mutation.ShapeIds);
+        Assert.Equal(FinalNamespace, mutation.OwnershipById[30]);
+        Assert.Equal(FinalNamespace, mutation.OwnershipById[31]);
+    }
+
+    [Fact]
+    public void Failed_pre_promotion_cleanup_preserves_primary_failure_and_exposes_cleanup_outcome()
+    {
+        var mutation = new RecordingMutation
+        {
+            FailurePoint = "tag",
+            FailedDeletionIds = new HashSet<int> { 31 },
+        };
+
+        var error = Assert.Throws<WorkerProtocolException>(() =>
+            SelectedPageOwnedRegionReplacement.Execute(mutation, Prepared(), FinalNamespace, StagingNamespace));
+
+        var failure = Assert.IsType<SelectedPageShapeDeletionFailure>(error.InnerException);
+        Assert.False(failure.ReplacementPromoted);
+        Assert.IsType<WorkerProtocolException>(failure.PrimaryError);
+        Assert.Equal([30, 31], failure.Outcome.RequestedShapeIds.Order());
+        Assert.Equal([30], failure.Outcome.DeletedShapeIds.Order());
+        Assert.Empty(failure.Outcome.MissingShapeIds);
+        Assert.Equal([31], failure.Outcome.FailedShapeIds.Order());
+        Assert.Contains(10, mutation.ShapeIds);
+        Assert.Contains(11, mutation.ShapeIds);
+        Assert.DoesNotContain(30, mutation.ShapeIds);
+        Assert.Contains(31, mutation.ShapeIds);
     }
 
     private static PreparedSelectedPageRegion Prepared() => new(
@@ -101,11 +152,11 @@ public sealed class SelectedPageOwnedRegionReplacementTests
         };
         public IReadOnlySet<int> DrawnIds { get; init; } = new HashSet<int> { 30, 31 };
         public string? FailurePoint { get; init; }
+        public IReadOnlySet<int> FailedDeletionIds { get; init; } = new HashSet<int>();
         public List<string> Events { get; } = [];
         public List<IReadOnlySet<int>> StagedShapeIdSets { get; } = [];
         public List<IReadOnlySet<int>> PromotedShapeIdSets { get; } = [];
         public List<IReadOnlySet<int>> DeletedShapeIdSets { get; } = [];
-        public int DeleteOldAttempts { get; private set; }
 
         public IReadOnlySet<int> ReadOwnedShapeIds(string ownershipNamespace)
         {
@@ -147,16 +198,35 @@ public sealed class SelectedPageOwnedRegionReplacementTests
             if (FailurePoint == "promote") throw new WorkerProtocolException("promote failed");
         }
 
-        public void DeleteShapes(IReadOnlySet<int> shapeIds)
+        public void RevalidateActiveTarget(SelectedPageTarget target)
+        {
+            Events.Add($"revalidate:{target.PageId}");
+            if (FailurePoint == "revalidate") throw new WorkerProtocolException("Selected Visio target changed before old-shape cleanup.");
+        }
+
+        public SelectedPageShapeDeletionOutcome DeleteShapes(IReadOnlySet<int> shapeIds)
         {
             DeletedShapeIdSets.Add(shapeIds.ToHashSet());
             Events.Add($"delete-ids:{Ids(shapeIds)}");
-            if (shapeIds.Contains(10) || shapeIds.Contains(11))
+            var deleted = new HashSet<int>();
+            var missing = new HashSet<int>();
+            var failed = new HashSet<int>();
+            foreach (var id in shapeIds.Order())
             {
-                DeleteOldAttempts++;
-                if (FailurePoint == "delete-old") throw new WorkerProtocolException("old cleanup failed");
+                if (!ShapeIds.Contains(id))
+                {
+                    missing.Add(id);
+                    continue;
+                }
+                if (FailedDeletionIds.Contains(id))
+                {
+                    failed.Add(id);
+                    continue;
+                }
+                DeleteShapesCore([id]);
+                deleted.Add(id);
             }
-            DeleteShapesCore(shapeIds);
+            return new SelectedPageShapeDeletionOutcome(shapeIds, deleted, missing, failed);
         }
 
         private void DeleteShapesCore(IEnumerable<int> shapeIds)
