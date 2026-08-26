@@ -195,6 +195,37 @@ public sealed class SelectedPageVisioComBackendTests
     }
 
     [Fact]
+    public void Native_selected_page_source_mapping_uses_the_creation_manifest_not_shape_names_or_all_nodes()
+    {
+        var sourcePath = Path.Combine(
+            RepositoryRoot(),
+            "workers",
+            "visio-worker",
+            "src",
+            "VisioWorker.Live",
+            "SelectedPageVisioComBackend.cs");
+        var source = File.ReadAllText(sourcePath);
+
+        Assert.Contains("synapse.rendererRole", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("return plan.Nodes", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SourceMappingSemanticIds(object shape, DiagramDocument plan)", source, StringComparison.Ordinal);
+    }
+
+    private static string RepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, ".git"))
+                || Directory.Exists(Path.Combine(directory.FullName, ".git")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException("The test assembly is not running beneath a Git worktree.");
+    }
+
+    [Fact]
     public void Native_target_revalidation_reads_the_active_window_page_afresh()
     {
         var document = new FakeDocument("101", "drawing.vsdx");

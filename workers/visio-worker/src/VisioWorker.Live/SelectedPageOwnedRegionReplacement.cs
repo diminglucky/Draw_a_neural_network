@@ -3,13 +3,53 @@ using System.Collections.Frozen;
 
 namespace VisioWorker.Live;
 
+internal enum SelectedPageShapeRole
+{
+    Primary,
+    Auxiliary,
+    Label,
+    Annotation,
+    Connector,
+    Title,
+}
+
+internal sealed record SelectedPageShapeCreationEntry(
+    int ShapeId,
+    IReadOnlyList<string> SemanticIds,
+    SelectedPageShapeRole Role);
+
+internal sealed record SelectedPagePromotedRegionManifest(
+    SelectedPageTarget Target,
+    string OwnershipNamespace,
+    IReadOnlyList<SelectedPageShapeCreationEntry> Entries);
+
 internal sealed class SelectedPageShapeCreationJournal
 {
-    private readonly HashSet<int> _shapeIds = [];
+    private readonly Dictionary<int, SelectedPageShapeCreationEntry> _entries = [];
 
-    internal IReadOnlySet<int> ShapeIds => _shapeIds.ToFrozenSet();
+    internal IReadOnlyList<SelectedPageShapeCreationEntry> Entries =>
+        Array.AsReadOnly(_entries.Values.OrderBy(entry => entry.ShapeId).ToArray());
 
-    internal void Record(int shapeId) => _shapeIds.Add(shapeId);
+    internal IReadOnlySet<int> ShapeIds => _entries.Keys.ToFrozenSet();
+
+    internal void Record(int shapeId, IEnumerable<string> semanticIds, SelectedPageShapeRole role)
+    {
+        ArgumentNullException.ThrowIfNull(semanticIds);
+        var canonical = semanticIds
+            .Select(value => value?.Trim() ?? string.Empty)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (shapeId <= 0
+            || canonical.Length == 0
+            || canonical.Any(string.IsNullOrWhiteSpace)
+            || canonical.Distinct(StringComparer.Ordinal).Count() != canonical.Length
+            || !_entries.TryAdd(
+                shapeId,
+                new SelectedPageShapeCreationEntry(shapeId, Array.AsReadOnly(canonical), role)))
+        {
+            throw new WorkerProtocolException("Selected-page renderer reported an invalid shape creation manifest entry.");
+        }
+    }
 }
 
 internal sealed class SelectedPageShapeDeletionOutcome
@@ -68,7 +108,7 @@ internal interface ISelectedPageShapeMutation
     IReadOnlySet<int> ReadOwnedShapeIds(string ownershipNamespace);
     void DeleteOwnedShapes(string ownershipNamespace);
     void DrawPrepared(PreparedSelectedPageRegion preparedRegion, SelectedPageShapeCreationJournal creationJournal);
-    void TagAndVerifyShapes(IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan);
+    void TagAndVerifyShapes(IReadOnlyList<SelectedPageShapeCreationEntry> entries, string ownershipNamespace);
     void PromoteAndVerifyShapes(IReadOnlySet<int> shapeIds, string stagingNamespace, string finalNamespace);
     void RevalidateActiveTarget(SelectedPageTarget target);
     SelectedPageShapeDeletionOutcome DeleteShapes(IReadOnlySet<int> shapeIds);
@@ -76,7 +116,7 @@ internal interface ISelectedPageShapeMutation
 
 internal static class SelectedPageOwnedRegionReplacement
 {
-    internal static void Execute(
+    internal static SelectedPagePromotedRegionManifest Execute(
         ISelectedPageShapeMutation mutation,
         PreparedSelectedPageRegion preparedRegion,
         string finalNamespace,
@@ -98,13 +138,14 @@ internal static class SelectedPageOwnedRegionReplacement
         try
         {
             mutation.DrawPrepared(preparedRegion, creationJournal);
+            var newEntries = creationJournal.Entries;
             var newShapeIds = creationJournal.ShapeIds;
             if (newShapeIds.Count == 0)
             {
                 throw new WorkerProtocolException("Selected-page replacement produced no shapes.");
             }
 
-            mutation.TagAndVerifyShapes(newShapeIds, stagingNamespace, preparedRegion.Plan);
+            mutation.TagAndVerifyShapes(newEntries, stagingNamespace);
             mutation.PromoteAndVerifyShapes(newShapeIds, stagingNamespace, finalNamespace);
         }
         catch (Exception primaryError)
@@ -173,6 +214,11 @@ internal static class SelectedPageOwnedRegionReplacement
                 oldCleanupOutcome,
                 replacementPromoted: true);
         }
+
+        return new SelectedPagePromotedRegionManifest(
+            preparedRegion.Target,
+            finalNamespace,
+            Array.AsReadOnly(creationJournal.Entries.ToArray()));
     }
 
     private static WorkerProtocolException DeletionFailure(

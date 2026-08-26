@@ -9,11 +9,32 @@ public sealed class SelectedPageOwnedRegionReplacementTests
     private const string StagingNamespace = "agent.region.staging";
 
     [Fact]
+    public void Creation_journal_rejects_invalid_entries_and_exposes_canonical_semantics()
+    {
+        var journal = new SelectedPageShapeCreationJournal();
+        journal.Record(21, ["semantic:b", "semantic:a"], SelectedPageShapeRole.Primary);
+
+        var entry = Assert.Single(journal.Entries);
+        Assert.Equal(21, entry.ShapeId);
+        Assert.Equal(["semantic:a", "semantic:b"], entry.SemanticIds);
+        Assert.Equal(SelectedPageShapeRole.Primary, entry.Role);
+        Assert.Throws<WorkerProtocolException>(() =>
+            journal.Record(21, ["semantic:c"], SelectedPageShapeRole.Label));
+        Assert.Throws<WorkerProtocolException>(() =>
+            new SelectedPageShapeCreationJournal().Record(22, [], SelectedPageShapeRole.Primary));
+        Assert.Throws<WorkerProtocolException>(() =>
+            new SelectedPageShapeCreationJournal().Record(23, ["semantic:a", " "], SelectedPageShapeRole.Primary));
+        Assert.Throws<WorkerProtocolException>(() =>
+            new SelectedPageShapeCreationJournal().Record(24, ["semantic:a", "semantic:a"], SelectedPageShapeRole.Primary));
+    }
+
+    [Fact]
     public void Successful_replacement_promotes_new_shapes_before_deleting_only_captured_old_shapes()
     {
         var mutation = new RecordingMutation();
+        var prepared = Prepared();
 
-        SelectedPageOwnedRegionReplacement.Execute(mutation, Prepared(), FinalNamespace, StagingNamespace);
+        var manifest = SelectedPageOwnedRegionReplacement.Execute(mutation, prepared, FinalNamespace, StagingNamespace);
 
         Assert.Equal(
         [
@@ -32,6 +53,14 @@ public sealed class SelectedPageOwnedRegionReplacementTests
         Assert.All(mutation.StagedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
         Assert.All(mutation.PromotedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
         Assert.All(mutation.DeletedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
+        Assert.Equal(prepared.Target, manifest.Target);
+        Assert.Equal(FinalNamespace, manifest.OwnershipNamespace);
+        Assert.Equal([30, 31], manifest.Entries.Select(entry => entry.ShapeId));
+        Assert.Equal(["semantic:primary"], manifest.Entries[0].SemanticIds);
+        Assert.Equal(SelectedPageShapeRole.Primary, manifest.Entries[0].Role);
+        Assert.Equal(["semantic:label"], manifest.Entries[1].SemanticIds);
+        Assert.Equal(SelectedPageShapeRole.Label, manifest.Entries[1].Role);
+        Assert.DoesNotContain(manifest.Entries, entry => entry.ShapeId == 40);
     }
 
     [Theory]
@@ -176,14 +205,18 @@ public sealed class SelectedPageOwnedRegionReplacementTests
             foreach (var id in FailurePoint == "draw" ? DrawnIds.Take(1) : DrawnIds)
             {
                 ShapeIds.Add(id);
-                creationJournal.Record(id);
+                creationJournal.Record(
+                    id,
+                    [id == 30 ? "semantic:primary" : "semantic:label"],
+                    id == 30 ? SelectedPageShapeRole.Primary : SelectedPageShapeRole.Label);
             }
             ShapeIds.Add(40);
             if (FailurePoint == "draw") throw new WorkerProtocolException("draw failed");
         }
 
-        public void TagAndVerifyShapes(IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan)
+        public void TagAndVerifyShapes(IReadOnlyList<SelectedPageShapeCreationEntry> entries, string ownershipNamespace)
         {
+            var shapeIds = entries.Select(entry => entry.ShapeId).ToHashSet();
             StagedShapeIdSets.Add(shapeIds.ToHashSet());
             Events.Add($"tag:{ownershipNamespace}:{Ids(shapeIds)}");
             foreach (var id in shapeIds) OwnershipById[id] = ownershipNamespace;

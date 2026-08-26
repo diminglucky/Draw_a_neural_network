@@ -34,45 +34,55 @@ public sealed class SelectedPageRenderingContractTests
 
         Assert.NotNull(method);
         Assert.Equal(
-            [typeof(object), typeof(PreparedSelectedPageRegion), typeof(Action<int>)],
+            [typeof(object), typeof(PreparedSelectedPageRegion), typeof(Action<int, IReadOnlyList<string>, SelectedPageShapeRole>)],
             method.GetParameters().Select(parameter => parameter.ParameterType));
+
+        var drawingMethods = typeof(ShapeTrackingPage)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Where(method => method.Name.StartsWith("Draw", StringComparison.Ordinal))
+            .ToArray();
+        Assert.NotEmpty(drawingMethods);
+        Assert.All(drawingMethods, method =>
+            Assert.Equal(
+                [typeof(IReadOnlyList<string>), typeof(SelectedPageShapeRole)],
+                method.GetParameters().Take(2).Select(parameter => parameter.ParameterType)));
     }
 
     [Fact]
     public void Prepared_selected_page_draw_reports_every_created_shape_before_later_shape_work()
     {
         var page = new RecordingDrawingPage();
-        var reportedIds = new List<int>();
+        var created = new List<SelectedPageShapeCreationEntry>();
         var plan = new VisioFigurePlan(
             11,
             7,
             [
                 Group("input", "pvp-input-terminal", ["input"]),
-                Group("marker", "pvp-add-marker", ["marker"]),
-                Group("tensor", "pvp-tensor-stage", ["tensor"]),
-                Group("rgb", "input-rgb-tile", ["rgb.red", "rgb.green", "rgb.blue"]),
-                Group("dense", "dense-vector-layer", ["dense.frame", "dense.unit-1", "dense.unit-2"]),
+                Group("output", "pvp-output-terminal", ["output"]),
             ],
-            [new VisioConnector("edge", "input", "marker", "flow", [new DiagramPoint(1, 1), new DiagramPoint(2, 1)])],
-            [new VisioFigureLabel("annotation", "marker", "Annotation", 3, 1, 1.2, 0.3, 9)]);
+            [new VisioConnector("edge", "input", "output", "flow", [new DiagramPoint(1, 1), new DiagramPoint(2, 1)])],
+            [new VisioFigureLabel("annotation", "input", "Annotation", 3, 1, 1.2, 0.3, 9)]);
         var prepared = new PreparedSelectedPageRegion(
             new SelectedPageTarget("document-1", "page-1", new string('a', 64), new string('b', 64), 1),
             new DiagramDocument("Figure", [], [], [], plan));
         var method = typeof(VisioComEngine).GetMethod("DrawPreparedSelectedPageRegion", BindingFlags.NonPublic | BindingFlags.Static);
 
         Assert.NotNull(method);
-        method.Invoke(null, [page, prepared, (Action<int>)(shapeId =>
+        method.Invoke(null, [page, prepared, (Action<int, IReadOnlyList<string>, SelectedPageShapeRole>)((shapeId, semanticIds, role) =>
         {
-            reportedIds.Add(shapeId);
+            created.Add(new SelectedPageShapeCreationEntry(shapeId, semanticIds, role));
             page.Events.Add($"reported:{shapeId}");
         })]);
 
         Assert.NotEmpty(page.CreatedShapeIds);
-        Assert.Equal(page.CreatedShapeIds, reportedIds);
+        Assert.Equal(page.CreatedShapeIds, created.Select(entry => entry.ShapeId));
         Assert.Contains(page.CreationKinds, kind => kind == "rectangle");
-        Assert.Contains(page.CreationKinds, kind => kind == "oval");
-        Assert.Contains(page.CreationKinds, kind => kind == "line");
         Assert.Contains(page.CreationKinds, kind => kind == "polyline");
+        Assert.All(created, entry => Assert.NotEmpty(entry.SemanticIds));
+        Assert.Contains(created, entry => entry.Role == SelectedPageShapeRole.Primary && entry.SemanticIds.SequenceEqual(["input"]));
+        Assert.Contains(created, entry => entry.Role == SelectedPageShapeRole.Label && entry.SemanticIds.SequenceEqual(["input"]));
+        Assert.Contains(created, entry => entry.Role == SelectedPageShapeRole.Connector && entry.SemanticIds.SequenceEqual(["input", "output"]));
+        Assert.Contains(created, entry => entry.Role == SelectedPageShapeRole.Title && entry.SemanticIds.SequenceEqual(["plan-1"]));
         foreach (var shapeId in page.CreatedShapeIds)
         {
             var createdIndex = page.Events.IndexOf($"created:{shapeId}");
@@ -294,7 +304,20 @@ public sealed class SelectedPageRenderingContractTests
     }
 
     private static VisioPrimitiveGroup Group(string id, string kind, IReadOnlyList<string> primitiveIds) =>
-        new(id, kind, new VisioBounds(1, 1, 1, 0.7), 0.08, 0.05, 0.04, primitiveIds, new Dictionary<string, string>(), InlineLabel: id);
+        new(
+            id,
+            kind,
+            new VisioBounds(1, 1, 1, 0.7),
+            0.08,
+            0.05,
+            0.04,
+            primitiveIds,
+            new Dictionary<string, string>
+            {
+                ["pvp.componentId"] = id,
+                ["pvp.planId"] = "plan-1",
+            },
+            InlineLabel: id);
 
     public sealed class RecordingDrawingPage
     {

@@ -656,8 +656,10 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         return new SelectedPageShapeDeletionOutcome(requested, deleted, missing, failed);
     }
 
-    private static void TagAndVerifyShapes(dynamic page, IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan)
+    private static void TagAndVerifyShapes(dynamic page, IReadOnlyList<SelectedPageShapeCreationEntry> entries, string ownershipNamespace)
     {
+        var entriesByShapeId = entries.ToDictionary(entry => entry.ShapeId);
+        var shapeIds = entriesByShapeId.Keys.ToHashSet();
         var foundShapeIds = new HashSet<int>();
         dynamic? shapes = null;
         try
@@ -670,23 +672,27 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
                 try
                 {
                     shape = shapes.Item(index);
-                    var id = Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture);
+                    int id = Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture);
                     if (!shapeIds.Contains(id)) continue;
                     foundShapeIds.Add(id);
+                    if (!entriesByShapeId.TryGetValue(id, out var entry))
+                    {
+                        throw new WorkerProtocolException("Selected-page created shape is absent from its exact creation manifest.");
+                    }
                     VisioComEngine.SetRequiredShapeData(shape, OwnershipMarker.ShapeDataKey, ownershipNamespace);
                     if (!string.Equals(VisioComEngine.ReadShapeDataOrNullStrict(shape, OwnershipMarker.ShapeDataKey), ownershipNamespace, StringComparison.Ordinal))
                     {
                         throw new WorkerProtocolException("Selected-page ownership marker was not persisted on a created shape.");
                     }
-                    IReadOnlyList<string> semanticIds = SourceMappingSemanticIds((object)shape, plan);
-                    if (semanticIds.Count == 0)
-                    {
-                        throw new WorkerProtocolException("Selected-page created shape cannot be mapped to a source semantic ID.");
-                    }
-                    VisioComEngine.SetRequiredShapeData(shape, "synapse.sourceMappingSemanticIds", string.Join(",", semanticIds));
-                    if (!ReadSourceMappingSemanticIds((object)shape).SequenceEqual(semanticIds, StringComparer.Ordinal))
+                    VisioComEngine.SetRequiredShapeData(shape, "synapse.sourceMappingSemanticIds", string.Join(",", entry.SemanticIds));
+                    if (!ReadSourceMappingSemanticIds((object)shape).SequenceEqual(entry.SemanticIds, StringComparer.Ordinal))
                     {
                         throw new WorkerProtocolException("Selected-page source mapping semantic IDs were not persisted on a created shape.");
+                    }
+                    VisioComEngine.SetRequiredShapeData(shape, "synapse.rendererRole", entry.Role.ToString());
+                    if (!string.Equals(VisioComEngine.ReadShapeDataOrNullStrict(shape, "synapse.rendererRole"), entry.Role.ToString(), StringComparison.Ordinal))
+                    {
+                        throw new WorkerProtocolException("Selected-page renderer role was not persisted on a created shape.");
                     }
                 }
                 finally
@@ -759,10 +765,10 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     void ISelectedPageShapeMutation.DrawPrepared(
         PreparedSelectedPageRegion preparedRegion,
         SelectedPageShapeCreationJournal creationJournal) =>
-        VisioComEngine.DrawPreparedSelectedPageRegion((object)_page!, preparedRegion, new Action<int>(creationJournal.Record));
+        VisioComEngine.DrawPreparedSelectedPageRegion((object)_page!, preparedRegion, creationJournal.Record);
 
-    void ISelectedPageShapeMutation.TagAndVerifyShapes(IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan) =>
-        TagAndVerifyShapes(_page!, shapeIds, ownershipNamespace, plan);
+    void ISelectedPageShapeMutation.TagAndVerifyShapes(IReadOnlyList<SelectedPageShapeCreationEntry> entries, string ownershipNamespace) =>
+        TagAndVerifyShapes(_page!, entries, ownershipNamespace);
 
     void ISelectedPageShapeMutation.PromoteAndVerifyShapes(IReadOnlySet<int> shapeIds, string stagingNamespace, string finalNamespace) =>
         PromoteAndVerifyShapes(_page!, shapeIds, stagingNamespace, finalNamespace);
@@ -786,38 +792,6 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
             : raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-    }
-
-    private static IReadOnlyList<string> SourceMappingSemanticIds(object shape, DiagramDocument plan)
-    {
-        var componentId = VisioComEngine.ReadShapeDataOrNullStrict(shape, "pvp.componentId");
-        if (!string.IsNullOrWhiteSpace(componentId)) return [componentId];
-
-        dynamic nativeShape = shape;
-        var name = Convert.ToString(nativeShape.NameU, CultureInfo.InvariantCulture) ?? string.Empty;
-        foreach (var node in plan.Nodes)
-        {
-            var semanticId = node.ShapeData.TryGetValue("pvp.componentId", out var value) ? value : node.Id;
-            var nodeName = "synapse.node." + VisioComEngine.SanitizeName(node.Id);
-            var labelName = "synapse.label." + VisioComEngine.SanitizeName(node.Id);
-            if (string.Equals(name, labelName, StringComparison.Ordinal) || name.StartsWith(nodeName + ".plane.", StringComparison.Ordinal)) return [semanticId];
-        }
-
-        foreach (var connector in plan.Connectors)
-        {
-            var connectorName = "synapse.edge." + VisioComEngine.SanitizeName(connector.Id);
-            if (!string.Equals(name, connectorName, StringComparison.Ordinal)) continue;
-            return plan.Nodes
-                .Where(node => string.Equals(node.Id, connector.Source, StringComparison.Ordinal) || string.Equals(node.Id, connector.Target, StringComparison.Ordinal))
-                .Select(node => node.ShapeData.TryGetValue("pvp.componentId", out var value) ? value : node.Id)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
-        }
-
-        return plan.Nodes
-            .Select(node => node.ShapeData.TryGetValue("pvp.componentId", out var value) ? value : node.Id)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
     }
 
     private void ReleaseAttachedReferences()
