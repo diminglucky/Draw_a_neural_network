@@ -7,7 +7,7 @@ const outputRoot = args[args.indexOf("--output-root") + 1];
 const tracePath = path.join(outputRoot, "session-trace.jsonl");
 const waitingForSelectedPage = args.includes("--waiting-for-selected-page");
 const hangOnAttach = args.includes("--hang-on-attach");
-const expectedCommands = ["attachSelectedPage", "applyOwnedRegion", "saveSelectedDocument", "readSelectedPage", "closeSession"];
+const expectedCommands = ["attachSelectedPage", "applyOwnedRegion", "readSelectedPage", "saveSelectedDocument", "readSelectedPage", "closeSession"];
 let commandIndex = 0;
 
 async function trace(entry) {

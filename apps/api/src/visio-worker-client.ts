@@ -481,15 +481,21 @@ export function buildSelectedPageVisioSessionCommands(input: BuildSelectedPageVi
     ownershipNamespace: input.binding.ownershipNamespace,
     sealedNativeIntent: input.sealedNativeIntent,
   }, { binding: input.binding, sealedPlanSecret: input.sealedPlanSecret, now: input.now });
+  const readBeforeSave = parseSelectedPageVisioSessionCommand({
+    protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
+    requestId: input.requestIdFactory("read-before-save"),
+    command: "readSelectedPage",
+    binding: input.binding,
+  });
   const save = parseSelectedPageVisioSessionCommand({
     protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
     requestId: input.requestIdFactory("save"),
     command: "saveSelectedDocument",
     binding: input.binding,
   });
-  const read = parseSelectedPageVisioSessionCommand({
+  const readAfterSave = parseSelectedPageVisioSessionCommand({
     protocolVersion: SELECTED_PAGE_VISIO_SESSION_PROTOCOL_VERSION,
-    requestId: input.requestIdFactory("read"),
+    requestId: input.requestIdFactory("read-after-save"),
     command: "readSelectedPage",
     binding: input.binding,
   });
@@ -499,7 +505,7 @@ export function buildSelectedPageVisioSessionCommands(input: BuildSelectedPageVi
     command: "closeSession",
     binding: input.binding,
   });
-  return [attach, apply, save, read, close];
+  return [attach, apply, readBeforeSave, save, readAfterSave, close];
 }
 
 export function buildVisioWorkerArguments(options: {

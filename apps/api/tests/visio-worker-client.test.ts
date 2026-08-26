@@ -77,7 +77,8 @@ describe("VisioWorkerClient", () => {
       sealedPlanSecret,
       now: new Date("2026-08-24T12:00:00.000Z"),
     });
-    expect(commands.map((command) => command.command)).toEqual(["attachSelectedPage", "applyOwnedRegion", "saveSelectedDocument", "readSelectedPage", "closeSession"]);
+    expect(commands.map((command) => command.command)).toEqual(["attachSelectedPage", "applyOwnedRegion", "readSelectedPage", "saveSelectedDocument", "readSelectedPage", "closeSession"]);
+    expect(commands.map((command) => command.requestId)).toEqual(["request-attach", "request-apply", "request-read-before-save", "request-save", "request-read-after-save", "request-close"]);
     expect(JSON.stringify(commands)).not.toMatch(/outputPath|createDocument|createPage|open/i);
     expect(() => buildSelectedPageVisioSessionCommands({
       requestIdFactory: (suffix) => `request-${suffix}`,
@@ -124,7 +125,7 @@ describe("VisioWorkerClient", () => {
     await waitFor(async () => (await readSessionTrace()).some((entry) => entry.event === "eof"));
     const trace = await readSessionTrace();
     expect(trace.filter((entry) => typeof entry.command === "string").map((entry) => entry.command)).toEqual([
-      "attachSelectedPage", "applyOwnedRegion", "saveSelectedDocument", "readSelectedPage", "closeSession",
+      "attachSelectedPage", "applyOwnedRegion", "readSelectedPage", "saveSelectedDocument", "readSelectedPage", "closeSession",
     ]);
     expect(new Set(trace.filter((entry) => typeof entry.command === "string").map((entry) => entry.pid))).toEqual(new Set([trace[0]?.pid]));
   });
