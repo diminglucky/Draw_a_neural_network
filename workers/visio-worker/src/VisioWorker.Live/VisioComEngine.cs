@@ -67,6 +67,38 @@ public sealed record PublicationTensorSlab(
     IReadOnlyList<PublicationPoint> Top,
     IReadOnlyList<PublicationPoint> Side);
 
+internal sealed class ShapeTrackingPage
+{
+    private readonly dynamic _nativePage;
+    private readonly Action<int> _onShapeCreated;
+
+    internal ShapeTrackingPage(object nativePage, Action<int> onShapeCreated)
+    {
+        ArgumentNullException.ThrowIfNull(nativePage);
+        ArgumentNullException.ThrowIfNull(onShapeCreated);
+        _nativePage = nativePage;
+        _onShapeCreated = onShapeCreated;
+    }
+
+    public dynamic DrawRectangle(double x1, double y1, double x2, double y2) =>
+        Track(_nativePage.DrawRectangle(x1, y1, x2, y2));
+
+    public dynamic DrawOval(double x1, double y1, double x2, double y2) =>
+        Track(_nativePage.DrawOval(x1, y1, x2, y2));
+
+    public dynamic DrawLine(double x1, double y1, double x2, double y2) =>
+        Track(_nativePage.DrawLine(x1, y1, x2, y2));
+
+    public dynamic DrawPolyline(double[] points, int flags) =>
+        Track(_nativePage.DrawPolyline(points, flags));
+
+    private dynamic Track(dynamic shape)
+    {
+        _onShapeCreated(Convert.ToInt32(shape.ID, System.Globalization.CultureInfo.InvariantCulture));
+        return shape;
+    }
+}
+
 public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 {
     private const double PageHeightInches = 9.5;
@@ -298,7 +330,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
     internal static void ConfigureAndDrawDocument(dynamic page, DiagramDocument document)
     {
-        ConfigureAndDraw(page, document, resizePage: true);
+        ConfigureAndDraw((object)page, document, resizePage: true);
     }
 
     /// <summary>
@@ -315,10 +347,14 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return FitSelectedPageDocument(document, pageWidth, pageHeight);
     }
 
-    internal static void DrawPreparedSelectedPageRegion(dynamic page, PreparedSelectedPageRegion preparedRegion)
+    internal static void DrawPreparedSelectedPageRegion(
+        object page,
+        PreparedSelectedPageRegion preparedRegion,
+        Action<int> onShapeCreated)
     {
         ArgumentNullException.ThrowIfNull(preparedRegion);
-        ConfigureAndDraw(page, preparedRegion.Plan, resizePage: false);
+        ArgumentNullException.ThrowIfNull(onShapeCreated);
+        ConfigureAndDraw(page, preparedRegion.Plan, resizePage: false, onShapeCreated: onShapeCreated);
     }
 
     internal static DiagramDocument FitSelectedPageDocument(DiagramDocument document, double pageWidthInches, double pageHeightInches)
@@ -423,12 +459,17 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void ConfigureAndDraw(dynamic page, DiagramDocument document, bool resizePage)
+    private static void ConfigureAndDraw(
+        object nativePage,
+        DiagramDocument document,
+        bool resizePage,
+        Action<int>? onShapeCreated = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         var figurePlan = document.FigurePlan;
         var pageHeight = figurePlan?.PageHeightInches ?? PageHeightInches;
-        if (resizePage) TrySetPageSize(page, figurePlan?.PageWidthInches ?? 26, pageHeight);
+        if (resizePage) TrySetPageSize(nativePage, figurePlan?.PageWidthInches ?? 26, pageHeight);
+        var page = new ShapeTrackingPage(nativePage, onShapeCreated ?? IgnoreShapeCreation);
 
         if (figurePlan is null)
         {
@@ -455,7 +496,11 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
     private static bool UsesLegacyFallbackLabels(VisioFigurePlan plan) => plan.Labels is null;
 
-    private static void DrawNode(dynamic page, VisioNode node)
+    private static void IgnoreShapeCreation(int shapeId)
+    {
+    }
+
+    private static void DrawNode(ShapeTrackingPage page, VisioNode node)
     {
         var x1 = node.XInches;
         var y1 = PageHeightInches - node.YInches - node.HeightInches;
@@ -475,14 +520,14 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         DrawTextLabel(page, node, x1, y2 + 0.06, x2, y2 + 0.42);
     }
 
-    private static dynamic DrawStandardBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    private static dynamic DrawStandardBlock(ShapeTrackingPage page, VisioNode node, double x1, double y1, double x2, double y2)
     {
         dynamic shape = page.DrawRectangle(x1, y1, x2, y2);
         ApplyFill(shape, ParseColor(node.Color, 79, 134, 198), 1.4);
         return shape;
     }
 
-    private static dynamic DrawFeatureMapStack(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    private static dynamic DrawFeatureMapStack(ShapeTrackingPage page, VisioNode node, double x1, double y1, double x2, double y2)
     {
         var depth = Math.Clamp(node.Depth, 2, 12);
         var offset = Math.Min(0.12, Math.Min(node.WidthInches, node.HeightInches) / Math.Max(12, depth * 2.0));
@@ -502,7 +547,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return front!;
     }
 
-    private static dynamic DrawPoolingBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    private static dynamic DrawPoolingBlock(ShapeTrackingPage page, VisioNode node, double x1, double y1, double x2, double y2)
     {
         var width = Math.Max(0.18, (x2 - x1) * 0.62);
         var height = Math.Max(0.28, (y2 - y1) * 0.72);
@@ -512,7 +557,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return shape;
     }
 
-    private static dynamic DrawFullyConnectedBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    private static dynamic DrawFullyConnectedBlock(ShapeTrackingPage page, VisioNode node, double x1, double y1, double x2, double y2)
     {
         var depth = Math.Clamp(node.Depth, 2, 5);
         var offset = Math.Min(0.1, (x2 - x1) / Math.Max(12, depth * 2.0));
@@ -528,7 +573,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return front!;
     }
 
-    private static dynamic DrawSoftmaxBlock(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    private static dynamic DrawSoftmaxBlock(ShapeTrackingPage page, VisioNode node, double x1, double y1, double x2, double y2)
     {
         var width = Math.Max(0.2, (x2 - x1) * 0.74);
         var center = (x1 + x2) / 2;
@@ -537,7 +582,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         return shape;
     }
 
-    private static void DrawPrimitiveGroup(dynamic page, VisioPrimitiveGroup group, double pageHeight)
+    private static void DrawPrimitiveGroup(ShapeTrackingPage page, VisioPrimitiveGroup group, double pageHeight)
     {
         var x1 = group.Bounds.XInches;
         var y1 = pageHeight - group.Bounds.YInches - group.Bounds.HeightInches;
@@ -636,7 +681,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
 
     }
 
-    private static void DrawTokenStrip(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, (int R, int G, int B)? stroke)
+    private static void DrawTokenStrip(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, (int R, int G, int B)? stroke)
     {
         var width = (x2 - x1) / group.PrimitiveIds.Count;
         for (var index = 0; index < group.PrimitiveIds.Count; index++)
@@ -677,17 +722,17 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySet(() => shape.CellsU("BottomMargin").FormulaU = "0 in");
     }
 
-    private static dynamic DrawClosedPolygon(dynamic page, double[] points)
+    private static dynamic DrawClosedPolygon(ShapeTrackingPage page, double[] points)
     {
         return page.DrawPolyline(points, 0);
     }
 
-    private static dynamic DrawClosedPolygon(dynamic page, IReadOnlyList<PublicationPoint> points)
+    private static dynamic DrawClosedPolygon(ShapeTrackingPage page, IReadOnlyList<PublicationPoint> points)
     {
         return DrawClosedPolygon(page, points.SelectMany(point => new[] { point.X, point.Y }).ToArray());
     }
 
-    private static void DrawFeatureMapPlaneStack(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
+    private static void DrawFeatureMapPlaneStack(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
     {
         var planeCount = group.PrimitiveIds.Count(id => id.EndsWith(".front", StringComparison.Ordinal));
         if (planeCount < 1) throw new WorkerProtocolException($"Feature-map stack {group.Id} has no planned front plane.");
@@ -712,7 +757,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void DrawFeatureMapFaces(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, string primitivePrefix, double faceDepth)
+    private static void DrawFeatureMapFaces(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, string primitivePrefix, double faceDepth)
     {
         var slab = PublicationTensorGeometry.CreateTensorSlab(x1, y1, x2, y2, faceDepth);
         dynamic front = DrawClosedPolygon(page, slab.Front);
@@ -729,7 +774,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, primitivePrefix, "side"));
     }
 
-    private static void DrawInputRgbTile(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    private static void DrawInputRgbTile(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
     {
         const double tileOffset = 0.12;
         var colors = new[]
@@ -749,7 +794,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void DrawInputTileGrid(dynamic page, double x1, double y1, double x2, double y2)
+    private static void DrawInputTileGrid(ShapeTrackingPage page, double x1, double y1, double x2, double y2)
     {
         for (var division = 1; division < 4; division++)
         {
@@ -764,7 +809,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void DrawDownsampleTransition(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
+    private static void DrawDownsampleTransition(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
     {
         var inputSpatial = ReadPositiveInteger(group, "synapse.inputSpatialSize", fallback: 2);
         var outputSpatial = ReadPositiveInteger(group, "synapse.outputSpatialSize", fallback: 1);
@@ -790,7 +835,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, "side"));
     }
 
-    private static void DrawFlattenRibbon(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    private static void DrawFlattenRibbon(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
     {
         var rightHeight = Math.Max(0.16, Math.Min(0.32, (y2 - y1) * 0.28));
         var centerY = (y1 + y2) / 2;
@@ -800,7 +845,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         NameAndAnnotatePrimitive(ribbon, group, group.Id + ".ribbon");
     }
 
-    private static void DrawDenseVectorLayer(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    private static void DrawDenseVectorLayer(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
     {
         dynamic frame = page.DrawRectangle(x1, y1, x2, y2);
         ApplyFill(frame, PublicationRenderPalette.DenseFill, 0.9);
@@ -809,7 +854,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         DrawVectorUnits(page, group, x1, y1, x2, y2, "unit", PublicationRenderPalette.DenseAccent);
     }
 
-    private static void DrawScoreVectorLayer(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    private static void DrawScoreVectorLayer(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
     {
         dynamic frame = page.DrawRectangle(x1, y1, x2, y2);
         ApplyFill(frame, PublicationRenderPalette.ScoreFill, 0.9);
@@ -827,7 +872,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void DrawVectorUnits(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, string prefix, (int R, int G, int B) accent)
+    private static void DrawVectorUnits(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, string prefix, (int R, int G, int B) accent)
     {
         var ids = group.PrimitiveIds.Where(id => id.StartsWith(group.Id + "." + prefix + "-", StringComparison.Ordinal)).ToArray();
         var slot = (y2 - y1) / (ids.Length + 1);
@@ -842,7 +887,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void DrawPoolingWedge(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
+    private static void DrawPoolingWedge(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight)
     {
         var inset = Math.Min((y2 - y1) * 0.22, 0.24);
         var skewX = Math.Max(0.06, Math.Abs(group.SkewXInches));
@@ -858,7 +903,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         NameAndAnnotatePrimitive(side, group, RequiredFaceId(group, "side"));
     }
 
-    private static void DrawPrismFaces(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, string primitivePrefix)
+    private static void DrawPrismFaces(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2, (int R, int G, int B) fill, double lineWeight, string primitivePrefix)
     {
         var skewX = Math.Max(0.06, Math.Abs(group.SkewXInches));
         var skewY = Math.Max(0.05, Math.Abs(group.SkewYInches));
@@ -891,7 +936,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySetShapeData(shape, "synapse.primitiveId", primitiveId);
     }
 
-    private static void DrawPrimitiveLabel(dynamic page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
+    private static void DrawPrimitiveLabel(ShapeTrackingPage page, VisioPrimitiveGroup group, double x1, double y1, double x2, double y2)
     {
         dynamic label = page.DrawRectangle(x1, y1, x2, y2);
         var repeat = group.ShapeData.TryGetValue("synapse.repeatCount", out var repeatCount) && repeatCount != "1" ? " x" + repeatCount : "";
@@ -904,7 +949,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySet(() => label.CellsU("Para.HorzAlign").FormulaU = "1");
     }
 
-    private static void DrawFigurePlanLabel(dynamic page, VisioFigureLabel label, double pageHeight)
+    private static void DrawFigurePlanLabel(ShapeTrackingPage page, VisioFigureLabel label, double pageHeight)
     {
         var x1 = label.XInches;
         var y1 = pageHeight - label.YInches - label.HeightInches;
@@ -921,7 +966,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySet(() => shape.CellsU("Para.HorzAlign").FormulaU = "1");
     }
 
-    private static void DrawTextLabel(dynamic page, VisioNode node, double x1, double y1, double x2, double y2)
+    private static void DrawTextLabel(ShapeTrackingPage page, VisioNode node, double x1, double y1, double x2, double y2)
     {
         dynamic label = page.DrawRectangle(x1, y1, x2, y2);
         var repeatLabel = node.RepeatCount > 1 ? $" x{node.RepeatCount}" : "";
@@ -933,7 +978,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySet(() => label.CellsU("Para.HorzAlign").FormulaU = "1");
     }
 
-    private static void DrawTitle(dynamic page, string title, double pageHeight, double pageWidth)
+    private static void DrawTitle(ShapeTrackingPage page, string title, double pageHeight, double pageWidth)
     {
         dynamic label = page.DrawRectangle(0.45, pageHeight - 0.65, Math.Max(0.9, pageWidth - 0.45), pageHeight - 0.2);
         label.Text = title;
@@ -946,7 +991,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         TrySet(() => label.CellsU("Para.HorzAlign").FormulaU = "1");
     }
 
-    private static void DrawStageLabels(dynamic page, DiagramDocument document)
+    private static void DrawStageLabels(ShapeTrackingPage page, DiagramDocument document)
     {
         if (document.StageLabels.Count > 8) return;
         foreach (var stage in document.StageLabels.Select((label, index) => (label, index)))
@@ -964,7 +1009,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
     }
 
-    private static void DrawLegend(dynamic page)
+    private static void DrawLegend(ShapeTrackingPage page)
     {
         var items = new[] { ("Convolution + ReLU", 79, 134, 198), ("Max Pooling", 198, 91, 91), ("Fully Connected + ReLU", 88, 166, 166), ("Softmax", 201, 163, 78) };
         var x = 0.55;
@@ -1012,7 +1057,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             : fallback;
     }
 
-    private static void DrawConnector(dynamic page, VisioConnector connector, double pageHeight)
+    private static void DrawConnector(ShapeTrackingPage page, VisioConnector connector, double pageHeight)
     {
         var points = FlattenConnectorPoints(connector, pageHeight);
         dynamic shape;

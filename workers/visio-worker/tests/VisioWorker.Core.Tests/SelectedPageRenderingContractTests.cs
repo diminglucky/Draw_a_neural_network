@@ -28,12 +28,75 @@ public sealed class SelectedPageRenderingContractTests
     }
 
     [Fact]
-    public void Prepared_selected_page_draw_accepts_only_the_prepared_region_token()
+    public void Prepared_selected_page_draw_requires_the_prepared_region_token_and_creation_callback()
     {
         var method = typeof(VisioComEngine).GetMethod("DrawPreparedSelectedPageRegion", BindingFlags.NonPublic | BindingFlags.Static);
 
         Assert.NotNull(method);
-        Assert.Equal(typeof(PreparedSelectedPageRegion), method.GetParameters()[1].ParameterType);
+        Assert.Equal(
+            [typeof(object), typeof(PreparedSelectedPageRegion), typeof(Action<int>)],
+            method.GetParameters().Select(parameter => parameter.ParameterType));
+    }
+
+    [Fact]
+    public void Prepared_selected_page_draw_reports_every_created_shape_before_later_shape_work()
+    {
+        var page = new RecordingDrawingPage();
+        var reportedIds = new List<int>();
+        var plan = new VisioFigurePlan(
+            11,
+            7,
+            [
+                Group("input", "pvp-input-terminal", ["input"]),
+                Group("marker", "pvp-add-marker", ["marker"]),
+                Group("tensor", "pvp-tensor-stage", ["tensor"]),
+                Group("rgb", "input-rgb-tile", ["rgb.red", "rgb.green", "rgb.blue"]),
+                Group("dense", "dense-vector-layer", ["dense.frame", "dense.unit-1", "dense.unit-2"]),
+            ],
+            [new VisioConnector("edge", "input", "marker", "flow", [new DiagramPoint(1, 1), new DiagramPoint(2, 1)])],
+            [new VisioFigureLabel("annotation", "marker", "Annotation", 3, 1, 1.2, 0.3, 9)]);
+        var prepared = new PreparedSelectedPageRegion(
+            new SelectedPageTarget("document-1", "page-1", new string('a', 64), new string('b', 64), 1),
+            new DiagramDocument("Figure", [], [], [], plan));
+        var method = typeof(VisioComEngine).GetMethod("DrawPreparedSelectedPageRegion", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        method.Invoke(null, [page, prepared, (Action<int>)(shapeId =>
+        {
+            reportedIds.Add(shapeId);
+            page.Events.Add($"reported:{shapeId}");
+        })]);
+
+        Assert.NotEmpty(page.CreatedShapeIds);
+        Assert.Equal(page.CreatedShapeIds, reportedIds);
+        Assert.Contains(page.CreationKinds, kind => kind == "rectangle");
+        Assert.Contains(page.CreationKinds, kind => kind == "oval");
+        Assert.Contains(page.CreationKinds, kind => kind == "line");
+        Assert.Contains(page.CreationKinds, kind => kind == "polyline");
+        foreach (var shapeId in page.CreatedShapeIds)
+        {
+            var createdIndex = page.Events.IndexOf($"created:{shapeId}");
+            var reportedIndex = page.Events.IndexOf($"reported:{shapeId}");
+            var firstShapeWorkIndex = page.Events.FindIndex(item => item.StartsWith($"shape-work:{shapeId}:", StringComparison.Ordinal));
+            Assert.True(createdIndex >= 0 && reportedIndex == createdIndex + 1, $"Shape {shapeId} was not reported immediately after creation.");
+            Assert.True(firstShapeWorkIndex < 0 || reportedIndex < firstShapeWorkIndex, $"Shape {shapeId} was styled before it was reported.");
+        }
+    }
+
+    [Fact]
+    public void Every_shape_producing_helper_requires_the_tracking_page()
+    {
+        var bypasses = typeof(VisioComEngine)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(method => method.Name.StartsWith("Draw", StringComparison.Ordinal))
+            .Where(method => method.Name != "DrawPreparedSelectedPageRegion")
+            .Where(method => method.GetParameters().FirstOrDefault()?.Name == "page")
+            .Where(method => method.GetParameters()[0].ParameterType != typeof(ShapeTrackingPage))
+            .Select(method => method.Name)
+            .Order()
+            .ToArray();
+
+        Assert.Empty(bypasses);
     }
 
     [Fact]
@@ -228,5 +291,65 @@ public sealed class SelectedPageRenderingContractTests
     public sealed class FakeFormulaCell
     {
         public string FormulaU { get; set; } = string.Empty;
+    }
+
+    private static VisioPrimitiveGroup Group(string id, string kind, IReadOnlyList<string> primitiveIds) =>
+        new(id, kind, new VisioBounds(1, 1, 1, 0.7), 0.08, 0.05, 0.04, primitiveIds, new Dictionary<string, string>(), InlineLabel: id);
+
+    public sealed class RecordingDrawingPage
+    {
+        private int _nextShapeId = 100;
+
+        public List<int> CreatedShapeIds { get; } = [];
+        public List<string> CreationKinds { get; } = [];
+        public List<string> Events { get; } = [];
+
+        public RecordingDrawingShape DrawRectangle(double x1, double y1, double x2, double y2) => Create("rectangle");
+        public RecordingDrawingShape DrawOval(double x1, double y1, double x2, double y2) => Create("oval");
+        public RecordingDrawingShape DrawLine(double x1, double y1, double x2, double y2) => Create("line");
+        public RecordingDrawingShape DrawPolyline(double[] points, int flags) => Create("polyline");
+
+        private RecordingDrawingShape Create(string kind)
+        {
+            var shapeId = _nextShapeId++;
+            CreatedShapeIds.Add(shapeId);
+            CreationKinds.Add(kind);
+            Events.Add($"created:{shapeId}");
+            return new RecordingDrawingShape(shapeId, Events);
+        }
+    }
+
+    public sealed class RecordingDrawingShape(int id, List<string> events)
+    {
+        private string _name = string.Empty;
+        private string _text = string.Empty;
+
+        public int ID { get; } = id;
+
+        public string NameU
+        {
+            get => _name;
+            set
+            {
+                events.Add($"shape-work:{ID}:name");
+                _name = value;
+            }
+        }
+
+        public string Text
+        {
+            get => _text;
+            set
+            {
+                events.Add($"shape-work:{ID}:text");
+                _text = value;
+            }
+        }
+
+        public FakeFormulaCell CellsU(string name)
+        {
+            events.Add($"shape-work:{ID}:cell:{name}");
+            return new FakeFormulaCell();
+        }
     }
 }

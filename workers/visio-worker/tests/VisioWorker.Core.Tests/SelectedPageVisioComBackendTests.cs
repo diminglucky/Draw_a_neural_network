@@ -176,6 +176,36 @@ public sealed class SelectedPageVisioComBackendTests
         Assert.Equal(0, operations.QuitApplicationCalls);
     }
 
+    [Fact]
+    public void Native_selected_page_operations_use_the_exact_shape_mutation_contract()
+    {
+        Assert.True(typeof(ISelectedPageShapeMutation).IsAssignableFrom(typeof(SelectedPageVisioComNative)));
+
+        var methods = typeof(ISelectedPageShapeMutation).GetMethods();
+        Assert.DoesNotContain(methods, method => method.Name == "ReadShapeIds");
+        var draw = Assert.Single(methods, method => method.Name == "DrawPrepared");
+        Assert.True(draw.IsAbstract);
+        Assert.Equal(
+            [typeof(PreparedSelectedPageRegion), typeof(SelectedPageShapeCreationJournal)],
+            draw.GetParameters().Select(parameter => parameter.ParameterType));
+    }
+
+    [Fact]
+    public void Staging_namespace_is_stable_target_bound_and_distinct_from_the_final_namespace()
+    {
+        var method = typeof(SelectedPageVisioComNative).GetMethod("StagingNamespace", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var first = Assert.IsType<string>(method.Invoke(null, [Target, OwnershipNamespace]));
+        var second = Assert.IsType<string>(method.Invoke(null, [Target, OwnershipNamespace]));
+        var changed = Assert.IsType<string>(method.Invoke(null, [Target with { PageId = "page-2" }, OwnershipNamespace]));
+
+        Assert.Matches("^[A-F0-9]{64}$", first);
+        Assert.Equal(first, second);
+        Assert.NotEqual(OwnershipNamespace, first);
+        Assert.NotEqual(first, changed);
+    }
+
     private static DiagramDocument Plan() => new("Selected page test", [], [], []);
 
     private sealed class RecordingOperations : ISelectedPageVisioComOperations

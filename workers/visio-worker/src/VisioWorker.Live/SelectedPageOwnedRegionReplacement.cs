@@ -14,17 +14,9 @@ internal sealed class SelectedPageShapeCreationJournal
 
 internal interface ISelectedPageShapeMutation
 {
-    // Compatibility slots for the unmodified COM adapter. The coordinator never calls them.
-    [Obsolete("The replacement coordinator uses an operation-scoped creation journal.")]
-    IReadOnlySet<int> ReadShapeIds() => throw new NotSupportedException("The legacy page-wide shape ID reader is not supported by staged replacement.");
-
-    [Obsolete("The replacement coordinator uses an operation-scoped creation journal.")]
-    void DrawPrepared(PreparedSelectedPageRegion preparedRegion) => throw new NotSupportedException("The legacy renderer cannot provide an operation-scoped creation journal.");
-
     IReadOnlySet<int> ReadOwnedShapeIds(string ownershipNamespace);
     void DeleteOwnedShapes(string ownershipNamespace);
-    void DrawPrepared(PreparedSelectedPageRegion preparedRegion, SelectedPageShapeCreationJournal creationJournal) =>
-        throw new NotSupportedException("The selected-page renderer must record every created shape in the operation-scoped creation journal.");
+    void DrawPrepared(PreparedSelectedPageRegion preparedRegion, SelectedPageShapeCreationJournal creationJournal);
     void TagAndVerifyShapes(IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan);
     void PromoteAndVerifyShapes(IReadOnlySet<int> shapeIds, string stagingNamespace, string finalNamespace);
     void DeleteShapes(IReadOnlySet<int> shapeIds);

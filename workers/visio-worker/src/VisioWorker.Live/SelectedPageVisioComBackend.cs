@@ -190,7 +190,7 @@ public sealed class SelectedPageVisioComBackend : ISelectedPageSessionBackend, I
 /// Holds only COM references acquired from the user's active Visio window. Releasing this object
 /// releases references; it never closes the user's document or quits their application.
 /// </summary>
-internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperations, IDisposable
+internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperations, ISelectedPageShapeMutation, IDisposable
 {
     private readonly VisioComEngineOptions _options;
     private dynamic? _application;
@@ -274,10 +274,11 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         {
             throw new InvalidOperationException("The prepared Visio region does not match the requested selected-page target.");
         }
-        DeleteOwnedShapes(_page!, ownershipNamespace);
-        var existingShapeIds = ReadShapeIds(_page!);
-        VisioComEngine.DrawPreparedSelectedPageRegion(_page!, preparedRegion);
-        TagNewShapes(_page!, existingShapeIds, ownershipNamespace, preparedRegion.Plan);
+        SelectedPageOwnedRegionReplacement.Execute(
+            this,
+            preparedRegion,
+            ownershipNamespace,
+            StagingNamespace(target, ownershipNamespace));
     }
 
     public void SaveSelectedDocument(SelectedPageTarget target)
@@ -456,6 +457,20 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     private static string Hash(params string[] values) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\0", values)))).ToLowerInvariant();
 
+    private static string StagingNamespace(SelectedPageTarget target, string ownershipNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownershipNamespace);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
+            "\0",
+            "selected-page-staging-v1",
+            ownershipNamespace,
+            target.DocumentId,
+            target.PageId,
+            target.DocumentFingerprint,
+            target.PageFingerprint))));
+    }
+
     private static void DeleteOwnedShapes(dynamic page, string ownershipNamespace)
     {
         dynamic? shapes = null;
@@ -486,7 +501,7 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
-    private static HashSet<int> ReadShapeIds(dynamic page)
+    private static HashSet<int> ReadOwnedShapeIds(dynamic page, string ownershipNamespace)
     {
         var result = new HashSet<int>();
         dynamic? shapes = null;
@@ -500,7 +515,10 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
                 try
                 {
                     shape = shapes.Item(index);
-                    result.Add(Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture));
+                    if (string.Equals(VisioComEngine.ReadShapeDataOrNullStrict(shape, OwnershipMarker.ShapeDataKey), ownershipNamespace, StringComparison.Ordinal))
+                    {
+                        result.Add(Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture));
+                    }
                 }
                 finally
                 {
@@ -515,8 +533,37 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
-    private static void TagNewShapes(dynamic page, IReadOnlySet<int> existingShapeIds, string ownershipNamespace, DiagramDocument plan)
+    private static void DeleteShapes(dynamic page, IReadOnlySet<int> shapeIds)
     {
+        if (shapeIds.Count == 0) return;
+        dynamic? shapes = null;
+        try
+        {
+            shapes = page.Shapes;
+            var count = Convert.ToInt32(shapes.Count, CultureInfo.InvariantCulture);
+            for (var index = count; index >= 1; index--)
+            {
+                dynamic? shape = null;
+                try
+                {
+                    shape = shapes.Item(index);
+                    if (shapeIds.Contains(Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture))) shape.Delete();
+                }
+                finally
+                {
+                    VisioComEngine.ReleaseCom(shape);
+                }
+            }
+        }
+        finally
+        {
+            VisioComEngine.ReleaseCom(shapes);
+        }
+    }
+
+    private static void TagAndVerifyShapes(dynamic page, IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan)
+    {
+        var foundShapeIds = new HashSet<int>();
         dynamic? shapes = null;
         try
         {
@@ -529,7 +576,8 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
                 {
                     shape = shapes.Item(index);
                     var id = Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture);
-                    if (existingShapeIds.Contains(id)) continue;
+                    if (!shapeIds.Contains(id)) continue;
+                    foundShapeIds.Add(id);
                     VisioComEngine.SetRequiredShapeData(shape, OwnershipMarker.ShapeDataKey, ownershipNamespace);
                     if (!string.Equals(VisioComEngine.ReadShapeDataOrNullStrict(shape, OwnershipMarker.ShapeDataKey), ownershipNamespace, StringComparison.Ordinal))
                     {
@@ -556,7 +604,75 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         {
             VisioComEngine.ReleaseCom(shapes);
         }
+        if (!foundShapeIds.SetEquals(shapeIds))
+        {
+            throw new WorkerProtocolException("Selected-page replacement lost a newly created shape before staging completed.");
+        }
     }
+
+    private static void PromoteAndVerifyShapes(dynamic page, IReadOnlySet<int> shapeIds, string stagingNamespace, string finalNamespace)
+    {
+        var foundShapeIds = new HashSet<int>();
+        dynamic? shapes = null;
+        try
+        {
+            shapes = page.Shapes;
+            var count = Convert.ToInt32(shapes.Count, CultureInfo.InvariantCulture);
+            for (var index = 1; index <= count; index++)
+            {
+                dynamic? shape = null;
+                try
+                {
+                    shape = shapes.Item(index);
+                    var id = Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture);
+                    if (!shapeIds.Contains(id)) continue;
+                    foundShapeIds.Add(id);
+                    if (!string.Equals(VisioComEngine.ReadShapeDataOrNullStrict(shape, OwnershipMarker.ShapeDataKey), stagingNamespace, StringComparison.Ordinal))
+                    {
+                        throw new WorkerProtocolException("Selected-page staged shape ownership changed before promotion.");
+                    }
+                    if (ReadSourceMappingSemanticIds((object)shape).Count == 0)
+                    {
+                        throw new WorkerProtocolException("Selected-page staged shape lost its source mapping before promotion.");
+                    }
+                    VisioComEngine.SetRequiredShapeData(shape, OwnershipMarker.ShapeDataKey, finalNamespace);
+                    if (!string.Equals(VisioComEngine.ReadShapeDataOrNullStrict(shape, OwnershipMarker.ShapeDataKey), finalNamespace, StringComparison.Ordinal))
+                    {
+                        throw new WorkerProtocolException("Selected-page final ownership marker was not persisted on a promoted shape.");
+                    }
+                }
+                finally
+                {
+                    VisioComEngine.ReleaseCom(shape);
+                }
+            }
+        }
+        finally
+        {
+            VisioComEngine.ReleaseCom(shapes);
+        }
+        if (!foundShapeIds.SetEquals(shapeIds))
+        {
+            throw new WorkerProtocolException("Selected-page replacement lost a staged shape before promotion completed.");
+        }
+    }
+
+    IReadOnlySet<int> ISelectedPageShapeMutation.ReadOwnedShapeIds(string ownershipNamespace) => ReadOwnedShapeIds(_page!, ownershipNamespace);
+
+    void ISelectedPageShapeMutation.DeleteOwnedShapes(string ownershipNamespace) => DeleteOwnedShapes(_page!, ownershipNamespace);
+
+    void ISelectedPageShapeMutation.DrawPrepared(
+        PreparedSelectedPageRegion preparedRegion,
+        SelectedPageShapeCreationJournal creationJournal) =>
+        VisioComEngine.DrawPreparedSelectedPageRegion((object)_page!, preparedRegion, new Action<int>(creationJournal.Record));
+
+    void ISelectedPageShapeMutation.TagAndVerifyShapes(IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan) =>
+        TagAndVerifyShapes(_page!, shapeIds, ownershipNamespace, plan);
+
+    void ISelectedPageShapeMutation.PromoteAndVerifyShapes(IReadOnlySet<int> shapeIds, string stagingNamespace, string finalNamespace) =>
+        PromoteAndVerifyShapes(_page!, shapeIds, stagingNamespace, finalNamespace);
+
+    void ISelectedPageShapeMutation.DeleteShapes(IReadOnlySet<int> shapeIds) => DeleteShapes(_page!, shapeIds);
 
     private static string NativeShapeId(object shape)
     {

@@ -28,7 +28,9 @@ public sealed class SelectedPageOwnedRegionReplacementTests
         Assert.Equal(FinalNamespace, mutation.OwnershipById[30]);
         Assert.Equal(FinalNamespace, mutation.OwnershipById[31]);
         Assert.DoesNotContain(40, mutation.OwnershipById.Keys);
-        Assert.DoesNotContain(mutation.Events, item => item.Contains(":40", StringComparison.Ordinal));
+        Assert.All(mutation.StagedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
+        Assert.All(mutation.PromotedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
+        Assert.All(mutation.DeletedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
     }
 
     [Theory]
@@ -49,7 +51,9 @@ public sealed class SelectedPageOwnedRegionReplacementTests
         Assert.DoesNotContain(30, mutation.ShapeIds);
         Assert.DoesNotContain(31, mutation.ShapeIds);
         Assert.DoesNotContain(40, mutation.OwnershipById.Keys);
-        Assert.DoesNotContain(mutation.Events, item => item.Contains(":40", StringComparison.Ordinal));
+        Assert.All(mutation.StagedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
+        Assert.All(mutation.PromotedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
+        Assert.All(mutation.DeletedShapeIdSets, shapeIds => Assert.DoesNotContain(40, shapeIds));
         Assert.DoesNotContain("delete-ids:10,11", mutation.Events);
     }
 
@@ -98,6 +102,9 @@ public sealed class SelectedPageOwnedRegionReplacementTests
         public IReadOnlySet<int> DrawnIds { get; init; } = new HashSet<int> { 30, 31 };
         public string? FailurePoint { get; init; }
         public List<string> Events { get; } = [];
+        public List<IReadOnlySet<int>> StagedShapeIdSets { get; } = [];
+        public List<IReadOnlySet<int>> PromotedShapeIdSets { get; } = [];
+        public List<IReadOnlySet<int>> DeletedShapeIdSets { get; } = [];
         public int DeleteOldAttempts { get; private set; }
 
         public IReadOnlySet<int> ReadOwnedShapeIds(string ownershipNamespace)
@@ -126,6 +133,7 @@ public sealed class SelectedPageOwnedRegionReplacementTests
 
         public void TagAndVerifyShapes(IReadOnlySet<int> shapeIds, string ownershipNamespace, DiagramDocument plan)
         {
+            StagedShapeIdSets.Add(shapeIds.ToHashSet());
             Events.Add($"tag:{ownershipNamespace}:{Ids(shapeIds)}");
             foreach (var id in shapeIds) OwnershipById[id] = ownershipNamespace;
             if (FailurePoint == "tag") throw new WorkerProtocolException("tag failed");
@@ -133,6 +141,7 @@ public sealed class SelectedPageOwnedRegionReplacementTests
 
         public void PromoteAndVerifyShapes(IReadOnlySet<int> shapeIds, string stagingNamespace, string finalNamespace)
         {
+            PromotedShapeIdSets.Add(shapeIds.ToHashSet());
             Events.Add($"promote:{stagingNamespace}->{finalNamespace}:{Ids(shapeIds)}");
             foreach (var id in shapeIds.Take(FailurePoint == "promote" ? 1 : shapeIds.Count)) OwnershipById[id] = finalNamespace;
             if (FailurePoint == "promote") throw new WorkerProtocolException("promote failed");
@@ -140,6 +149,7 @@ public sealed class SelectedPageOwnedRegionReplacementTests
 
         public void DeleteShapes(IReadOnlySet<int> shapeIds)
         {
+            DeletedShapeIdSets.Add(shapeIds.ToHashSet());
             Events.Add($"delete-ids:{Ids(shapeIds)}");
             if (shapeIds.Contains(10) || shapeIds.Contains(11))
             {
