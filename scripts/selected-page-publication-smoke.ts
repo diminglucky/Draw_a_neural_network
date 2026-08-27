@@ -13,7 +13,7 @@ import { SelectedPageDrawingJob } from "../apps/api/src/selected-page-drawing-jo
 import { InMemorySelectedPageLeaseStore, SelectedPageLeaseService } from "../apps/api/src/selected-page-lease.js";
 import { parseUniversalGraphSpec } from "../apps/api/src/universal-graph-spec.js";
 import { VisioWorkerClient } from "../apps/api/src/visio-worker-client.js";
-import { unknownResidualMultiBranchUgs } from "../apps/api/tests/fixtures/universal-graph-spec.js";
+import { unknownHybridSemanticRegionsUgs } from "../apps/api/tests/fixtures/universal-graph-spec.js";
 
 const worktree = process.cwd();
 const secret = randomBytes(32).toString("hex");
@@ -40,7 +40,7 @@ async function main(): Promise<void> {
     idFactory: randomUUID,
   });
 
-  const ugs = parseUniversalGraphSpec(unknownResidualMultiBranchUgs());
+  const ugs = parseUniversalGraphSpec(unknownHybridSemanticRegionsUgs());
   const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
   const pending = compilePublicationVisualPlan({
     ugs,

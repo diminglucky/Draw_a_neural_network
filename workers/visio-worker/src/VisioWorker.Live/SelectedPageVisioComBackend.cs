@@ -356,6 +356,7 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
                 ownershipNamespace,
                 StagingNamespace(target, ownershipNamespace));
             _expectedPromotedManifest = FreezeManifest(manifest);
+            VisioComEngine.TryFitSelectedPageWindow(_window);
         }
         catch
         {
@@ -708,6 +709,39 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
         }
     }
 
+    private static HashSet<int> ReadAgentOwnedShapeIds(dynamic page)
+    {
+        var result = new HashSet<int>();
+        dynamic? shapes = null;
+        try
+        {
+            shapes = page.Shapes;
+            var count = Convert.ToInt32(shapes.Count, CultureInfo.InvariantCulture);
+            for (var index = 1; index <= count; index++)
+            {
+                dynamic? shape = null;
+                try
+                {
+                    shape = shapes.Item(index);
+                    var marker = VisioComEngine.ReadShapeDataOrNullStrict(shape, OwnershipMarker.ShapeDataKey);
+                    if (marker is not null && marker.StartsWith("agent:", StringComparison.Ordinal))
+                    {
+                        result.Add(Convert.ToInt32(shape.ID, CultureInfo.InvariantCulture));
+                    }
+                }
+                finally
+                {
+                    VisioComEngine.ReleaseCom(shape);
+                }
+            }
+            return result;
+        }
+        finally
+        {
+            VisioComEngine.ReleaseCom(shapes);
+        }
+    }
+
     private static SelectedPageShapeDeletionOutcome DeleteShapes(dynamic page, IReadOnlySet<int> shapeIds)
     {
         var requested = shapeIds.ToHashSet();
@@ -880,6 +914,8 @@ internal sealed class SelectedPageVisioComNative : ISelectedPageVisioComOperatio
     }
 
     IReadOnlySet<int> ISelectedPageShapeMutation.ReadOwnedShapeIds(string ownershipNamespace) => ReadOwnedShapeIds(_page!, ownershipNamespace);
+
+    IReadOnlySet<int> ISelectedPageShapeMutation.ReadAgentOwnedShapeIds() => ReadAgentOwnedShapeIds(_page!);
 
     void ISelectedPageShapeMutation.DeleteOwnedShapes(string ownershipNamespace) => DeleteOwnedShapes(_page!, ownershipNamespace);
 

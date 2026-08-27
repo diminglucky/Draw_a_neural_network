@@ -45,8 +45,9 @@ export function composeGeneralPublicationGraph(input: UniversalGraphSpec, intent
   const semanticRegions = deriveComposableSemanticRegions(ugs);
   assertSemanticRegionReferences(ugs, semanticRegions);
   const rankByNodeId = ranksFor(ugs);
+  const orderByNodeId = topologyOrderFor(ugs, rankByNodeId);
   const nodeComponentId = (nodeId: string) => `node:${nodeId}`;
-  const orderedNodes = [...ugs.nodes].sort((left, right) => rankByNodeId.get(left.nodeId)! - rankByNodeId.get(right.nodeId)! || compareCodeUnits(left.nodeId, right.nodeId));
+  const orderedNodes = [...ugs.nodes].sort((left, right) => rankByNodeId.get(left.nodeId)! - rankByNodeId.get(right.nodeId)! || orderByNodeId.get(left.nodeId)! - orderByNodeId.get(right.nodeId)! || compareCodeUnits(left.nodeId, right.nodeId));
   const components: GeneralPublicationComponent[] = [];
 
   for (const [order, node] of orderedNodes.entries()) {
@@ -214,6 +215,74 @@ function ranksFor(ugs: UniversalGraphSpec): Map<string, number> {
     if (!changed) return rankByNodeId;
   }
   return rankByNodeId;
+}
+
+/**
+ * Produces a stable layered order that follows the topology of a graph. The
+ * previous implementation sorted every layer by node ID, which is
+ * deterministic but can place two branches in the opposite order from their
+ * destinations and force crossing connectors. Two small barycentric sweeps
+ * preserve deterministic ties while reducing those crossings for arbitrary
+ * unseen DAGs.
+ */
+function topologyOrderFor(ugs: UniversalGraphSpec, rankByNodeId: ReadonlyMap<string, number>): Map<string, number> {
+  const nodesByRank = new Map<number, string[]>();
+  for (const node of ugs.nodes) {
+    const rank = rankByNodeId.get(node.nodeId) ?? 0;
+    nodesByRank.set(rank, [...(nodesByRank.get(rank) ?? []), node.nodeId]);
+  }
+  for (const [rank, nodeIds] of nodesByRank) nodesByRank.set(rank, nodeIds.sort(compareCodeUnits));
+
+  const neighbours = new Map<string, { source: string; target: string }[]>();
+  const validEdges = ugs.edges
+    .filter((edge) => edge.relation !== "candidate" && edge.knowledge !== "candidate" && edge.relation !== "feedback")
+    .map((edge) => ({ source: portOwner(ugs, edge.sourcePortId), target: portOwner(ugs, edge.targetPortId) }))
+    .filter((edge): edge is { source: string; target: string } => edge.source !== null && edge.target !== null);
+  for (const edge of validEdges) {
+    neighbours.set(edge.source, [...(neighbours.get(edge.source) ?? []), edge]);
+    neighbours.set(edge.target, [...(neighbours.get(edge.target) ?? []), edge]);
+  }
+
+  const maxRank = Math.max(0, ...nodesByRank.keys());
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    reorderRanks(nodesByRank, neighbours, rankByNodeId, maxRank, -1);
+    reorderRanks(nodesByRank, neighbours, rankByNodeId, maxRank, 1);
+  }
+
+  return new Map([...nodesByRank.entries()].sort(([left], [right]) => left - right).flatMap(([, nodeIds]) => nodeIds.map((nodeId, order) => [nodeId, order] as const)));
+}
+
+function reorderRanks(
+  nodesByRank: Map<number, string[]>,
+  neighbours: ReadonlyMap<string, readonly { source: string; target: string }[]>,
+  rankByNodeId: ReadonlyMap<string, number>,
+  maxRank: number,
+  direction: -1 | 1,
+): void {
+  const ranks = direction < 0
+    ? Array.from({ length: maxRank }, (_, index) => maxRank - 1 - index)
+    : Array.from({ length: Math.max(0, maxRank) }, (_, index) => index + 1);
+  for (const rank of ranks) {
+    const current = nodesByRank.get(rank) ?? [];
+    const referenceRank = new Map((nodesByRank.get(direction < 0 ? rank + 1 : rank - 1) ?? []).map((nodeId, index) => [nodeId, index]));
+    const previousOrder = new Map(current.map((nodeId, index) => [nodeId, index]));
+    const score = (nodeId: string): number | null => {
+      const values = (neighbours.get(nodeId) ?? []).flatMap((edge) => {
+        const other = edge.source === nodeId ? edge.target : edge.source;
+        const otherRank = rankByNodeId.get(other);
+        return otherRank === (direction < 0 ? rank + 1 : rank - 1) && referenceRank.has(other) ? [referenceRank.get(other)!] : [];
+      });
+      return values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
+    };
+    nodesByRank.set(rank, [...current].sort((left, right) => {
+      const leftScore = score(left);
+      const rightScore = score(right);
+      if (leftScore !== null && rightScore !== null && leftScore !== rightScore) return leftScore - rightScore;
+      if (leftScore !== null && rightScore === null) return -1;
+      if (leftScore === null && rightScore !== null) return 1;
+      return previousOrder.get(left)! - previousOrder.get(right)! || compareCodeUnits(left, right);
+    }));
+  }
 }
 
 function portOwner(ugs: UniversalGraphSpec, portId: string): string | null {

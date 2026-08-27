@@ -82,6 +82,7 @@ public static class SelectedPageNativeIntentMapper
                 };
             nodes.Add(new VisioNode(primitiveId, kind, label, null, 0, bounds.X / 1000d, bounds.Y / 1000d, bounds.Width / 1000d, bounds.Height / 1000d, "", Role(kind), kind, 1, 1, false, style.FillColor, shapeData));
             var figureKind = FigureKind(visualKind);
+            var renderedLabel = RenderedLabel(figureKind, label);
             groups.Add((zIndex, new VisioPrimitiveGroup(
                 primitiveId,
                 figureKind,
@@ -92,8 +93,8 @@ public static class SelectedPageNativeIntentMapper
                 primitiveIdsForFigure,
                 shapeData,
                 style,
-                InlineLabel(figureKind, label))));
-            if (UsesExternalLabel(figureKind)) labels.Add(CreateLabel(primitiveId, label, bounds, page));
+                InlineLabel(figureKind, renderedLabel))));
+            if (UsesExternalLabel(figureKind) && !string.IsNullOrWhiteSpace(renderedLabel)) labels.Add(CreateLabel(primitiveId, renderedLabel, bounds, page));
         }
 
         var edges = new List<VisioConnector>();
@@ -153,6 +154,15 @@ public static class SelectedPageNativeIntentMapper
         "pvp-input-terminal" or "pvp-output-terminal" or "pvp-tensor-stage"
             or "pvp-operator-frame" or "pvp-module-frame" or "pvp-repeat-badge" => label,
         _ => null,
+    };
+
+    private static string RenderedLabel(string figureKind, string label) => figureKind switch
+    {
+        "pvp-tensor-stage" => "scale",
+        "pvp-tensor-volume" => "tensor",
+        "pvp-attention-token-strip" => "tokens",
+        "pvp-attention-relation" or "pvp-split-marker" or "pvp-add-marker" or "pvp-concat-marker" => "",
+        _ => label,
     };
 
     private static bool UsesExternalLabel(string figureKind) => figureKind is

@@ -17,14 +17,15 @@ describe("PublicationVisualPlan compiler", () => {
     expect((plan.primitives as any[]).some((item) => item.kind === "OperatorFrame")).toBe(true);
     expect(plan.ports).toHaveLength(graph.relations.length * 2);
     expect(plan.connectors).toHaveLength(graph.relations.length);
-    expect(plan.sourceMappings).toHaveLength(graph.components.length);
+    expect(plan.sourceMappings).toHaveLength(plan.primitives.length);
+    expect((plan.primitives as any[]).some((item) => item.primitiveId === "primitive:fusion:spectral_fusion")).toBe(false);
     const inputTerminal = (plan.primitives as any[]).find((item) => item.kind === "InputTerminal");
     const moduleFrame = (plan.primitives as any[]).find((item) => item.kind === "ModuleFrame");
     const operatorFrame = (plan.primitives as any[]).find((item) => item.kind === "OperatorFrame");
     expect(inputTerminal.bounds.width).toBeLessThan(moduleFrame.bounds.width);
     expect(operatorFrame.bounds.width).toBeLessThanOrEqual(moduleFrame.bounds.width);
     for (const connector of plan.connectors as any[]) {
-      expect(connector.route).toHaveLength(4);
+      expect(connector.route.length).toBeGreaterThanOrEqual(2);
       expect(connector.route[0]).not.toEqual(connector.route.at(-1));
     }
   });
@@ -163,15 +164,19 @@ describe("PublicationVisualPlan compiler", () => {
     });
     expect(split.bounds.y + split.bounds.height / 2).toBe(primary.bounds.y + primary.bounds.height / 2);
     expect(stage.bounds).toMatchObject({
-      x: primary.bounds.x + primary.bounds.width + 16,
+      x: primary.bounds.x + Math.floor((primary.bounds.width - 300) / 2),
+      y: expect.any(Number),
       width: 300,
-      height: 88,
+      height: 120,
     });
     expect(volume.bounds).toMatchObject({
-      x: primary.bounds.x + primary.bounds.width + 16,
+      x: stage.bounds.x,
+      y: expect.any(Number),
       width: 300,
-      height: 68,
+      height: 160,
     });
+    expect(stage.bounds.y).toBeGreaterThanOrEqual(primary.bounds.y + primary.bounds.height + 16);
+    expect(volume.bounds.y).toBeGreaterThan(stage.bounds.y + stage.bounds.height);
     expect([repeat, split, stage, volume].every((primitive) => primitive.bounds.width < primary.bounds.width && primitive.bounds.height < primary.bounds.height)).toBe(true);
     expect([repeat, split, stage, volume].every((primitive) => (first.sourceMappings as any[])
       .some((mapping) => mapping.visualId === primitive.primitiveId && mapping.ugsIds.includes("spatial_stage")))).toBe(true);
@@ -214,7 +219,12 @@ describe("PublicationVisualPlan compiler", () => {
       expect.objectContaining({ kind: "AttentionRelation" }),
     ]));
     expect(primary.bounds).toMatchObject({ width: 720, height: 320 });
-    expect(attachments.every((primitive) => primitive.bounds.x >= primary.bounds.x + primary.bounds.width)).toBe(true);
+    const rightAttachments = attachments.filter((primitive) => ["RepeatBadge", "SplitMarker"].includes(primitive.kind));
+    const shelfAttachments = attachments.filter((primitive) => !rightAttachments.includes(primitive));
+    expect(rightAttachments.every((primitive) => primitive.bounds.x >= primary.bounds.x + primary.bounds.width)).toBe(true);
+    expect(shelfAttachments.every((primitive) => primitive.bounds.x >= primary.bounds.x
+      && primitive.bounds.x + primitive.bounds.width <= primary.bounds.x + primary.bounds.width
+      && primitive.bounds.y >= primary.bounds.y + primary.bounds.height + 16)).toBe(true);
     expect(attachments.every((primitive, index) => attachments.slice(index + 1).every((other) => !boundsOverlap(primitive.bounds, other.bounds)))).toBe(true);
     expect(attachments.every((primitive) => (first.sourceMappings as any[]).some((mapping) => mapping.visualId === primitive.primitiveId
       && mapping.ugsIds.includes("spatial_stage") && mapping.evidenceIds.includes("e-topology")))).toBe(true);
@@ -261,12 +271,32 @@ describe("PublicationVisualPlan compiler", () => {
     for (const [nodeId, primary] of primaryByNodeId) {
       const nodeAttachments = attachmentsFor(nodeId);
       expect(nodeAttachments).toHaveLength(3);
-      expect(nodeAttachments.every((primitive) => primitive.bounds.x >= primary.bounds.x + primary.bounds.width)).toBe(true);
+      expect(nodeAttachments.filter((primitive) => primitive.kind === "RepeatBadge")
+        .every((primitive) => primitive.bounds.x >= primary.bounds.x + primary.bounds.width)).toBe(true);
+      expect(nodeAttachments.filter((primitive) => primitive.kind !== "RepeatBadge")
+        .every((primitive) => primitive.bounds.x >= primary.bounds.x
+          && primitive.bounds.x + primitive.bounds.width <= primary.bounds.x + primary.bounds.width
+          && primitive.bounds.y >= primary.bounds.y + primary.bounds.height + 16)).toBe(true);
     }
     expect(evaluatePublicationVisualPlanQa(first).status).toBe("passed");
     expect(first.connectors).toHaveLength(graph.relations.length);
     expect((first.connectors as any[]).map((connector) => connector.connectorId).sort()).toEqual(graph.relations.map((relation) => `connector:${relation.relationId}`).sort());
     expect(new Set((first.connectors as any[]).map((connector) => `${connector.sourcePortId}:${connector.targetPortId}`)).size).toBe(graph.relations.length);
+  });
+
+  it("uses a semantic shelf below a primary instead of stretching the whole network sideways", () => {
+    const ugs = parseUniversalGraphSpec(unknownHybridSemanticRegionsUgs());
+    const graph = composeGeneralPublicationGraph(ugs, { detail: "architecture" });
+    const plan = compilePublicationVisualPlan({ ugs, graph, updateIdentity });
+    const primary = (plan.primitives as any[]).find((primitive) => primitive.primitiveId === "primitive:node:spatial_stage");
+    const stage = (plan.primitives as any[]).find((primitive) => primitive.kind === "TensorStage");
+    const volume = (plan.primitives as any[]).find((primitive) => primitive.kind === "TensorVolume");
+
+    expect(stage.bounds.x).toBeGreaterThanOrEqual(primary.bounds.x);
+    expect(stage.bounds.x + stage.bounds.width).toBeLessThanOrEqual(primary.bounds.x + primary.bounds.width);
+    expect(stage.bounds.y).toBeGreaterThanOrEqual(primary.bounds.y + primary.bounds.height + 16);
+    expect(volume.bounds.y).toBeGreaterThan(stage.bounds.y + stage.bounds.height);
+    expect(plan.coordinateSpace.page.width).toBeLessThan(6812);
   });
 
   it("adds a CandidateCallout and keeps a candidate semantic graph non-exportable", () => {

@@ -146,4 +146,61 @@ describe("General Publication Graph", () => {
     ]));
     expect(graph.relations.some((relation) => relation.role === "flow")).toBe(true);
   });
+
+  it("orders same-rank branches by topology to avoid a crossed two-lane read path", () => {
+    const graph = composeGeneralPublicationGraph(parseUniversalGraphSpec(crossingBranchesUgs()), { detail: "architecture" });
+    const rankOne = graph.layoutOrder.filter((item) => item.rank === 1).map((item) => item.componentId);
+
+    expect(rankOne).toEqual(["node:branch_b", "node:branch_a"]);
+  });
 });
+
+function crossingBranchesUgs(): any {
+  const sourceHash = "a".repeat(64);
+  const node = (nodeId: string, kind: string, inputPortIds: string[], outputPortIds: string[], index: number) => ({
+    nodeId,
+    kind,
+    label: nodeId,
+    semanticHints: [],
+    inputPortIds,
+    outputPortIds,
+    attributes: {},
+    shapeClaim: "unknown",
+    operationKnowledge: "known",
+    evidenceIds: [`e${index}`],
+  });
+  const nodes = [
+    node("input", "input", [], ["input:out"], 0),
+    node("branch_a", "operator", ["branch_a:in"], ["branch_a:out"], 1),
+    node("branch_b", "operator", ["branch_b:in"], ["branch_b:out"], 2),
+    node("target_A", "operator", ["target_A:in"], ["target_A:out"], 3),
+    node("target_B", "operator", ["target_B:in"], ["target_B:out"], 4),
+    node("output", "output", ["output:in"], [], 5),
+  ];
+  const ports = nodes.flatMap((item: any) => [
+    ...item.inputPortIds.map((portId: string) => ({ portId, nodeId: item.nodeId, direction: "input", label: null, representation: null, semanticType: "data", evidenceIds: [] })),
+    ...item.outputPortIds.map((portId: string) => ({ portId, nodeId: item.nodeId, direction: "output", label: null, representation: null, semanticType: "data", evidenceIds: [] })),
+  ]);
+  const edge = (edgeId: string, sourcePortId: string, targetPortId: string, evidenceId: string) => ({ edgeId, sourcePortId, targetPortId, relation: "data", knowledge: "declared", evidenceIds: [evidenceId] });
+  return {
+    version: 1,
+    graphId: "crossing-branches",
+    revision: 1,
+    sourceIds: ["prompt-1"],
+    sourceHashes: [sourceHash],
+    nodes,
+    ports,
+    edges: [
+      edge("input-a", "input:out", "branch_a:in", "e1"),
+      edge("input-b", "input:out", "branch_b:in", "e2"),
+      edge("a-to-B", "branch_a:out", "target_B:in", "e3"),
+      edge("b-to-A", "branch_b:out", "target_A:in", "e4"),
+      edge("A-output", "target_A:out", "output:in", "e5"),
+      edge("B-output", "target_B:out", "output:in", "e6"),
+    ],
+    groups: [],
+    evidence: Array.from({ length: 7 }, (_: unknown, index: number) => ({ evidenceId: `e${index}`, sourceId: "prompt-1", sourceHash, locator: `fragment-${index}`, excerptDigest: "b".repeat(64) })),
+    topologyConfidence: 1,
+    unresolved: [],
+  };
+}

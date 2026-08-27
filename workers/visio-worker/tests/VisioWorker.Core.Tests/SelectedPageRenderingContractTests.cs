@@ -308,6 +308,81 @@ public sealed class SelectedPageRenderingContractTests
         Assert.Same(running, method.Invoke(null, [running]));
     }
 
+    [Fact]
+    public void Required_shape_data_updates_an_existing_row_without_adding_it_again()
+    {
+        var method = typeof(VisioComEngine).GetMethod("SetRequiredShapeData", BindingFlags.NonPublic | BindingFlags.Static);
+        var shape = new ExistingRowRejectingShape();
+
+        Assert.NotNull(method);
+        method.Invoke(null, [shape, "synapse.sessionOwner", "staging-owner"]);
+        method.Invoke(null, [shape, "synapse.sessionOwner", "final-owner"]);
+
+        Assert.Equal(1, shape.AddNamedRowCalls);
+        Assert.Equal("\"final-owner\"", shape.Cells["Prop.synapse_sessionOwner"].FormulaU);
+    }
+
+    [Fact]
+    public void Publication_operator_and_module_frames_use_distinct_semantic_containers()
+    {
+        var page = new PublicationDrawingPage();
+        var operatorGroup = Group("operator", "pvp-operator-frame", ["operator"]);
+        var moduleGroup = Group("module", "pvp-module-frame", ["module"]);
+        var prepared = Prepared(new VisioFigurePlan(11, 7, [operatorGroup, moduleGroup], [], []));
+
+        VisioComEngine.DrawPreparedSelectedPageRegion(page, prepared, (_, _, _) => { });
+
+        Assert.Contains(page.Created, shape => shape.Kind == "polyline");
+        var module = Assert.Single(page.Created, shape => shape.NameU == "synapse.primitive.module");
+        Assert.Equal("rectangle", module.Kind);
+        Assert.Equal("0.08 in", module.Cells["Rounding"].FormulaU);
+    }
+
+    [Fact]
+    public void Publication_secondary_connectors_are_visually_deemphasized_without_changing_topology()
+    {
+        var page = new PublicationDrawingPage();
+        var source = Group("source", "pvp-module-frame", ["source"]);
+        var target = Group("target", "pvp-module-frame", ["target"]);
+        var connector = new VisioConnector(
+            "skip-edge",
+            source.Id,
+            target.Id,
+            "skip",
+            [new DiagramPoint(1, 1), new DiagramPoint(2, 1)],
+            new VisioLineStyle("#64748B", 1.0));
+        var prepared = Prepared(new VisioFigurePlan(11, 7, [source, target], [connector], []));
+
+        VisioComEngine.DrawPreparedSelectedPageRegion(page, prepared, (_, _, _) => { });
+
+        var edge = Assert.Single(page.Created, shape => shape.NameU == "synapse.edge.skip_edge");
+        Assert.Equal("2", edge.Cells["LinePattern"].FormulaU);
+        Assert.Equal("4", edge.Cells["EndArrow"].FormulaU);
+    }
+
+    [Fact]
+    public void Publication_connectors_are_created_before_containers_so_data_flow_sits_behind_nodes()
+    {
+        var page = new PublicationDrawingPage();
+        var source = Group("source", "pvp-module-frame", ["source"]);
+        var target = Group("target", "pvp-operator-frame", ["target"]);
+        var connector = new VisioConnector(
+            "flow-edge",
+            source.Id,
+            target.Id,
+            "flow",
+            [new DiagramPoint(2, 1), new DiagramPoint(3, 1)]);
+        var prepared = Prepared(new VisioFigurePlan(11, 7, [source, target], [connector], []));
+
+        VisioComEngine.DrawPreparedSelectedPageRegion(page, prepared, (_, _, _) => { });
+
+        var connectorIndex = page.Created.FindIndex(shape => shape.NameU == "synapse.edge.flow_edge");
+        var firstContainerIndex = page.Created.FindIndex(shape => shape.NameU == "synapse.primitive.source");
+        Assert.True(connectorIndex >= 0);
+        Assert.True(firstContainerIndex >= 0);
+        Assert.True(connectorIndex < firstContainerIndex, "connectors must be layered behind semantic containers");
+    }
+
     public sealed class FakePage(double value)
     {
         public FakePageSheet PageSheet { get; } = new(value);
@@ -358,6 +433,76 @@ public sealed class SelectedPageRenderingContractTests
     public sealed class FakeFormulaCell
     {
         public string FormulaU { get; set; } = string.Empty;
+    }
+
+    public sealed class ExistingRowRejectingShape
+    {
+        private readonly HashSet<string> _rows = new(StringComparer.Ordinal);
+
+        public int AddNamedRowCalls { get; private set; }
+        public Dictionary<string, FakeFormulaCell> Cells { get; } = new(StringComparer.Ordinal);
+
+        public int CellExistsU(string name, int flags) => _rows.Contains(BaseCellName(name)) ? 1 : 0;
+
+        public void AddNamedRow(int section, string rowName, int rowTag)
+        {
+            AddNamedRowCalls++;
+            if (!_rows.Add($"Prop.{rowName}")) throw new InvalidOperationException("duplicate Shape Data row");
+        }
+
+        public FakeFormulaCell CellsU(string name)
+        {
+            if (!_rows.Contains(BaseCellName(name))) throw new InvalidOperationException("Shape Data row is absent");
+            if (!Cells.TryGetValue(name, out var cell)) Cells[name] = cell = new FakeFormulaCell();
+            return cell;
+        }
+
+        private static string BaseCellName(string name)
+        {
+            var labelSuffix = ".Label";
+            return name.EndsWith(labelSuffix, StringComparison.Ordinal) ? name[..^labelSuffix.Length] : name;
+        }
+    }
+
+    public sealed class PublicationDrawingPage
+    {
+        private int _nextShapeId = 400;
+
+        public List<PublicationDrawingShape> Created { get; } = [];
+
+        public PublicationDrawingShape DrawRectangle(double x1, double y1, double x2, double y2) => Create("rectangle");
+        public PublicationDrawingShape DrawOval(double x1, double y1, double x2, double y2) => Create("oval");
+        public PublicationDrawingShape DrawLine(double x1, double y1, double x2, double y2) => Create("line");
+        public PublicationDrawingShape DrawPolyline(double[] points, int flags) => Create("polyline");
+
+        private PublicationDrawingShape Create(string kind)
+        {
+            var shape = new PublicationDrawingShape(_nextShapeId++, kind);
+            Created.Add(shape);
+            return shape;
+        }
+    }
+
+    public sealed class PublicationDrawingShape(int id, string kind)
+    {
+        private readonly Dictionary<string, FakeFormulaCell> _cells = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _rows = new(StringComparer.Ordinal);
+
+        public int ID { get; } = id;
+        public string Kind { get; } = kind;
+        public string NameU { get; set; } = string.Empty;
+        public string Text { get; set; } = string.Empty;
+        public IReadOnlyDictionary<string, FakeFormulaCell> Cells => _cells;
+
+        public FakeFormulaCell CellsU(string name)
+        {
+            if (!_cells.TryGetValue(name, out var cell)) _cells[name] = cell = new FakeFormulaCell();
+            return cell;
+        }
+
+        public int CellExistsU(string name, int flags) => _rows.Contains(name) ? 1 : 0;
+
+        public void AddNamedRow(int section, string rowName, int rowTag) => _rows.Add($"Prop.{rowName}");
     }
 
     private static VisioPrimitiveGroup Group(string id, string kind, IReadOnlyList<string> primitiveIds) =>

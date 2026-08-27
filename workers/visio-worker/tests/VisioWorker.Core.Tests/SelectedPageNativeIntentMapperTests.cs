@@ -49,7 +49,7 @@ public sealed class SelectedPageNativeIntentMapperTests
         Assert.Equal("#7dd3fc", volume.Style!.FillColor);
         Assert.Equal("#1e293b", volume.Style.StrokeColor);
         Assert.Equal(2, volume.Style.StrokeWidthPoints);
-        Assert.Contains(plan.Labels!, label => label.GroupId == "module-1" && label.Text == "Conv");
+        Assert.Contains(plan.Labels!, label => label.GroupId == "module-1" && label.Text == "tensor");
         Assert.Equal("#475569", Assert.Single(plan.Connectors).Style!.StrokeColor);
         Assert.DoesNotContain("Convolution + ReLU", plan.Labels!.Select(label => label.Text));
     }
@@ -78,6 +78,27 @@ public sealed class SelectedPageNativeIntentMapperTests
         Assert.Null(Assert.Single(plan.PrimitiveGroups, group => group.Id == "input-1").InlineLabel);
         Assert.Equal("shared × N", Assert.Single(plan.PrimitiveGroups, group => group.Id == "module-1").InlineLabel);
         Assert.DoesNotContain(plan.Labels!, label => label.GroupId is "input-1" or "module-1");
+    }
+
+    [Fact]
+    public void Uses_compact_labels_for_semantic_attachment_visuals()
+    {
+        var stageValue = Fixture();
+        stageValue["primitives"]![1]! ["visualKind"] = "TensorStage";
+        stageValue["primitives"]![1]! ["label"] = "Spatial scale transition";
+        stageValue["primitives"]![1]! ["visual"] = JsonNode.Parse("""{"regionRole":"scale_transition","nativeSupport":"supported","geometry":{"kind":"none"}}""");
+
+        var stagePlan = Assert.IsType<VisioFigurePlan>(Map(stageValue).FigurePlan);
+        Assert.Equal("scale", Assert.Single(stagePlan.PrimitiveGroups, group => group.Id == "module-1").InlineLabel);
+        Assert.Empty(stagePlan.Labels!);
+
+        var volumeValue = Fixture();
+        volumeValue["primitives"]![1]! ["visualKind"] = "TensorVolume";
+        volumeValue["primitives"]![1]! ["label"] = "Spatial scale transition";
+        volumeValue["primitives"]![1]! ["visual"] = JsonNode.Parse("""{"regionRole":"scale_transition","nativeSupport":"supported","geometry":{"kind":"tensor_volume","frontFace":[{"x":240,"y":40},{"x":320,"y":40},{"x":320,"y":100},{"x":240,"y":100}],"depthFace":[{"x":320,"y":40},{"x":340,"y":20},{"x":340,"y":80},{"x":320,"y":100}]}}""");
+
+        var volumePlan = Assert.IsType<VisioFigurePlan>(Map(volumeValue).FigurePlan);
+        Assert.Equal("tensor", Assert.Single(volumePlan.Labels!).Text);
     }
 
     [Fact]

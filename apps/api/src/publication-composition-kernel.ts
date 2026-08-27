@@ -110,7 +110,9 @@ function rankPositions(byRank: ReadonlyMap<number, readonly ComposableRegionVisu
     result.set(rank, x);
     const primaryWidth = Math.max(...primaries.map((descriptor) => sizeFor(descriptor.kind).width));
     const attachmentWidth = descriptors
-      .filter((descriptor) => descriptor.attachment !== null && descriptor.layout.rank === rank)
+      .filter((descriptor) => descriptor.attachment !== null
+        && descriptor.layout.rank === rank
+        && consumesHorizontalRankWidth(descriptor))
       .reduce((maximum, descriptor) => Math.max(maximum, attachmentSizeFor(descriptor).width + ATTACHMENT_GAP), 0);
     x += primaryWidth + attachmentWidth + COLUMN_GAP;
   }
@@ -143,14 +145,32 @@ function preferredAttachmentBounds(primary: PublicationCompositionBounds, descri
   const x = primary.x + primary.width + ATTACHMENT_GAP;
   if (descriptor.attachment!.placement === "corner_top_right") return { x, y: primary.y + ATTACHMENT_GAP, ...size };
   if (descriptor.attachment!.placement === "output_side") return { x, y: primary.y + Math.floor((primary.height - size.height) / 2), ...size };
-  if (descriptor.attachment!.placement === "adjacent_right_top") return { x, y: primary.y + 64, ...size };
-  return { x, y: primary.y + 184, ...size };
+  // Semantic detail belongs on a shelf below its stable topology primitive.
+  // It is deliberately centered inside the primary instead of extending the
+  // reading axis to the right. Collision packing may move it farther down,
+  // but never changes the shelf's horizontal ownership.
+  const shelfX = primary.x + Math.floor((primary.width - size.width) / 2);
+  const shelfY = primary.y + primary.height + ATTACHMENT_GAP;
+  if (descriptor.attachment!.placement === "adjacent_right_top") return { x: shelfX, y: shelfY, ...size };
+  return { x: shelfX, y: shelfY, ...size };
+}
+
+function consumesHorizontalRankWidth(descriptor: ComposableRegionVisualDescriptor): boolean {
+  const placement = descriptor.attachment?.placement;
+  return placement === "corner_top_right" || placement === "output_side";
 }
 
 function attachmentSizeFor(descriptor: ComposableRegionVisualDescriptor): { width: number; height: number } {
   if (descriptor.attachment?.placement === "corner_top_right") return { width: 180, height: 48 };
-  if (descriptor.attachment?.placement === "adjacent_right_top") return { width: 300, height: 88 };
-  if (descriptor.attachment?.placement === "adjacent_right_bottom") return { width: 300, height: 68 };
+  if (descriptor.attachment?.placement === "adjacent_right_top") {
+    if (descriptor.kind === "AttentionTokenStrip") return { width: 360, height: 120 };
+    return { width: 300, height: 120 };
+  }
+  if (descriptor.attachment?.placement === "adjacent_right_bottom") {
+    if (descriptor.kind === "AttentionRelation") return { width: 120, height: 120 };
+    if (descriptor.kind === "TensorVolume") return { width: 300, height: 160 };
+    return { width: 300, height: 120 };
+  }
   return sizeFor(descriptor.kind);
 }
 

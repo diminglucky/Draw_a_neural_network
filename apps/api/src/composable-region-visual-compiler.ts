@@ -65,7 +65,15 @@ export interface ComposableRegionVisualCompilation {
 export function compileComposableRegionVisuals(graph: GeneralPublicationGraph): ComposableRegionVisualCompilation {
   const componentByNodeId = componentIndex(graph.components);
   const relationBySourceEdgeId = relationIndex(graph.relations);
-  const descriptors = graph.components.map((component) => componentDescriptor(component));
+  // A custom_fusion component is a semantic claim about the same topology
+  // node, not a second topology node. Rendering it as another full frame
+  // creates duplicated modules at the same rank and makes an unseen network
+  // look like two architectures overlaid. The source node remains represented
+  // by its canonical node component; fusion meaning is carried by its
+  // multi-input relations or a verified merge semantic region.
+  const descriptors = graph.components
+    .filter((component) => component.role !== "custom_fusion")
+    .map((component) => componentDescriptor(component));
   const groups: ComposableRegionVisualGroup[] = [];
   const constraints: ComposableRegionLayoutConstraint[] = [];
   let semanticOrder = 0;

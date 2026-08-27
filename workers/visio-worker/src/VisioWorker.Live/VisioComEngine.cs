@@ -503,8 +503,8 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             return;
         }
 
-        foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveGroup(page, group, pageHeight);
         foreach (var connector in figurePlan.Connectors) DrawConnector(page, connector, pageHeight, ConnectorSemanticIds(connector, figurePlan));
+        foreach (var group in figurePlan.PrimitiveGroups) DrawPrimitiveGroup(page, group, pageHeight);
         if (figurePlan.Labels is not null)
         {
             foreach (var label in figurePlan.Labels) DrawFigurePlanLabel(page, label, pageHeight, ComponentSemanticIds(figurePlan, label.GroupId));
@@ -700,6 +700,38 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             ApplyInlineLabel(shape, group);
             NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
         }
+        else if (string.Equals(group.Kind, "pvp-operator-frame", StringComparison.Ordinal))
+        {
+            var insetX = Math.Min((x2 - x1) * 0.12, 0.18);
+            var insetY = Math.Min((y2 - y1) * 0.16, 0.12);
+            dynamic shape = DrawClosedPolygon(
+                page,
+                GroupSemanticIds(group),
+                PrimitiveRole(group, group.PrimitiveIds.Single()),
+                new double[]
+                {
+                    x1 + insetX, y1,
+                    x2 - insetX, y1,
+                    x2, y1 + insetY,
+                    x2, y2 - insetY,
+                    x2 - insetX, y2,
+                    x1 + insetX, y2,
+                    x1, y2 - insetY,
+                    x1, y1 + insetY,
+                    x1 + insetX, y1,
+                });
+            ApplyFill(shape, fill, lineWeight, stroke);
+            ApplyInlineLabel(shape, group);
+            NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
+        }
+        else if (string.Equals(group.Kind, "pvp-module-frame", StringComparison.Ordinal))
+        {
+            dynamic shape = page.DrawRectangle(GroupSemanticIds(group), PrimitiveRole(group, group.PrimitiveIds.Single()), x1, y1, x2, y2);
+            ApplyFill(shape, fill, lineWeight, stroke);
+            TrySet(() => shape.CellsU("Rounding").FormulaU = "0.08 in");
+            ApplyInlineLabel(shape, group);
+            NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
+        }
         else if (string.Equals(group.Kind, "pvp-attention-token-strip", StringComparison.Ordinal))
         {
             DrawTokenStrip(page, group, x1, y1, x2, y2, fill, lineWeight, stroke);
@@ -713,6 +745,7 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
             ApplyFill(shape, fill, lineWeight, stroke);
             if (string.Equals(group.Kind, "pvp-add-marker", StringComparison.Ordinal)) ApplyMarkerGlyph(shape, "+");
             if (string.Equals(group.Kind, "pvp-concat-marker", StringComparison.Ordinal)) ApplyMarkerGlyph(shape, "C");
+            if (string.Equals(group.Kind, "pvp-attention-relation", StringComparison.Ordinal)) ApplyMarkerGlyph(shape, "↔");
             NameAndAnnotatePrimitive(shape, group, group.PrimitiveIds.Single());
         }
         else if (string.Equals(group.Kind, "input-rgb-tile", StringComparison.Ordinal))
@@ -1160,11 +1193,19 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         }
         TrySet(() => shape.NameU = $"synapse.edge.{SanitizeName(connector.Id)}");
         TrySet(() => shape.CellsU("EndArrow").FormulaU = "4");
+        TrySet(() => shape.CellsU("LinePattern").FormulaU = ConnectorLinePattern(connector.Kind));
         var stroke = connector.Style is null ? (75, 91, 120) : ParseColor(connector.Style.StrokeColor, 75, 91, 120);
         var lineWeight = connector.Style?.StrokeWidthPoints ?? 1.2;
         TrySet(() => shape.CellsU("LineColor").FormulaU = $"RGB({stroke.Item1},{stroke.Item2},{stroke.Item3})");
         TrySet(() => shape.CellsU("LineWeight").FormulaU = $"{lineWeight.ToString(System.Globalization.CultureInfo.InvariantCulture)} pt");
     }
+
+    private static string ConnectorLinePattern(string kind) => kind.Trim().ToLowerInvariant() switch
+    {
+        "skip" or "residual" or "shortcut" => "2",
+        "condition" or "conditional" => "4",
+        _ => "1",
+    };
 
     private static double[] FlattenConnectorPoints(VisioConnector connector, double pageHeight) =>
         connector.Points.SelectMany(point => new[] { point.X, pageHeight - point.Y }).ToArray();
@@ -1299,7 +1340,10 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
     {
         var rowName = new string(key.Select(character => char.IsLetterOrDigit(character) ? character : '_').ToArray());
         var escapedValue = value.Replace("\"", "\"\"");
-        shape.AddNamedRow(243, rowName, 0);
+        if (Convert.ToInt32(shape.CellExistsU($"Prop.{rowName}", 0), System.Globalization.CultureInfo.InvariantCulture) == 0)
+        {
+            shape.AddNamedRow(243, rowName, 0);
+        }
         shape.CellsU($"Prop.{rowName}.Label").FormulaU = $"\"{key}\"";
         shape.CellsU($"Prop.{rowName}").FormulaU = "\"" + escapedValue + "\"";
     }
@@ -1330,6 +1374,12 @@ public sealed class VisioComEngine : IVisioEngine, IAsyncDisposable
         {
             ReleaseCom(window);
         }
+    }
+
+    internal static void TryFitSelectedPageWindow(dynamic? window)
+    {
+        if (window is null) return;
+        TrySet(() => window.ViewFit());
     }
 
     internal static void ExitApplication(

@@ -63,6 +63,25 @@ public sealed class SelectedPageOwnedRegionReplacementTests
         Assert.DoesNotContain(manifest.Entries, entry => entry.ShapeId == 40);
     }
 
+    [Fact]
+    public void Successful_replacement_cleans_stale_agent_namespaces_but_keeps_unowned_shapes()
+    {
+        var mutation = new RecordingMutation
+        {
+            AgentOwnedShapeIds = new HashSet<int> { 12, 13 },
+        };
+        mutation.ShapeIds.UnionWith(mutation.AgentOwnedShapeIds);
+        mutation.OwnershipById[12] = "agent:old-figure";
+        mutation.OwnershipById[13] = "agent:another-old-figure";
+
+        SelectedPageOwnedRegionReplacement.Execute(mutation, Prepared(), FinalNamespace, StagingNamespace);
+
+        Assert.Equal("delete-ids:10,11,12,13", mutation.Events.Single(item => item.StartsWith("delete-ids:", StringComparison.Ordinal)));
+        Assert.Contains(20, mutation.ShapeIds);
+        Assert.DoesNotContain(12, mutation.ShapeIds);
+        Assert.DoesNotContain(13, mutation.ShapeIds);
+    }
+
     [Theory]
     [InlineData("draw")]
     [InlineData("tag")]
@@ -180,6 +199,7 @@ public sealed class SelectedPageOwnedRegionReplacementTests
             [11] = FinalNamespace,
         };
         public IReadOnlySet<int> DrawnIds { get; init; } = new HashSet<int> { 30, 31 };
+        public IReadOnlySet<int> AgentOwnedShapeIds { get; init; } = new HashSet<int>();
         public string? FailurePoint { get; init; }
         public IReadOnlySet<int> FailedDeletionIds { get; init; } = new HashSet<int>();
         public List<string> Events { get; } = [];
@@ -192,6 +212,8 @@ public sealed class SelectedPageOwnedRegionReplacementTests
             Events.Add($"read-owned:{ownershipNamespace}");
             return OwnershipById.Where(item => string.Equals(item.Value, ownershipNamespace, StringComparison.Ordinal)).Select(item => item.Key).ToHashSet();
         }
+
+        public IReadOnlySet<int> ReadAgentOwnedShapeIds() => AgentOwnedShapeIds;
 
         public void DeleteOwnedShapes(string ownershipNamespace)
         {

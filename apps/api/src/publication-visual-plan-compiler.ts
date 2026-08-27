@@ -91,7 +91,7 @@ function connectorsFor(graph: GeneralPublicationGraph, descriptors: readonly Com
     const middleX = Math.max(sourcePoint.x + 80, Math.floor((sourcePoint.x + targetPoint.x) / 2));
     const route = relation.role === "skip"
       ? skipRoute(sourcePoint, targetPoint, primaryTop, Math.max(0, skipRelations.indexOf(relation)))
-      : [sourcePoint, { x: middleX, y: sourcePoint.y }, { x: middleX, y: targetPoint.y }, targetPoint];
+      : compactOrthogonalRoute([sourcePoint, { x: middleX, y: sourcePoint.y }, { x: middleX, y: targetPoint.y }, targetPoint]);
     ports.push(
       { portId: sourcePortId, primitiveId: source.primitiveId, role: "output", anchor: { side: "right", offset: 500 }, order: 0, semanticPortId: `${relation.relationId}:source` },
       { portId: targetPortId, primitiveId: target.primitiveId, role: "input", anchor: { side: "left", offset: targetOffset }, order: targetIndex, semanticPortId: `${relation.relationId}:target` },
@@ -150,4 +150,19 @@ function skipRoute(source: { x: number; y: number }, target: { x: number; y: num
     { x: targetEntryX, y: target.y },
     target,
   ];
+}
+
+function compactOrthogonalRoute(points: readonly { x: number; y: number }[]): Array<{ x: number; y: number }> {
+  const compact: Array<{ x: number; y: number }> = [];
+  for (const point of points) {
+    const previous = compact.at(-1);
+    if (previous && previous.x === point.x && previous.y === point.y) continue;
+    const beforePrevious = compact.at(-2);
+    if (beforePrevious && previous && (beforePrevious.x === previous.x && previous.x === point.x || beforePrevious.y === previous.y && previous.y === point.y)) {
+      compact[compact.length - 1] = point;
+      continue;
+    }
+    compact.push(point);
+  }
+  return compact;
 }

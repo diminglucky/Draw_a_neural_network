@@ -106,6 +106,7 @@ internal sealed class SelectedPageShapeDeletionFailure : Exception
 internal interface ISelectedPageShapeMutation
 {
     IReadOnlySet<int> ReadOwnedShapeIds(string ownershipNamespace);
+    IReadOnlySet<int> ReadAgentOwnedShapeIds();
     void DeleteOwnedShapes(string ownershipNamespace);
     void DrawPrepared(PreparedSelectedPageRegion preparedRegion, SelectedPageShapeCreationJournal creationJournal);
     void TagAndVerifyShapes(IReadOnlyList<SelectedPageShapeCreationEntry> entries, string ownershipNamespace);
@@ -133,6 +134,7 @@ internal static class SelectedPageOwnedRegionReplacement
 
         mutation.DeleteOwnedShapes(stagingNamespace);
         var oldOwnedShapeIds = mutation.ReadOwnedShapeIds(finalNamespace).ToHashSet();
+        oldOwnedShapeIds.UnionWith(mutation.ReadAgentOwnedShapeIds());
         var creationJournal = new SelectedPageShapeCreationJournal();
 
         try
