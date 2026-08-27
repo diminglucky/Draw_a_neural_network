@@ -1,0 +1,237 @@
+const VERSION = "universal-neural-ir/v1";
+
+const FAMILY_ALIASES = [
+  ["input", /^(input|tensor|placeholder|source)$/i],
+  ["output", /^(output|prediction|logits|softmax)$/i],
+  ["conv", /conv|convolution/i],
+  ["pool", /pool|downsample|upsample|interpolate/i],
+  ["dense", /linear|dense|dense-layer|neuron|fully.?connected|classifier/i],
+  ["attention", /attention|mhsa|mha|transformer/i],
+  ["merge", /concat|concatenate|add|sum|merge|join/i],
+  ["flatten", /flatten|reshape|view|projection/i],
+  ["norm", /norm|batch.?normal|layer.?normal|group.?normal/i],
+  ["activation", /relu|gelu|silu|sigmoid|tanh|softmax|activation/i],
+  ["recurrent", /lstm|gru|rnn|recurrent/i],
+  ["graph", /graph.?conv|message.?pass|gcn|gat|graph/i],
+  ["volume", /volume|voxel|3d/i],
+];
+
+export function createUniversalIR(document = {}, options = {}) {
+  return normalizeUniversalIR({
+    version: VERSION,
+    source: {
+      kind: String(options.sourceKind || document.meta?.framework || "unknown"),
+      name: options.sourceName || document.meta?.modelName || "",
+      ...(options.source || {}),
+    },
+    figure: normalizeFigure(document.figure),
+    nodes: Array.isArray(document.nodes) ? document.nodes : [],
+    edges: Array.isArray(document.edges) ? document.edges : [],
+    groups: Array.isArray(document.groups) ? document.groups : [],
+    diagnostics: Array.isArray(document.diagnostics) ? document.diagnostics : [],
+  });
+}
+
+export function normalizeUniversalIR(ir = {}) {
+  const nodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index)) : [];
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = Array.isArray(ir.edges)
+    ? ir.edges.map((edge, index) => normalizeEdge(edge, index))
+    : [];
+  return {
+    version: String(ir.version || VERSION),
+    source: { kind: String(ir.source?.kind || "unknown"), ...(ir.source || {}) },
+    figure: normalizeFigure(ir.figure),
+    nodes,
+    edges,
+    groups: Array.isArray(ir.groups) ? ir.groups.map((group, index) => normalizeGroup(group, index)) : [],
+    diagnostics: Array.isArray(ir.diagnostics) ? ir.diagnostics : [],
+    nodeIds,
+  };
+}
+
+export function validateUniversalIR(ir = {}) {
+  const normalized = normalizeUniversalIR(ir);
+  const issues = [];
+  const seen = new Set();
+  normalized.nodes.forEach((node) => {
+    if (seen.has(node.id)) issues.push({ kind: "duplicate-node-id", nodeId: node.id });
+    seen.add(node.id);
+    if (!Number.isFinite(node.confidence) || node.confidence < 0 || node.confidence > 1) {
+      issues.push({ kind: "invalid-confidence", nodeId: node.id, confidence: node.confidence });
+    }
+  });
+  normalized.edges.forEach((edge) => {
+    if (!normalized.nodeIds.has(edge.source) || !normalized.nodeIds.has(edge.target)) {
+      issues.push({ kind: "missing-edge-endpoint", edgeId: edge.id, source: edge.source, target: edge.target });
+    }
+  });
+  return {
+    ok: issues.length === 0 && normalized.nodes.length > 0,
+    issues,
+    summary: {
+      nodeCount: normalized.nodes.length,
+      edgeCount: normalized.edges.length,
+      customNodeCount: normalized.nodes.filter((node) => node.family === "custom" || node.compoundKind === "unresolved").length,
+      diagnosticCount: normalized.diagnostics.length,
+    },
+  };
+}
+
+export function projectUniversalIRToCanvas(ir = {}) {
+  const normalized = normalizeUniversalIR(ir);
+  const nodes = normalized.nodes.map((node, index) => {
+    const typeInfo = canvasTypeForFamily(node.family, node);
+    return {
+      id: node.id,
+      type: typeInfo.type,
+      compoundKind: typeInfo.compoundKind,
+      x: Number.isFinite(node.x) ? node.x : 280 + index * 220,
+      y: Number.isFinite(node.y) ? node.y : 620,
+      w: Number.isFinite(node.w) ? node.w : typeInfo.w,
+      h: Number.isFinite(node.h) ? node.h : typeInfo.h,
+      stage: Number.isFinite(node.stage) ? node.stage : index,
+      label: node.label,
+      subtitle: node.subtitle || shapeLabel(node.shape),
+      color: node.color || typeInfo.color,
+      op: node.op,
+      family: node.family,
+      semanticRole: node.semanticRole,
+      shape: node.shape,
+      ports: node.ports,
+      attributes: node.attributes,
+      source: node.source,
+      evidence: node.evidence,
+      confidence: node.confidence,
+      note: node.note || (node.compoundKind === "unresolved" ? "structure requires review" : ""),
+    };
+  });
+  return {
+    figure: normalized.figure,
+    paletteName: "dopamine",
+    nodes,
+    edges: normalized.edges.map((edge) => ({
+      ...edge,
+      color: edge.color || (edge.type === "skip" ? "#00d4aa" : edge.type === "attention" ? "#ff2aa3" : "#2846d8"),
+    })),
+    ir: normalized,
+  };
+}
+
+export function classifyOperation(op = "", family = "") {
+  if (family && family !== "unknown") return family;
+  const normalized = String(op).trim();
+  return FAMILY_ALIASES.find(([, pattern]) => pattern.test(normalized))?.[0] || "custom";
+}
+
+function normalizeNode(node = {}, index) {
+  const op = String(node.op || node.operation || node.type || node.label || "UnknownOperator");
+  const family = classifyOperation(op, node.family);
+  const normalized = {
+    id: String(node.id || `ir-node-${index + 1}`),
+    op,
+    family,
+    semanticRole: String(node.semanticRole || semanticRoleForFamily(family)),
+    stage: Number.isFinite(node.stage) ? node.stage : index,
+    order: Number.isFinite(node.order) ? node.order : index,
+    label: String(node.label || op),
+    subtitle: String(node.subtitle || ""),
+    inputs: Array.isArray(node.inputs) ? node.inputs.map(String) : [],
+    outputs: Array.isArray(node.outputs) ? node.outputs.map(String) : [],
+    ports: normalizePorts(node.ports),
+    attributes: isRecord(node.attributes) ? { ...node.attributes } : {},
+    source: isRecord(node.source)
+      ? { ...node.source }
+      : Number.isFinite(node.sourceLine) ? { line: node.sourceLine } : undefined,
+    evidence: Array.isArray(node.evidence) ? node.evidence.map((item) => ({ ...item })) : [],
+    confidence: Number.isFinite(node.confidence) ? node.confidence : 1,
+    note: String(node.note || ""),
+  };
+  if (node.shape !== undefined) normalized.shape = normalizeShape(node.shape);
+  ["x", "y", "w", "h"].forEach((key) => {
+    if (Number.isFinite(node[key])) normalized[key] = node[key];
+  });
+  if (node.color) normalized.color = String(node.color);
+  if (family === "custom") normalized.compoundKind = "unresolved";
+  if (family === "attention" && /transformer/i.test(op)) normalized.compoundKind = "transformer";
+  return normalized;
+}
+
+function normalizeEdge(edge = {}, index) {
+  return {
+    id: String(edge.id || `ir-edge-${index + 1}`),
+    source: String(edge.source || ""),
+    target: String(edge.target || ""),
+    type: String(edge.type || "signal"),
+    label: String(edge.label || ""),
+    ports: edge.ports ? { ...edge.ports } : undefined,
+    evidence: Array.isArray(edge.evidence) ? edge.evidence.map((item) => ({ ...item })) : [],
+    confidence: Number.isFinite(edge.confidence) ? edge.confidence : 1,
+  };
+}
+
+function normalizeGroup(group = {}, index) {
+  return {
+    id: String(group.id || `ir-group-${index + 1}`),
+    label: String(group.label || group.id || `Group ${index + 1}`),
+    nodeIds: Array.isArray(group.nodeIds) ? group.nodeIds.map(String) : [],
+    kind: String(group.kind || "module"),
+    expandable: group.expandable !== false,
+  };
+}
+
+function normalizeFigure(figure = {}) {
+  return {
+    title: String(figure?.title || "Neural Network Architecture"),
+    subtitle: String(figure?.subtitle || "Universal Neural Network IR"),
+    stages: Array.isArray(figure?.stages) ? figure.stages.map(String) : [],
+  };
+}
+
+function normalizePorts(ports) {
+  if (!isRecord(ports)) return { inputs: [], outputs: [] };
+  return {
+    inputs: Array.isArray(ports.inputs) ? ports.inputs.map(String) : [],
+    outputs: Array.isArray(ports.outputs) ? ports.outputs.map(String) : [],
+  };
+}
+
+function normalizeShape(shape) {
+  if (Array.isArray(shape)) return { output: shape };
+  if (!isRecord(shape)) return { output: [String(shape)] };
+  return { ...shape };
+}
+
+function canvasTypeForFamily(family, node) {
+  const common = { w: 160, h: 110, color: "#a855ff" };
+  if (family === "input") return { type: "tensor", w: 122, h: 188, color: "#00e5ff" };
+  if (family === "output") return { type: "output", w: 110, h: 148, color: "#ff4fd8" };
+  if (family === "conv") return { type: "conv", w: 86, h: 220, color: "#ff2aa3" };
+  if (family === "volume") return { type: "volume-stack", w: 138, h: 230, color: "#2f6bff" };
+  if (family === "pool") return { type: "pool", w: 92, h: 92, color: "#ffe94a" };
+  if (family === "flatten") return { type: "flatten", w: 150, h: 138, color: "#ff2aa3" };
+  if (family === "dense") return { type: "dense-layer", w: 132, h: 210, color: "#2f6bff" };
+  if (family === "merge") return { type: "concat", w: 82, h: 82, color: "#00d4aa" };
+  if (family === "attention") return { type: "compound", compoundKind: node.compoundKind || "attention", w: 320, h: 250, color: "#a855ff" };
+  if (family === "recurrent" || family === "graph") return { type: "compound", compoundKind: "operator", w: 320, h: 250, color: "#a855ff" };
+  if (family === "custom" || node.compoundKind === "unresolved") return { type: "compound", compoundKind: "unresolved", w: 320, h: 250, color: "#a855ff" };
+  return { ...common, type: "compound", compoundKind: "operator" };
+}
+
+function semanticRoleForFamily(family) {
+  if (family === "input") return "input";
+  if (family === "output") return "output";
+  if (family === "merge") return "merge";
+  if (family === "attention") return "contextual_interaction";
+  if (family === "custom") return "unresolved_operator";
+  return "feature_transform";
+}
+
+function shapeLabel(shape) {
+  const value = shape?.output || shape?.input;
+  return Array.isArray(value) ? value.join(" × ") : "";
+}
+
+function isRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}

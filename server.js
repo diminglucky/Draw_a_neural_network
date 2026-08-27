@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
+import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
 
 const port = Number(process.env.PORT || 4173);
 const root = process.cwd();
@@ -10,6 +11,7 @@ const model = process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
@@ -25,6 +27,10 @@ createServer(async (request, response) => {
       await handleAnalyze(request, response);
       return;
     }
+    if (request.method === "POST" && request.url === "/api/analyze-code") {
+      await handleAnalyzeCode(request, response);
+      return;
+    }
     await serveStatic(request, response);
   } catch (error) {
     console.error(error);
@@ -34,9 +40,16 @@ createServer(async (request, response) => {
   console.log(`Synapse Studio running at http://127.0.0.1:${port}`);
 });
 
+async function handleAnalyzeCode(request, response) {
+  const result = analyzeArchitectureInput(await readJson(request));
+  const status = result.status === "invalid_input" ? 422 : 200;
+  sendJson(response, status, result);
+}
+
 async function handleAnalyze(request, response) {
   if (!openAIKey) {
-    sendJson(response, 200, synthesizeFallbackDiagram(await readJson(request)));
+    const body = await readJson(request);
+    sendJson(response, 200, analyzeArchitectureInput({ ...body, kind: "image" }));
     return;
   }
 
@@ -86,18 +99,30 @@ async function handleAnalyze(request, response) {
     sendJson(response, 502, { error: "Vision model returned no diagram JSON" });
     return;
   }
-  sendJson(response, 200, JSON.parse(text));
+  const candidate = JSON.parse(text);
+  const analysis = analyzeArchitectureInput({
+    kind: "ir",
+    ir: candidate.ir || candidate,
+    diagnostics: candidate.diagnostics,
+  });
+  if (analysis.status === "invalid_input") {
+    sendJson(response, 422, {
+      error: "Vision model returned invalid Universal IR",
+      ...analysis,
+    });
+    return;
+  }
+  sendJson(response, 200, analysis);
 }
 
 function buildVisionPrompt(body) {
   return [
-    "You are converting uploaded neural-network diagrams, sketches, or multiple reference images into an editable JSON diagram for Synapse Studio.",
+    "You are converting uploaded neural-network diagrams, sketches, or multiple reference images into a framework-neutral Universal Neural Network IR for Synapse Studio.",
     "Return only the JSON required by the schema. Do not return SVG or Markdown.",
-    "Use publication-quality architecture semantics inspired by PlotNeuralNet, NN-SVG, VisualKeras, and Netron: tensor, conv, pool, flatten, dense-layer, concat, volume, volume-stack, patch-grid, token, encoder, block, attention, neuron, output.",
+    "Preserve arbitrary operations, custom modules, multi-input/multi-output ports, tensor shapes, branch and merge topology, source evidence, and confidence. Use a known family when justified; use family custom and compoundKind unresolved when internal structure is not visible.",
     "Preserve labels and important arrows when visible. If ambiguous, infer a clean neural architecture rather than copying visual noise.",
-    "Use canvas coordinates within 2600 x 1500, centered around y=650, with readable spacing.",
-    "Prefer real neural-network topology over generic boxes: feature-map stacks, pooling/downsampling, flatten vectors, dense classifier layers, concat/add nodes, attention matrices, and long skip connections.",
-    "For 3D / medical / volumetric diagrams use volume or volume-stack nodes with depth, z, layers, concat nodes, and skip connections.",
+    "Return one Universal IR object with nodes and edges; canvas coordinates are optional and the client will lay out the graph deterministically.",
+    "Prefer real neural-network topology over generic boxes, but never invent hidden internal layers without evidence.",
     `Mode: ${body.mode || "auto"}.`,
     `User instruction: ${body.prompt || "Generate a clear editable neural-network diagram."}`,
   ].join("\n");
@@ -165,7 +190,7 @@ function diagramSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["figure", "paletteName", "nodes", "edges"],
+    required: ["ir"],
     properties: {
       figure: {
         type: "object",
@@ -188,7 +213,7 @@ function diagramSchema() {
           required: ["id", "type", "x", "y", "w", "h", "label", "subtitle", "stage", "color"],
           properties: {
             id: { type: "string" },
-            type: { type: "string", enum: ["tensor", "conv", "pool", "flatten", "dense-layer", "concat", "volume", "volume-stack", "patch-grid", "token", "encoder", "block", "attention", "neuron", "output"] },
+            type: { type: "string" },
             x: { type: "number" },
             y: { type: "number" },
             w: { type: "number" },
@@ -203,6 +228,17 @@ function diagramSchema() {
             badge: { type: "string" },
             note: { type: "string" },
             channels: { type: "string" },
+            op: { type: "string" },
+            family: { type: "string" },
+            compoundKind: { type: "string" },
+            inputs: { type: "array", items: { type: "string" } },
+            outputs: { type: "array", items: { type: "string" } },
+            ports: { type: "object", additionalProperties: true },
+            shape: { type: "object", additionalProperties: true },
+            attributes: { type: "object", additionalProperties: true },
+            source: { type: "object", additionalProperties: true },
+            evidence: { type: "array", items: { type: "object", additionalProperties: true } },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
           },
         },
       },
@@ -218,9 +254,25 @@ function diagramSchema() {
             source: { type: "string" },
             target: { type: "string" },
             label: { type: "string" },
-            type: { type: "string", enum: ["signal", "skip", "attention"] },
+            type: { type: "string" },
             color: { type: "string" },
+            ports: { type: "object", additionalProperties: true },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            evidence: { type: "array", items: { type: "object", additionalProperties: true } },
           },
+        },
+      },
+      ir: {
+        type: "object",
+        additionalProperties: true,
+        required: ["nodes", "edges"],
+        properties: {
+          version: { type: "string" },
+          source: { type: "object", additionalProperties: true },
+          nodes: { type: "array", minItems: 1 },
+          edges: { type: "array" },
+          groups: { type: "array" },
+          diagnostics: { type: "array" },
         },
       },
     },

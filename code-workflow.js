@@ -1,3 +1,5 @@
+import { createUniversalIR } from "./universal-ir.mjs";
+
 const paletteName = "dopamine";
 
 const nodePalette = {
@@ -65,7 +67,7 @@ const opPatterns = [
   },
 ];
 
-export function setupCodeWorkflow({ applyDiagramDocument, setStatus }) {
+export function setupCodeWorkflow({ applyDiagramDocument, setStatus, analyzeArchitectureInput }) {
   const textarea = document.querySelector("#modelCodeInput");
   const frameworkInput = document.querySelector("#codeFrameworkInput");
   const generateButton = document.querySelector("#codeGenerateButton");
@@ -81,12 +83,21 @@ export function setupCodeWorkflow({ applyDiagramDocument, setStatus }) {
       return;
     }
 
-    const document = diagramFromCode(source, frameworkInput.value);
+    const analysis = typeof analyzeArchitectureInput === "function"
+      ? analyzeArchitectureInput({ kind: "source", framework: frameworkInput.value, source })
+      : { status: "ready_for_preview", readyForPreview: true, canvasDocument: diagramFromCode(source, frameworkInput.value) };
+    const document = analysis?.canvasDocument;
+    if (!analysis?.readyForPreview || !document) {
+      updateCodeStatus(codeStatus, formatAgentStatus(analysis));
+      setStatus(formatAgentStatus(analysis));
+      return;
+    }
+
     const ok = applyDiagramDocument(document, { message: "已根据代码绘制可编辑神经网络图" });
     updateCodeStatus(codeStatus, ok
-      ? formatCodeStatus(document)
+      ? formatAgentStatus(analysis, document)
       : "代码解析结果没有通过画布校验。");
-    if (ok) setStatus(`代码生成完成：${document.figure.title}`);
+    if (ok) setStatus(`代码生成完成：${document.figure.title}${analysis.status === "needs_confirmation" ? "（部分结构待确认）" : ""}`);
   });
 
   fileInput?.addEventListener("change", async () => {
@@ -118,14 +129,55 @@ export function diagramFromCode(source, framework = "auto") {
   const layers = compressSemanticLayers(parsed.operations);
 
   if (!layers.length) {
-    return fallbackDiagram(source, inferred);
+    return withUniversalIR(fallbackDiagram(source, inferred), source, inferred);
   }
 
-  return buildDiagram(layers, {
+  return withUniversalIR(buildDiagram(layers, {
     framework: inferred,
     source,
     modelName: detectModelName(source),
-  });
+  }), source, inferred);
+}
+
+function formatAgentStatus(analysis, document = analysis?.canvasDocument) {
+  if (!analysis) return "代码解析结果没有通过画布校验。";
+  if (analysis.status === "invalid_input") {
+    return `代码解析失败：${analysis.diagnostics?.[0]?.message || "输入无效"}`;
+  }
+  if (analysis.status === "needs_external_vision") {
+    return "当前输入需要外部视觉分析器。";
+  }
+  const base = document ? formatCodeStatus(document) : "已生成架构预览";
+  if (analysis.status === "needs_confirmation") {
+    const count = analysis.summary?.unresolvedNodeCount || analysis.diagnostics?.filter((item) => item.kind === "dynamic-control-flow").length || 0;
+    return `${base} 部分结构需要确认${count ? `（${count} 项）` : ""}。`;
+  }
+  return base;
+}
+
+function withUniversalIR(document, source, framework) {
+  const diagnostics = dynamicControlFlowDiagnostics(source);
+  const enriched = { ...document, diagnostics };
+  return {
+    ...enriched,
+    diagnostics,
+    ir: createUniversalIR(enriched, {
+      sourceKind: framework,
+      sourceName: document.meta?.modelName || detectModelName(source),
+      source: { textLength: source.length },
+    }),
+  };
+}
+
+function dynamicControlFlowDiagnostics(source = "") {
+  const diagnostics = [];
+  if (/\bif\s+|\belse\s*:|torch\.cond|tf\.cond|lax\.cond/i.test(source)) {
+    diagnostics.push({ kind: "dynamic-control-flow", severity: "warning", message: "Conditional execution may require runtime tracing to resolve all branches." });
+  }
+  if (/\bfor\s+|\bwhile\s+|range\s*\(/i.test(source)) {
+    diagnostics.push({ kind: "dynamic-control-flow", severity: "warning", message: "Loop execution was statically approximated; provide an example input for exact expansion." });
+  }
+  return diagnostics;
 }
 
 function parseModelCode(source, framework) {
@@ -134,7 +186,30 @@ function parseModelCode(source, framework) {
     if (forwardOperations.length) return { operations: forwardOperations };
   }
 
-  return { operations: parseOperationMatches(source, framework) };
+  return { operations: [...parseOperationMatches(source, framework), ...parseCustomLayerOperations(source, framework)].sort((a, b) => a.index - b.index) };
+}
+
+function parseCustomLayerOperations(source, framework) {
+  const operations = [];
+  const pattern = /(?:layers\.)?([A-Z][A-Za-z0-9_]*(?:Layer|Block|Fusion|Attention))\s*\(/g;
+  let match;
+  while ((match = pattern.exec(source))) {
+    const name = match[1];
+    if (/^(?:Conv|MaxPool|AvgPool|AdaptiveAvgPool|BatchNorm|LayerNorm|GroupNorm|Linear|Dense|Flatten|ReLU|GELU|SiLU|Sigmoid|Tanh|Softmax|MultiheadAttention|MultiHeadAttention|Upsample|ConvTranspose)/i.test(name)) continue;
+    operations.push({
+      kind: "custom",
+      framework,
+      text: match[0],
+      args: match[0].slice(match[0].indexOf("(") + 1, -1),
+      line: lineNumberAt(source, match.index),
+      index: match.index,
+      name,
+      constructor: name,
+      label: name,
+      note: "custom operator · structure requires review",
+    });
+  }
+  return operations;
 }
 
 function parseOperationMatches(source, framework, options = {}) {
@@ -233,6 +308,26 @@ function collectPyTorchDefinitions(source) {
     if (!definitions.has(assignment)) definitions.set(assignment, []);
     definitions.get(assignment).push({ ...operation, name: assignment });
   });
+
+  const customPattern = /self\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\(([^)]*)\)/g;
+  let customMatch;
+  while ((customMatch = customPattern.exec(source))) {
+    const [, name, constructor, args] = customMatch;
+    if (definitions.has(name) || /^(?:Conv|MaxPool|AvgPool|Adaptive|BatchNorm|LayerNorm|GroupNorm|Linear|Flatten|ReLU|GELU|SiLU|Sigmoid|Tanh|Softmax|MultiheadAttention|Upsample|ConvTranspose)/i.test(constructor)) continue;
+    const index = customMatch.index;
+    definitions.set(name, [{
+      kind: "custom",
+      framework: "pytorch",
+      text: customMatch[0],
+      args,
+      line: lineNumberAt(source, index),
+      index,
+      name,
+      constructor,
+      label: constructor,
+      note: "custom operator · structure requires review",
+    }]);
+  }
 
   return definitions;
 }
@@ -593,9 +688,12 @@ function layerToNode(layer, stage, x, centerY, is3D) {
 
   return makeNode({
     ...common,
-    type: "block",
-    w: 170,
-    h: 116,
+    type: "compound",
+    compoundKind: "unresolved",
+    w: 320,
+    h: 250,
+    label: layer.name || layer.label || "Custom operator",
+    subtitle: layer.constructor ? `${layer.constructor} · unresolved` : "unresolved operator",
     color: nodePalette.attention,
   });
 }
@@ -671,25 +769,36 @@ function mergeSkipLabel(layer) {
 function fallbackDiagram(source, framework) {
   const title = detectModelName(source) || `${titleCase(framework)} Model`;
   const nodes = [
-    makeNode({ id: "code-input", type: "tensor", x: 270, y: 660, w: 120, h: 180, label: "Input", subtitle: "source tensor", stage: 0, color: nodePalette.tensor, depth: 22 }),
-    makeNode({ id: "code-stem", type: "conv", x: 560, y: 620, w: 82, h: 245, label: "Feature Extractor", subtitle: "Conv / Norm / ReLU", stage: 1, color: nodePalette.conv, depth: 104, layers: 10, channels: "C maps", note: "inferred block" }),
-    makeNode({ id: "code-readout", type: "flatten", x: 930, y: 650, w: 154, h: 146, label: "Flatten", subtitle: "vectorize", stage: 2, color: nodePalette.flatten, layers: 18 }),
-    makeNode({ id: "code-head", type: "dense-layer", x: 1230, y: 620, w: 132, h: 218, label: "Head", subtitle: "classifier", stage: 3, color: nodePalette.output, layers: 8 }),
+    makeNode({
+      id: "code-unresolved",
+      type: "compound",
+      compoundKind: "unresolved",
+      x: 860,
+      y: 625,
+      w: 320,
+      h: 250,
+      label: "Unresolved source graph",
+      subtitle: "No recognized operations; provide a trace or explicit IR",
+      op: "UnresolvedSourceGraph",
+      family: "custom",
+      semanticRole: "unresolved_operator",
+      stage: 0,
+      color: nodePalette.attention,
+      confidence: 0.15,
+      evidence: [{ kind: "source", framework, textLength: source.length }],
+      note: "source was not statically resolved",
+    }),
   ];
   return {
     figure: {
       title: `${title} Architecture`,
-      subtitle: "Code was parsed partially; edit the generated semantic scaffold on canvas",
-      stages: ["Input", "Features", "Flatten", "Head"],
+      subtitle: "No stable topology was extracted; confirm the model or provide runtime evidence",
+      stages: ["Unresolved"],
     },
     paletteName,
     nodes,
-    edges: [
-      makeEdge("code-input", "code-stem", "features", "signal"),
-      makeEdge("code-stem", "code-readout", "flatten", "attention"),
-      makeEdge("code-readout", "code-head", "logits", "signal"),
-    ],
-    meta: { framework, layerCount: 3, generatedFrom: "code-fallback" },
+    edges: [],
+    meta: { framework, layerCount: 0, generatedFrom: "code-unresolved", unresolved: true },
   };
 }
 

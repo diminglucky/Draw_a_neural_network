@@ -1,6 +1,10 @@
 import { createEdge, createNode, createTemplate, defaultFigure, modelLibrary } from "./models.js";
 import { setupAIWorkflow } from "./ai-workflow.js";
 import { setupCodeWorkflow } from "./code-workflow.js";
+import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
+import { getCompoundLayout, normalizeCompoundNode } from "./compound-module.mjs";
+import { layoutDocumentForCanvas } from "./publication-layout-browser.mjs";
+import { projectUniversalIRToCanvas } from "./universal-ir.mjs";
 
 const svg = document.querySelector("#networkCanvas");
 const statusText = document.querySelector("#statusText");
@@ -93,7 +97,7 @@ function loadTemplate(name, options = {}) {
     setStatus(`未知模型模板：${name}`);
     return;
   }
-  state.nodes = template.nodes;
+  state.nodes = template.nodes.map(normalizeVisualNode);
   state.edges = template.edges;
   state.figure = template.figure || state.figure;
   state.paletteName = palettes[state.paletteName] ? state.paletteName : defaultPaletteName;
@@ -179,10 +183,14 @@ function applyDiagramDocument(document, options = {}) {
 }
 
 function normalizeDiagramDocument(document) {
-  if (!document || !Array.isArray(document.nodes) || !Array.isArray(document.edges)) return null;
-  const nodes = document.nodes
+  if (!document) return null;
+  const projected = document.ir && (!Array.isArray(document.nodes) || !Array.isArray(document.edges))
+    ? projectUniversalIRToCanvas(document.ir)
+    : document;
+  if (!Array.isArray(projected.nodes) || !Array.isArray(projected.edges)) return null;
+  const nodes = projected.nodes
     .filter((item) => item && item.id)
-    .map((item, index) => ({
+    .map((item, index) => normalizeVisualNode({
       ...item,
       type: item.type || "block",
       x: Number.isFinite(item.x) ? item.x : 320 + index * 240,
@@ -195,7 +203,7 @@ function normalizeDiagramDocument(document) {
       color: item.color || "#b79cff",
     }));
   const ids = new Set(nodes.map((item) => item.id));
-  const edges = document.edges
+  const edges = (projected.edges || document.edges || [])
     .filter((item) => item && ids.has(item.source) && ids.has(item.target))
     .map((item, index) => ({
       ...item,
@@ -206,11 +214,16 @@ function normalizeDiagramDocument(document) {
     }));
 
   return {
-    figure: document.figure,
+    figure: document.figure || projected.figure,
     nodes,
     edges,
-    paletteName: document.paletteName,
+    paletteName: document.paletteName || projected.paletteName,
+    ir: document.ir || projected.ir,
   };
+}
+
+function normalizeVisualNode(item) {
+  return normalizeCompoundNode(item);
 }
 
 function nextNumericId(items, prefix) {
@@ -462,10 +475,8 @@ function drawNode(item) {
     drawPatchGrid(group, item);
   } else if (item.type === "token") {
     drawToken(group, item);
-  } else if (item.type === "encoder") {
-    drawEncoder(group, item);
-  } else if (item.type === "attention") {
-    drawAttention(group, item);
+  } else if (item.type === "compound" || item.type === "encoder" || item.type === "attention") {
+    drawCompound(group, item);
   } else if (item.type === "tensor") {
     drawTensor(group, item);
   } else if (item.type === "output") {
@@ -596,6 +607,239 @@ function drawBlock(group, item) {
   addCenteredText(group, item);
   if (!addOperationChips(group, item, item.w / 2, item.h + 30)) {
     addNodeNote(group, item, item.w / 2, item.h + 28);
+  }
+}
+
+function drawCompound(group, item) {
+  const layout = getCompoundLayout(item);
+  const frame = el("rect", {
+    class: "compound-frame",
+    width: layout.width,
+    height: layout.height,
+    rx: 18,
+    fill: item.color,
+    "fill-opacity": 0.92,
+    stroke: "rgba(15,23,42,0.3)",
+    "stroke-width": 2,
+  });
+  group.appendChild(frame);
+  group.appendChild(el("rect", {
+    class: "compound-frame-inner",
+    x: 8,
+    y: 8,
+    width: layout.width - 16,
+    height: layout.height - 16,
+    rx: 13,
+    fill: "rgba(255,255,255,0.08)",
+    stroke: "rgba(255,255,255,0.24)",
+  }));
+  group.appendChild(el("text", {
+    class: "compound-title",
+    x: 18,
+    y: 26,
+  }, layout.title));
+  group.appendChild(el("text", {
+    class: "compound-subtitle",
+    x: 18,
+    y: 44,
+  }, layout.subtitle));
+  if (layout.repeat) {
+    group.appendChild(el("rect", {
+      class: "compound-repeat",
+      x: layout.width - 64,
+      y: 14,
+      width: 46,
+      height: 24,
+      rx: 9,
+    }));
+    group.appendChild(el("text", {
+      class: "compound-repeat-text",
+      x: layout.width - 41,
+      y: 31,
+      "text-anchor": "middle",
+    }, layout.repeat));
+  }
+
+  const childMap = new Map(layout.children.map((child) => [child.id, child]));
+  layout.edges.forEach((edge) => drawCompoundEdge(group, edge, childMap));
+  layout.children.forEach((child) => drawCompoundChild(group, child));
+}
+
+function drawCompoundEdge(group, edge, childMap) {
+  const source = childMap.get(edge.source);
+  const target = childMap.get(edge.target);
+  if (!source || !target) return;
+  const start = { x: source.x + source.w, y: source.y + source.h / 2 };
+  const end = { x: target.x, y: target.y + target.h / 2 };
+  const midX = (start.x + end.x) / 2;
+  const isResidual = edge.kind === "residual";
+  const d = isResidual
+    ? `M${start.x} ${start.y} C${midX} ${start.y - 34}, ${midX} ${end.y - 34}, ${end.x} ${end.y}`
+    : `M${start.x} ${start.y} H${midX} V${end.y} H${end.x}`;
+  group.appendChild(el("path", {
+    class: `compound-edge compound-edge-${edge.kind}`,
+    d,
+    fill: "none",
+    stroke: edge.kind === "attention" ? "#ffe95c" : "rgba(255,255,255,0.78)",
+    "stroke-width": edge.kind === "attention" ? 2.6 : 2,
+    "stroke-dasharray": isResidual ? "6 5" : "",
+    "marker-end": "url(#arrow-attention)",
+  }));
+}
+
+function drawCompoundChild(group, child) {
+  const base = {
+    class: `compound-child compound-child-${child.kind}`,
+    x: child.x,
+    y: child.y,
+    width: child.w,
+    height: child.h,
+    rx: 7,
+  };
+  if (child.kind === "add") {
+    const cx = child.x + child.w / 2;
+    const cy = child.y + child.h / 2;
+    group.appendChild(el("circle", {
+      class: "compound-add",
+      cx,
+      cy,
+      r: Math.min(child.w, child.h) / 2 - 2,
+    }));
+    group.appendChild(el("text", {
+      class: "compound-add-label",
+      x: cx,
+      y: cy + 6,
+      "text-anchor": "middle",
+    }, child.label));
+    return;
+  }
+  if (child.kind === "volume") {
+    const depth = child.depth || 14;
+    group.appendChild(el("polygon", {
+      class: "compound-volume-top",
+      points: `${child.x + depth},${child.y} ${child.x + child.w},${child.y} ${child.x + child.w - depth},${child.y + depth} ${child.x},${child.y + depth}`,
+      fill: "rgba(111,238,255,0.46)",
+      stroke: "#6feeff",
+    }));
+    group.appendChild(el("polygon", {
+      class: "compound-volume-side",
+      points: `${child.x + child.w},${child.y} ${child.x + child.w},${child.y + child.h - depth} ${child.x + child.w - depth},${child.y + child.h} ${child.x + child.w - depth},${child.y + depth}`,
+      fill: "rgba(0,120,160,0.42)",
+      stroke: "#6feeff",
+    }));
+    group.appendChild(el("rect", {
+      class: "compound-volume-front",
+      x: child.x,
+      y: child.y + depth,
+      width: child.w - depth,
+      height: child.h - depth,
+      rx: 5,
+      fill: "rgba(0,229,255,0.25)",
+      stroke: "#6feeff",
+    }));
+    group.appendChild(el("text", {
+      class: "compound-child-label",
+      x: child.x + (child.w - depth) / 2,
+      y: child.y + child.h / 2 + 5,
+      "text-anchor": "middle",
+    }, child.label));
+    return;
+  }
+  if (child.kind === "attention") {
+    group.appendChild(el("rect", { ...base, fill: "rgba(255,233,92,0.3)", stroke: "#ffe95c" }));
+    const cells = 4;
+    const cell = Math.min(10, (child.w - 22) / cells);
+    for (let row = 0; row < cells; row += 1) {
+      for (let column = 0; column < cells; column += 1) {
+        group.appendChild(el("rect", {
+          class: "compound-attention-cell",
+          x: child.x + 8 + column * cell,
+          y: child.y + 8 + row * cell,
+          width: Math.max(4, cell - 2),
+          height: Math.max(4, cell - 2),
+          rx: 1,
+          fill: row === column ? "#fff6ad" : "rgba(15,23,42,0.32)",
+        }));
+      }
+    }
+    return;
+  }
+  if (child.kind === "qkv") {
+    group.appendChild(el("rect", { ...base, fill: "rgba(111,238,255,0.25)", stroke: "#6feeff" }));
+    ["Q", "K", "V"].forEach((label, index) => {
+      group.appendChild(el("rect", {
+        class: "compound-qkv-cell",
+        x: child.x + 7 + index * ((child.w - 14) / 3),
+        y: child.y + 9,
+        width: (child.w - 20) / 3,
+        height: child.h - 18,
+        rx: 4,
+        fill: index === 1 ? "rgba(255,255,255,0.32)" : "rgba(15,23,42,0.18)",
+      }));
+      group.appendChild(el("text", {
+        class: "compound-micro",
+        x: child.x + 16 + index * ((child.w - 14) / 3),
+        y: child.y + 28,
+        "text-anchor": "middle",
+      }, label));
+    });
+    return;
+  }
+  if (child.kind === "mlp") {
+    group.appendChild(el("rect", { ...base, fill: "rgba(255,255,255,0.18)", stroke: "rgba(255,255,255,0.7)" }));
+    group.appendChild(el("rect", { x: child.x + 8, y: child.y + 9, width: child.w - 16, height: 14, rx: 4, fill: "rgba(255,255,255,0.32)" }));
+    group.appendChild(el("rect", { x: child.x + 8, y: child.y + 31, width: child.w - 16, height: 14, rx: 4, fill: "rgba(255,233,92,0.36)" }));
+  } else if (child.kind === "unresolved") {
+    group.appendChild(el("rect", { ...base, fill: "rgba(255,255,255,0.08)", stroke: "#ffe95c", "stroke-dasharray": "6 4" }));
+  } else {
+    const semanticFill = {
+      latent: "rgba(0,229,255,0.26)",
+      timestep: "rgba(255,233,92,0.28)",
+      condition: "rgba(255,159,28,0.28)",
+      conv: "rgba(255,255,255,0.18)",
+      activation: "rgba(255,233,92,0.24)",
+      projection: "rgba(111,238,255,0.2)",
+      denoise: "rgba(0,212,170,0.24)",
+    }[child.kind] || (child.kind === "norm" ? "rgba(111,238,255,0.2)" : "rgba(255,255,255,0.16)");
+    const semanticStroke = {
+      latent: "#6feeff",
+      timestep: "#ffe95c",
+      condition: "#ffb347",
+      denoise: "#00d4aa",
+    }[child.kind] || (child.kind === "norm" ? "#6feeff" : "rgba(255,255,255,0.62)");
+    group.appendChild(el("rect", {
+      ...base,
+      rx: ["latent", "timestep", "condition"].includes(child.kind) ? 14 : 7,
+      fill: semanticFill,
+      stroke: semanticStroke,
+    }));
+    if (child.kind === "latent") {
+      for (let index = 0; index < 3; index += 1) {
+        group.appendChild(el("rect", {
+          class: "compound-latent-cell",
+          x: child.x + 8 + index * 13,
+          y: child.y + 9,
+          width: 9,
+          height: child.h - 18,
+          rx: 2,
+          fill: index === 1 ? "rgba(255,255,255,0.34)" : "rgba(15,23,42,0.18)",
+        }));
+      }
+    }
+  }
+  group.appendChild(el("text", {
+    class: "compound-child-label",
+    x: child.x + child.w / 2,
+    y: child.y + child.h / 2 + 4,
+    "text-anchor": "middle",
+  }, child.label));
+  if (child.subtitle && child.kind !== "mlp") {
+    group.appendChild(el("text", {
+      class: "compound-child-subtitle",
+      x: child.x + child.w / 2,
+      y: child.y + child.h - 5,
+      "text-anchor": "middle",
+    }, child.subtitle));
   }
 }
 
@@ -1528,7 +1772,9 @@ function drawEdge(item) {
 
   const start = anchor(source, "right");
   const end = anchor(target, "left");
-  const path = createEdgePath(start, end, item.type);
+  const path = item.route?.points?.length >= 2
+    ? createRoutedEdgePath(item.route)
+    : createEdgePath(start, end, item.type);
   const group = el("g", { "data-edge-id": item.id });
   const strokeWidth = item.type === "attention" ? 3.4 : item.type === "skip" ? 2.35 : 2.65;
   const visual = el("path", {
@@ -1547,7 +1793,9 @@ function drawEdge(item) {
   group.append(visual, hit);
 
   if (item.label) {
-    const mid = edgeLabelPoint(start, end, item.type);
+    const mid = item.route?.points?.length >= 2
+      ? routedEdgeLabelPoint(item.route, item.type)
+      : edgeLabelPoint(start, end, item.type);
     const width = item.label.length * 7.2 + 22;
     group.appendChild(el("rect", {
       class: "edge-label-bg",
@@ -1565,6 +1813,20 @@ function drawEdge(item) {
     }, item.label));
   }
   return group;
+}
+
+function createRoutedEdgePath(route) {
+  return route.points.map((point, index) => `${index === 0 ? "M" : "L"} ${snap(point.x)} ${snap(point.y)}`).join(" ");
+}
+
+function routedEdgeLabelPoint(route, type) {
+  const points = route.points;
+  const first = points[0];
+  const last = points[points.length - 1];
+  return {
+    x: (first.x + last.x) / 2,
+    y: type === "skip" ? (route.laneY || points[Math.min(1, points.length - 1)].y) - 14 : (first.y + last.y) / 2 - 14,
+  };
 }
 
 function drawConnectionPreview() {
@@ -1953,8 +2215,8 @@ minimap.addEventListener("pointerdown", handleMinimapPointer);
 minimap.addEventListener("keydown", handleMinimapKeydown);
 
 bindInspector();
-setupAIWorkflow({ applyDiagramDocument, setStatus });
-setupCodeWorkflow({ applyDiagramDocument, setStatus });
+setupAIWorkflow({ applyDiagramDocument, setStatus, analyzeArchitectureInput });
+setupCodeWorkflow({ applyDiagramDocument, setStatus, analyzeArchitectureInput });
 window.__synapseTestApply = applyDiagramDocument;
 const previewTemplate = new URLSearchParams(window.location.search).get("previewTemplate");
 if (previewTemplate && modelLibrary.some((item) => item.id === previewTemplate)) {
@@ -2189,7 +2451,7 @@ function addBlock() {
   const palette = palettes[state.paletteName] || palettes[defaultPaletteName];
   const id = `node-${state.nextNodeId++}`;
   const stage = Math.max(0, ...state.nodes.map((item) => item.stage ?? 0)) + 1;
-  const item = createNode(id, "encoder", snap(Math.min(artboard.x + artboard.width - 260, artboard.x + 130 + stage * 280)), artboard.y + 500, 190, 150, "Encoder", "LN · MHSA · MLP", stage % 2 ? palette.encoderA : palette.encoderB, stage, { layers: 4, badge: "xN" });
+  const item = normalizeVisualNode(createNode(id, "encoder", snap(Math.min(artboard.x + artboard.width - 260, artboard.x + 130 + stage * 280)), artboard.y + 500, 190, 150, "Encoder", "LN · MHSA · MLP", stage % 2 ? palette.encoderA : palette.encoderB, stage, { layers: 4, badge: "xN" }));
   state.nodes.push(item);
   if (state.selected?.type === "node") {
     state.edges.push(createNumberedEdge(state.selected.id, id));
@@ -2253,7 +2515,7 @@ function colorForNode(item, palette) {
   if (item.type === "concat") return palette.skip;
   if (item.type === "patch-grid") return palette.patch;
   if (item.type === "token") return palette.token;
-  if (item.type === "encoder") return item.id.includes("2") ? palette.encoderB : palette.encoderA;
+  if (item.type === "encoder" || item.type === "compound") return item.id.includes("2") ? palette.encoderB : palette.encoderA;
   if (item.type === "output") return palette.output;
   if (item.type === "neuron") return item.stage >= 3 ? palette.output : palette.convA;
   if (item.type === "block" || item.type === "attention") return palette.block;
@@ -2261,30 +2523,29 @@ function colorForNode(item, palette) {
 }
 
 function autoLayout() {
-  const groups = new Map();
-  state.nodes.forEach((item) => {
-    const key = item.stage ?? 0;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(item);
+  const layout = layoutDocumentForCanvas({
+    nodes: state.nodes,
+    edges: state.edges,
+    figure: state.figure,
+  }, {
+    artboard,
+    canvas: canvasSize,
+    paletteName: state.paletteName,
   });
-  const ordered = [...groups.entries()].sort((a, b) => a[0] - b[0]);
-  const layoutLeft = artboard.x + 130;
-  const layoutRight = artboard.x + artboard.width - 260;
-  const gapX = Math.min(360, (layoutRight - layoutLeft) / Math.max(1, ordered.length - 1));
-  ordered.forEach(([stage, items], stageIndex) => {
-    const totalHeight = items.reduce((sum, item) => sum + item.h, 0) + (items.length - 1) * 46;
-    let y = Math.max(artboard.y + 260, artboard.y + artboard.height / 2 - totalHeight / 2);
-    items.forEach((item) => {
-      item.x = snap(layoutLeft + stageIndex * gapX);
-      item.y = snap(y);
-      item.stage = stage;
-      y += item.h + 46;
-    });
+  const layoutNodes = new Map(layout.nodes.map((item) => [item.id, item]));
+  state.nodes = state.nodes.map((item) => {
+    const positioned = layoutNodes.get(item.id);
+    return positioned ? { ...item, x: positioned.x, y: positioned.y, w: positioned.w, h: positioned.h, stage: positioned.stage, columnX: positioned.columnX } : item;
+  });
+  const layoutEdges = new Map(layout.edges.map((item) => [item.id, item]));
+  state.edges = state.edges.map((item) => {
+    const positioned = layoutEdges.get(item.id);
+    return positioned ? { ...item, route: positioned.route, color: positioned.color } : item;
   });
   persist();
   render();
   focusArchitecture({ silent: true });
-  setStatus("布局已重新美化");
+  setStatus(layout.validation.ok ? "已应用顶刊式分阶段布局" : `布局已应用，但有 ${layout.validation.overlaps.length + layout.validation.boundaryViolations.length} 个几何问题待调整`);
 }
 
 function togglePanels() {
@@ -2683,7 +2944,7 @@ function restore() {
     if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
       throw new Error("Invalid saved document");
     }
-    state.nodes = parsed.nodes;
+    state.nodes = parsed.nodes.map(normalizeVisualNode);
     state.edges = parsed.edges;
     state.paletteName = palettes[parsed.paletteName] ? parsed.paletteName : defaultPaletteName;
     state.paletteVersion = Number.isFinite(parsed.paletteVersion) ? parsed.paletteVersion : 1;
@@ -2769,6 +3030,12 @@ function localAnchor(item, side) {
     return {
       x: side === "right" ? item.w + depth : 0,
       y: item.h / 2 + skew * 0.18,
+    };
+  }
+  if (item.type === "compound") {
+    return {
+      x: side === "right" ? item.w : 0,
+      y: item.h / 2,
     };
   }
   if (item.type === "encoder") {

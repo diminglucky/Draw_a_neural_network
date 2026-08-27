@@ -5,7 +5,7 @@ const aiState = {
 
 const paletteName = "dopamine";
 
-export function setupAIWorkflow({ applyDiagramDocument, setStatus }) {
+export function setupAIWorkflow({ applyDiagramDocument, setStatus, analyzeArchitectureInput }) {
   const input = document.querySelector("#aiImageInput");
   const previewList = document.querySelector("#aiPreviewList");
   const uploadZone = document.querySelector(".ai-upload-zone");
@@ -56,7 +56,14 @@ export function setupAIWorkflow({ applyDiagramDocument, setStatus }) {
           dataUrl,
         })),
       };
-      const document = await analyzeWithOptionalBackend(request);
+      const analysis = await analyzeWithOptionalBackend(request, analyzeArchitectureInput);
+      if (!analysis?.readyForPreview) {
+        const message = analysis?.diagnostics?.[0]?.message || "当前图片需要外部视觉分析器，未生成猜测拓扑。";
+        updateAIStatus(aiStatus, message);
+        setStatus(analysis?.status || "AI 分析未完成");
+        return;
+      }
+      const document = analysis.canvasDocument || analysis;
       const ok = applyDiagramDocument(document, { message: "AI 已根据上传图片绘制可编辑网络图" });
       updateAIStatus(aiStatus, ok ? `已生成 ${document.nodes.length} 个节点、${document.edges.length} 条连接。` : "AI 结果没有通过画布校验。");
     } catch (error) {
@@ -76,7 +83,7 @@ async function setFiles(files, previewList, aiStatus) {
   updateAIStatus(aiStatus, `${aiState.files.length} 张图片已准备好，可开始分析。`);
 }
 
-async function analyzeWithOptionalBackend(request) {
+export async function analyzeWithOptionalBackend(request, analyzeArchitectureInput) {
   try {
     const response = await fetch("/api/analyze-diagram", {
       method: "POST",
@@ -85,12 +92,33 @@ async function analyzeWithOptionalBackend(request) {
     });
     if (response.ok) {
       const payload = await response.json();
-      if (payload?.nodes && payload?.edges) return payload;
+      if (payload?.status && !payload.ir && !payload.nodes) return payload;
+      if (analyzeArchitectureInput && (payload?.ir || (payload?.nodes && payload?.edges))) {
+        return analyzeArchitectureInput({
+          kind: "ir",
+          ir: payload.ir || payload,
+          diagnostics: payload.diagnostics,
+        });
+      }
+      if (payload?.ir || (payload?.nodes && payload?.edges)) return payload;
     }
   } catch {
-    // Static-file mode has no backend; fall through to local structure synthesis.
+    // The explicit image result below records that a vision capability is missing.
   }
-  return synthesizeDiagram(request);
+
+  if (analyzeArchitectureInput) {
+    return analyzeArchitectureInput({
+      kind: "image",
+      images: request.images,
+      prompt: request.prompt,
+      mode: request.mode,
+    });
+  }
+  return {
+    status: "needs_external_vision",
+    readyForPreview: false,
+    diagnostics: [{ kind: "vision-analyzer-required", message: "Image input requires a vision analyzer." }],
+  };
 }
 
 function synthesizeDiagram(request) {

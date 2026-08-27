@@ -11,6 +11,7 @@ The app is designed for people who want diagrams closer to PlotNeuralNet, NN-SVG
 - Code-to-diagram generation for common PyTorch and Keras/TensorFlow model code.
 - PyTorch `forward()` ordering, `nn.Sequential(...)` expansion, residual add detection, `torch.cat(...)` concat detection, and symbolic shape flow such as `H/2 x W/2 x 64`.
 - Vision-assisted diagram reconstruction from paper screenshots, sketches, or multiple reference images.
+- Universal Neural Network IR: arbitrary operators, custom modules, ports, tensor shapes, evidence, confidence, branches, merges, and explicit unresolved states.
 - Export to SVG, PNG, and JSON; import JSON to continue editing.
 - Built-in templates for CNN, ResNet, U-Net, 3D Medical U-Net, Hybrid ViT, GAN, Diffusion U-Net, and MLP.
 
@@ -38,7 +39,7 @@ To enable AI vision analysis for uploaded diagrams, set `OPENAI_API_KEY` before 
 OPENAI_API_KEY=your_key node server.js
 ```
 
-Without an API key, the app still works and uses local fallback synthesis for uploaded references.
+Without an API key, image analysis stops with an explicit `needs_external_vision` status. The app does not fabricate a CNN, U-Net, or other fixed topology from an image it cannot inspect.
 
 ## Code Generation
 
@@ -58,7 +59,35 @@ Supported patterns include:
 - `nn.MultiheadAttention`, `MultiHeadAttention`
 - `ConvTranspose*`, `Upsample`, `UpSampling*`
 
-The parser is intentionally lightweight and runs in the browser. It handles common architecture code well, but it is not a full Python runtime or `torch.fx` tracer. Highly dynamic control flow may need manual editing after generation.
+The browser parser now emits a framework-neutral Universal Neural Network IR before projecting to the editable canvas. Known operations are mapped to semantic primitives; custom PyTorch/Keras modules remain explicit unresolved compound operators with source evidence, ports, and confidence instead of silently becoming generic blocks.
+
+The parser is still static and is not a full Python runtime or `torch.fx`/ONNX executor. Conditional control flow, loops, data-dependent routing, and opaque third-party operators are preserved as low-confidence unresolved compounds with source evidence and IR diagnostics; runtime tracing or user confirmation is required for exact expansion. This is intentional: the Agent must surface uncertainty rather than fabricate a topology.
+
+The stable generation boundary is:
+
+```text
+code / model file / image / prompt
+    -> Universal Neural Network IR
+    -> validation + evidence + confidence
+    -> semantic canvas projection
+    -> publication layout
+```
+
+All code, IR, prompt, and image requests use the same agent entry point:
+
+```text
+analyzeArchitectureInput(input)
+    -> ready_for_preview
+    -> needs_confirmation
+    -> needs_external_vision
+    -> invalid_input
+```
+
+`POST /api/analyze-code` exposes this boundary for source and IR clients. A
+vision provider response is also validated and projected through the same
+boundary before it reaches the canvas. Prompt-only requests are retained as
+low-confidence unresolved hypotheses; they are never treated as evidence of a
+specific model family.
 
 ## Editing Workflow
 
@@ -78,6 +107,8 @@ The parser is intentionally lightweight and runs in the browser. It handles comm
 ├── app.js            # SVG canvas rendering and editing interactions
 ├── models.js         # Built-in neural architecture templates
 ├── code-workflow.js  # PyTorch/Keras code-to-diagram generation
+├── agent-pipeline.mjs # Unified source/IR/image/prompt routing and status policy
+├── universal-ir.mjs  # Framework-neutral IR, validation, and canvas projection
 ├── ai-workflow.js    # Image upload and vision-assisted diagram workflow
 ├── server.js         # Static server and optional OpenAI vision endpoint
 └── favicon.svg

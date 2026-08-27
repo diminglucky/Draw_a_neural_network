@@ -791,6 +791,81 @@ h3 {
   pointer-events: none;
 }
 
+.compound-frame {
+  paint-order: stroke fill;
+  stroke-linejoin: round;
+}
+
+.compound-frame-inner {
+  pointer-events: none;
+}
+
+.compound-title {
+  fill: #ffffff;
+  font-size: 15px;
+  font-weight: 900;
+  pointer-events: none;
+}
+
+.compound-subtitle {
+  fill: rgba(255, 255, 255, 0.72);
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.compound-repeat {
+  fill: rgba(15, 23, 42, 0.45);
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-width: 1;
+}
+
+.compound-repeat-text,
+.compound-child-label,
+.compound-child-subtitle,
+.compound-add-label,
+.compound-micro {
+  fill: #ffffff;
+  font-weight: 900;
+  pointer-events: none;
+}
+
+.compound-repeat-text {
+  font-size: 11px;
+}
+
+.compound-child-label {
+  font-size: 10px;
+}
+
+.compound-child-subtitle {
+  fill: rgba(255, 255, 255, 0.72);
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.compound-micro {
+  font-size: 9px;
+}
+
+.compound-add {
+  fill: rgba(255, 233, 92, 0.28);
+  stroke: #ffe95c;
+  stroke-width: 2;
+}
+
+.compound-edge {
+  pointer-events: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.compound-child,
+.compound-attention-cell,
+.compound-qkv-cell {
+  pointer-events: none;
+}
+
 .node-note {
   fill: rgba(38, 50, 60, 0.52);
   font-size: 11px;
