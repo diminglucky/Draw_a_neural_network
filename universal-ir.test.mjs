@@ -81,3 +81,31 @@ test("Universal IR validation fails closed for missing endpoints and invalid con
   assert.ok(report.issues.some((issue) => issue.kind === "missing-edge-endpoint"));
   assert.ok(report.issues.some((issue) => issue.kind === "invalid-confidence"));
 });
+
+test("Universal IR treats unknown declared families as unresolved custom operators", () => {
+  const ir = normalizeUniversalIR({
+    nodes: [{ id: "mystery", op: "MysteryOp", family: "made-up-family" }],
+    edges: [],
+  });
+  assert.equal(ir.nodes[0].family, "custom");
+  assert.equal(ir.nodes[0].compoundKind, "unresolved");
+});
+
+test("Universal IR rejects self-loops, duplicate edge IDs, and unreachable outputs", () => {
+  const report = validateUniversalIR({
+    nodes: [
+      { id: "input", op: "Input", family: "input" },
+      { id: "output", op: "Output", family: "output" },
+      { id: "dead", op: "Custom", family: "custom" },
+    ],
+    edges: [
+      { id: "loop", source: "input", target: "input" },
+      { id: "duplicate", source: "input", target: "dead" },
+      { id: "duplicate", source: "dead", target: "dead" },
+    ],
+  });
+  assert.equal(report.ok, false);
+  assert.ok(report.issues.some((issue) => issue.kind === "self-loop"));
+  assert.ok(report.issues.some((issue) => issue.kind === "duplicate-edge-id"));
+  assert.ok(report.issues.some((issue) => issue.kind === "unreachable-output"));
+});

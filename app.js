@@ -5,6 +5,7 @@ import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
 import { getCompoundLayout, normalizeCompoundNode } from "./compound-module.mjs";
 import { layoutDocumentForCanvas } from "./publication-layout-browser.mjs";
 import { projectUniversalIRToCanvas } from "./universal-ir.mjs";
+import { mergeCanvasStateIntoUniversalIR, renderCurrentIRToVisio } from "./visio-client.mjs";
 
 const svg = document.querySelector("#networkCanvas");
 const statusText = document.querySelector("#statusText");
@@ -40,6 +41,7 @@ const state = {
   viewport: { x: 0, y: 0, width: canvasSize.width, height: canvasSize.height },
   nextNodeId: 1,
   nextEdgeId: 1,
+  ir: null,
 };
 
 const storageKey = "synapse-studio-document-v5";
@@ -99,6 +101,7 @@ function loadTemplate(name, options = {}) {
   }
   state.nodes = template.nodes.map(normalizeVisualNode);
   state.edges = template.edges;
+  state.ir = template.ir || null;
   state.figure = template.figure || state.figure;
   state.paletteName = palettes[state.paletteName] ? state.paletteName : defaultPaletteName;
   state.paletteVersion = paletteVersion;
@@ -162,6 +165,7 @@ function applyDiagramDocument(document, options = {}) {
 
   state.nodes = normalized.nodes;
   state.edges = normalized.edges;
+  state.ir = normalized.ir || document.ir || null;
   state.figure = normalized.figure || state.figure;
   state.paletteName = palettes[normalized.paletteName] ? normalized.paletteName : state.paletteName;
   state.paletteVersion = paletteVersion;
@@ -2217,7 +2221,49 @@ minimap.addEventListener("keydown", handleMinimapKeydown);
 bindInspector();
 setupAIWorkflow({ applyDiagramDocument, setStatus, analyzeArchitectureInput });
 setupCodeWorkflow({ applyDiagramDocument, setStatus, analyzeArchitectureInput });
+setupVisioWorkflow();
 window.__synapseTestApply = applyDiagramDocument;
+
+function setupVisioWorkflow() {
+  const button = document.querySelector("#visioRenderButton");
+  const pathInput = document.querySelector("#visioDocumentPathInput");
+  const pageInput = document.querySelector("#visioPageInput");
+  const status = document.querySelector("#visioStatusText");
+  if (!button || !pathInput || !pageInput || !status) return;
+
+  button.addEventListener("click", async () => {
+    if (!state.nodes.length) {
+      status.textContent = "当前画布没有可同步的网络。";
+      return;
+    }
+    const currentIR = mergeCanvasStateIntoUniversalIR({
+      stateIR: state.ir || {},
+      figure: state.figure,
+      nodes: state.nodes,
+      edges: state.edges,
+    });
+    button.disabled = true;
+    status.textContent = "正在连接已有 Visio 文档并回读验证……";
+    try {
+      const result = await renderCurrentIRToVisio({
+        documentPath: pathInput.value,
+        pageName: pageInput.value,
+        ir: currentIR,
+      });
+      status.textContent = result.status === "dry_run"
+        ? `已生成 Visio 计划：${result.plan.shapes.length} 个 Shape。`
+        : result.status === "readback_failed"
+          ? `Visio 已写入但回读未通过：缺少 ${result.readbackValidation?.missingSourceNodeIds?.length || 0} 个节点。`
+          : `Visio 已保存并回读：${result.createdShapes} 个 Shape，${result.createdConnectorSegments} 段连接器。`;
+      setStatus(status.textContent);
+    } catch (error) {
+      status.textContent = `Visio 同步失败：${error.message}`;
+      setStatus(status.textContent);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
 const previewTemplate = new URLSearchParams(window.location.search).get("previewTemplate");
 if (previewTemplate && modelLibrary.some((item) => item.id === previewTemplate)) {
   loadTemplate(previewTemplate, { render: false, persist: false, message: `预览 ${previewTemplate} 模板，不覆盖当前草稿` });
@@ -2905,6 +2951,7 @@ function importJson(event) {
       }
       state.nodes = parsed.nodes;
       state.edges = parsed.edges;
+      state.ir = parsed.ir || null;
       state.paletteName = palettes[parsed.paletteName] ? parsed.paletteName : defaultPaletteName;
       state.paletteVersion = Number.isFinite(parsed.paletteVersion) ? parsed.paletteVersion : paletteVersion;
       if (!palettes[parsed.paletteName]) recolorDocument(palettes[state.paletteName]);
@@ -2946,6 +2993,7 @@ function restore() {
     }
     state.nodes = parsed.nodes.map(normalizeVisualNode);
     state.edges = parsed.edges;
+    state.ir = parsed.ir || null;
     state.paletteName = palettes[parsed.paletteName] ? parsed.paletteName : defaultPaletteName;
     state.paletteVersion = Number.isFinite(parsed.paletteVersion) ? parsed.paletteVersion : 1;
     state.figure = parsed.figure || state.figure;
@@ -2966,7 +3014,7 @@ function restore() {
 }
 
 function persist() {
-  localStorage.setItem(storageKey, JSON.stringify({ nodes: state.nodes, edges: state.edges, paletteName: state.paletteName, paletteVersion: state.paletteVersion, figure: state.figure }));
+  localStorage.setItem(storageKey, JSON.stringify({ nodes: state.nodes, edges: state.edges, ir: state.ir, paletteName: state.paletteName, paletteVersion: state.paletteVersion, figure: state.figure }));
 }
 
 function select(selection) {

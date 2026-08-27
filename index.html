@@ -84,6 +84,24 @@
           <p id="codeStatusText" class="ai-status">等待粘贴模型代码。</p>
         </section>
 
+        <section class="panel-card visio-panel">
+          <div class="section-heading">
+            <h3>同步到 Visio</h3>
+            <span class="beta-pill">Native</span>
+          </div>
+          <p class="panel-note">填写已经打开或已存在的 `.vsdx` 路径。Agent 会在同一文档中写入原生 Shape，不会创建新的空白画布。</p>
+          <label class="ai-field" for="visioDocumentPathInput">
+            已有 Visio 文档路径
+            <input id="visioDocumentPathInput" type="text" placeholder="C:\\项目\\model.vsdx" />
+          </label>
+          <label class="ai-field" for="visioPageInput">
+            页面
+            <input id="visioPageInput" type="text" value="Page-1" />
+          </label>
+          <button id="visioRenderButton" class="primary-button ai-action" type="button">同步当前网络到 Visio</button>
+          <p id="visioStatusText" class="ai-status">等待选择已有 Visio 文档。</p>
+        </section>
+
         <section class="panel-card">
           <h3>模型库</h3>
           <p class="panel-note">从论文常用结构开始，再拖拽、缩放和连线微调。</p>

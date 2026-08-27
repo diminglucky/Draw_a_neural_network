@@ -2,6 +2,8 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
+import { layoutUniversalFigure } from "./universal-figure.mjs";
+import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
 
 const port = Number(process.env.PORT || 4173);
 const root = process.cwd();
@@ -31,12 +33,16 @@ createServer(async (request, response) => {
       await handleAnalyzeCode(request, response);
       return;
     }
+    if (request.method === "POST" && request.url === "/api/render-visio") {
+      await handleRenderVisio(request, response);
+      return;
+    }
     await serveStatic(request, response);
   } catch (error) {
     console.error(error);
     sendJson(response, 500, { error: "Internal server error" });
   }
-}).listen(port, () => {
+}).listen(port, "127.0.0.1", () => {
   console.log(`Synapse Studio running at http://127.0.0.1:${port}`);
 });
 
@@ -44,6 +50,70 @@ async function handleAnalyzeCode(request, response) {
   const result = analyzeArchitectureInput(await readJson(request));
   const status = result.status === "invalid_input" ? 422 : 200;
   sendJson(response, status, result);
+}
+
+async function handleRenderVisio(request, response) {
+  const body = await readJson(request);
+  const documentPath = String(body.documentPath || "").trim();
+  if (!documentPath) {
+    sendJson(response, 400, { error: "documentPath is required; rendering never creates an implicit Visio document." });
+    return;
+  }
+
+  const analysis = body.ir
+    ? analyzeArchitectureInput({ kind: "ir", ir: body.ir, diagnostics: body.diagnostics })
+    : analyzeArchitectureInput({ kind: "source", source: body.source, framework: body.framework });
+  if (analysis.status === "invalid_input" || !analysis.ir) {
+    sendJson(response, 422, { error: "Architecture input cannot be rendered", ...analysis });
+    return;
+  }
+
+  const figureLayout = analysis.figureLayout || layoutUniversalFigure(analysis.ir);
+  if (!figureLayout.validation?.ok) {
+    sendJson(response, 422, {
+      status: "invalid_layout",
+      error: "Publication figure validation failed; Visio was not modified.",
+      validation: figureLayout.validation,
+      diagnostics: analysis.diagnostics,
+    });
+    return;
+  }
+  const options = {
+    documentPath,
+    pageName: body.pageName || "Page-1",
+    renderId: body.renderId,
+    unitScale: body.unitScale,
+    scriptPath: process.env.VISIO_BRIDGE_SCRIPT,
+  };
+  const plan = buildVisioRenderPlan(figureLayout, options);
+  if (process.env.VISIO_DRY_RUN === "1") {
+    sendJson(response, 200, {
+      status: "dry_run",
+      analysisStatus: analysis.status,
+      diagnostics: analysis.diagnostics,
+      validation: figureLayout.validation,
+      plan,
+    });
+    return;
+  }
+
+  try {
+    const result = await renderUniversalFigureToVisio(figureLayout, options);
+    sendJson(response, 200, {
+      status: "rendered",
+      analysisStatus: analysis.status,
+      diagnostics: analysis.diagnostics,
+      validation: figureLayout.validation,
+      ...result,
+    });
+  } catch (error) {
+    sendJson(response, 503, {
+      status: "visio_unavailable",
+      error: error.message,
+      diagnostics: analysis.diagnostics,
+      validation: figureLayout.validation,
+    });
+  }
 }
 
 async function handleAnalyze(request, response) {

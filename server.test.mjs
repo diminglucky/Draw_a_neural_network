@@ -103,6 +103,41 @@ test("/api/analyze-diagram does not return a fixed fallback without a vision pro
   assert.equal(payload.nodes, undefined);
 });
 
+test("/api/render-visio produces an existing-document plan without creating a canvas", async (t) => {
+  const port = 4185;
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), VISIO_DRY_RUN: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+
+  await waitForServer(child, port);
+  const response = await fetch(`http://127.0.0.1:${port}/api/render-visio`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      documentPath: "C:\\project\\existing.vsdx",
+      pageName: "Page-1",
+      ir: {
+        nodes: [
+          { id: "input", op: "Input", family: "input", stage: 0 },
+          { id: "custom", op: "CustomBlock", family: "custom", stage: 1, confidence: 0.5 },
+        ],
+        edges: [{ id: "flow", source: "input", target: "custom", type: "signal" }],
+      },
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.status, "dry_run");
+  assert.equal(payload.plan.createDocument, false);
+  assert.equal(payload.plan.preserveExisting, true);
+  assert.equal(payload.plan.documentPath, "C:\\project\\existing.vsdx");
+  assert.ok(payload.plan.shapes.some((shape) => shape.shapeData.sourceNodeId === "custom"));
+});
+
 async function waitForServer(child, port) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {

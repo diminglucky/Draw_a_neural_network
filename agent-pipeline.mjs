@@ -1,6 +1,7 @@
 import { diagramFromCode } from "./code-workflow.js";
 import { extractGenericSourceTopology } from "./generic-source-topology.mjs";
 import { layoutDocumentForCanvas } from "./publication-layout-browser.mjs";
+import { layoutUniversalFigure } from "./universal-figure.mjs";
 import {
   normalizeUniversalIR,
   projectUniversalIRToCanvas,
@@ -177,6 +178,7 @@ function finalizeResult(rawIR, context = {}) {
 
   const rawCanvasDocument = projectUniversalIRToCanvas(ir);
   const laidOutCanvasDocument = layoutDocumentForCanvas(rawCanvasDocument);
+  const figureLayout = layoutUniversalFigure(ir);
   return {
     status: hasUncertainty ? STATUS.CONFIRM : STATUS.READY,
     readyForPreview: true,
@@ -185,7 +187,9 @@ function finalizeResult(rawIR, context = {}) {
       ...laidOutCanvasDocument,
       ir: publicIR(ir),
       layoutValidation: laidOutCanvasDocument.validation,
+      universalFigureLayout: figureLayout,
     },
+    figureLayout,
     validation,
     diagnostics: uniqueDiagnostics,
     summary: summaryFor(ir, context.sourceKind),

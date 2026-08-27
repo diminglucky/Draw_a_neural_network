@@ -12,6 +12,8 @@ The app is designed for people who want diagrams closer to PlotNeuralNet, NN-SVG
 - PyTorch `forward()` ordering, `nn.Sequential(...)` expansion, residual add detection, `torch.cat(...)` concat detection, and symbolic shape flow such as `H/2 x W/2 x 64`.
 - Vision-assisted diagram reconstruction from paper screenshots, sketches, or multiple reference images.
 - Universal Neural Network IR: arbitrary operators, custom modules, ports, tensor shapes, evidence, confidence, branches, merges, and explicit unresolved states.
+- Universal publication figure planner: selects tensor-flow, residual-graph, encoder-decoder, token-attention, or generic-DAG grammar from topology evidence and preserves arbitrary internal compound graphs.
+- Native Microsoft Visio bridge: writes the Universal IR into an existing `.vsdx` through Visio COM, uses native Shapes/connectors/Shape Data, saves, and reads back the rendered node IDs.
 - Export to SVG, PNG, and JSON; import JSON to continue editing.
 - Built-in templates for CNN, ResNet, U-Net, 3D Medical U-Net, Hybrid ViT, GAN, Diffusion U-Net, and MLP.
 
@@ -73,6 +75,30 @@ code / model file / image / prompt
     -> publication layout
 ```
 
+For a Windows machine with Microsoft Visio installed, the native editable path is:
+
+```text
+Universal IR
+    -> semantic figure grammar + geometry plan
+    -> POST /api/render-visio
+    -> bind existing .vsdx with Visio COM
+    -> native Shape / connector / Shape Data creation
+    -> save + readback validation
+```
+
+`/api/render-visio` requires `documentPath`; it never creates an implicit blank
+Visio canvas. Repeated syncs to the same document and page use a stable
+agent-owned render scope, so only the Agent's previous Shapes are replaced.
+Existing user Shapes are outside that scope. The browser's **同步到 Visio**
+panel exposes this path after a code or image analysis has produced Universal
+IR.
+
+Unknown operators are rendered as explicit compound frames. If an internal
+graph is present in `attributes.internalGraph`, its actual child nodes and
+edges are placed inside the frame. If no evidence exists, the frame remains
+`unresolved` with confidence/evidence Shape Data; the Agent does not invent
+hidden layers.
+
 All code, IR, prompt, and image requests use the same agent entry point:
 
 ```text
@@ -109,6 +135,10 @@ specific model family.
 ├── code-workflow.js  # PyTorch/Keras code-to-diagram generation
 ├── agent-pipeline.mjs # Unified source/IR/image/prompt routing and status policy
 ├── universal-ir.mjs  # Framework-neutral IR, validation, and canvas projection
+├── universal-figure.mjs # Topology-driven figure grammar selection and geometry
+├── visio-bridge.mjs  # Existing-document Visio render plan, COM runner, readback validation
+├── visio-bridge.ps1  # Windows Visio COM native Shape/connector/Shape Data bridge
+├── visio-client.mjs  # Browser request boundary for same-document Visio sync
 ├── ai-workflow.js    # Image upload and vision-assisted diagram workflow
 ├── server.js         # Static server and optional OpenAI vision endpoint
 └── favicon.svg
@@ -128,4 +158,5 @@ specific model family.
 - More paper presets for U-Net variants, Transformers, diffusion models, and multimodal models.
 - Better automatic layout for very large models.
 - Layer-level import/export interoperability with common model visualization formats.
+- ONNX / torch.fx runtime extraction for expanding unresolved dynamic modules with evidence.
 

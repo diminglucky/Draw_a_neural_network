@@ -16,6 +16,11 @@ const FAMILY_ALIASES = [
   ["volume", /volume|voxel|3d/i],
 ];
 
+const KNOWN_FAMILIES = new Set([
+  "input", "output", "conv", "pool", "dense", "attention", "merge", "flatten",
+  "norm", "activation", "recurrent", "graph", "volume", "custom", "unknown",
+]);
+
 export function createUniversalIR(document = {}, options = {}) {
   return normalizeUniversalIR({
     version: VERSION,
@@ -54,6 +59,7 @@ export function validateUniversalIR(ir = {}) {
   const normalized = normalizeUniversalIR(ir);
   const issues = [];
   const seen = new Set();
+  const edgeIds = new Set();
   normalized.nodes.forEach((node) => {
     if (seen.has(node.id)) issues.push({ kind: "duplicate-node-id", nodeId: node.id });
     seen.add(node.id);
@@ -62,9 +68,27 @@ export function validateUniversalIR(ir = {}) {
     }
   });
   normalized.edges.forEach((edge) => {
+    if (edgeIds.has(edge.id)) issues.push({ kind: "duplicate-edge-id", edgeId: edge.id });
+    edgeIds.add(edge.id);
+    if (edge.source === edge.target) issues.push({ kind: "self-loop", edgeId: edge.id, nodeId: edge.source });
     if (!normalized.nodeIds.has(edge.source) || !normalized.nodeIds.has(edge.target)) {
       issues.push({ kind: "missing-edge-endpoint", edgeId: edge.id, source: edge.source, target: edge.target });
     }
+  });
+  const inputIds = normalized.nodes.filter((node) => node.family === "input").map((node) => node.id);
+  const reachable = new Set(inputIds);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    normalized.edges.forEach((edge) => {
+      if (reachable.has(edge.source) && normalized.nodeIds.has(edge.target) && !reachable.has(edge.target)) {
+        reachable.add(edge.target);
+        changed = true;
+      }
+    });
+  }
+  normalized.nodes.filter((node) => node.family === "output").forEach((node) => {
+    if (inputIds.length && !reachable.has(node.id)) issues.push({ kind: "unreachable-output", nodeId: node.id });
   });
   return {
     ok: issues.length === 0 && normalized.nodes.length > 0,
@@ -119,7 +143,8 @@ export function projectUniversalIRToCanvas(ir = {}) {
 }
 
 export function classifyOperation(op = "", family = "") {
-  if (family && family !== "unknown") return family;
+  const declaredFamily = String(family || "").trim().toLowerCase();
+  if (KNOWN_FAMILIES.has(declaredFamily) && declaredFamily !== "unknown") return declaredFamily;
   const normalized = String(op).trim();
   return FAMILY_ALIASES.find(([, pattern]) => pattern.test(normalized))?.[0] || "custom";
 }

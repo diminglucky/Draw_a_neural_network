@@ -20,6 +20,8 @@ class Net(nn.Module):
   assert.equal(result.readyForPreview, true);
   assert.ok(result.ir.nodes.some((node) => node.compoundKind === "unresolved"));
   assert.ok(result.canvasDocument.nodes.some((node) => node.compoundKind === "unresolved"));
+  assert.equal(result.figureLayout.grammar.id, "generic-dag");
+  assert.ok(result.figureLayout.nodes.some((node) => node.representation === "compound"));
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-operator"));
 });
 

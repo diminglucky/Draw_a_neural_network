@@ -68,6 +68,82 @@ test("unknown compound kinds remain explicit instead of silently becoming blocks
   const layout = getCompoundLayout(node);
   assert.equal(layout.children[0].kind, "unresolved");
   assert.match(layout.children[0].label, /Future Module/);
+  assert.equal(layout.children.length, 1);
+});
+
+test("custom compounds render their evidenced internal graph instead of a fixed template", () => {
+  const layout = getCompoundLayout({
+    id: "wavelet",
+    type: "compound",
+    compoundKind: "unresolved",
+    label: "Wavelet Encoder",
+    subtitle: "runtime-traced internals",
+    inner: {
+      kind: "topology",
+      nodes: [
+        { id: "analysis", family: "conv", label: "Analysis Conv", subtitle: "stride 2" },
+        { id: "attention", family: "attention", label: "Cross Attention" },
+        { id: "merge", family: "merge", label: "Residual Add" },
+      ],
+      edges: [
+        { id: "signal", source: "analysis", target: "attention", type: "signal" },
+        { id: "context", source: "attention", target: "merge", type: "attention" },
+        { id: "shortcut", source: "analysis", target: "merge", type: "residual" },
+      ],
+    },
+  });
+
+  assert.deepEqual(layout.children.map((child) => child.id), ["analysis", "attention", "merge"]);
+  assert.deepEqual(layout.children.map((child) => child.kind), ["conv", "attention", "add"]);
+  assert.deepEqual(layout.edges.map((edge) => edge.kind), ["signal", "attention", "residual"]);
+  assert.equal(layout.edges.every((edge) => layout.children.some((child) => child.id === edge.source)), true);
+  assert.equal(layout.edges.every((edge) => layout.children.some((child) => child.id === edge.target)), true);
+});
+
+test("internalGraph evidence is accepted directly and unknown children stay unresolved", () => {
+  const layout = getCompoundLayout({
+    id: "custom",
+    type: "compound",
+    compoundKind: "unresolved",
+    label: "Custom Module",
+    attributes: {
+      internalGraph: {
+        nodes: [
+          { id: "known", family: "norm", label: "LayerNorm" },
+          { id: "opaque", family: "custom", label: "Opaque Kernel" },
+        ],
+        edges: [{ id: "known-to-opaque", source: "known", target: "opaque", type: "signal" }],
+      },
+    },
+  });
+
+  assert.deepEqual(layout.children.map((child) => child.kind), ["norm", "unresolved"]);
+  assert.equal(layout.edges[0].kind, "signal");
+  assert.equal(layout.children[1].label, "Opaque Kernel");
+});
+
+test("generic internal layout keeps wide parallel graphs inside the compound frame", () => {
+  const layout = getCompoundLayout({
+    id: "parallel",
+    type: "compound",
+    compoundKind: "unresolved",
+    label: "Parallel Module",
+    w: 320,
+    h: 250,
+    inner: {
+      kind: "topology",
+      nodes: Array.from({ length: 7 }, (_, index) => ({
+        id: `branch-${index + 1}`,
+        family: "conv",
+        label: `Branch ${index + 1}`,
+      })),
+      edges: [],
+    },
+  });
+
+  assert.ok(layout.children.every((child) => child.x >= 0 && child.y >= 0));
+  assert.ok(layout.children.every((child) => child.x + child.w <= layout.width));
+  assert.ok(layout.children.every((child) => child.y + child.h <= layout.height));
 });
 
 test("generic module blocks become operator compounds with an internal chain", () => {
