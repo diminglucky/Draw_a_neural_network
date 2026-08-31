@@ -1215,7 +1215,9 @@ function edgeLabelFor(layer) {
 
 function edgeTypeFor(layer) {
   if (!layer) return "signal";
-  if (layer.kind === "flatten" || layer.kind === "attention" || layer.kind === "upsample") return "attention";
+  if (layer.kind === "flatten") return "reshape";
+  if (layer.kind === "attention") return "attention";
+  if (layer.kind === "upsample") return "upsample";
   return "signal";
 }
 

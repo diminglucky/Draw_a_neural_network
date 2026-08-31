@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { compileSemanticVisualNode } from "./semantic-visual-grammar.mjs";
 
 const BRIDGE_VERSION = "visio-native-bridge/v1";
 
@@ -100,6 +101,7 @@ export function buildVisioRenderPlan(layout = {}, options = {}) {
     replaceScope: String(options.replaceLegacyPrefix || "").trim() ? "agent-owned+legacy-prefix" : "agent-owned",
     replaceLegacyPrefix: String(options.replaceLegacyPrefix || "").trim() || undefined,
     openMode: String(options.openMode || "attach"),
+    previewPath: String(options.previewPath || "").trim() || undefined,
     renderId,
     unitScale: Number.isFinite(options.unitScale) ? options.unitScale : 0.0065,
     artboard: layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 },
@@ -116,7 +118,11 @@ export function buildVisioPowerShellCommand(plan, options = {}) {
   const encodedPlan = Buffer.from(JSON.stringify(plan), "utf8").toString("base64");
   return {
     file: "powershell.exe",
-    args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-PlanBase64", encodedPlan],
+    // Keep the stable -PlanBase64 contract while transporting the payload over
+    // stdin. Windows command lines are too small for a real VGG/Transformer
+    // Universal IR once Shape Data and internal topology are included.
+    args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-PlanBase64", "__STDIN__"],
+    stdin: encodedPlan,
   };
 }
 
@@ -175,6 +181,11 @@ function runPowerShell(command) {
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("error", reject);
+    if (typeof command.stdin === "string") {
+      child.stdin.end(command.stdin, "utf8");
+    } else {
+      child.stdin.end();
+    }
     child.on("close", (code) => {
       if (code !== 0) {
         reject(new Error(`Visio bridge failed with exit code ${code}: ${stderr || stdout}`));
@@ -190,15 +201,25 @@ function runPowerShell(command) {
 }
 
 function shapePlan(node, options) {
+  const semantic = compileSemanticVisualNode(node);
+  const visualRole = String(node.visualRole || semantic.visualRole || options.shapeKind || "operator");
+  const styleProfile = String(node.styleProfile || semantic.styleProfile || "operator");
+  const labelSlots = node.labelSlots || semantic.labelSlots;
+  const geometryData = node.geometryData || semantic.geometryData;
   return {
     id: options.id,
     x: Number(node.x) || 0,
     y: Number(node.y) || 0,
     w: Number(node.w) || 120,
     h: Number(node.h) || 80,
-    label: String(node.label || node.op || "Operator"),
-    subtitle: String(node.subtitle || ""),
+    label: String(node.figureLabel || node.label || node.op || "Operator"),
+    subtitle: String(node.figureSubtitle || node.subtitle || ""),
     shapeKind: options.shapeKind,
+    visualRole,
+    styleProfile,
+    labelSlots,
+    geometryData,
+    labelOutside: options.parentNodeId === "",
     parentNodeId: options.parentNodeId,
     fill: String(node.color || "#A855F7"),
     line: String(node.lineColor || "#263248"),
@@ -206,10 +227,32 @@ function shapePlan(node, options) {
       renderId: options.renderId,
       sourceNodeId: String(node.id || ""),
       parentNodeId: options.parentNodeId,
-      visualRole: String(options.shapeKind || node.family || "operator"),
+      visualRole: String(node.visualRole || options.shapeKind || node.family || "operator"),
+      semanticRole: visualRole,
+      styleProfile,
+      labelTitleSlot: String(labelSlots.title || "above"),
+      labelSubtitleSlot: String(labelSlots.subtitle || "below"),
+      labelTensorShapeSlot: String(labelSlots.tensorShape || "below"),
+      labelOperatorDetailsSlot: String(labelSlots.operatorDetails || "outside"),
+      labelOutside: options.parentNodeId === "",
       layerRole: String(node.semanticRole || "feature_transform"),
       tensorShape: shapeText(node.shape),
-      repeatCount: node.repeatCount ?? node.layers ?? "",
+      operatorFamily: String(node.family || node.type || node.op || ""),
+      operatorLabels: Array.isArray(geometryData.internalOperatorLabels)
+        ? geometryData.internalOperatorLabels.join("|")
+        : String(geometryData.operatorLabels || ""),
+      repeatCount: geometryData.repeatCount ?? node.repeatCount ?? node.layers ?? "",
+      spatialSize: geometryData.spatialSize ?? "",
+      channelCount: geometryData.channelCount ?? "",
+      preferredWidth: geometryData.preferredWidth ?? "",
+      preferredHeight: geometryData.preferredHeight ?? "",
+      sourceHeight: geometryData.sourceHeight ?? "",
+      targetHeight: geometryData.targetHeight ?? "",
+      sourceAnchor: geometryData.sourceAnchor ?? "",
+      targetAnchor: geometryData.targetAnchor ?? "",
+      geometryProfile: visualRole,
+      hasInternalTopology: Boolean(geometryData.hasInternalTopology),
+      internalNodeCount: geometryData.internalNodeCount ?? 0,
       confidence: Number.isFinite(node.confidence) ? node.confidence : 1,
       evidenceCount: Array.isArray(node.evidence) ? node.evidence.length : 0,
       grammarId: options.grammarId,

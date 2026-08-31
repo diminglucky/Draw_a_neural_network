@@ -80,6 +80,7 @@ example = torch.randn(1, 3, 224, 224)
   assert.ok(result.ir.nodes.some((node) => node.family === "pool"));
   assert.ok(result.ir.nodes.some((node) => node.family === "dense"));
   assert.equal(result.ir.nodes.find((node) => node.family === "input").subtitle, "224 x 224 x 3");
+  assert.equal(result.figureLayout.grammar.id, "tensor-flow");
 });
 
 test("agent pipeline validates IR input without requiring a model template", () => {

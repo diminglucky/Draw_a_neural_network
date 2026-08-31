@@ -84,10 +84,13 @@ test("layoutUniversalFigure packs a long single-lane graph with a readable width
   }));
   const layout = layoutUniversalFigure({ nodes, edges });
   const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
-  const gaps = ordered.slice(1).map((node, index) => node.x - (ordered[index].x + ordered[index].w));
+  const gaps = ordered.slice(1).map((node, index) => (
+    node.x - (ordered[index].x + ordered[index].w + ordered[index].geometryData.visualRightOutset)
+  ));
 
   assert.equal(layout.validation.ok, true);
-  assert.ok(Math.min(...gaps) >= 30, `expected every stage gap to be >= 30, got ${gaps.join(", ")}`);
+  assert.ok(Math.min(...gaps) >= 12, `expected publication gaps to preserve readable clearance, got ${gaps.join(", ")}`);
+  assert.ok(gaps.includes(12), `expected the compact source-to-pool gap, got ${gaps.join(", ")}`);
   assert.ok(layout.artboard.height <= 700, `expected a compact single-lane page, got height ${layout.artboard.height}`);
 });
 
@@ -149,4 +152,154 @@ test("universal figure groups linear convolution runs into evidence-backed stage
   assert.equal(layout.nodes.find((node) => node.id === "flatten").representation, "flatten-ribbon");
   assert.equal(layout.nodes.find((node) => node.id === "output").representation, "softmax-prism");
   assert.equal(layout.validation.ok, true);
+});
+
+test("universal layout carries topology-derived semantic visual metadata", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      {
+        id: "spatial",
+        family: "conv",
+        label: "Spatial operator",
+        shape: { output: [1, 32, 32, 64] },
+        repeatCount: 2,
+      },
+      {
+        id: "vector",
+        family: "flatten",
+        label: "Vectorize",
+        shape: { output: [1, 2048] },
+      },
+    ],
+    edges: [{ id: "flow", source: "spatial", target: "vector", type: "signal" }],
+  });
+
+  const spatial = layout.nodes.find((node) => node.id === "spatial");
+  const vector = layout.nodes.find((node) => node.id === "vector");
+  assert.equal(spatial.visualRole, "feature-map-stage");
+  assert.equal(spatial.styleProfile, "feature-map");
+  assert.equal(spatial.labelSlots.tensorShape, "below");
+  assert.equal(spatial.geometryData.repeatCount, 2);
+  assert.equal(vector.visualRole, "vectorize");
+  assert.equal(vector.styleProfile, "vectorize");
+});
+
+test("universal layout restores publication hierarchy without a model-specific template", () => {
+  const nodes = [
+    { id: "input", family: "input", stage: 0, label: "Input", shape: { output: [1, 224, 224, 3] } },
+    { id: "conv-a", family: "conv", stage: 1, label: "Conv 64", shape: { output: [1, 224, 224, 64] } },
+    { id: "conv-b", family: "conv", stage: 2, label: "Conv 64", shape: { output: [1, 224, 224, 64] } },
+    { id: "pool", family: "pool", stage: 3, label: "MaxPool", subtitle: "112 x 112 x 64 · k2 · s2", shape: { output: [1, 112, 112, 64] } },
+    { id: "flatten", family: "flatten", stage: 4, label: "Flatten", shape: { output: [1, 802816] } },
+    { id: "hidden", family: "dense", stage: 5, label: "Linear 4096", shape: { output: [1, 4096] } },
+    { id: "output", family: "dense", stage: 6, label: "Linear 1000", shape: { output: [1, 1000] } },
+  ];
+  const layout = layoutUniversalFigure({
+    nodes,
+    edges: nodes.slice(0, -1).map((node, index) => ({
+      id: `edge-${index}`,
+      source: node.id,
+      target: nodes[index + 1].id,
+      type: "signal",
+    })),
+  });
+
+  const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
+  assert.deepEqual(ordered.map((node) => node.figureLabel), ["Input", "CONV 1", "MP", "Flatten", "FC 1", "OUTPUT"]);
+  assert.equal(ordered.at(-1).visualRole, "output-distribution");
+  assert.equal(ordered.at(-1).representation, "softmax-prism");
+  assert.ok(ordered.find((node) => node.visualRole === "feature-map-stage").h >= 220);
+  assert.ok(ordered.find((node) => node.visualRole === "neuron-layer").w <= 96);
+  assert.ok(layout.artboard.height <= 900);
+});
+
+test("universal layout keeps repeated spatial stages narrow relative to their vertical feature-map extent", () => {
+  const nodes = [
+    { id: "a", family: "conv", stage: 0, order: 0, label: "Conv 32", shape: { output: [1, 64, 64, 32] } },
+    { id: "b", family: "conv", stage: 1, order: 1, label: "Conv 64", shape: { output: [1, 64, 64, 64] } },
+    { id: "c", family: "conv", stage: 2, order: 2, label: "Conv 128", shape: { output: [1, 32, 32, 128] } },
+  ];
+  const layout = layoutUniversalFigure({
+    nodes,
+    edges: [
+      { id: "ab", source: "a", target: "b" },
+      { id: "bc", source: "b", target: "c" },
+    ],
+  });
+  const stage = layout.nodes.find((node) => node.visualRole === "feature-map-stage");
+
+  assert.ok(stage, "expected a condensed spatial stage");
+  assert.ok(stage.w <= 150, `expected a narrow stage, got width ${stage.w}`);
+  assert.ok(stage.w / stage.h <= 0.65, `expected a thin stage ratio, got ${stage.w}/${stage.h}`);
+});
+
+test("universal layout scales tensor modules by evidenced spatial resolution instead of equal card sizes", () => {
+  const nodes = [
+    { id: "input", family: "input", stage: 0, order: 0, label: "Input", shape: { output: [1, 224, 224, 3] } },
+    { id: "conv-a", family: "conv", stage: 1, order: 1, label: "Conv 64", shape: { output: [1, 224, 224, 64] } },
+    { id: "pool-a", family: "pool", stage: 2, order: 2, label: "MaxPool", shape: { output: [1, 112, 112, 64] } },
+    { id: "conv-b", family: "conv", stage: 3, order: 3, label: "Conv 128", shape: { output: [1, 112, 112, 128] } },
+    { id: "pool-b", family: "pool", stage: 4, order: 4, label: "MaxPool", shape: { output: [1, 56, 56, 128] } },
+    { id: "conv-c", family: "conv", stage: 5, order: 5, label: "Conv 256", shape: { output: [1, 56, 56, 256] } },
+    { id: "flatten", family: "flatten", stage: 6, order: 6, label: "Flatten", shape: { input: [1, 56, 56, 256], output: [1, 802816] } },
+    { id: "hidden", family: "dense", stage: 7, order: 7, label: "Linear 4096", shape: { output: [1, 4096] } },
+    { id: "output", family: "dense", stage: 8, order: 8, label: "Linear 10", shape: { output: [1, 10] } },
+  ];
+  const edges = nodes.slice(0, -1).map((node, index) => ({
+    id: `edge-${index}`,
+    source: node.id,
+    target: nodes[index + 1].id,
+    type: "signal",
+  }));
+  const layout = layoutUniversalFigure({ nodes, edges });
+  const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
+  const featureStages = ordered.filter((node) => node.visualRole === "feature-map-stage");
+  const pools = ordered.filter((node) => node.visualRole === "pool-downsample");
+  const dense = ordered.find((node) => node.visualRole === "neuron-layer");
+  const output = ordered.find((node) => node.visualRole === "output-distribution");
+
+  assert.equal(featureStages.length, 3);
+  assert.ok(featureStages[0].h > featureStages[1].h, "later spatial stages should be visibly shorter");
+  assert.ok(featureStages[1].h > featureStages[2].h, "later spatial stages should continue to contract");
+  assert.equal(pools[0].h, featureStages[1].h, "pool should use its downsampled tensor height");
+  assert.equal(pools[1].h, featureStages[2].h, "later pool should use its downsampled tensor height");
+  assert.ok(pools.every((pool) => pool.w <= 60), "pool should stay a narrow Box between spatial stages");
+  assert.ok(dense.w <= 72, `dense column should remain thin, got ${dense.w}`);
+  assert.ok(output.w <= 72, `output distribution should remain thin, got ${output.w}`);
+  assert.ok(output.h < dense.h, "output distribution should be shorter than a hidden neuron layer");
+});
+
+test("single-lane tensor layout follows role-specific PlotNeuralNet stage gaps", () => {
+  const nodes = [
+    { id: "conv-a", family: "conv", stage: 0, order: 0, label: "Conv 64", shape: { output: [1, 112, 112, 64] } },
+    { id: "pool-a", family: "pool", stage: 1, order: 1, label: "MaxPool", shape: { output: [1, 56, 56, 64] } },
+    { id: "conv-b", family: "conv", stage: 2, order: 2, label: "Conv 128", shape: { output: [1, 56, 56, 128] } },
+  ];
+  const layout = layoutUniversalFigure({
+    nodes,
+    edges: nodes.slice(0, -1).map((node, index) => ({ id: `edge-${index}`, source: node.id, target: nodes[index + 1].id })),
+  });
+  const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
+
+  const [conv, pool, nextConv] = ordered;
+  assert.equal(pool.x - (conv.x + conv.w + conv.geometryData.visualRightOutset), 12, "pool should sit close to the projected source tensor");
+  assert.equal(nextConv.x - (pool.x + pool.w + pool.geometryData.visualRightOutset), 96, "next feature stage should receive the publication stage gap");
+});
+
+test("single-lane layout reserves the projected tensor depth before placing the next stage", () => {
+  const nodes = [
+    { id: "conv-a", family: "conv", stage: 0, order: 0, label: "Conv 64", shape: { output: [1, 112, 112, 64] } },
+    { id: "pool-a", family: "pool", stage: 1, order: 1, label: "MaxPool", shape: { output: [1, 56, 56, 64] } },
+    { id: "conv-b", family: "conv", stage: 2, order: 2, label: "Conv 128", shape: { output: [1, 56, 56, 128] } },
+  ];
+  const layout = layoutUniversalFigure({
+    nodes,
+    edges: nodes.slice(0, -1).map((node, index) => ({ id: `edge-${index}`, source: node.id, target: nodes[index + 1].id })),
+  });
+  const [conv, pool, nextConv] = [...layout.nodes].sort((left, right) => left.order - right.order);
+
+  assert.ok(conv.geometryData.visualRightOutset >= Math.round(conv.h * 0.3), "feature-map depth must derive from tensor height");
+  assert.ok(pool.geometryData.visualRightOutset >= Math.round(pool.h * 0.3), "pool depth must derive from tensor height");
+  assert.ok(pool.x - (conv.x + conv.w + conv.geometryData.visualRightOutset) >= 12, "pool must clear the preceding tensor projection");
+  assert.ok(nextConv.x - (pool.x + pool.w + pool.geometryData.visualRightOutset) >= 96, "the next tensor must clear the pool projection");
 });

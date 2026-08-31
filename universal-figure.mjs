@@ -1,3 +1,8 @@
+import {
+  compileSemanticVisualNode,
+  compileSemanticVisualNodes,
+} from "./semantic-visual-grammar.mjs";
+
 const DEFAULT_ARTBOARD = Object.freeze({ x: 170, y: 160, width: 2260, height: 1060 });
 const PLAN_VERSION = "universal-publication-figure/v1";
 
@@ -49,7 +54,9 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   const normalizedNodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index)) : [];
   const normalizedEdges = Array.isArray(ir.edges) ? ir.edges.map((edge, index) => normalizeEdge(edge, index)) : [];
   const condensed = condenseLinearConvRuns(normalizedNodes, normalizedEdges);
-  const sourceNodes = condensed.nodes;
+  const sourceNodes = resolvePublicationGeometry(
+    compileSemanticVisualNodes(condensed.nodes, condensed.edges),
+  );
   const sourceEdges = condensed.edges;
   const singleLane = canUseSingleLaneLayout(sourceNodes, sourceEdges);
   const fittedArtboard = singleLane ? fitSingleLaneArtboard(artboard, sourceNodes) : artboard;
@@ -66,13 +73,15 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     const gap = members.length > 1 ? Math.max(26, Math.min(54, Math.floor((artboard.height - 120 - totalHeight) / (members.length - 1)))) : 0;
     let cursor = fittedArtboard.y + Math.max(60, Math.floor((fittedArtboard.height - totalHeight - gap * Math.max(0, members.length - 1)) / 2));
     members.forEach((node) => {
-      const rawX = singleLaneX.get(node.id) ?? Math.round(fittedArtboard.x + 130 + stageGap * stageIndex - node.w / 2);
-      const x = Math.max(fittedArtboard.x, Math.min(fittedArtboard.x + fittedArtboard.width - node.w, rawX));
+      const visualWidth = compactVisualWidth(node);
+      const rawX = singleLaneX.get(node.id) ?? Math.round(fittedArtboard.x + 130 + stageGap * stageIndex - visualWidth / 2);
+      const x = Math.max(fittedArtboard.x, Math.min(fittedArtboard.x + fittedArtboard.width - visualWidth, rawX));
       const y = Math.round(cursor);
       const positioned = {
         ...node,
         x,
         y,
+        w: visualWidth,
         stageIndex,
         representation: representationFor(node),
         inner: layoutInnerGraph(node),
@@ -97,6 +106,64 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   };
 }
 
+function compactVisualWidth(node) {
+  if (node.visualRole === "pool-downsample") return Math.min(node.w, 96);
+  if (node.visualRole === "neuron-layer" || node.visualRole === "output-distribution") return Math.min(node.w, 96);
+  if (node.visualRole === "vectorize") return Math.min(node.w, 130);
+  return node.w;
+}
+
+function resolvePublicationGeometry(nodes) {
+  const ordered = [...nodes].sort(compareStageThenOrder);
+  const resolved = nodes.map((node) => {
+    const preferredWidth = Number(node.geometryData?.preferredWidth);
+    const preferredHeight = Number(node.geometryData?.preferredHeight);
+    return {
+      ...node,
+      w: Number.isFinite(preferredWidth) && preferredWidth > 0 ? preferredWidth : node.w,
+      h: Number.isFinite(preferredHeight) && preferredHeight > 0 ? preferredHeight : node.h,
+    };
+  });
+  const byId = new Map(resolved.map((node) => [node.id, node]));
+  for (const node of ordered) {
+    if (node.visualRole !== "pool-downsample") continue;
+    const current = byId.get(node.id);
+    const source = [...ordered]
+      .filter((candidate) => compareStageThenOrder(candidate, node) < 0 && candidate.visualRole === "feature-map-stage")
+      .at(-1);
+    if (!source) continue;
+    const resolvedSource = byId.get(source.id) || source;
+    const sourceSpatial = Number(resolvedSource.geometryData?.spatialSize);
+    const targetSpatial = Number(node.geometryData?.spatialSize);
+    const targetHeight = Number.isFinite(sourceSpatial) && sourceSpatial > 0
+      && Number.isFinite(targetSpatial) && targetSpatial > 0
+      ? Math.max(48, Math.round(resolvedSource.h * Math.pow(Math.max(1, targetSpatial) / sourceSpatial, 0.4)))
+      : Math.max(48, Math.round(resolvedSource.h * 0.72));
+    // Match the reference Box grammar: pooling is the already-downsampled
+    // tensor, not a large frustum that bridges both tensor sizes.
+    current.w = Math.max(38, Math.min(56, Math.round(resolvedSource.w * 0.62)));
+    current.h = targetHeight;
+    current.geometryData = {
+      ...current.geometryData,
+      sourceHeight: resolvedSource.h,
+      targetHeight,
+      sourceAnchor: "left-center",
+      targetAnchor: "right-center",
+    };
+  }
+  return resolved.map((node) => ({
+    ...node,
+    geometryData: {
+      ...node.geometryData,
+      ...visualEnvelopeFor(node),
+    },
+  }));
+}
+
+function compareStageThenOrder(left, right) {
+  return compareStage(left, right) || compareNode(left, right);
+}
+
 function canUseSingleLaneLayout(nodes, edges) {
   if (nodes.length < 2 || edges.length !== nodes.length - 1) return false;
   const ordered = [...nodes].sort((left, right) => compareStage(left, right) || compareNode(left, right));
@@ -111,16 +178,14 @@ function canUseSingleLaneLayout(nodes, edges) {
 function fitSingleLaneArtboard(artboard, nodes) {
   const minimumGap = 30;
   const horizontalMargin = 50;
-  const requiredWidth = horizontalMargin * 2
-    + nodes.reduce((sum, node) => sum + node.w, 0)
-    + minimumGap * Math.max(0, nodes.length - 1);
+  const requiredWidth = horizontalMargin * 2 + singleLaneFootprintWidth(nodes, minimumGap);
   const maximumNodeHeight = nodes.reduce((maximum, node) => Math.max(maximum, node.h), 0);
-  const compactHeight = Math.max(640, maximumNodeHeight + 380);
+  const compactHeight = Math.max(640, maximumNodeHeight + 300);
   return {
     ...artboard,
     x: artboard.x,
-    y: compactHeight < artboard.height ? 80 : artboard.y,
-    width: Math.max(artboard.width, requiredWidth),
+    y: compactHeight < artboard.height ? 20 : artboard.y,
+    width: Math.max(900, requiredWidth),
     height: Math.min(artboard.height, compactHeight),
   };
 }
@@ -128,19 +193,63 @@ function fitSingleLaneArtboard(artboard, nodes) {
 function packSingleLaneX(nodes, artboard) {
   const ordered = [...nodes].sort((left, right) => compareStage(left, right) || compareNode(left, right));
   const horizontalMargin = 50;
-  const contentWidth = ordered.reduce((sum, node) => sum + node.w, 0);
-  const availableGapWidth = artboard.width - horizontalMargin * 2 - contentWidth;
-  const gap = ordered.length > 1
-    ? Math.max(30, Math.floor(availableGapWidth / (ordered.length - 1)))
-    : 0;
-  const occupiedWidth = contentWidth + gap * Math.max(0, ordered.length - 1);
-  let cursor = artboard.x + Math.max(horizontalMargin, Math.floor((artboard.width - occupiedWidth) / 2));
+  const minimumGap = 30;
+  let cursor = artboard.x + horizontalMargin + visualLeftOutset(ordered[0]);
   const positions = new Map();
-  for (const node of ordered) {
+  for (let index = 0; index < ordered.length; index += 1) {
+    const node = ordered[index];
     positions.set(node.id, Math.round(cursor));
-    cursor += node.w + gap;
+    cursor += compactVisualWidth(node) + visualRightOutset(node);
+    const next = ordered[index + 1];
+    if (next) cursor += publicationGapAfter(node, next, minimumGap) + visualLeftOutset(next);
   }
   return positions;
+}
+
+function singleLaneFootprintWidth(nodes, minimumGap) {
+  if (nodes.length === 0) return 0;
+  let width = visualLeftOutset(nodes[0]);
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    width += compactVisualWidth(node) + visualRightOutset(node);
+    const next = nodes[index + 1];
+    if (next) width += publicationGapAfter(node, next, minimumGap) + visualLeftOutset(next);
+  }
+  return width;
+}
+
+function publicationGapAfter(previous, next, fallbackGap) {
+  const role = String(next.visualRole || next.family || "").toLowerCase();
+  if (role === "pool-downsample") return 12;
+  if (role === "feature-map-stage") return 96;
+  if (role === "vectorize") return 48;
+  if (role === "neuron-layer") return 96;
+  if (role === "output-distribution") return 55;
+  return fallbackGap;
+}
+
+function visualEnvelopeFor(node) {
+  const width = compactVisualWidth(node);
+  switch (node.visualRole) {
+    case "input-tensor":
+      return { visualLeftOutset: Math.round(width * 0.24), visualRightOutset: Math.round(width * 0.22) };
+    case "feature-map-stage":
+      return { visualLeftOutset: 0, visualRightOutset: Math.max(Math.round(width * 0.16), Math.round(node.h * 0.38)) };
+    case "pool-downsample":
+      return { visualLeftOutset: 0, visualRightOutset: Math.max(Math.round(width * 0.20), Math.round(node.h * 0.38)) };
+    case "output-distribution":
+      return { visualLeftOutset: 0, visualRightOutset: Math.round(width * 0.30) };
+    default:
+      return { visualLeftOutset: 0, visualRightOutset: 0 };
+  }
+}
+
+function visualLeftOutset(node) {
+  return Math.max(0, Number(node.geometryData?.visualLeftOutset) || 0);
+}
+
+function visualRightOutset(node) {
+  return Math.max(0, Number(node.geometryData?.visualRightOutset) || 0);
 }
 
 function grammar(id, reason, confidence) {
@@ -150,7 +259,7 @@ function grammar(id, reason, confidence) {
 function normalizeNode(node = {}, index) {
   const family = String(node.family || node.type || "custom").toLowerCase();
   const [defaultW, defaultH] = FAMILY_SIZE[family] || FAMILY_SIZE.default;
-  return {
+  const normalized = {
     ...node,
     id: String(node.id || `figure-node-${index + 1}`),
     family,
@@ -165,6 +274,7 @@ function normalizeNode(node = {}, index) {
     evidence: Array.isArray(node.evidence) ? node.evidence.map((item) => ({ ...item })) : [],
     semanticRole: String(node.semanticRole || semanticRole(family)),
   };
+  return compileSemanticVisualNode(normalized);
 }
 
 function normalizeEdge(edge = {}, index) {
@@ -198,7 +308,7 @@ function stageOrder(nodes) {
 
 function stageLabel(stage, nodes) {
   const node = nodes.find((item) => String(item.stage) === stage);
-  return node?.stageLabel || node?.label || stage;
+  return node?.stageLabel || node?.figureLabel || node?.label || stage;
 }
 
 function compareNode(left, right) {
@@ -206,12 +316,12 @@ function compareNode(left, right) {
 }
 
 function representationFor(node) {
-  if (node.family === "output") return "softmax-prism";
-  if (node.family === "input" || node.family === "conv" || node.family === "volume") return "volume";
-  if (node.family === "pool") return "pool-prism";
+  if (node.visualRole === "output-distribution" || node.family === "output") return "softmax-prism";
+  if (node.visualRole === "input-tensor" || node.visualRole === "feature-map-stage" || node.family === "volume") return "volume";
+  if (node.visualRole === "pool-downsample" || node.family === "pool") return "pool-prism";
   if (node.family === "merge") return "operator-symbol";
-  if (node.family === "flatten") return "flatten-ribbon";
-  if (node.family === "dense") return "classifier-prism";
+  if (node.visualRole === "vectorize" || node.family === "flatten") return "flatten-ribbon";
+  if (node.visualRole === "neuron-layer" || node.family === "dense") return "classifier-prism";
   if (["attention", "recurrent", "graph", "custom"].includes(node.family)) return "compound";
   return "operator";
 }
@@ -272,8 +382,11 @@ function condenseLinearConvRuns(nodes, edges) {
       shape: last.shape || first.shape,
       order: first.order,
       stage: first.stage,
-      w: Math.max(164, 34 + run.length * 58),
-      h: Math.max(220, first.h),
+      // Spatial stages are intentionally tall and narrow. The repeated
+      // operators remain available in internalGraph/repeatCount; their
+      // horizontal footprint must not turn a feature-map volume into a card.
+      w: Math.max(104, 26 + run.length * 36),
+      h: Math.max(96, first.h),
       repeatCount: run.length,
       layers: run.length,
       renderInternalGraph: false,
