@@ -21,7 +21,9 @@ export function buildVisioRenderPlan(layout = {}, options = {}) {
       renderId,
       shapeKind: node.representation || node.family || "operator",
     }));
-    const innerNodes = Array.isArray(node.inner?.nodes) ? node.inner.nodes : [];
+    const innerNodes = node.renderInternalGraph === false
+      ? []
+      : Array.isArray(node.inner?.nodes) ? node.inner.nodes : [];
     for (const child of innerNodes) {
       const innerId = `inner::${node.id}::${child.id}`;
       innerShapeIds.set(`${node.id}::${child.id}`, innerId);
@@ -56,6 +58,8 @@ export function buildVisioRenderPlan(layout = {}, options = {}) {
       renderId,
       sourceNodeId: edge.source,
       targetNodeId: edge.target,
+      sourceShapeId: `outer::${edge.source}`,
+      targetShapeId: `outer::${edge.target}`,
       evidenceCount: Array.isArray(edge.evidence) ? edge.evidence.length : 0,
     });
   }
@@ -80,6 +84,8 @@ export function buildVisioRenderPlan(layout = {}, options = {}) {
         renderId,
         sourceNodeId: node.id,
         targetNodeId: node.id,
+        sourceShapeId: source,
+        targetShapeId: target,
         evidenceCount: Array.isArray(edge.evidence) ? edge.evidence.length : 0,
       });
     }
@@ -91,9 +97,12 @@ export function buildVisioRenderPlan(layout = {}, options = {}) {
     pageName,
     createDocument: false,
     preserveExisting: true,
-    replaceScope: "agent-owned",
+    replaceScope: String(options.replaceLegacyPrefix || "").trim() ? "agent-owned+legacy-prefix" : "agent-owned",
+    replaceLegacyPrefix: String(options.replaceLegacyPrefix || "").trim() || undefined,
+    openMode: String(options.openMode || "attach"),
     renderId,
-    unitScale: Number.isFinite(options.unitScale) ? options.unitScale : 0.0035,
+    unitScale: Number.isFinite(options.unitScale) ? options.unitScale : 0.0065,
+    artboard: layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 },
     grammarId,
     figure: layout.figure || {},
     shapes,
@@ -136,9 +145,15 @@ export function validateVisioReadback(plan = {}, readback = {}) {
   const actualEdgeIds = [...new Set((readback.edgeIds || []).map(String))].sort();
   const actualEdgeSet = new Set(actualEdgeIds);
   const missingEdgeIds = expectedEdgeIds.filter((id) => !actualEdgeSet.has(id));
+  const glueReported = Array.isArray(readback.gluedBeginEdgeIds) || Array.isArray(readback.gluedEndEdgeIds);
+  const gluedBegin = new Set((readback.gluedBeginEdgeIds || []).map(String));
+  const gluedEnd = new Set((readback.gluedEndEdgeIds || []).map(String));
+  const missingGluedBeginEdgeIds = glueReported ? expectedEdgeIds.filter((id) => !gluedBegin.has(id)) : [];
+  const missingGluedEndEdgeIds = glueReported ? expectedEdgeIds.filter((id) => !gluedEnd.has(id)) : [];
   const renderIdMatches = String(readback.renderId || "") === String(plan.renderId || "");
   return {
-    ok: renderIdMatches && missingSourceNodeIds.length === 0 && missingEdgeIds.length === 0,
+    ok: renderIdMatches && missingSourceNodeIds.length === 0 && missingEdgeIds.length === 0
+      && missingGluedBeginEdgeIds.length === 0 && missingGluedEndEdgeIds.length === 0,
     renderIdMatches,
     expectedSourceNodeIds: expected,
     actualSourceNodeIds: actual,
@@ -146,6 +161,9 @@ export function validateVisioReadback(plan = {}, readback = {}) {
     expectedEdgeIds,
     actualEdgeIds,
     missingEdgeIds,
+    connectivityValidated: glueReported,
+    missingGluedBeginEdgeIds,
+    missingGluedEndEdgeIds,
   };
 }
 

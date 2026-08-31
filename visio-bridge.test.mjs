@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   buildVisioPowerShellCommand,
@@ -81,4 +82,84 @@ test("validateVisioReadback also requires every planned connector edge to be pre
   });
   assert.equal(report.ok, false);
   assert.deepEqual(report.missingEdgeIds, ["outer-edge::edge-1"]);
+});
+
+test("Visio bridge uses repeat geometry, pooling prisms, and glued connector endpoints", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /repeatCount/i);
+  assert.match(script, /pool-prism/i);
+  assert.match(script, /GlueTo/i);
+});
+
+test("Visio plan keeps semantic connector shape references and classifier primitives", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "tensor-flow" },
+    nodes: [
+      { id: "a", family: "conv", representation: "volume", x: 0, y: 0, w: 120, h: 160, repeatCount: 2 },
+      { id: "b", family: "dense", representation: "classifier-prism", x: 220, y: 0, w: 100, h: 160 },
+    ],
+    edges: [{ id: "ab", source: "a", target: "b", route: { points: [{ x: 120, y: 80 }, { x: 220, y: 80 }] } }],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+
+  assert.equal(plan.shapes[1].shapeKind, "classifier-prism");
+  assert.equal(plan.connectors[0].sourceShapeId, "outer::a");
+  assert.equal(plan.connectors[0].targetShapeId, "outer::b");
+});
+
+test("legacy cleanup is opt-in and limited to an explicit shape-name prefix", () => {
+  const plan = buildVisioRenderPlan(layout, {
+    documentPath: "C:\\project\\existing.vsdx",
+    replaceLegacyPrefix: "synapse.",
+  });
+  assert.equal(plan.replaceLegacyPrefix, "synapse.");
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /replaceLegacyPrefix/i);
+  assert.match(script, /-like/);
+});
+
+test("Visio plan and bridge allocate a readable publication page", () => {
+  const plan = buildVisioRenderPlan(layout, { documentPath: "C:\\project\\existing.vsdx" });
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.ok(plan.unitScale >= 0.006);
+  assert.match(script, /PageWidth/i);
+  assert.match(script, /Draw-FigureHeader/i);
+  assert.match(script, /figure-title/i);
+});
+
+test("Visio bridge refreshes the existing document window after an in-place sync", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /windowActivated/);
+  assert.match(script, /ViewFit/i);
+  assert.match(script, /Visible\s*=\s*\$true/i);
+  assert.match(script, /Activate\(\)\s*\|\s*Out-Null/);
+});
+
+test("Visio page height follows a compact publication artboard instead of a fixed letter page", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /pageHeight\s*=\s*\[Math\]::Max\(5\.5/);
+});
+
+test("Visio migration can explicitly open the existing document in an editable fresh session", () => {
+  const plan = buildVisioRenderPlan(layout, {
+    documentPath: "C:\\project\\existing.vsdx",
+    openMode: "fresh",
+  });
+  assert.equal(plan.openMode, "fresh");
+});
+
+test("validateVisioReadback rejects reported connectors without glued endpoints", () => {
+  const plan = buildVisioRenderPlan({
+    ...layout,
+    edges: [{ id: "edge-1", source: "n1", target: "n1", route: { points: [{ x: 1, y: 1 }, { x: 2, y: 2 }] } }],
+  }, { documentPath: "C:\\project\\existing.vsdx", renderId: "run-glue" });
+  const report = validateVisioReadback(plan, {
+    renderId: "run-glue",
+    sourceNodeIds: ["n1"],
+    edgeIds: ["outer-edge::edge-1"],
+    gluedBeginEdgeIds: [],
+    gluedEndEdgeIds: [],
+  });
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.missingGluedBeginEdgeIds, ["outer-edge::edge-1"]);
+  assert.deepEqual(report.missingGluedEndEdgeIds, ["outer-edge::edge-1"]);
 });

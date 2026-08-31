@@ -63,6 +63,12 @@ Supported patterns include:
 
 The browser parser now emits a framework-neutral Universal Neural Network IR before projecting to the editable canvas. Known operations are mapped to semantic primitives; custom PyTorch/Keras modules remain explicit unresolved compound operators with source evidence, ports, and confidence instead of silently becoming generic blocks.
 
+When a PyTorch file contains the source definition of a custom module, the
+Agent now extracts the visible submodule assignments and forward-call order
+into `attributes.internalGraph`. The browser and Visio paths can therefore
+draw the evidenced `Conv / Norm / Attention / Merge` internals of that module.
+If the class body is not available, the module remains explicitly unresolved.
+
 The parser is still static and is not a full Python runtime or `torch.fx`/ONNX executor. Conditional control flow, loops, data-dependent routing, and opaque third-party operators are preserved as low-confidence unresolved compounds with source evidence and IR diagnostics; runtime tracing or user confirmation is required for exact expansion. This is intentional: the Agent must surface uncertainty rather than fabricate a topology.
 
 The stable generation boundary is:

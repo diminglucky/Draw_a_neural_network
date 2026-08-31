@@ -46,10 +46,16 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   const grammar = selectFigureGrammar(ir);
   const figure = normalizeFigure(ir.figure);
   const artboard = normalizeArtboard(options.artboard);
-  const sourceNodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index)) : [];
-  const sourceEdges = Array.isArray(ir.edges) ? ir.edges.map((edge, index) => normalizeEdge(edge, index)) : [];
+  const normalizedNodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index)) : [];
+  const normalizedEdges = Array.isArray(ir.edges) ? ir.edges.map((edge, index) => normalizeEdge(edge, index)) : [];
+  const condensed = condenseLinearConvRuns(normalizedNodes, normalizedEdges);
+  const sourceNodes = condensed.nodes;
+  const sourceEdges = condensed.edges;
+  const singleLane = canUseSingleLaneLayout(sourceNodes, sourceEdges);
+  const fittedArtboard = singleLane ? fitSingleLaneArtboard(artboard, sourceNodes) : artboard;
   const stages = stageOrder(sourceNodes);
-  const stageGap = stages.length > 1 ? (artboard.width - 260) / (stages.length - 1) : 0;
+  const stageGap = stages.length > 1 ? (fittedArtboard.width - 260) / (stages.length - 1) : 0;
+  const singleLaneX = singleLane ? packSingleLaneX(sourceNodes, fittedArtboard) : new Map();
   const nodes = [];
 
   stages.forEach((stage, stageIndex) => {
@@ -58,10 +64,10 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
       .sort(compareNode);
     const totalHeight = members.reduce((sum, node) => sum + node.h, 0);
     const gap = members.length > 1 ? Math.max(26, Math.min(54, Math.floor((artboard.height - 120 - totalHeight) / (members.length - 1)))) : 0;
-    let cursor = artboard.y + Math.max(60, Math.floor((artboard.height - totalHeight - gap * Math.max(0, members.length - 1)) / 2));
+    let cursor = fittedArtboard.y + Math.max(60, Math.floor((fittedArtboard.height - totalHeight - gap * Math.max(0, members.length - 1)) / 2));
     members.forEach((node) => {
-      const rawX = Math.round(artboard.x + 130 + stageGap * stageIndex - node.w / 2);
-      const x = Math.max(artboard.x, Math.min(artboard.x + artboard.width - node.w, rawX));
+      const rawX = singleLaneX.get(node.id) ?? Math.round(fittedArtboard.x + 130 + stageGap * stageIndex - node.w / 2);
+      const x = Math.max(fittedArtboard.x, Math.min(fittedArtboard.x + fittedArtboard.width - node.w, rawX));
       const y = Math.round(cursor);
       const positioned = {
         ...node,
@@ -78,17 +84,63 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   });
 
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const edges = sourceEdges.map((edge, index) => routeEdge(edge, nodeMap, index, artboard));
-  const validation = validateFigureLayout(nodes, edges, artboard);
+  const edges = sourceEdges.map((edge, index) => routeEdge(edge, nodeMap, index, fittedArtboard));
+  const validation = validateFigureLayout(nodes, edges, fittedArtboard);
   return {
     version: PLAN_VERSION,
     grammar,
     figure: { ...figure, stages: stages.map((stage) => stageLabel(stage, sourceNodes)) },
-    artboard,
+    artboard: fittedArtboard,
     nodes,
     edges,
     validation,
   };
+}
+
+function canUseSingleLaneLayout(nodes, edges) {
+  if (nodes.length < 2 || edges.length !== nodes.length - 1) return false;
+  const ordered = [...nodes].sort((left, right) => compareStage(left, right) || compareNode(left, right));
+  if (new Set(ordered.map((node) => String(node.stage))).size !== ordered.length) return false;
+  return edges.every((edge, index) => (
+    !/skip|residual|shortcut/i.test(String(edge.type || ""))
+      && edge.source === ordered[index].id
+      && edge.target === ordered[index + 1].id
+  ));
+}
+
+function fitSingleLaneArtboard(artboard, nodes) {
+  const minimumGap = 30;
+  const horizontalMargin = 50;
+  const requiredWidth = horizontalMargin * 2
+    + nodes.reduce((sum, node) => sum + node.w, 0)
+    + minimumGap * Math.max(0, nodes.length - 1);
+  const maximumNodeHeight = nodes.reduce((maximum, node) => Math.max(maximum, node.h), 0);
+  const compactHeight = Math.max(640, maximumNodeHeight + 380);
+  return {
+    ...artboard,
+    x: artboard.x,
+    y: compactHeight < artboard.height ? 80 : artboard.y,
+    width: Math.max(artboard.width, requiredWidth),
+    height: Math.min(artboard.height, compactHeight),
+  };
+}
+
+function packSingleLaneX(nodes, artboard) {
+  const ordered = [...nodes].sort((left, right) => compareStage(left, right) || compareNode(left, right));
+  const horizontalMargin = 50;
+  const contentWidth = ordered.reduce((sum, node) => sum + node.w, 0);
+  const availableGapWidth = artboard.width - horizontalMargin * 2 - contentWidth;
+  const gap = ordered.length > 1
+    ? Math.max(30, Math.floor(availableGapWidth / (ordered.length - 1)))
+    : 0;
+  const occupiedWidth = contentWidth + gap * Math.max(0, ordered.length - 1);
+  let cursor = artboard.x + Math.max(horizontalMargin, Math.floor((artboard.width - occupiedWidth) / 2));
+  const positions = new Map();
+  for (const node of ordered) {
+    positions.set(node.id, Math.round(cursor));
+    cursor += node.w + gap;
+  }
+  return positions;
 }
 
 function grammar(id, reason, confidence) {
@@ -154,10 +206,107 @@ function compareNode(left, right) {
 }
 
 function representationFor(node) {
-  if (node.family === "input" || node.family === "output" || node.family === "conv" || node.family === "volume") return "volume";
-  if (node.family === "pool" || node.family === "merge") return "operator-symbol";
+  if (node.family === "output") return "softmax-prism";
+  if (node.family === "input" || node.family === "conv" || node.family === "volume") return "volume";
+  if (node.family === "pool") return "pool-prism";
+  if (node.family === "merge") return "operator-symbol";
+  if (node.family === "flatten") return "flatten-ribbon";
+  if (node.family === "dense") return "classifier-prism";
   if (["attention", "recurrent", "graph", "custom"].includes(node.family)) return "compound";
   return "operator";
+}
+
+function condenseLinearConvRuns(nodes, edges) {
+  const ordered = [...nodes].sort((left, right) => (
+    compareStage(left, right) || compareNode(left, right)
+  ));
+  const outgoing = new Map();
+  const incoming = new Map();
+  edges.forEach((edge) => {
+    if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
+    if (!incoming.has(edge.target)) incoming.set(edge.target, []);
+    outgoing.get(edge.source).push(edge);
+    incoming.get(edge.target).push(edge);
+  });
+
+  const replacement = new Map();
+  const condensedNodes = [];
+  for (let index = 0; index < ordered.length;) {
+    const first = ordered[index];
+    const run = [first];
+    while (index + run.length < ordered.length) {
+      const previous = run[run.length - 1];
+      const next = ordered[index + run.length];
+      if (!isConvFamily(previous.family) || !isConvFamily(next.family) || previous.family !== next.family) break;
+      const link = outgoing.get(previous.id) || [];
+      const targetIncoming = incoming.get(next.id) || [];
+      if (link.length !== 1 || targetIncoming.length !== 1 || link[0].target !== next.id) break;
+      run.push(next);
+    }
+
+    if (run.length < 2) {
+      condensedNodes.push(first);
+      index += 1;
+      continue;
+    }
+
+    const last = run[run.length - 1];
+    const groupId = `stage-${run[0].id}-${last.id}`;
+    const internalEdges = [];
+    for (let childIndex = 0; childIndex < run.length - 1; childIndex += 1) {
+      const childEdge = (outgoing.get(run[childIndex].id) || []).find((edge) => edge.target === run[childIndex + 1].id);
+      if (childEdge) internalEdges.push({ ...childEdge });
+    }
+    const children = run.map((child, childIndex) => ({
+      ...child,
+      x: 20 + childIndex * (Math.max(64, Math.min(92, child.w)) + 14),
+      y: 74,
+      w: Math.max(64, Math.min(92, child.w)),
+      h: Math.max(96, Math.min(156, child.h)),
+    }));
+    const grouped = {
+      ...first,
+      id: groupId,
+      label: `${first.family === "volume" ? "Volume" : "Conv"} ×${run.length}`,
+      subtitle: last.subtitle || shapeLabel(last.shape),
+      shape: last.shape || first.shape,
+      order: first.order,
+      stage: first.stage,
+      w: Math.max(164, 34 + run.length * 58),
+      h: Math.max(220, first.h),
+      repeatCount: run.length,
+      layers: run.length,
+      renderInternalGraph: false,
+      attributes: {
+        ...first.attributes,
+        internalGraph: { nodes: children, edges: internalEdges },
+        groupedFrom: run.map((child) => child.id),
+      },
+    };
+    run.forEach((child) => replacement.set(child.id, groupId));
+    condensedNodes.push(grouped);
+    index += run.length;
+  }
+
+  const condensedEdges = edges
+    .map((edge) => ({
+      ...edge,
+      source: replacement.get(edge.source) || edge.source,
+      target: replacement.get(edge.target) || edge.target,
+    }))
+    .filter((edge) => edge.source !== edge.target);
+  return { nodes: condensedNodes, edges: condensedEdges };
+}
+
+function isConvFamily(family) {
+  return family === "conv" || family === "volume";
+}
+
+function compareStage(left, right) {
+  const a = Number(left.stage);
+  const b = Number(right.stage);
+  if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a - b;
+  return String(left.stage).localeCompare(String(right.stage));
 }
 
 function layoutInnerGraph(node) {

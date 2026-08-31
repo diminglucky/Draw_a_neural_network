@@ -45,7 +45,7 @@ function analyzeSourceInput(input) {
 
   const document = diagramFromCode(input.source, input.framework || "auto");
   const genericTopology = extractGenericSourceTopology(input.source, input.framework || "auto");
-  const selectedIR = shouldPreferGenericTopology(genericTopology) ? genericTopology : document.ir;
+  const selectedIR = shouldPreferGenericTopology(genericTopology, document) ? genericTopology : document.ir;
   return finalizeResult(selectedIR, {
     source: document,
     baseDiagnostics: [
@@ -56,12 +56,27 @@ function analyzeSourceInput(input) {
   });
 }
 
-function shouldPreferGenericTopology(topology) {
+function shouldPreferGenericTopology(topology, document = {}) {
   if (!topology || !Array.isArray(topology.nodes) || !topology.nodes.length) return false;
-  const operations = topology.nodes.filter((node) => !["input", "output"].includes(node.family));
+  const operations = topology.nodes.filter((node) => (
+    !["input", "output"].includes(node.family) && !isSourceExampleNode(node)
+  ));
+  const genericCustom = operations.filter((node) => node.family === "custom");
+  const documentOperations = Array.isArray(document.ir?.nodes)
+    ? document.ir.nodes.filter((node) => !["input", "output"].includes(node.family))
+    : [];
+  const containerOnly = genericCustom.length > 0
+    && genericCustom.every((node) => /^(Sequential|ModuleList|ModuleDict)$/i.test(String(node.op || node.label || "")));
+  if (containerOnly && documentOperations.length > operations.length) return false;
   return operations.some((node) => node.family === "custom")
     || operations.some((node) => node.ports?.inputs?.length > 1 || node.ports?.outputs?.length > 1)
     || topology.edges.length > Math.max(0, topology.nodes.length - 1);
+}
+
+function isSourceExampleNode(node = {}) {
+  return /^(?:randn|zeros|ones|empty|full|tensor|arange|linspace|rand|randint)$/i.test(
+    String(node.op || node.label || "").trim()
+  );
 }
 
 function analyzeIRInput(input) {

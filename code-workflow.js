@@ -297,6 +297,7 @@ function assignedVariableFromLine(line) {
 function collectPyTorchDefinitions(source) {
   const definitions = new Map();
   const constructorKinds = ["conv", "pool", "norm", "activation", "dense", "attention", "upsample", "flatten"];
+  const classGraphs = collectPyTorchClassGraphs(source, constructorKinds);
   const sequentialRanges = collectPyTorchSequentialDefinitions(source, definitions, constructorKinds);
   const operations = parseOperationMatches(source, "pytorch", { includeKinds: constructorKinds });
 
@@ -326,10 +327,112 @@ function collectPyTorchDefinitions(source) {
       constructor,
       label: constructor,
       note: "custom operator · structure requires review",
+      attributes: classGraphs.has(constructor)
+        ? { internalGraph: classGraphs.get(constructor) }
+        : undefined,
     }]);
   }
 
   return definitions;
+}
+
+function collectPyTorchClassGraphs(source, constructorKinds) {
+  const classBlocks = collectPyTorchClassBlocks(source);
+  const classNames = new Set(classBlocks.map((block) => block.name));
+  const graphs = new Map();
+
+  classBlocks.forEach((block) => {
+    const nodes = new Map();
+    const operations = parseOperationMatches(block.content, "pytorch", {
+      includeKinds: constructorKinds,
+      baseIndex: block.start,
+      fullSource: source,
+    });
+
+    operations.forEach((operation) => {
+      const line = sourceLineAt(source, operation.index);
+      const assignment = line.match(/self\.([A-Za-z_]\w*)\s*=/)?.[1];
+      if (!assignment || nodes.has(assignment)) return;
+      nodes.set(assignment, internalGraphNode(assignment, operation));
+    });
+
+    const customPattern = /self\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\(([^)]*)\)/g;
+    let customMatch;
+    while ((customMatch = customPattern.exec(block.content))) {
+      const [, field, constructor, args] = customMatch;
+      if (nodes.has(field) || isKnownConstructor(constructor) || !classNames.has(constructor)) continue;
+      nodes.set(field, {
+        id: field,
+        op: constructor,
+        family: "custom",
+        label: constructor,
+        subtitle: "same-source custom module",
+        sourceLine: lineNumberAt(source, block.start + customMatch.index),
+        attributes: graphs.has(constructor) ? { internalGraph: graphs.get(constructor) } : undefined,
+        args,
+      });
+    }
+
+    const orderedNodes = [...nodes.values()];
+    const calls = extractMethodLines(block.content, "forward")
+      .flatMap(({ text }) => [...text.matchAll(/self\.([A-Za-z_]\w*)\s*\(/g)].map((match) => match[1]))
+      .filter((field) => nodes.has(field));
+    const orderedCalls = calls.filter((field, index) => index === 0 || field !== calls[index - 1]);
+    const edgeFields = orderedCalls.length > 1 ? orderedCalls : orderedNodes.map((node) => node.id);
+    const edges = edgeFields.slice(1).map((target, index) => ({
+      id: `${block.name}-inner-${edgeFields[index]}-${target}`,
+      source: edgeFields[index],
+      target,
+      type: "signal",
+      label: "signal",
+    }));
+
+    if (orderedNodes.length) graphs.set(block.name, { nodes: orderedNodes, edges });
+  });
+
+  return graphs;
+}
+
+function collectPyTorchClassBlocks(source) {
+  const declarations = [...source.matchAll(/^([ \t]*)class\s+([A-Za-z_]\w*)\b[^\n]*:\s*$/gm)];
+  return declarations.map((declaration, index) => {
+    const indent = indentationWidth(declaration[1]);
+    const bodyStart = source.indexOf("\n", declaration.index) + 1;
+    let bodyEnd = source.length;
+    for (let next = index + 1; next < declarations.length; next += 1) {
+      if (indentationWidth(declarations[next][1]) <= indent) {
+        bodyEnd = declarations[next].index;
+        break;
+      }
+    }
+    return {
+      name: declaration[2],
+      start: bodyStart,
+      content: source.slice(bodyStart, bodyEnd),
+    };
+  });
+}
+
+function internalGraphNode(field, operation) {
+  return {
+    id: field,
+    op: operation.kind,
+    family: internalGraphFamily(operation.kind),
+    label: operation.label || operation.name || operation.kind,
+    subtitle: operation.note || "",
+    sourceLine: operation.line,
+  };
+}
+
+function internalGraphFamily(kind) {
+  if (kind === "upsample") return "conv";
+  if (kind === "concat" || kind === "add") return "merge";
+  if (["conv", "pool", "norm", "activation", "dense", "attention", "flatten"].includes(kind)) return kind;
+  return "custom";
+}
+
+function isKnownConstructor(name) {
+  return /^(?:Conv|MaxPool|AvgPool|Adaptive|BatchNorm|LayerNorm|GroupNorm|Linear|Flatten|ReLU|GELU|SiLU|Sigmoid|Tanh|Softmax|MultiheadAttention|Upsample|ConvTranspose)/i.test(name);
 }
 
 function collectPyTorchSequentialDefinitions(source, definitions, constructorKinds) {
@@ -436,7 +539,14 @@ function mergeMetaFromLine(line, kind) {
 }
 
 function extractForwardLines(source) {
-  const match = /^([ \t]*)def\s+forward\s*\([^)]*\)\s*:/m.exec(source);
+  return extractMethodLines(source, "forward");
+}
+
+function extractMethodLines(source, methodName) {
+  const pattern = new RegExp(`^([ \\t]*)def\\s+${methodName}\\s*\\([^)]*\\)\\s*:`, "gm");
+  const matches = [...source.matchAll(pattern)];
+  const match = matches.findLast((candidate) => /net|model|network/i.test(classNameBefore(source, candidate.index)))
+    || matches[matches.length - 1];
   if (!match) return [];
   const defIndent = indentationWidth(match[1]);
   const firstLineEnd = source.indexOf("\n", match.index);
@@ -457,6 +567,11 @@ function extractForwardLines(source) {
   }
 
   return lines;
+}
+
+function classNameBefore(source, index) {
+  const matches = [...source.slice(0, index).matchAll(/^([ \t]*)class\s+([A-Za-z_]\w*)\b[^\n]*:\s*$/gm)];
+  return matches[matches.length - 1]?.[2] || "";
 }
 
 function operationFromMatch(kind, match, source, framework, baseIndex = 0) {
@@ -600,7 +715,10 @@ function layerToNode(layer, stage, x, centerY, is3D) {
     stage,
     note: noteForLayer(layer),
     sourceLine: layer.line,
-    op: layer.kind,
+    op: Object.prototype.hasOwnProperty.call(layer, "constructor") && layer.constructor
+      ? layer.constructor
+      : layer.kind,
+    attributes: layer.attributes,
   };
 
   if (layer.kind === "conv") {
@@ -876,6 +994,7 @@ function enrichUpsample(base) {
 }
 
 function labelForLayer(layer) {
+  if (layer.kind === "custom") return layer.constructor || layer.label || layer.name || "Custom operator";
   if (layer.kind === "conv") {
     const channels = layer.outChannels ? ` ${layer.outChannels}` : "";
     return layer.dim === 3 ? `3D Conv${channels}` : `Conv${channels}`;

@@ -25,6 +25,63 @@ class Net(nn.Module):
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-operator"));
 });
 
+test("agent pipeline keeps specific Sequential layer evidence instead of replacing it with a container", () => {
+  const result = analyzeArchitectureInput({
+    kind: "source",
+    framework: "pytorch",
+    source: `
+class VGG16(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, 3), nn.ReLU(),
+            nn.Conv2d(64, 64, 3), nn.MaxPool2d(2, 2)
+        )
+        self.classifier = nn.Sequential(nn.Linear(64, 10))
+    def forward(self, x):
+        x = self.features(x)
+        return self.classifier(x)
+`,
+  });
+
+  assert.equal(result.status, "ready_for_preview");
+  assert.equal(result.ir.nodes.some((node) => node.op === "Sequential"), false);
+  assert.ok(result.ir.nodes.some((node) => node.family === "conv"));
+  assert.ok(result.ir.nodes.some((node) => node.family === "pool"));
+  assert.ok(result.ir.nodes.some((node) => node.family === "dense"));
+});
+
+test("agent pipeline does not let an example input call override a specific PyTorch graph", () => {
+  const result = analyzeArchitectureInput({
+    kind: "source",
+    framework: "pytorch",
+    source: `
+class VGG16(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, 3), nn.MaxPool2d(2, 2),
+            nn.Conv2d(64, 128, 3), nn.MaxPool2d(2, 2)
+        )
+        self.classifier = nn.Sequential(nn.Linear(128, 10))
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        return self.classifier(x)
+
+example = torch.randn(1, 3, 224, 224)
+`,
+  });
+
+  assert.equal(result.status, "ready_for_preview");
+  assert.equal(result.ir.nodes.some((node) => node.op === "Sequential"), false);
+  assert.equal(result.ir.nodes.some((node) => node.op === "randn"), false);
+  assert.ok(result.ir.nodes.some((node) => node.family === "conv"));
+  assert.ok(result.ir.nodes.some((node) => node.family === "pool"));
+  assert.ok(result.ir.nodes.some((node) => node.family === "dense"));
+  assert.equal(result.ir.nodes.find((node) => node.family === "input").subtitle, "224 x 224 x 3");
+});
+
 test("agent pipeline validates IR input without requiring a model template", () => {
   const result = analyzeArchitectureInput({
     kind: "ir",
