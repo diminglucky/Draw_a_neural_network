@@ -96,3 +96,27 @@ class DynamicNet(nn.Module):
   assert.ok(result.diagnostics.some((item) => item.kind === "dynamic-control-flow"));
   assert.equal(result.status, "needs_confirmation");
 });
+
+test("generic source extraction preserves recurrent state ports and LSTM evidence", () => {
+  const result = analyzeArchitectureInput({
+    kind: "source",
+    framework: "pytorch",
+    source: `
+class LSTMNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cell = nn.LSTMCell(128, 64)
+    def forward(self, x, state):
+        h, c = self.cell(x, state)
+        return h, c
+`,
+  });
+
+  assert.equal(result.status, "ready_for_preview");
+  const recurrent = result.ir.nodes.find((node) => node.family === "recurrent");
+  assert.ok(recurrent);
+  assert.deepEqual(recurrent.ports.inputs, ["x", "state"]);
+  assert.deepEqual(recurrent.ports.outputs, ["h", "c"]);
+  assert.ok(recurrent.evidence.some((item) => item.kind === "source-call" && item.operation === "LSTMCell"));
+  assert.equal(result.figurePlan.nodes.find((node) => node.sourceNodeId === recurrent.id).visualRole, "recurrent-state");
+});

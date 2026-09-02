@@ -165,7 +165,7 @@ export function extractGenericSourceTopology(source = "", framework = "auto") {
         constructorArgs: call.constructorArgs || "",
       },
       source: { line, expression },
-      evidence: [{ kind: "source-call", line, expression }],
+      evidence: [{ kind: "source-call", line, expression, operation: op }],
       confidence: family === "custom" ? 0.72 : 0.88,
     };
     nodes.push(node);
