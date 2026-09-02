@@ -4,6 +4,7 @@ import {
   createAgentRun,
   continueAgentRun,
   diagnoseReadback,
+  persistAgentRun,
   resumeAgentRun,
   runAgentPipeline,
 } from "./agent-orchestrator.mjs";
@@ -70,6 +71,34 @@ test("resumes after confirmation from the latest valid snapshot without rerunnin
   assert.deepEqual(calls, ["inspect", "extract", "normalize", "plan"]);
   assert.deepEqual(resumed.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract", "normalize", "plan"]);
   assert.equal(resumed.ir.nodes[0].id, "confirmed");
+});
+
+test("rejecting confirmation does not continue the pipeline", async () => {
+  const run = createAgentRun(input, dependencies({
+    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
+    plan: () => { throw new Error("plan must not run after rejection"); },
+  }));
+  const paused = await runAgentPipeline(run);
+  const rejected = resumeAgentRun(paused, { type: "confirm", value: { accepted: false } });
+
+  assert.equal(rejected.status, "confirmation-rejected");
+  assert.equal(rejected.stage, "extract");
+  assert.equal(rejected.figurePlan, undefined);
+});
+
+test("external vision waits without normalizing or planning a placeholder", async () => {
+  const run = createAgentRun({ kind: "image", images: [{ name: "paper.png" }] }, {
+    inspect: (value) => value,
+    extract: () => ({ status: "needs_external_vision", diagnostics: [{ kind: "vision-analyzer-required" }] }),
+    normalize: () => { throw new Error("normalize must not run while vision is pending"); },
+    plan: () => { throw new Error("plan must not run while vision is pending"); },
+  });
+  const result = await runAgentPipeline(run);
+
+  assert.equal(result.status, "needs_external_vision");
+  assert.equal(result.stage, "extract");
+  assert.equal(result.figurePlan, undefined);
+  assert.deepEqual(result.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract"]);
 });
 
 test("stops with structured diagnostics when extraction or normalization fails", async () => {
@@ -175,6 +204,21 @@ test("diagnoses missing IDs, render ID changes, and connector glue changes", () 
   );
   assert.deepEqual(diagnostics.map((item) => item.code).sort(), ["glue-mismatch", "missing-connector-id", "missing-source-node-id", "render-id-mismatch"]);
   assert.ok(diagnostics.every((item) => item.kind === "readback-mismatch"));
+});
+
+test("persists externally supplied render and readback events", async () => {
+  const { createMemoryRunStore } = await import("./run-store.mjs");
+  const runStore = createMemoryRunStore();
+  const run = createAgentRun(input, dependencies(), { runStore });
+  const rendered = resumeAgentRun(run, { type: "render-result", value: { renderId: "r1" } });
+  await persistAgentRun(rendered);
+  const readback = resumeAgentRun(rendered, { type: "readback-result", value: { renderId: "r1", nodes: [], connectors: [] } });
+  await persistAgentRun(readback);
+  const stored = await runStore.get(run.id);
+
+  assert.equal(stored.status, "completed");
+  assert.equal(stored.stage, "readback");
+  assert.deepEqual(stored.snapshots.map((snapshot) => snapshot.stage), ["render", "readback"]);
 });
 
 test("render failures and readback mismatches use explicit statuses", async () => {

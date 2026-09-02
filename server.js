@@ -114,11 +114,16 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
     const readback = process.env.VISIO_DRY_RUN === "1"
       ? undefined
       : (stageDependencies.readback || defaultVisioReadback);
-    const run = createAgentRun(input, {
+    let run;
+    try {
+      run = createAgentRun(input, {
       ...stageDependencies,
       render: (figurePlan, current) => render(figurePlan, { ...current, visioOptions: options }),
       readback: (figurePlan, renderResult, current) => readback(figurePlan, renderResult, { ...current, visioOptions: options }),
-    }, { runStore, allowUnresolved: true });
+      }, { runStore, allowUnresolved: true });
+    } catch (error) {
+      return jsonResponse(422, { status: "invalid_input", code: "invalid-input", message: error.message });
+    }
     runs.set(run.id, run);
     const result = await runAgentPipeline(run);
     if (!result.figurePlan) {
@@ -142,6 +147,8 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
     }
     const responseStatus = result.renderResult?.status === "dry_run"
       ? "dry_run"
+      : result.renderResult?.status === "readback_failed"
+        ? "readback_failed"
       : result.status === "completed" ? "rendered" : result.status;
     const response = {
       ...nextResult(result),

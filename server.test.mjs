@@ -326,6 +326,35 @@ test("/api/render-visio executes render and readback through one Agent Run", asy
   assert.equal(payload.plan.shapes[0].shapeData.sourceNodeId, "input");
 });
 
+test("/api/render-visio reports malformed architecture input as 422", async () => {
+  const service = createAgentService();
+  const response = await service(new Request("http://agent.test/api/render-visio", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentPath: "C:\\project\\existing.vsdx" }),
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 422);
+  assert.equal(payload.status, "invalid_input");
+});
+
+test("/api/render-visio preserves a real Visio readback failure status", async () => {
+  const service = createAgentService({ dependencies: {
+    render: async () => ({ status: "readback_failed", renderId: "r1", plan: { shapes: [], connectors: [] } }),
+    readback: async () => ({ renderId: "wrong", nodes: [], connectors: [] }),
+  } });
+  const response = await service(new Request("http://agent.test/api/render-visio", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentPath: "C:\\project\\existing.vsdx", ir: { nodes: [{ id: "input", family: "input" }] } }),
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, "readback_failed");
+});
+
 async function waitForServer(child, port) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {

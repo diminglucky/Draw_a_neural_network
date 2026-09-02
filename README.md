@@ -15,7 +15,7 @@ The app is designed for people who want diagrams closer to PlotNeuralNet, NN-SVG
 - Universal publication figure planner: selects tensor-flow, residual-graph, encoder-decoder, token-attention, or generic-DAG grammar from topology evidence and preserves arbitrary internal compound graphs.
 - Native Microsoft Visio bridge: writes the Universal IR into an existing `.vsdx` through Visio COM, uses native Shapes/connectors/Shape Data, saves, and reads back the rendered node IDs.
 - Export to SVG, PNG, and JSON; import JSON to continue editing.
-- Built-in templates for CNN, ResNet, U-Net, 3D Medical U-Net, Hybrid ViT, GAN, Diffusion U-Net, and MLP.
+- Built-in templates for CNN, ResNet, U-Net, 3D Medical U-Net, Hybrid ViT, GAN, Diffusion U-Net, and MLP are retained as manual demo/fixture starting points; production Agent requests do not select topology from this registry.
 
 ## Quick Start
 
@@ -91,6 +91,15 @@ Universal IR
     -> native Shape / connector / Shape Data creation
     -> save + readback validation
 ```
+
+The production Agent service uses one resumable run for inspection, evidence
+extraction, IR normalization, Figure Plan generation, rendering, and readback.
+Confirmation resumes from the latest valid snapshot; readback diagnostics can
+invoke a bounded, reason-specific Figure Plan repair before rendering again.
+Recurrent evidence selects the `recurrent-flow` grammar and preserves state
+ports, loop routes, and time-step metadata. The default Run Store is in-memory
+and replaceable, so persistence across process restarts is an explicit
+deployment concern rather than an implicit claim.
 
 `/api/render-visio` requires `documentPath`; it never creates an implicit blank
 Visio canvas. Repeated syncs to the same document and page use a stable

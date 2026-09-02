@@ -59,6 +59,15 @@ export async function runAgentPipeline(run, options = {}) {
     } catch (error) {
       return rememberResult(await failAt(current, stage, error), runtime);
     }
+    if (stage === "extract" && current.extract?.status === "needs_external_vision") {
+      current.status = "needs_external_vision";
+      current.diagnostics = uniqueDiagnostics([
+        ...current.diagnostics,
+        ...(Array.isArray(current.extract.diagnostics) ? current.extract.diagnostics : []),
+      ]);
+      await saveRun(current, runtime.runStore);
+      return rememberResult(current, runtime);
+    }
     if (stage === "extract" && containsUnresolved(current.extract) && !current.allowUnresolved) {
       current.status = "needs-confirmation";
       current.diagnostics = uniqueDiagnostics([...current.diagnostics, {
@@ -76,8 +85,8 @@ export function resumeAgentRun(run, event = {}) {
   const runtime = runtimeFor(run);
   const next = workingRun(runtime.state || run, runtime);
   if (event.type === "confirm") {
-    next.status = "confirmed";
     next.confirmation = clone(event.value);
+    next.status = event.value?.accepted === true ? "confirmed" : "confirmation-rejected";
   } else if (event.type === "repair") {
     if (next.attempts.repair >= MAX_REPAIR_ATTEMPTS) next.status = "repair-failed";
     else {
@@ -106,6 +115,19 @@ export async function continueAgentRun(run, options = {}) {
 }
 
 export const resumeAgentPipeline = continueAgentRun;
+
+export async function persistAgentRun(run) {
+  const runtime = runtimeFor(run);
+  const next = workingRun(run, runtime);
+  const latestStage = next.stage;
+  const value = latestStage === "render" ? next.renderResult : latestStage === "readback" ? next.readback : undefined;
+  if (value !== undefined && !next.snapshots.some((snapshot) => snapshot.stage === latestStage)) {
+    next.snapshots = freezeSnapshots([...next.snapshots, { stage: latestStage, value: clone(value) }]);
+  }
+  await saveRun(next, runtime.runStore);
+  runtimeByRun.set(run, { ...runtime, state: next });
+  return resultOf(next);
+}
 
 export function diagnoseReadback(expected = {}, actual = {}) {
   const diagnostics = [];
