@@ -70,7 +70,8 @@ async function handleRenderVisio(request, response) {
 
   const figurePlan = analysis.figurePlan || analysis.canvasDocument?.figurePlan;
   const figureLayout = analysis.figureLayout || layoutUniversalFigure(analysis.ir);
-  if (!figureLayout.validation?.ok) {
+  const renderPlan = figurePlan || figureLayout;
+  if (!figureLayout.validation?.ok || (figurePlan && !figurePlan.validation?.ok)) {
     sendJson(response, 422, {
       status: "invalid_layout",
       error: "Publication figure validation failed; Visio was not modified.",
@@ -86,7 +87,7 @@ async function handleRenderVisio(request, response) {
     unitScale: body.unitScale,
     scriptPath: process.env.VISIO_BRIDGE_SCRIPT,
   };
-  const plan = buildVisioRenderPlan(figureLayout, options);
+  const plan = buildVisioRenderPlan(renderPlan, options);
   if (process.env.VISIO_DRY_RUN === "1") {
     sendJson(response, 200, {
       status: "dry_run",
@@ -99,7 +100,7 @@ async function handleRenderVisio(request, response) {
   }
 
   try {
-    const result = await renderUniversalFigureToVisio(figureLayout, options);
+    const result = await renderUniversalFigureToVisio(renderPlan, options);
     sendJson(response, 200, {
       status: "rendered",
       analysisStatus: analysis.status,
