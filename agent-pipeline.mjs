@@ -1,11 +1,13 @@
 import { diagramFromCode } from "./code-workflow.js";
 import { extractGenericSourceTopology } from "./generic-source-topology.mjs";
+import { normalizeArchitectureInput } from "./input-adapters.mjs";
+import { createEvidenceGraph, evidenceGraphToUniversalIR } from "./evidence-graph.mjs";
+import { createFigurePlan, validateFigurePlan } from "./figure-plan.mjs";
 import { layoutDocumentForCanvas } from "./publication-layout-browser.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
+import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
 import {
-  normalizeUniversalIR,
   projectUniversalIRToCanvas,
-  validateUniversalIR,
 } from "./universal-ir.mjs";
 
 const STATUS = Object.freeze({
@@ -25,6 +27,14 @@ const STATUS = Object.freeze({
  */
 export function analyzeArchitectureInput(input = {}, options = {}) {
   const kind = inferInputKind(input);
+
+  if (["source", "ir", "prompt"].includes(kind)) {
+    try {
+      normalizeArchitectureInput({ ...input, kind });
+    } catch (error) {
+      return invalidResult([diagnostic("invalid-input", "error", error.message)]);
+    }
+  }
 
   if (kind === "source") return analyzeSourceInput(input);
   if (kind === "ir") return analyzeIRInput(input);
@@ -53,6 +63,7 @@ function analyzeSourceInput(input) {
       ...(Array.isArray(genericTopology?.diagnostics) ? genericTopology.diagnostics : []),
     ],
     sourceKind: "source",
+    input,
   });
 }
 
@@ -89,6 +100,7 @@ function analyzeIRInput(input) {
   return finalizeResult(input.ir, {
     sourceKind: "ir",
     baseDiagnostics: input.diagnostics,
+    input,
   });
 }
 
@@ -105,6 +117,7 @@ function analyzeImageInput(input, options) {
       return finalizeResult(analyzed.ir, {
         sourceKind: "image",
         baseDiagnostics: analyzed.diagnostics,
+        input,
       });
     }
   }
@@ -162,14 +175,24 @@ function analyzePromptInput(input) {
     )],
   };
 
-  return finalizeResult(ir, { sourceKind: "prompt" });
+  return finalizeResult(ir, { sourceKind: "prompt", input });
 }
 
 function finalizeResult(rawIR, context = {}) {
-  const ir = normalizeUniversalIR(rawIR || {});
-  const validation = validateUniversalIR(ir);
+  const evidenceGraph = createEvidenceGraph({
+    input: context.input || { kind: context.sourceKind || "unknown" },
+    nodes: Array.isArray(rawIR?.nodes) ? rawIR.nodes : [],
+    edges: Array.isArray(rawIR?.edges) ? rawIR.edges : [],
+    diagnostics: [
+      ...(Array.isArray(rawIR?.diagnostics) ? rawIR.diagnostics : []),
+      ...(Array.isArray(context.baseDiagnostics) ? context.baseDiagnostics : []),
+    ],
+    figure: rawIR?.figure,
+  });
+  const ir = normalizeNetworkIR(evidenceGraphToUniversalIR(evidenceGraph));
+  const validation = validateNetworkIR(ir);
   const diagnostics = [
-    ...(Array.isArray(context.baseDiagnostics) ? context.baseDiagnostics : []),
+    ...(Array.isArray(evidenceGraph.diagnostics) ? evidenceGraph.diagnostics : []),
     ...(Array.isArray(ir.diagnostics) ? ir.diagnostics : []),
     ...unresolvedDiagnostics(ir),
     ...validation.issues.map((issue) => ({ ...issue, severity: "error" })),
@@ -194,6 +217,8 @@ function finalizeResult(rawIR, context = {}) {
   const rawCanvasDocument = projectUniversalIRToCanvas(ir);
   const laidOutCanvasDocument = layoutDocumentForCanvas(rawCanvasDocument);
   const figureLayout = layoutUniversalFigure(ir);
+  const figurePlan = createFigurePlan({ ir, layout: figureLayout, diagnostics: uniqueDiagnostics });
+  const figurePlanValidation = validateFigurePlan(figurePlan);
   return {
     status: hasUncertainty ? STATUS.CONFIRM : STATUS.READY,
     readyForPreview: true,
@@ -203,8 +228,11 @@ function finalizeResult(rawIR, context = {}) {
       ir: publicIR(ir),
       layoutValidation: laidOutCanvasDocument.validation,
       universalFigureLayout: figureLayout,
+      figurePlan,
     },
     figureLayout,
+    figurePlan: { ...figurePlan, validation: figurePlanValidation },
+    figurePlanValidation,
     validation,
     diagnostics: uniqueDiagnostics,
     summary: summaryFor(ir, context.sourceKind),
@@ -251,7 +279,7 @@ function publicIR(ir) {
 }
 
 function summaryFor(ir, inputKind) {
-  const report = validateUniversalIR(ir);
+  const report = validateNetworkIR(ir);
   return {
     inputKind,
     ...report.summary,

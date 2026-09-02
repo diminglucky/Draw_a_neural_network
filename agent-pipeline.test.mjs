@@ -23,6 +23,29 @@ class Net(nn.Module):
   assert.equal(result.figureLayout.grammar.id, "generic-dag");
   assert.ok(result.figureLayout.nodes.some((node) => node.representation === "compound"));
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-operator"));
+  assert.ok(result.figurePlan);
+  assert.deepEqual(
+    result.figurePlan.nodes.map((node) => node.sourceNodeId),
+    result.figureLayout.nodes.map((node) => node.sourceNodeId),
+  );
+});
+
+test("production analysis exposes one renderer-neutral Figure Plan for direct IR", () => {
+  const result = analyzeArchitectureInput({
+    kind: "ir",
+    ir: {
+      nodes: [
+        { id: "input", family: "input", op: "Input", stage: 0 },
+        { id: "cell", family: "recurrent", op: "LSTMCell", stage: 1 },
+      ],
+      edges: [{ id: "state-loop", source: "cell", target: "cell", type: "loop" }, { id: "flow", source: "input", target: "cell" }],
+    },
+  });
+
+  assert.ok(result.figurePlan);
+  assert.equal(result.figurePlan.edges.find((edge) => edge.sourceEdgeId === "state-loop").type, "loop");
+  assert.deepEqual(result.figurePlan.nodes.map((node) => node.sourceNodeId), ["input", "cell"]);
+  assert.equal(result.figurePlan.validation.ok, true);
 });
 
 test("agent pipeline keeps specific Sequential layer evidence instead of replacing it with a container", () => {

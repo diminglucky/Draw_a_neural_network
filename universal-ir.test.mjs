@@ -109,3 +109,11 @@ test("Universal IR rejects self-loops, duplicate edge IDs, and unreachable outpu
   assert.ok(report.issues.some((issue) => issue.kind === "duplicate-edge-id"));
   assert.ok(report.issues.some((issue) => issue.kind === "unreachable-output"));
 });
+
+test("Universal IR preserves explicit recurrent loop edges", () => {
+  const report = validateUniversalIR({
+    nodes: [{ id: "cell", family: "recurrent", op: "LSTMCell" }],
+    edges: [{ id: "state-loop", source: "cell", target: "cell", type: "loop" }],
+  });
+  assert.equal(report.ok, true);
+});

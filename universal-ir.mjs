@@ -70,7 +70,9 @@ export function validateUniversalIR(ir = {}) {
   normalized.edges.forEach((edge) => {
     if (edgeIds.has(edge.id)) issues.push({ kind: "duplicate-edge-id", edgeId: edge.id });
     edgeIds.add(edge.id);
-    if (edge.source === edge.target) issues.push({ kind: "self-loop", edgeId: edge.id, nodeId: edge.source });
+    if (edge.source === edge.target && !["loop", "state", "recurrent-state"].includes(edge.type.toLowerCase())) {
+      issues.push({ kind: "self-loop", edgeId: edge.id, nodeId: edge.source });
+    }
     if (!normalized.nodeIds.has(edge.source) || !normalized.nodeIds.has(edge.target)) {
       issues.push({ kind: "missing-edge-endpoint", edgeId: edge.id, source: edge.source, target: edge.target });
     }

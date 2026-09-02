@@ -49,6 +49,7 @@ class Net(nn.Module):
   assert.equal(payload.status, "needs_confirmation");
   assert.ok(payload.ir.nodes.some((node) => node.compoundKind === "unresolved"));
   assert.ok(payload.diagnostics.some((item) => item.kind === "unresolved-operator"));
+  assert.ok(payload.figurePlan);
 });
 
 test("/api/analyze-code returns structured validation failures for invalid IR", async (t) => {
@@ -136,6 +137,10 @@ test("/api/render-visio produces an existing-document plan without creating a ca
   assert.equal(payload.plan.preserveExisting, true);
   assert.equal(payload.plan.documentPath, "C:\\project\\existing.vsdx");
   assert.ok(payload.plan.shapes.some((shape) => shape.shapeData.sourceNodeId === "custom"));
+  assert.deepEqual(
+    payload.plan.shapes.filter((shape) => shape.parentNodeId === "").map((shape) => shape.shapeData.sourceNodeId).sort(),
+    payload.plan.connectors.flatMap((edge) => [edge.sourceNodeId, edge.targetNodeId]).filter(Boolean).filter((id, index, list) => list.indexOf(id) === index).sort(),
+  );
 });
 
 async function waitForServer(child, port) {

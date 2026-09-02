@@ -28,6 +28,10 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
       labelSlots: cloneValue(node.labelSlots || {}),
       shapeKind: String(node.representation || node.shapeKind || node.family || "operator"),
       geometry: geometryFor(node),
+      x: finiteOr(node.x, 0),
+      y: finiteOr(node.y, 0),
+      w: finiteOr(node.w, 0),
+      h: finiteOr(node.h, 0),
       unresolved,
       ...(unresolved ? {
         unresolvedMarker: {
