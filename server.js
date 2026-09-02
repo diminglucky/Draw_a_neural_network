@@ -1,7 +1,10 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
+import { createAgentRun, resumeAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
+import { createFigurePlan, validateFigurePlan } from "./figure-plan.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
 import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
 
@@ -23,8 +26,109 @@ const mimeTypes = {
   ".json": "application/json; charset=utf-8",
 };
 
-createServer(async (request, response) => {
+const agentService = createAgentService();
+
+export function createAgentService({ dependencies = {} } = {}) {
+  const runs = new Map();
+  const stageDependencies = {
+    ...defaultAgentDependencies(),
+    ...dependencies,
+  };
+  return async function route(request) {
+    const url = new URL(request.url || "/", "http://agent.test");
+    if (request.method !== "POST") return jsonResponse(404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
+    try {
+      const body = await request.json();
+      if (url.pathname === "/api/agent-run") {
+        let run;
+        try {
+          run = createAgentRun(body, stageDependencies);
+        } catch (error) {
+          return jsonResponse(422, { status: "invalid_input", code: "invalid-input", message: error.message });
+        }
+        runs.set(run.id, run);
+        const result = await runAgentPipeline(run);
+        return jsonResponse(200, result);
+      }
+      const match = url.pathname.match(/^\/api\/agent-run\/([^/]+)\/resume$/);
+      if (!match) return jsonResponse(404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
+      const run = runs.get(match[1]);
+      if (!run) return jsonResponse(404, { status: "not_found", code: "run-not-found", message: `Agent run ${match[1]} was not found.` });
+      const event = body && typeof body === "object" ? body : {};
+      if (!["confirm", "repair", "render-result", "readback-result"].includes(event.type)) {
+        return jsonResponse(400, { status: "invalid_event", code: "invalid-event", message: "Event type must be confirm, repair, render-result, or readback-result." });
+      }
+      const next = resumeAgentRun(run, event);
+      const resumed = event.type === "repair" && next.status === "repair-pending"
+        ? await runAgentPipeline(next)
+        : next;
+      runs.set(resumed.id, resumed);
+      const statusCode = resumed.status === "repair-failed" ? 409 : 200;
+      return jsonResponse(statusCode, resumed.status === "repair-failed"
+        ? { ...nextResult(resumed), code: "repair-limit-exceeded" }
+        : nextResult(resumed));
+    } catch (error) {
+      return jsonResponse(400, { status: "invalid_request", code: "invalid-json", message: error.message });
+    }
+  };
+}
+
+function defaultAgentDependencies() {
+  return {
+    inspect: async (input) => input,
+    extract: (input) => analyzeArchitectureInput(input),
+    normalize: (analysis) => {
+      if (!analysis?.ir || analysis.status === "invalid_input") {
+        throw new Error(analysis?.diagnostics?.[0]?.message || "Architecture input could not be normalized.");
+      }
+      return { ir: analysis.ir, analysis };
+    },
+    plan: (normalized) => {
+      if (!normalized?.nodes) throw new Error("Canonical Universal IR was not produced by the analysis pipeline.");
+      const layout = layoutUniversalFigure(normalized);
+      const figurePlan = createFigurePlan({ ir: normalized, layout, diagnostics: normalized.diagnostics });
+      return { ir: normalized, figurePlan: { ...figurePlan, validation: validateFigurePlan(figurePlan) } };
+    },
+  };
+}
+
+function nextResult(run) {
+  return {
+    id: run.id,
+    status: run.status,
+    stage: run.stage,
+    snapshots: run.snapshots,
+    diagnostics: run.diagnostics,
+    attempts: { ...run.attempts },
+    input: run.input,
+    ir: run.ir,
+    figurePlan: run.figurePlan,
+    planOutput: run.planOutput,
+    renderResult: run.renderResult,
+    readback: run.readback,
+  };
+}
+
+function jsonResponse(status, payload) {
+  return new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json; charset=utf-8" } });
+}
+
+async function handleAgentRequest(request, response) {
+  const body = await readJson(request);
+  const agentResponse = await agentService(new Request(`http://agent.test${request.url}`, {
+    method: request.method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+  sendJson(response, agentResponse.status, await agentResponse.json());
+}
+
+const server = createServer(async (request, response) => {
   try {
+    if (request.method === "POST" && (request.url === "/api/agent-run" || /^\/api\/agent-run\/[^/]+\/resume$/.test(request.url || ""))) {
+      await handleAgentRequest(request, response);
+      return;
+    }
     if (request.method === "POST" && request.url === "/api/analyze-diagram") {
       await handleAnalyze(request, response);
       return;
@@ -42,9 +146,13 @@ createServer(async (request, response) => {
     console.error(error);
     sendJson(response, 500, { error: "Internal server error" });
   }
-}).listen(port, "127.0.0.1", () => {
-  console.log(`Synapse Studio running at http://127.0.0.1:${port}`);
 });
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`Synapse Studio running at http://127.0.0.1:${port}`);
+  });
+}
 
 async function handleAnalyzeCode(request, response) {
   const result = analyzeArchitectureInput(await readJson(request));
