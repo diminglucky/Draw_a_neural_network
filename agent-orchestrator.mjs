@@ -99,12 +99,14 @@ export function resumeAgentRun(run, event = {}) {
     next.renderResult = clone(event.value);
     next.status = "rendered";
     next.stage = "render";
+    next.snapshots = upsertSnapshot(next.snapshots, "render", event.value);
   } else if (event.type === "readback-result") {
     next.readback = clone(event.value);
     const issues = diagnoseReadback(next.renderResult?.figurePlan || next.figurePlan, next.readback);
     next.diagnostics = uniqueDiagnostics([...next.diagnostics, ...issues]);
     next.status = issues.length ? "readback-mismatch" : "completed";
     next.stage = "readback";
+    next.snapshots = upsertSnapshot(next.snapshots, "readback", event.value);
   }
   runtimeByRun.set(next, { ...runtime, state: next });
   return next;
@@ -296,4 +298,7 @@ function uniqueDiagnostics(items) {
   return items.filter((item) => { const key = `${item.kind}:${item.code || ""}:${item.sourceNodeId || item.sourceEdgeId || ""}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }
 function freezeSnapshots(value) { return Object.freeze(value.map((item) => Object.freeze(clone(item)))); }
+function upsertSnapshot(snapshots, stage, value) {
+  return freezeSnapshots([...snapshots.filter((snapshot) => snapshot.stage !== stage), { stage, value: clone(value) }]);
+}
 function clone(value) { return value === undefined ? undefined : structuredClone(value); }

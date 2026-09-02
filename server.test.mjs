@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { createAgentService } from "./server.js";
+import { createAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
+import { createMemoryRunStore } from "./run-store.mjs";
 
 const agentInput = { kind: "source", source: "class Net: pass", framework: "pytorch" };
 
@@ -137,6 +139,55 @@ test("agent service bounds repair requests and rejects invalid run events", asyn
   const invalidEvent = await requestAgent(service, path, { type: "unknown" });
   assert.equal(invalidEvent.response.status, 400);
   assert.equal(invalidEvent.payload.code, "invalid-event");
+});
+
+test("agent service persists every externally supplied resume event", async () => {
+  const runStore = createMemoryRunStore();
+  const service = createAgentService({ dependencies: agentDependencies(), runStore });
+  const created = await requestAgent(service, "/api/agent-run", agentInput);
+
+  const rendered = await requestAgent(service, `/api/agent-run/${created.payload.id}/resume`, {
+    type: "render-result",
+    value: { renderId: "external-render" },
+  });
+  assert.equal(rendered.payload.status, "rendered");
+  const storedRender = await runStore.get(created.payload.id);
+  assert.equal(storedRender.status, "rendered");
+  assert.equal(storedRender.stage, "render");
+  assert.equal(storedRender.renderResult.renderId, "external-render");
+  assert.deepEqual(storedRender.snapshots.at(-1), { stage: "render", value: { renderId: "external-render" } });
+
+  const completed = await requestAgent(service, `/api/agent-run/${created.payload.id}/resume`, {
+    type: "readback-result",
+    value: { renderId: "external-render", nodes: [], connectors: [] },
+  });
+  assert.equal(completed.payload.status, "readback-mismatch");
+  const storedReadback = await runStore.get(created.payload.id);
+  assert.equal(storedReadback.status, "readback-mismatch");
+  assert.equal(storedReadback.stage, "readback");
+  assert.deepEqual(storedReadback.snapshots.at(-1), { stage: "readback", value: { renderId: "external-render", nodes: [], connectors: [] } });
+});
+
+test("HTTP resume restores a run from the Run Store when the in-memory map is empty", async () => {
+  const runStore = createMemoryRunStore();
+  const pausedRun = createAgentRun(agentInput, agentDependencies({
+    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
+    render: undefined,
+    readback: undefined,
+  }), { runStore });
+  const paused = await runAgentPipeline(pausedRun);
+  assert.equal(paused.status, "needs-confirmation");
+
+  const service = createAgentService({ dependencies: agentDependencies({ render: undefined, readback: undefined }), runStore });
+  const resumed = await requestAgent(service, `/api/agent-run/${paused.id}/resume`, {
+    type: "confirm",
+    value: { accepted: true },
+  });
+
+  assert.equal(resumed.response.status, 200);
+  assert.equal(resumed.payload.status, "completed");
+  assert.equal(resumed.payload.id, paused.id);
+  assert.equal(resumed.payload.figurePlan.nodes[0].sourceNodeId, "input");
 });
 
 test("agent service returns structured boundary errors", async () => {
@@ -326,23 +377,29 @@ test("/api/render-visio executes render and readback through one Agent Run", asy
   assert.equal(payload.plan.shapes[0].shapeData.sourceNodeId, "input");
 });
 
-test("/api/render-visio reports malformed architecture input as 422", async () => {
+test("/api/render-visio reports malformed source and IR input as 422 invalid_input", async () => {
   const service = createAgentService();
-  const response = await service(new Request("http://agent.test/api/render-visio", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ documentPath: "C:\\project\\existing.vsdx" }),
-  }));
-  const payload = await response.json();
+  for (const input of [
+    { source: { not: "a string" } },
+    { ir: [] },
+    { ir: null },
+  ]) {
+    const response = await service(new Request("http://agent.test/api/render-visio", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentPath: "C:\\project\\existing.vsdx", ...input }),
+    }));
+    const payload = await response.json();
 
-  assert.equal(response.status, 422);
-  assert.equal(payload.status, "invalid_input");
+    assert.equal(response.status, 422);
+    assert.equal(payload.status, "invalid_input");
+  }
 });
 
 test("/api/render-visio preserves a real Visio readback failure status", async () => {
   const service = createAgentService({ dependencies: {
-    render: async () => ({ status: "readback_failed", renderId: "r1", plan: { shapes: [], connectors: [] } }),
-    readback: async () => ({ renderId: "wrong", nodes: [], connectors: [] }),
+    render: async (figurePlan) => ({ status: "readback_failed", renderId: "r1", figurePlan, plan: { shapes: [], connectors: [] } }),
+    readback: async () => ({ renderId: "r1", nodes: [{ sourceNodeId: "input" }], connectors: [] }),
   } });
   const response = await service(new Request("http://agent.test/api/render-visio", {
     method: "POST",
@@ -353,6 +410,7 @@ test("/api/render-visio preserves a real Visio readback failure status", async (
 
   assert.equal(response.status, 200);
   assert.equal(payload.status, "readback_failed");
+  assert.notEqual(payload.status, "rendered");
 });
 
 async function waitForServer(child, port) {

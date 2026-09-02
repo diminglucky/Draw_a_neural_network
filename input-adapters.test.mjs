@@ -20,3 +20,21 @@ test("rejects malformed architecture input with a structured error", () => {
   assert.throws(() => normalizeArchitectureInput({ kind: "ir", ir: null }), (error) => error.kind === "invalid-input");
   assert.throws(() => normalizeArchitectureInput({ kind: "ir", ir: [] }), (error) => error.kind === "invalid-input");
 });
+
+test("explicitly rejects null, empty, and blank payloads at the input boundary", () => {
+  const invalidInputs = [
+    { kind: "source", source: null },
+    { kind: "ir", ir: null },
+    { kind: "image", images: [] },
+    { kind: "prompt", prompt: "" },
+    { kind: "prompt", prompt: "   " },
+  ];
+
+  for (const input of invalidInputs) {
+    assert.throws(
+      () => normalizeArchitectureInput(input),
+      (error) => error.kind === "invalid-input",
+      `expected ${input.kind} payload to be rejected`,
+    );
+  }
+});

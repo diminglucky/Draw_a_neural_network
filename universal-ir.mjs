@@ -111,7 +111,7 @@ export function projectUniversalIRToCanvas(ir = {}) {
     return {
       id: node.id,
       type: typeInfo.type,
-      compoundKind: typeInfo.compoundKind,
+      compoundKind: node.compoundKind || typeInfo.compoundKind,
       x: Number.isFinite(node.x) ? node.x : 280 + index * 220,
       y: Number.isFinite(node.y) ? node.y : 620,
       w: Number.isFinite(node.w) ? node.w : typeInfo.w,
@@ -167,20 +167,23 @@ function normalizeNode(node = {}, index) {
     outputs: Array.isArray(node.outputs) ? node.outputs.map(String) : [],
     ports: normalizePorts(node.ports),
     attributes: isRecord(node.attributes) ? { ...node.attributes } : {},
-    source: isRecord(node.source)
+      source: isRecord(node.source)
       ? { ...node.source }
       : Number.isFinite(node.sourceLine) ? { line: node.sourceLine } : undefined,
-    evidence: Array.isArray(node.evidence) ? node.evidence.map((item) => ({ ...item })) : [],
-    confidence: Number.isFinite(node.confidence) ? node.confidence : 1,
-    note: String(node.note || ""),
+      evidence: Array.isArray(node.evidence) ? node.evidence.map((item) => ({ ...item })) : [],
+      provenance: node.provenance,
+      confidence: Number.isFinite(node.confidence) ? node.confidence : 1,
+      status: String(node.status || "confirmed"),
+      note: String(node.note || ""),
   };
   if (node.shape !== undefined) normalized.shape = normalizeShape(node.shape);
+  if (node.compoundKind !== undefined) normalized.compoundKind = String(node.compoundKind);
   ["x", "y", "w", "h"].forEach((key) => {
     if (Number.isFinite(node[key])) normalized[key] = node[key];
   });
   if (node.color) normalized.color = String(node.color);
-  if (family === "custom") normalized.compoundKind = "unresolved";
-  if (family === "attention" && /transformer/i.test(op)) normalized.compoundKind = "transformer";
+  if (normalized.compoundKind === undefined && family === "custom") normalized.compoundKind = "unresolved";
+  if (normalized.compoundKind === undefined && family === "attention" && /transformer/i.test(op)) normalized.compoundKind = "transformer";
   return normalized;
 }
 
@@ -193,7 +196,9 @@ function normalizeEdge(edge = {}, index) {
     label: String(edge.label || ""),
     ports: edge.ports ? { ...edge.ports } : undefined,
     evidence: Array.isArray(edge.evidence) ? edge.evidence.map((item) => ({ ...item })) : [],
+    provenance: edge.provenance,
     confidence: Number.isFinite(edge.confidence) ? edge.confidence : 1,
+    status: String(edge.status || "confirmed"),
   };
 }
 

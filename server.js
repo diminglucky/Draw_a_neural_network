@@ -8,7 +8,7 @@ import {
   normalizeArchitectureEvidence,
   planArchitectureFigure,
 } from "./agent-pipeline.mjs";
-import { createAgentRun, resumeAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
+import { createAgentRun, persistAgentRun, resumeAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
 import { createMemoryRunStore } from "./run-store.mjs";
 import { validateFigurePlan } from "./figure-plan.mjs";
 import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
@@ -33,9 +33,9 @@ const mimeTypes = {
 
 const agentService = createAgentService();
 
-export function createAgentService({ dependencies = {} } = {}) {
+export function createAgentService({ dependencies = {}, runStore: configuredRunStore } = {}) {
   const runs = new Map();
-  const runStore = createMemoryRunStore();
+  const runStore = configuredRunStore || createMemoryRunStore();
   const stageDependencies = {
     ...createDefaultAgentDependencies(),
     ...dependencies,
@@ -61,13 +61,15 @@ export function createAgentService({ dependencies = {} } = {}) {
       }
       const match = url.pathname.match(/^\/api\/agent-run\/([^/]+)\/resume$/);
       if (!match) return jsonResponse(404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
-      const run = runs.get(match[1]);
+      const storedRun = await runStore.get(match[1]);
+      const run = runs.get(match[1]) || (storedRun ? { ...storedRun, dependencies: stageDependencies, runStore } : undefined);
       if (!run) return jsonResponse(404, { status: "not_found", code: "run-not-found", message: `Agent run ${match[1]} was not found.` });
       const event = body && typeof body === "object" ? body : {};
       if (!["confirm", "repair", "render-result", "readback-result"].includes(event.type)) {
         return jsonResponse(400, { status: "invalid_event", code: "invalid-event", message: "Event type must be confirm, repair, render-result, or readback-result." });
       }
       const next = resumeAgentRun(run, event);
+      await persistAgentRun(next);
       const resumed = ["repair", "confirm"].includes(event.type) && ["repair-pending", "confirmed"].includes(next.status)
         ? await runAgentPipeline(next)
         : next;

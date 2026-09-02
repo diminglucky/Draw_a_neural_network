@@ -221,6 +221,21 @@ test("persists externally supplied render and readback events", async () => {
   assert.deepEqual(stored.snapshots.map((snapshot) => snapshot.stage), ["render", "readback"]);
 });
 
+test("persists an externally supplied resume event over an existing stage snapshot", async () => {
+  const runStore = createMemoryRunStore();
+  const run = createAgentRun(input, dependencies(), { runStore });
+  const completed = await runAgentPipeline(run);
+  const resumed = resumeAgentRun(completed, { type: "render-result", value: { renderId: "replacement" } });
+
+  await persistAgentRun(resumed);
+  const stored = await runStore.get(run.id);
+
+  assert.equal(stored.status, "rendered");
+  assert.equal(stored.stage, "render");
+  assert.equal(stored.renderResult.renderId, "replacement");
+  assert.equal(stored.snapshots.find((snapshot) => snapshot.stage === "render").value.renderId, "replacement");
+});
+
 test("render failures and readback mismatches use explicit statuses", async () => {
   const renderRun = createAgentRun(input, dependencies({ render: () => { throw new Error("renderer down"); } }));
   const renderResult = await runAgentPipeline(renderRun);

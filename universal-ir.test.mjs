@@ -91,6 +91,19 @@ test("Universal IR treats unknown declared families as unresolved custom operato
   assert.equal(ir.nodes[0].compoundKind, "unresolved");
 });
 
+test("Universal IR preserves explicit compound and unresolved markers on known operators", () => {
+  const ir = normalizeUniversalIR({
+    nodes: [
+      { id: "compound", op: "Conv2d", family: "conv", compoundKind: "residual-block" },
+      { id: "unresolved", op: "Conv2d", family: "conv", compoundKind: "unresolved" },
+    ],
+    edges: [],
+  });
+
+  assert.equal(ir.nodes[0].compoundKind, "residual-block");
+  assert.equal(ir.nodes[1].compoundKind, "unresolved");
+});
+
 test("Universal IR rejects self-loops, duplicate edge IDs, and unreachable outputs", () => {
   const report = validateUniversalIR({
     nodes: [
