@@ -46,6 +46,114 @@ export function analyzeArchitectureInput(input = {}, options = {}) {
   ]);
 }
 
+/**
+ * Stage adapters used by the resumable Agent. They intentionally stop at the
+ * boundary named by each function so the synchronous compatibility facade and
+ * the HTTP Agent cannot accidentally perform the same work twice.
+ */
+export function extractArchitectureEvidence(input = {}, options = {}) {
+  const kind = inferInputKind(input);
+  if (!["source", "ir", "image", "prompt"].includes(kind)) {
+    throw new TypeError("Expected source, ir, image, or prompt architecture input.");
+  }
+  normalizeArchitectureInput({ ...input, kind });
+
+  if (kind === "source") {
+    const document = diagramFromCode(input.source, input.framework || "auto");
+    const genericTopology = extractGenericSourceTopology(input.source, input.framework || "auto");
+    const rawIR = shouldPreferGenericTopology(genericTopology, document) ? genericTopology : document.ir;
+    return {
+      kind,
+      rawIR,
+      nodes: rawIR?.nodes || [],
+      edges: rawIR?.edges || [],
+      source: document,
+      baseDiagnostics: [
+        ...(Array.isArray(document.diagnostics) ? document.diagnostics : []),
+        ...(Array.isArray(genericTopology?.diagnostics) ? genericTopology.diagnostics : []),
+      ],
+      input,
+    };
+  }
+  if (kind === "ir") return { kind, rawIR: input.ir, nodes: input.ir.nodes || [], edges: input.ir.edges || [], baseDiagnostics: input.diagnostics, input };
+  if (kind === "prompt") {
+    const rawIR = promptHypothesisIR(input);
+    return { kind, rawIR, nodes: rawIR.nodes, edges: rawIR.edges, diagnostics: rawIR.diagnostics, input };
+  }
+
+  const analyzer = options.visionAnalyzer;
+  const images = Array.isArray(input.images) ? input.images.filter(Boolean) : [];
+  if (typeof analyzer === "function") {
+    const analyzed = analyzer({ ...input, images });
+    if (analyzed && typeof analyzed.then !== "function" && analyzed.ir) {
+      return { kind, rawIR: analyzed.ir, baseDiagnostics: analyzed.diagnostics, input };
+    }
+  }
+  return {
+    kind,
+    status: STATUS.VISION,
+    diagnostics: [diagnostic(
+      "vision-analyzer-required",
+      "info",
+      images.length
+        ? "Image input is waiting for a vision analyzer to extract Universal IR."
+        : "Image input must include at least one image before vision analysis."
+    )],
+    input,
+  };
+}
+
+export function normalizeArchitectureEvidence(evidence = {}) {
+  if (evidence.status === STATUS.VISION) return evidence;
+  const evidenceGraph = createEvidenceGraph({
+    input: evidence.input || { kind: evidence.kind || "unknown" },
+    nodes: Array.isArray(evidence.rawIR?.nodes) ? evidence.rawIR.nodes : [],
+    edges: Array.isArray(evidence.rawIR?.edges) ? evidence.rawIR.edges : [],
+    diagnostics: [
+      ...(Array.isArray(evidence.rawIR?.diagnostics) ? evidence.rawIR.diagnostics : []),
+      ...(Array.isArray(evidence.baseDiagnostics) ? evidence.baseDiagnostics : []),
+    ],
+    figure: evidence.rawIR?.figure,
+  });
+  const ir = normalizeNetworkIR(evidenceGraphToUniversalIR(evidenceGraph));
+  const validation = validateNetworkIR(ir);
+  return { ir, validation, evidenceGraph, source: evidence.source, kind: evidence.kind };
+}
+
+export function planArchitectureFigure(normalized = {}) {
+  if (normalized.status === STATUS.VISION) return normalized;
+  const ir = normalized.ir || normalized;
+  const rawCanvasDocument = projectUniversalIRToCanvas(ir);
+  const laidOutCanvasDocument = layoutDocumentForCanvas(rawCanvasDocument);
+  const figureLayout = layoutUniversalFigure(ir);
+  const diagnostics = [
+    ...(Array.isArray(normalized.evidenceGraph?.diagnostics) ? normalized.evidenceGraph.diagnostics : []),
+    ...(Array.isArray(ir.diagnostics) ? ir.diagnostics : []),
+    ...unresolvedDiagnostics(ir),
+    ...(normalized.validation?.issues || []).map((issue) => ({ ...issue, severity: "error" })),
+  ];
+  const uniqueDiagnostics = dedupeDiagnostics(diagnostics);
+  const figurePlan = createFigurePlan({ ir, layout: figureLayout, diagnostics: uniqueDiagnostics });
+  const figurePlanValidation = validateFigurePlan(figurePlan);
+  return {
+    ir: publicIR(ir),
+    source: normalized.source,
+    rawCanvasDocument,
+    canvasDocument: {
+      ...laidOutCanvasDocument,
+      ir: publicIR(ir),
+      layoutValidation: laidOutCanvasDocument.validation,
+      universalFigureLayout: figureLayout,
+      figurePlan,
+    },
+    figureLayout,
+    figurePlan: { ...figurePlan, validation: figurePlanValidation },
+    figurePlanValidation,
+    validation: normalized.validation,
+    diagnostics: uniqueDiagnostics,
+  };
+}
+
 function analyzeSourceInput(input) {
   if (typeof input.source !== "string" || !input.source.trim()) {
     return invalidResult([
@@ -150,7 +258,13 @@ function analyzePromptInput(input) {
   // Prompt-only input has no grounded topology. Keep one unresolved semantic
   // operator as a reviewable hypothesis rather than fabricating a CNN or a
   // template-specific graph.
-  const ir = {
+  const ir = promptHypothesisIR(input);
+  return finalizeResult(ir, { sourceKind: "prompt", input });
+}
+
+function promptHypothesisIR(input) {
+  const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
+  return {
     source: { kind: "prompt", text: prompt },
     figure: {
       title: "Prompt-derived architecture hypothesis",
@@ -175,7 +289,6 @@ function analyzePromptInput(input) {
     )],
   };
 
-  return finalizeResult(ir, { sourceKind: "prompt", input });
 }
 
 function finalizeResult(rawIR, context = {}) {

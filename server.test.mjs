@@ -81,7 +81,7 @@ test("default agent service stops prompt-only input for confirmation without pla
   assert.ok(payload.diagnostics.some((item) => item.kind === "needs-confirmation"));
 });
 
-test("agent service exposes needs-confirmation and resumes confirmation", async () => {
+test("agent service exposes needs-confirmation and resumes confirmation into planning", async () => {
   const service = createAgentService({ dependencies: agentDependencies({
     extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
   }) });
@@ -95,7 +95,9 @@ test("agent service exposes needs-confirmation and resumes confirmation", async 
     value: { accepted: true },
   });
   assert.equal(resumed.response.status, 200);
-  assert.equal(resumed.payload.status, "confirmed");
+  assert.equal(resumed.payload.status, "completed");
+  assert.equal(resumed.payload.stage, "readback");
+  assert.ok(resumed.payload.figurePlan);
   assert.equal(resumed.payload.id, created.payload.id);
 });
 
@@ -293,6 +295,35 @@ test("/api/render-visio produces an existing-document plan without creating a ca
     payload.plan.shapes.filter((shape) => shape.parentNodeId === "").map((shape) => shape.shapeData.sourceNodeId).sort(),
     payload.plan.connectors.flatMap((edge) => [edge.sourceNodeId, edge.targetNodeId]).filter(Boolean).filter((id, index, list) => list.indexOf(id) === index).sort(),
   );
+});
+
+test("/api/render-visio executes render and readback through one Agent Run", async () => {
+  const calls = [];
+  const service = createAgentService({
+    dependencies: {
+      inspect: async (input) => { calls.push("inspect"); return input; },
+      extract: (input) => { calls.push("extract"); return { ...input, nodes: [{ id: "input", family: "input" }] }; },
+      normalize: (value) => { calls.push("normalize"); return { ir: { ...value, nodes: [{ id: "input", family: "input" }] } }; },
+      plan: (value) => {
+        calls.push("plan");
+        return { ir: value.ir, figurePlan: { version: "figure-plan/v1", renderId: "shared", nodes: [{ id: "f-input", sourceNodeId: "input" }], edges: [] } };
+      },
+      render: async (figurePlan) => { calls.push(["render", figurePlan.renderId]); return { renderId: "shared", figurePlan }; },
+      readback: async (figurePlan, renderResult) => { calls.push(["readback", figurePlan.renderId, renderResult.figurePlan.renderId]); return { renderId: "shared", nodes: [{ sourceNodeId: "input" }], connectors: [] }; },
+    },
+  });
+
+  const response = await service(new Request("http://agent.test/api/render-visio", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentPath: "C:\\project\\existing.vsdx", ir: { nodes: [{ id: "input", family: "input" }] }, pageName: "Page-1" }),
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, "rendered");
+  assert.deepEqual(calls, ["inspect", "extract", "normalize", "plan", ["render", "shared"], ["readback", "shared", "shared"]]);
+  assert.equal(payload.plan.shapes[0].shapeData.sourceNodeId, "input");
 });
 
 async function waitForServer(child, port) {

@@ -11,6 +11,7 @@ export function createAgentRun(input, dependencies = {}, options = {}) {
     id: `agent-run-${Date.now().toString(36)}-${nextRunId++}`,
     input: clone(normalizeArchitectureInput(input)),
     dependencies: { ...dependencies },
+    allowUnresolved: Boolean(options.allowUnresolved),
     status: "ready",
     stage: "inspect",
     snapshots: freezeSnapshots([]),
@@ -58,7 +59,7 @@ export async function runAgentPipeline(run, options = {}) {
     } catch (error) {
       return rememberResult(await failAt(current, stage, error), runtime);
     }
-    if (stage === "extract" && containsUnresolved(current.extract)) {
+    if (stage === "extract" && containsUnresolved(current.extract) && !current.allowUnresolved) {
       current.status = "needs-confirmation";
       current.diagnostics = uniqueDiagnostics([...current.diagnostics, {
         kind: "needs-confirmation", code: "unresolved-evidence", severity: "warning",
@@ -254,7 +255,7 @@ function resultOf(run) {
 }
 
 function publicState(run) {
-  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), figurePlan: clone(run.figurePlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
+  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), figurePlan: clone(run.figurePlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason, allowUnresolved: run.allowUnresolved };
 }
 
 async function invoke(dependency, value, run) { return typeof dependency === "function" ? dependency(value, run) : value; }

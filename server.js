@@ -2,10 +2,15 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
+import {
+  analyzeArchitectureInput,
+  extractArchitectureEvidence,
+  normalizeArchitectureEvidence,
+  planArchitectureFigure,
+} from "./agent-pipeline.mjs";
 import { createAgentRun, resumeAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
-import { createFigurePlan, validateFigurePlan } from "./figure-plan.mjs";
-import { layoutUniversalFigure } from "./universal-figure.mjs";
+import { createMemoryRunStore } from "./run-store.mjs";
+import { validateFigurePlan } from "./figure-plan.mjs";
 import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
 
 const port = Number(process.env.PORT || 4173);
@@ -30,8 +35,9 @@ const agentService = createAgentService();
 
 export function createAgentService({ dependencies = {} } = {}) {
   const runs = new Map();
+  const runStore = createMemoryRunStore();
   const stageDependencies = {
-    ...defaultAgentDependencies(),
+    ...createDefaultAgentDependencies(),
     ...dependencies,
   };
   return async function route(request) {
@@ -39,10 +45,13 @@ export function createAgentService({ dependencies = {} } = {}) {
     if (request.method !== "POST") return jsonResponse(404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
     try {
       const body = await request.json();
+      if (url.pathname === "/api/render-visio") {
+        return renderVisioThroughAgent(body, stageDependencies, runs, runStore);
+      }
       if (url.pathname === "/api/agent-run") {
         let run;
         try {
-          run = createAgentRun(body, stageDependencies);
+          run = createAgentRun(body, stageDependencies, { runStore });
         } catch (error) {
           return jsonResponse(422, { status: "invalid_input", code: "invalid-input", message: error.message });
         }
@@ -59,7 +68,7 @@ export function createAgentService({ dependencies = {} } = {}) {
         return jsonResponse(400, { status: "invalid_event", code: "invalid-event", message: "Event type must be confirm, repair, render-result, or readback-result." });
       }
       const next = resumeAgentRun(run, event);
-      const resumed = event.type === "repair" && next.status === "repair-pending"
+      const resumed = ["repair", "confirm"].includes(event.type) && ["repair-pending", "confirmed"].includes(next.status)
         ? await runAgentPipeline(next)
         : next;
       runs.set(resumed.id, resumed);
@@ -73,23 +82,91 @@ export function createAgentService({ dependencies = {} } = {}) {
   };
 }
 
-function defaultAgentDependencies() {
+export function createDefaultAgentDependencies() {
   return {
     inspect: async (input) => input,
-    extract: (input) => analyzeArchitectureInput(input),
-    normalize: (analysis) => {
-      if (!analysis?.ir || analysis.status === "invalid_input") {
-        throw new Error(analysis?.diagnostics?.[0]?.message || "Architecture input could not be normalized.");
-      }
-      return { ir: analysis.ir, analysis };
-    },
-    plan: (normalized) => {
-      if (!normalized?.nodes) throw new Error("Canonical Universal IR was not produced by the analysis pipeline.");
-      const layout = layoutUniversalFigure(normalized);
-      const figurePlan = createFigurePlan({ ir: normalized, layout, diagnostics: normalized.diagnostics });
-      return { ir: normalized, figurePlan: { ...figurePlan, validation: validateFigurePlan(figurePlan) } };
-    },
+    extract: (input) => extractArchitectureEvidence(input),
+    normalize: (evidence) => normalizeArchitectureEvidence(evidence),
+    plan: (normalized) => planArchitectureFigure(normalized),
   };
+}
+
+async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runStore) {
+  const documentPath = String(body.documentPath || "").trim();
+  if (!documentPath) {
+    return jsonResponse(400, { error: "documentPath is required; rendering never creates an implicit Visio document." });
+  }
+
+  const input = body.ir
+    ? { kind: "ir", ir: body.ir, diagnostics: body.diagnostics }
+    : { kind: "source", source: body.source, framework: body.framework };
+  let options;
+  try {
+    options = {
+      documentPath,
+      pageName: body.pageName || "Page-1",
+      renderId: body.renderId,
+      unitScale: body.unitScale,
+      previewPath: body.previewPath,
+      scriptPath: process.env.VISIO_BRIDGE_SCRIPT,
+    };
+    const render = stageDependencies.render || defaultVisioRender;
+    const readback = process.env.VISIO_DRY_RUN === "1"
+      ? undefined
+      : (stageDependencies.readback || defaultVisioReadback);
+    const run = createAgentRun(input, {
+      ...stageDependencies,
+      render: (figurePlan, current) => render(figurePlan, { ...current, visioOptions: options }),
+      readback: (figurePlan, renderResult, current) => readback(figurePlan, renderResult, { ...current, visioOptions: options }),
+    }, { runStore, allowUnresolved: true });
+    runs.set(run.id, run);
+    const result = await runAgentPipeline(run);
+    if (!result.figurePlan) {
+      return jsonResponse(422, {
+        status: "invalid_layout",
+        error: "Architecture input did not produce a Figure Plan; Visio was not modified.",
+        diagnostics: result.diagnostics,
+        ...nextResult(result),
+      });
+    }
+    const renderPlan = result.renderResult?.plan || buildVisioRenderPlan(result.figurePlan, options);
+    const validation = result.figurePlan.validation || validateFigurePlan(result.figurePlan);
+    if (!validation.ok) {
+      return jsonResponse(422, {
+        status: "invalid_layout",
+        error: "Publication figure validation failed; Visio was not modified.",
+        validation,
+        diagnostics: result.diagnostics,
+        ...nextResult(result),
+      });
+    }
+    const responseStatus = result.renderResult?.status === "dry_run"
+      ? "dry_run"
+      : result.status === "completed" ? "rendered" : result.status;
+    const response = {
+      ...nextResult(result),
+      status: responseStatus,
+      analysisStatus: result.status,
+      diagnostics: result.diagnostics,
+      validation,
+      plan: renderPlan,
+    };
+    runs.set(result.id, result);
+    return jsonResponse(200, response);
+  } catch (error) {
+    return jsonResponse(503, { status: "visio_unavailable", error: error.message });
+  }
+}
+
+async function defaultVisioRender(figurePlan, current = {}) {
+  const options = current.visioOptions || {};
+  const plan = buildVisioRenderPlan(figurePlan, options);
+  if (process.env.VISIO_DRY_RUN === "1") return { status: "dry_run", plan };
+  return renderUniversalFigureToVisio(figurePlan, options);
+}
+
+async function defaultVisioReadback(_figurePlan, renderResult = {}) {
+  return renderResult.readback || renderResult;
 }
 
 function nextResult(run) {
@@ -138,7 +215,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "POST" && request.url === "/api/render-visio") {
-      await handleRenderVisio(request, response);
+      await handleAgentRequest(request, response);
       return;
     }
     await serveStatic(request, response);
@@ -158,73 +235,6 @@ async function handleAnalyzeCode(request, response) {
   const result = analyzeArchitectureInput(await readJson(request));
   const status = result.status === "invalid_input" ? 422 : 200;
   sendJson(response, status, result);
-}
-
-async function handleRenderVisio(request, response) {
-  const body = await readJson(request);
-  const documentPath = String(body.documentPath || "").trim();
-  if (!documentPath) {
-    sendJson(response, 400, { error: "documentPath is required; rendering never creates an implicit Visio document." });
-    return;
-  }
-
-  const analysis = body.ir
-    ? analyzeArchitectureInput({ kind: "ir", ir: body.ir, diagnostics: body.diagnostics })
-    : analyzeArchitectureInput({ kind: "source", source: body.source, framework: body.framework });
-  if (analysis.status === "invalid_input" || !analysis.ir) {
-    sendJson(response, 422, { error: "Architecture input cannot be rendered", ...analysis });
-    return;
-  }
-
-  const figurePlan = analysis.figurePlan || analysis.canvasDocument?.figurePlan;
-  const figureLayout = analysis.figureLayout || layoutUniversalFigure(analysis.ir);
-  const renderPlan = figurePlan || figureLayout;
-  if (!figureLayout.validation?.ok || (figurePlan && !figurePlan.validation?.ok)) {
-    sendJson(response, 422, {
-      status: "invalid_layout",
-      error: "Publication figure validation failed; Visio was not modified.",
-      validation: figureLayout.validation,
-      diagnostics: analysis.diagnostics,
-    });
-    return;
-  }
-  const options = {
-    documentPath,
-    pageName: body.pageName || "Page-1",
-    renderId: body.renderId,
-    unitScale: body.unitScale,
-    previewPath: body.previewPath,
-    scriptPath: process.env.VISIO_BRIDGE_SCRIPT,
-  };
-  const plan = buildVisioRenderPlan(renderPlan, options);
-  if (process.env.VISIO_DRY_RUN === "1") {
-    sendJson(response, 200, {
-      status: "dry_run",
-      analysisStatus: analysis.status,
-      diagnostics: analysis.diagnostics,
-      validation: figureLayout.validation,
-      plan,
-    });
-    return;
-  }
-
-  try {
-    const result = await renderUniversalFigureToVisio(renderPlan, options);
-    sendJson(response, 200, {
-      status: "rendered",
-      analysisStatus: analysis.status,
-      diagnostics: analysis.diagnostics,
-      validation: figureLayout.validation,
-      ...result,
-    });
-  } catch (error) {
-    sendJson(response, 503, {
-      status: "visio_unavailable",
-      error: error.message,
-      diagnostics: analysis.diagnostics,
-      validation: figureLayout.validation,
-    });
-  }
 }
 
 async function handleAnalyze(request, response) {
