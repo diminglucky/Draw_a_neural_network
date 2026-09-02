@@ -103,6 +103,7 @@ node --test universal-ir.test.mjs
 
 Output: focused `tests 7`, `pass 7`, `fail 0`; Universal IR `tests 5`, `pass 5`, `fail 0`; both exit code `0`.
 
-Fix commit: `TODO_REPLACED_AFTER_COMMIT`
+Fix commit: `ebb0c870b3c66b507893bf763730a4faef713daf`
 
 Remaining concerns are unchanged: explicit evidence IDs are recommended for cross-record identity, and no host/UI or rendered-figure acceptance was performed.
+
