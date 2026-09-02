@@ -40,6 +40,51 @@ test("selectFigureGrammar chooses a semantic grammar from topology, not a templa
   assert.match(grammar.reason, /residual|skip/i);
 });
 
+test("selectFigureGrammar chooses recurrent-flow for recurrent evidence before generic grammars", () => {
+  const recurrentNode = selectFigureGrammar({
+    nodes: [{ id: "cell", family: "recurrent", op: "GRUCell" }],
+    edges: [],
+  });
+  const stateEdge = selectFigureGrammar({
+    nodes: [{ id: "a" }, { id: "b" }],
+    edges: [{ source: "a", target: "b", type: "state" }],
+  });
+  const recurrentStateEdge = selectFigureGrammar({
+    nodes: [{ id: "a" }, { id: "b" }],
+    edges: [{ source: "a", target: "b", type: "recurrent-state" }],
+  });
+  const loopEdge = selectFigureGrammar({
+    nodes: [{ id: "cell", family: "custom" }],
+    edges: [{ source: "cell", target: "cell", type: "loop" }],
+  });
+
+  for (const grammar of [recurrentNode, stateEdge, recurrentStateEdge, loopEdge]) {
+    assert.equal(grammar.id, "recurrent-flow");
+    assert.match(grammar.reason, /recurrent|state|loop/i);
+  }
+});
+
+test("layoutUniversalFigure keeps recurrent flow grammar, metadata, and loop routing", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      { id: "input", family: "input", stage: 0, label: "Sequence" },
+      { id: "cell", family: "recurrent", stage: 1, label: "GRU cell", op: "GRUCell" },
+    ],
+    edges: [
+      { id: "input-state", source: "input", target: "cell", type: "state" },
+      { id: "cell-loop", source: "cell", target: "cell", type: "loop" },
+    ],
+  });
+  const cell = layout.nodes.find((node) => node.id === "cell");
+
+  assert.equal(layout.grammar.id, "recurrent-flow");
+  assert.equal(cell.visualRole, "recurrent-state");
+  assert.equal(cell.geometryData.timeAxis, "left-to-right");
+  assert.equal(cell.geometryData.stateFlow, "feedback-loop");
+  assert.equal(cell.geometryData.preservesStateFlow, true);
+  assert.equal(layout.edges.find((edge) => edge.id === "cell-loop").route.kind, "loop");
+});
+
 test("layoutUniversalFigure preserves arbitrary internal topology inside a compound node", () => {
   const layout = layoutUniversalFigure(residualIR());
   const block = layout.nodes.find((node) => node.id === "block");

@@ -31,7 +31,12 @@ export function selectFigureGrammar(ir = {}) {
   const hasAttention = families.has("attention") || edges.some((edge) => edge.type === "attention");
   const hasEncoderDecoder = nodes.some((node) => /encoder|decoder|upsample|downsample/i.test(`${node.family} ${node.op} ${node.label}`));
   const hasTensor = families.has("conv") || families.has("volume") || families.has("pool");
+  const hasRecurrentFlow = families.has("recurrent")
+    || edges.some((edge) => /^(state|recurrent-state|loop)$/i.test(String(edge.type || "")));
 
+  if (hasRecurrentFlow) {
+    return grammar("recurrent-flow", "recurrent nodes or state/loop edges are present", 0.95);
+  }
   if (hasAttention) {
     return grammar("token-attention", "attention or token interaction edges are present", 0.94);
   }

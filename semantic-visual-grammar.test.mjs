@@ -157,3 +157,19 @@ test("semantic grammar carries evidenced internal operator labels for module ren
   });
   assert.deepEqual(compiled.geometryData.internalOperatorLabels, ["Conv 3×3", "BatchNorm"]);
 });
+
+test("semantic grammar preserves recurrent time-step and state-flow layout semantics", () => {
+  const compiled = compileSemanticVisualNode({
+    id: "recurrent-cell",
+    family: "recurrent",
+    op: "GRUCell",
+    label: "GRU cell",
+    shape: { input: [1, 16], output: [1, 32] },
+  });
+
+  assert.equal(compiled.visualRole, "recurrent-state");
+  assert.equal(compiled.styleProfile, "recurrent");
+  assert.equal(compiled.geometryData.timeAxis, "left-to-right");
+  assert.equal(compiled.geometryData.stateFlow, "feedback-loop");
+  assert.equal(compiled.geometryData.preservesStateFlow, true);
+});

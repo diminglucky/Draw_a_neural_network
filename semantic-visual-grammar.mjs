@@ -99,6 +99,11 @@ export function compileSemanticVisualNode(node = {}, context = {}) {
     labelSlots: labelSlotsForRole(visualRole),
     geometryData: {
       repeatCount: positiveCount(node.repeatCount ?? node.layers),
+      ...(visualRole === "recurrent-state" ? {
+        timeAxis: "left-to-right",
+        stateFlow: "feedback-loop",
+        preservesStateFlow: true,
+      } : {}),
       hasInternalTopology: hasInternalTopology(node),
       internalNodeCount: Array.isArray(internalGraph?.nodes) ? internalGraph.nodes.length : 0,
       internalOperatorLabels: Array.isArray(internalGraph?.nodes)
