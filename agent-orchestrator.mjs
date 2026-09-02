@@ -1,156 +1,122 @@
 import { normalizeArchitectureInput } from "./input-adapters.mjs";
+import { createMemoryRunStore } from "./run-store.mjs";
 
 const MAX_REPAIR_ATTEMPTS = 2;
+const CORE_STAGES = ["inspect", "extract", "normalize", "plan"];
 let nextRunId = 1;
+const runtimeByRun = new WeakMap();
 
-export function createAgentRun(input, dependencies = {}) {
-  const normalizedInput = normalizeArchitectureInput(input);
-  return {
+export function createAgentRun(input, dependencies = {}, options = {}) {
+  const run = {
     id: `agent-run-${Date.now().toString(36)}-${nextRunId++}`,
-    input: clone(normalizedInput),
+    input: clone(normalizeArchitectureInput(input)),
     dependencies: { ...dependencies },
     status: "ready",
     stage: "inspect",
     snapshots: freezeSnapshots([]),
     diagnostics: [],
     attempts: { repair: 0 },
-    inspect: undefined,
-    extract: undefined,
-    normalize: undefined,
-    ir: undefined,
-    figurePlan: undefined,
-    renderResult: undefined,
-    readback: undefined,
+    inspect: undefined, extract: undefined, normalize: undefined, ir: undefined,
+    plan: undefined, planOutput: undefined, figurePlan: undefined,
+    renderResult: undefined, readback: undefined,
   };
+  runtimeByRun.set(run, {
+    dependencies: { ...dependencies },
+    runStore: options.runStore || dependencies.runStore || createMemoryRunStore(),
+    rootRun: run,
+    state: run,
+  });
+  return run;
 }
 
-export async function runAgentPipeline(run) {
-  let current = run;
-  const stages = [
-    ["inspect", current.input],
-    ["extract", () => current.inspect],
-    ["normalize", () => current.extract],
-    ["plan", () => current.ir],
-  ];
+export async function runAgentPipeline(run, options = {}) {
+  const runtime = runtimeFor(run, options);
+  const stored = await readStoredRun(runtime.runStore, run.id);
+  const preferred = runtime.state && runtime.state !== run
+    && ["confirmed", "repair-pending"].includes(runtime.state.status)
+    ? runtime.state
+    : (runtime.state || stored || run);
+  const current = workingRun(preferred, runtime);
+  if (current.status === "completed" && !options.force) return rememberResult(current, runtime);
+  await saveRun(current, runtime.runStore);
 
-  for (const [stage, input] of stages) {
+  if (current.status === "repair-pending") return rememberResult(await continueRepair(current, runtime), runtime);
+
+  for (let index = nextCoreStageIndex(current); index < CORE_STAGES.length; index += 1) {
+    const stage = CORE_STAGES[index];
     current.stage = stage;
-    const dependency = current.dependencies?.[stage];
     try {
-      const value = await invoke(dependency, typeof input === "function" ? input() : input, current);
+      const value = await invoke(runtime.dependencies?.[stage], stageInput(current, stage), current);
       current[stage] = value;
-      appendSnapshot(current, stage, value);
+      if (stage === "normalize") current.ir = current.normalize?.ir || current.normalize;
+      if (stage === "plan") {
+        current.planOutput = current.plan;
+        current.figurePlan = current.plan?.figurePlan || current.plan;
+        if (current.plan?.ir) current.ir = current.plan.ir;
+      }
+      await appendSnapshot(current, stage, value, runtime.runStore);
     } catch (error) {
-      return failAt(current, stage, error);
+      return rememberResult(await failAt(current, stage, error), runtime);
     }
-
     if (stage === "extract" && containsUnresolved(current.extract)) {
       current.status = "needs-confirmation";
-      current.diagnostics = uniqueDiagnostics([
-        ...current.diagnostics,
-        { kind: "needs-confirmation", code: "unresolved-evidence", severity: "warning", message: "Evidence contains unresolved architecture structure." },
-      ]);
-      return resultOf(current);
-    }
-
-    if (stage === "normalize") {
-      current.ir = current.normalize?.ir || current.normalize;
-    }
-    if (stage === "plan") {
-      current.planOutput = current.plan;
-      current.figurePlan = current.plan?.figurePlan || current.plan;
-      if (current.plan?.ir) current.ir = current.plan.ir;
+      current.diagnostics = uniqueDiagnostics([...current.diagnostics, {
+        kind: "needs-confirmation", code: "unresolved-evidence", severity: "warning",
+        message: "Evidence contains unresolved architecture structure.",
+      }]);
+      await saveRun(current, runtime.runStore);
+      return rememberResult(current, runtime);
     }
   }
-
-  const render = current.dependencies?.render;
-  if (typeof render === "function") {
-    current.stage = "render";
-    try {
-      current.renderResult = await render(current.figurePlan, current);
-      appendSnapshot(current, "render", current.renderResult);
-    } catch (error) {
-      return failAt(current, "render", error, "render-failed");
-    }
-  }
-
-  const readback = current.dependencies?.readback;
-  if (typeof readback === "function") {
-    current.stage = "readback";
-    try {
-      current.readback = await readback(current.figurePlan, current.renderResult, current);
-      appendSnapshot(current, "readback", current.readback);
-    } catch (error) {
-      return failAt(current, "readback", error, "readback-mismatch");
-    }
-    const readbackDiagnostics = diagnoseReadback(current.renderResult?.figurePlan || current.figurePlan, current.readback);
-    if (readbackDiagnostics.length) {
-      current.diagnostics = uniqueDiagnostics([...current.diagnostics, ...readbackDiagnostics]);
-      current.status = "readback-mismatch";
-      return resultOf(current);
-    }
-  }
-
-  current.status = "completed";
-  current.stage = current.snapshots.at(-1)?.stage || "plan";
-  return resultOf(current);
+  return rememberResult(await runPostPlan(current, runtime), runtime);
 }
 
 export function resumeAgentRun(run, event = {}) {
-  const next = {
-    ...run,
-    input: clone(run.input),
-    dependencies: { ...(run.dependencies || {}) },
-    snapshots: freezeSnapshots(run.snapshots || []),
-    diagnostics: clone(run.diagnostics || []),
-    attempts: { repair: Number(run.attempts?.repair || 0) },
-  };
+  const runtime = runtimeFor(run);
+  const next = workingRun(runtime.state || run, runtime);
   if (event.type === "confirm") {
     next.status = "confirmed";
     next.confirmation = clone(event.value);
-    return next;
-  }
-  if (event.type === "repair") {
-    if (next.attempts.repair >= MAX_REPAIR_ATTEMPTS) {
-      next.status = "repair-failed";
-      return next;
+  } else if (event.type === "repair") {
+    if (next.attempts.repair >= MAX_REPAIR_ATTEMPTS) next.status = "repair-failed";
+    else {
+      next.attempts.repair += 1;
+      next.status = "repair-pending";
+      next.repair = clone(event.value);
+      next.repairReason = event.value?.reason ?? event.reason ?? "unspecified";
     }
-    next.attempts.repair += 1;
-    next.status = "repair-pending";
-    next.repair = clone(event.value);
-    return next;
-  }
-  if (event.type === "render-result") {
+  } else if (event.type === "render-result") {
     next.renderResult = clone(event.value);
     next.status = "rendered";
-    return next;
-  }
-  if (event.type === "readback-result") {
+    next.stage = "render";
+  } else if (event.type === "readback-result") {
     next.readback = clone(event.value);
     const issues = diagnoseReadback(next.renderResult?.figurePlan || next.figurePlan, next.readback);
     next.diagnostics = uniqueDiagnostics([...next.diagnostics, ...issues]);
     next.status = issues.length ? "readback-mismatch" : "completed";
-    return next;
+    next.stage = "readback";
   }
+  runtimeByRun.set(next, { ...runtime, state: next });
   return next;
 }
+
+export async function continueAgentRun(run, options = {}) {
+  return runAgentPipeline(run, { ...options, force: true });
+}
+
+export const resumeAgentPipeline = continueAgentRun;
 
 export function diagnoseReadback(expected = {}, actual = {}) {
   const diagnostics = [];
   const expectedNodes = Array.isArray(expected.nodes) ? expected.nodes : [];
-  const actualNodes = Array.isArray(actual.nodes)
-    ? actual.nodes
-    : (Array.isArray(actual.sourceNodeIds) ? actual.sourceNodeIds.map((sourceNodeId) => ({ sourceNodeId })) : []);
+  const actualNodes = Array.isArray(actual.nodes) ? actual.nodes : (Array.isArray(actual.sourceNodeIds) ? actual.sourceNodeIds.map((sourceNodeId) => ({ sourceNodeId })) : []);
   const expectedNodeIds = expectedNodes.map((node) => String(node.sourceNodeId || node.id || "")).filter(Boolean);
   const actualNodeIds = new Set(actualNodes.map((node) => String(node.sourceNodeId || node.id || node || "")).filter(Boolean));
   for (const sourceNodeId of expectedNodeIds) {
     if (!actualNodeIds.has(sourceNodeId)) diagnostics.push(mismatch("missing-source-node-id", `Readback is missing source node ${sourceNodeId}.`, { sourceNodeId }));
   }
-
   const expectedEdges = Array.isArray(expected.edges) ? expected.edges : [];
-  const actualEdges = Array.isArray(actual.connectors)
-    ? actual.connectors
-    : (Array.isArray(actual.edgeIds) ? actual.edgeIds.map((id) => ({ sourceEdgeId: id })) : []);
+  const actualEdges = Array.isArray(actual.connectors) ? actual.connectors : (Array.isArray(actual.edgeIds) ? actual.edgeIds.map((id) => ({ sourceEdgeId: id })) : []);
   const actualEdgeById = new Map(actualEdges.map((edge) => [String(edge.sourceEdgeId || edge.id || ""), edge]));
   for (const expectedEdge of expectedEdges) {
     const sourceEdgeId = String(expectedEdge.sourceEdgeId || expectedEdge.id || "");
@@ -168,79 +134,143 @@ export function diagnoseReadback(expected = {}, actual = {}) {
       diagnostics.push(mismatch("glue-mismatch", `Connector ${sourceEdgeId} is glued to the wrong endpoint.`, { sourceEdgeId }));
     }
   }
-  if (expected.renderId && String(expected.renderId) !== String(actual.renderId || "")) {
-    diagnostics.push(mismatch("render-id-mismatch", "Readback render identity does not match the requested render.", { expected: expected.renderId, actual: actual.renderId || "" }));
-  }
+  if (expected.renderId && String(expected.renderId) !== String(actual.renderId || "")) diagnostics.push(mismatch("render-id-mismatch", "Readback render identity does not match the requested render.", { expected: expected.renderId, actual: actual.renderId || "" }));
   return diagnostics;
 }
 
-function appendSnapshot(run, stage, value) {
-  run.snapshots = freezeSnapshots([...run.snapshots, { stage, value: clone(value) }]);
+async function continueRepair(current, runtime) {
+  current.stage = "repair";
+  const reason = current.repairReason || current.repair?.reason || "unspecified";
+  try {
+    const repair = runtime.dependencies?.repairFigurePlan;
+    const nextPlan = typeof repair === "function" ? await repair(clone(current.figurePlan), reason, current) : clone(current.figurePlan);
+    if (nextPlan === undefined) throw new Error("repairFigurePlan must return a Figure Plan.");
+    current.figurePlan = clone(nextPlan);
+    current.planOutput = current.planOutput?.figurePlan ? { ...clone(current.planOutput), figurePlan: clone(nextPlan) } : clone(nextPlan);
+    current.plan = current.planOutput;
+    await appendSnapshot(current, "repair", { reason, figurePlan: nextPlan }, runtime.runStore);
+    return runPostPlan(current, runtime);
+  } catch (error) {
+    return failAt(current, "repair", error, "repair-failed");
+  }
 }
 
-function failAt(run, stage, error, kind = `${stage}-failed`) {
+async function runPostPlan(current, runtime) {
+  if (typeof runtime.dependencies?.render === "function") {
+    current.stage = "render";
+    try {
+      current.renderResult = await runtime.dependencies.render(clone(current.figurePlan), current);
+      await appendSnapshot(current, "render", current.renderResult, runtime.runStore);
+    } catch (error) { return failAt(current, "render", error, "render-failed"); }
+  }
+  if (typeof runtime.dependencies?.readback === "function") {
+    current.stage = "readback";
+    try {
+      current.readback = await runtime.dependencies.readback(clone(current.figurePlan), current.renderResult, current);
+      await appendSnapshot(current, "readback", current.readback, runtime.runStore);
+    } catch (error) { return failAt(current, "readback", error, "readback-mismatch"); }
+    const issues = diagnoseReadback(current.renderResult?.figurePlan || current.figurePlan, current.readback);
+    if (issues.length) {
+      current.diagnostics = uniqueDiagnostics([...current.diagnostics, ...issues]);
+      current.status = "readback-mismatch";
+      await saveRun(current, runtime.runStore);
+      return current;
+    }
+  }
+  current.status = "completed";
+  current.stage = current.snapshots.at(-1)?.stage || "plan";
+  await saveRun(current, runtime.runStore);
+  return current;
+}
+
+function nextCoreStageIndex(run) {
+  const indexes = run.snapshots.map((snapshot) => CORE_STAGES.indexOf(snapshot.stage)).filter((index) => index >= 0);
+  return indexes.length ? indexes.at(-1) + 1 : 0;
+}
+
+function stageInput(run, stage) {
+  if (stage === "inspect") return run.input;
+  if (stage === "extract") return run.inspect;
+  if (stage === "normalize") return run.extract;
+  return run.ir;
+}
+
+async function appendSnapshot(run, stage, value, store) {
+  const snapshot = { stage, value: clone(value) };
+  run.snapshots = freezeSnapshots([...run.snapshots, snapshot]);
+  if (store) {
+    await store.appendSnapshot(run.id, snapshot);
+    await saveRun(run, store);
+  }
+}
+
+async function failAt(run, stage, error, kind = `${stage}-failed`) {
   run.status = kind;
   run.stage = stage;
-  run.diagnostics = uniqueDiagnostics([...run.diagnostics, {
-    kind,
-    code: kind,
-    severity: "error",
-    message: error instanceof Error ? error.message : String(error),
-    stage,
-  }]);
-  return resultOf(run);
+  run.diagnostics = uniqueDiagnostics([...run.diagnostics, { kind, code: kind, severity: "error", message: error instanceof Error ? error.message : String(error), stage }]);
+  await saveRun(run, runtimeByRun.get(run)?.runStore);
+  return run;
+}
+
+function runtimeFor(run, options = {}) {
+  const existing = runtimeByRun.get(run);
+  if (existing) return { ...existing, runStore: options.runStore || existing.runStore };
+  return { dependencies: { ...(run.dependencies || {}) }, runStore: options.runStore || run.runStore, state: run };
+}
+
+async function readStoredRun(store, id) { return store?.get ? store.get(id) : undefined; }
+async function saveRun(run, store) { if (store?.set) await store.set(run.id, persistedRun(run)); }
+function persistedRun(run) { const copy = publicState(run); delete copy.dependencies; return copy; }
+
+function workingRun(source, runtime) {
+  const run = { ...source, input: clone(source.input), dependencies: { ...runtime.dependencies }, snapshots: freezeSnapshots(source.snapshots || []), diagnostics: clone(source.diagnostics || []), attempts: { repair: Number(source.attempts?.repair || 0) }, repair: clone(source.repair), confirmation: clone(source.confirmation), repairReason: source.repairReason };
+  restoreSnapshots(run);
+  return run;
+}
+
+function restoreSnapshots(run) {
+  for (const snapshot of run.snapshots) {
+    const value = clone(snapshot.value);
+    if (snapshot.stage === "inspect") run.inspect = value;
+    if (snapshot.stage === "extract") run.extract = value;
+    if (snapshot.stage === "normalize") { run.normalize = value; run.ir = value?.ir || value; }
+    if (snapshot.stage === "plan") { run.plan = value; run.planOutput = value; run.figurePlan = value?.figurePlan || value; if (value?.ir) run.ir = value.ir; }
+    if (snapshot.stage === "render") run.renderResult = value;
+    if (snapshot.stage === "readback") run.readback = value;
+  }
+}
+
+function rememberResult(current, runtime) {
+  const result = resultOf(current);
+  const metadata = { ...runtime, state: current };
+  runtimeByRun.set(current, metadata);
+  runtimeByRun.set(result, metadata);
+  if (runtime.rootRun) runtimeByRun.set(runtime.rootRun, metadata);
+  return result;
 }
 
 function resultOf(run) {
-  return {
-    id: run.id,
-    status: run.status,
-    stage: run.stage,
-    snapshots: run.snapshots,
-    diagnostics: clone(run.diagnostics),
-    attempts: { ...run.attempts },
-    input: clone(run.input),
-    ir: clone(run.ir),
-    figurePlan: clone(run.figurePlan),
-    planOutput: clone(run.planOutput),
-    renderResult: clone(run.renderResult),
-    readback: clone(run.readback),
-  };
+  return publicState(run);
 }
 
-async function invoke(dependency, value, run) {
-  if (typeof dependency !== "function") return value;
-  return dependency(value, run);
+function publicState(run) {
+  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), figurePlan: clone(run.figurePlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
 }
+
+async function invoke(dependency, value, run) { return typeof dependency === "function" ? dependency(value, run) : value; }
 
 function containsUnresolved(value) {
   if (!value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(containsUnresolved);
   if (value.status === "unresolved" || value.kind === "unresolved-operator" || value.code === "unresolved-operator") return true;
   if (value.family === "custom" || value.compoundKind === "unresolved") return true;
-  return Array.isArray(value.diagnostics) && value.diagnostics.some(containsUnresolved)
-    || Array.isArray(value.nodes) && value.nodes.some(containsUnresolved);
+  return Array.isArray(value.diagnostics) && value.diagnostics.some(containsUnresolved) || Array.isArray(value.nodes) && value.nodes.some(containsUnresolved);
 }
 
-function mismatch(code, message, extra) {
-  return { kind: "readback-mismatch", code, severity: "error", message, ...extra };
-}
-
+function mismatch(code, message, extra) { return { kind: "readback-mismatch", code, severity: "error", message, ...extra }; }
 function uniqueDiagnostics(items) {
   const seen = new Set();
-  return items.filter((item) => {
-    const key = `${item.kind}:${item.code || ""}:${item.sourceNodeId || item.sourceEdgeId || ""}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return items.filter((item) => { const key = `${item.kind}:${item.code || ""}:${item.sourceNodeId || item.sourceEdgeId || ""}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }
-
-function freezeSnapshots(value) {
-  return Object.freeze(value.map((item) => Object.freeze(clone(item))));
-}
-
-function clone(value) {
-  if (value === undefined) return undefined;
-  return structuredClone(value);
-}
+function freezeSnapshots(value) { return Object.freeze(value.map((item) => Object.freeze(clone(item)))); }
+function clone(value) { return value === undefined ? undefined : structuredClone(value); }

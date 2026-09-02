@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createAgentRun,
+  continueAgentRun,
   diagnoseReadback,
   resumeAgentRun,
   runAgentPipeline,
 } from "./agent-orchestrator.mjs";
+import { createMemoryRunStore } from "./run-store.mjs";
 
 const input = { kind: "source", source: "class Net: pass", framework: "pytorch" };
 
@@ -42,7 +44,32 @@ test("runs injected stages, retains outputs, and reports a successful readback",
   assert.equal(result.ir.nodes[0].id, "input");
   assert.equal(result.figurePlan.nodes[0].sourceNodeId, "input");
   assert.deepEqual(result.diagnostics, []);
-  assert.deepEqual(run.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract", "normalize", "plan", "render", "readback"]);
+  assert.deepEqual(result.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract", "normalize", "plan", "render", "readback"]);
+  assert.deepEqual(run.snapshots, []);
+  assert.equal(run.status, "ready");
+});
+
+test("resumes after confirmation from the latest valid snapshot without rerunning earlier stages", async () => {
+  const calls = [];
+  const run = createAgentRun(input, dependencies({
+    inspect: async (value) => { calls.push("inspect"); return { source: value.source }; },
+    extract: (value) => { calls.push("extract"); return { ...value, nodes: [{ id: "opaque", family: "custom" }] }; },
+    normalize: (value) => { calls.push("normalize"); return { ...value, nodes: [{ id: "confirmed", family: "input" }] }; },
+    plan: (value) => { calls.push("plan"); return { figurePlan: { nodes: [{ id: "confirmed", sourceNodeId: "confirmed" }], edges: [] }, ir: value }; },
+    render: undefined,
+    readback: undefined,
+  }));
+  const paused = await runAgentPipeline(run);
+  assert.equal(paused.status, "needs-confirmation");
+
+  const confirmed = resumeAgentRun(paused, { type: "confirm", value: { accepted: true } });
+  assert.equal(confirmed.status, "confirmed");
+  const resumed = await continueAgentRun(confirmed);
+
+  assert.equal(resumed.status, "completed");
+  assert.deepEqual(calls, ["inspect", "extract", "normalize", "plan"]);
+  assert.deepEqual(resumed.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract", "normalize", "plan"]);
+  assert.equal(resumed.ir.nodes[0].id, "confirmed");
 });
 
 test("stops with structured diagnostics when extraction or normalization fails", async () => {
@@ -77,7 +104,8 @@ test("resume creates a new run and bounds repair attempts without changing sourc
   const originalSnapshots = result.snapshots;
   const confirmed = resumeAgentRun(run, { type: "confirm", value: { accepted: true } });
   assert.notEqual(confirmed, run);
-  assert.deepEqual(run.snapshots, originalSnapshots);
+  assert.deepEqual(run.snapshots, []);
+  assert.notEqual(confirmed.snapshots, originalSnapshots);
   assert.equal(confirmed.status, "confirmed");
   const repaired = resumeAgentRun(confirmed, { type: "repair", value: { reason: "glue" } });
   const repairedAgain = resumeAgentRun(repaired, { type: "repair", value: { reason: "route" } });
@@ -86,6 +114,58 @@ test("resume creates a new run and bounds repair attempts without changing sourc
   assert.equal(exhausted.status, "repair-failed");
   assert.equal(exhausted.attempts.repair, 2);
   assert.deepEqual(exhausted.ir, result.ir);
+});
+
+test("repair continuation injects a reason-specific Figure Plan and stops after two repairs", async () => {
+  const repairedReasons = [];
+  let renderCount = 0;
+  const run = createAgentRun(input, dependencies({
+    repairFigurePlan: (plan, reason) => {
+      repairedReasons.push(reason);
+      return { ...plan, revision: reason, nodes: plan.nodes.map((node) => ({ ...node, label: reason })) };
+    },
+    render: (plan) => ({ renderId: `render-${++renderCount}`, figurePlan: plan }),
+    readback: (_plan, rendered) => ({ renderId: rendered.renderId, nodes: [{ sourceNodeId: "input" }], connectors: [] }),
+  }));
+  const first = await runAgentPipeline(run);
+  const requested = resumeAgentRun(first, { type: "repair", value: { reason: "glue-mismatch" } });
+  const repaired = await continueAgentRun(requested);
+
+  assert.equal(repaired.status, "completed");
+  assert.deepEqual(repairedReasons, ["glue-mismatch"]);
+  assert.equal(repaired.figurePlan.revision, "glue-mismatch");
+  assert.equal(repaired.attempts.repair, 1);
+
+  const second = resumeAgentRun(repaired, { type: "repair", value: { reason: "route-overlap" } });
+  const repairedAgain = await continueAgentRun(second);
+  assert.equal(repairedAgain.status, "completed");
+  assert.deepEqual(repairedReasons, ["glue-mismatch", "route-overlap"]);
+
+  const exhausted = resumeAgentRun(repairedAgain, { type: "repair", value: { reason: "third" } });
+  assert.equal(exhausted.status, "repair-failed");
+  assert.equal(exhausted.attempts.repair, 2);
+});
+
+test("continues from a run restored from the Run Store", async () => {
+  const store = createMemoryRunStore();
+  const calls = [];
+  const stageDependencies = dependencies({
+    extract: (value) => { calls.push("extract"); return { ...value, nodes: [{ id: "opaque", family: "custom" }] }; },
+    normalize: (value) => { calls.push("normalize"); return { ...value, nodes: [{ id: "restored", family: "input" }] }; },
+    plan: (value) => { calls.push("plan"); return { figurePlan: { nodes: [{ id: "restored", sourceNodeId: "restored" }], edges: [] }, ir: value }; },
+    render: undefined,
+    readback: undefined,
+  });
+  const original = createAgentRun(input, stageDependencies, { runStore: store });
+  const paused = await runAgentPipeline(original);
+  const persisted = await store.get(paused.id);
+  const restored = { ...persisted, dependencies: stageDependencies };
+  const confirmed = resumeAgentRun(restored, { type: "confirm", value: { accepted: true } });
+  const resumed = await continueAgentRun(confirmed, { runStore: store });
+
+  assert.equal(resumed.status, "completed");
+  assert.deepEqual(calls, ["extract", "normalize", "plan"]);
+  assert.equal(resumed.figurePlan.nodes[0].sourceNodeId, "restored");
 });
 
 test("diagnoses missing IDs, render ID changes, and connector glue changes", () => {
