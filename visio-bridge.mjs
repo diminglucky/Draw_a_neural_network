@@ -12,15 +12,18 @@ export function buildVisioRenderPlan(layout = {}, options = {}) {
   const grammarId = String(layout.grammar?.id || "generic-dag");
   const shapes = [];
   const innerShapeIds = new Map();
+  const outerShapeIds = new Map();
 
   for (const node of Array.isArray(layout.nodes) ? layout.nodes : []) {
     const shapeId = `outer::${node.id}`;
+    outerShapeIds.set(String(node.id || ""), shapeId);
+    if (node.sourceNodeId) outerShapeIds.set(String(node.sourceNodeId), shapeId);
     shapes.push(shapePlan(node, {
       id: shapeId,
       parentNodeId: "",
       grammarId,
       renderId,
-      shapeKind: node.representation || node.family || "operator",
+      shapeKind: node.shapeKind || node.representation || node.family || "operator",
     }));
     const innerNodes = node.renderInternalGraph === false
       ? []
@@ -51,16 +54,19 @@ export function buildVisioRenderPlan(layout = {}, options = {}) {
     const points = Array.isArray(edge.route?.points) ? edge.route.points : [];
     connectors.push({
       id: `outer-edge::${edge.id}`,
-      source: edge.source,
-      target: edge.target,
+      source: String(edge.sourceNodeId || edge.source),
+      target: String(edge.targetNodeId || edge.target),
       type: edge.type || "signal",
       label: edge.label || "",
       points,
       renderId,
-      sourceNodeId: edge.source,
-      targetNodeId: edge.target,
-      sourceShapeId: `outer::${edge.source}`,
-      targetShapeId: `outer::${edge.target}`,
+      sourceEdgeId: String(edge.sourceEdgeId || edge.id),
+      sourceNodeId: String(edge.sourceNodeId || edge.source),
+      targetNodeId: String(edge.targetNodeId || edge.target),
+      sourceShapeId: outerShapeIds.get(String(edge.source || edge.sourceNodeId))
+        || `outer::${String(edge.source || edge.sourceNodeId)}`,
+      targetShapeId: outerShapeIds.get(String(edge.target || edge.targetNodeId))
+        || `outer::${String(edge.target || edge.targetNodeId)}`,
       evidenceCount: Array.isArray(edge.evidence) ? edge.evidence.length : 0,
     });
   }
@@ -205,13 +211,13 @@ function shapePlan(node, options) {
   const visualRole = String(node.visualRole || semantic.visualRole || options.shapeKind || "operator");
   const styleProfile = String(node.styleProfile || semantic.styleProfile || "operator");
   const labelSlots = node.labelSlots || semantic.labelSlots;
-  const geometryData = node.geometryData || semantic.geometryData;
+  const geometryData = node.geometryData || node.geometry?.data || semantic.geometryData;
   return {
     id: options.id,
-    x: Number(node.x) || 0,
-    y: Number(node.y) || 0,
-    w: Number(node.w) || 120,
-    h: Number(node.h) || 80,
+    x: Number(node.x ?? node.geometry?.x) || 0,
+    y: Number(node.y ?? node.geometry?.y) || 0,
+    w: Number(node.w ?? node.geometry?.width) || 120,
+    h: Number(node.h ?? node.geometry?.height) || 80,
     label: String(node.figureLabel || node.label || node.op || "Operator"),
     subtitle: String(node.figureSubtitle || node.subtitle || ""),
     shapeKind: options.shapeKind,
@@ -225,7 +231,7 @@ function shapePlan(node, options) {
     line: String(node.lineColor || "#263248"),
     shapeData: {
       renderId: options.renderId,
-      sourceNodeId: String(node.id || ""),
+      sourceNodeId: String(node.sourceNodeId || node.id || ""),
       parentNodeId: options.parentNodeId,
       visualRole: String(node.visualRole || options.shapeKind || node.family || "operator"),
       semanticRole: visualRole,

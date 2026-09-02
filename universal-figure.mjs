@@ -262,6 +262,7 @@ function normalizeNode(node = {}, index) {
   const normalized = {
     ...node,
     id: String(node.id || `figure-node-${index + 1}`),
+    sourceNodeId: String(node.sourceNodeId || node.id || `figure-node-${index + 1}`),
     family,
     op: String(node.op || node.operation || node.label || "UnknownOperator"),
     label: String(node.label || node.op || `Node ${index + 1}`),
@@ -281,6 +282,7 @@ function normalizeEdge(edge = {}, index) {
   return {
     ...edge,
     id: String(edge.id || `figure-edge-${index + 1}`),
+    sourceEdgeId: String(edge.sourceEdgeId || edge.id || `figure-edge-${index + 1}`),
     source: String(edge.source || ""),
     target: String(edge.target || ""),
     type: String(edge.type || "signal"),
@@ -406,8 +408,10 @@ function condenseLinearConvRuns(nodes, edges) {
       ...edge,
       source: replacement.get(edge.source) || edge.source,
       target: replacement.get(edge.target) || edge.target,
+      preserveSelfLoop: edge.source === edge.target,
     }))
-    .filter((edge) => edge.source !== edge.target);
+    .filter((edge) => edge.source !== edge.target || edge.preserveSelfLoop)
+    .map(({ preserveSelfLoop, ...edge }) => edge);
   return { nodes: condensedNodes, edges: condensedEdges };
 }
 
@@ -463,7 +467,20 @@ function routeEdge(edge, nodeMap, index, artboard) {
   if (!source || !target) return result;
   const from = { x: source.x + source.w, y: source.y + source.h / 2 };
   const to = { x: target.x, y: target.y + target.h / 2 };
-  if (edge.type === "skip" || edge.type === "residual") {
+  if (source.id === target.id || edge.type === "loop") {
+    const laneX = source.x + source.w + 34 + index * 8;
+    result.route = {
+      kind: "loop",
+      points: [
+        from,
+        { x: laneX, y: from.y },
+        { x: laneX, y: source.y - 28 - index * 12 },
+        { x: source.x + source.w / 2, y: source.y - 28 - index * 12 },
+        { x: to.x + source.w / 2, y: to.y - 28 - index * 12 },
+        to,
+      ],
+    };
+  } else if (edge.type === "skip" || edge.type === "residual") {
     const laneY = artboard.y + 36 + index * 24;
     result.route = {
       kind: "skip-lane",

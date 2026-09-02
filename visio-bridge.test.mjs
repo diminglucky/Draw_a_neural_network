@@ -6,6 +6,7 @@ import {
   buildVisioRenderPlan,
   validateVisioReadback,
 } from "./visio-bridge.mjs";
+import { createFigurePlan } from "./figure-plan.mjs";
 
 const layout = {
   grammar: { id: "residual-graph" },
@@ -42,6 +43,40 @@ test("buildVisioRenderPlan targets an existing document and carries semantic Sha
   assert.equal(plan.shapes[0].shapeData.grammarId, "residual-graph");
   assert.equal(plan.shapes[0].shapeData.confidence, 0.42);
   assert.equal(plan.shapes[0].shapeData.evidenceCount, 1);
+});
+
+test("Visio consumes Figure Plan source identities for shapes and connectors", () => {
+  const figurePlan = createFigurePlan({
+    ir: {
+      nodes: [
+        { id: "source-a", family: "recurrent", label: "State A", stage: 0 },
+        { id: "source-b", family: "custom", label: "Opaque B", stage: 1 },
+      ],
+      edges: [{ id: "source-edge", source: "source-a", target: "source-b", type: "loop" }],
+    },
+    layout: {
+      grammar: { id: "generic-dag" },
+      figure: { title: "Identity fixture" },
+      artboard: { x: 0, y: 0, width: 600, height: 300 },
+      nodes: [
+        { id: "layout-a", sourceNodeId: "source-a", family: "recurrent", representation: "compound", x: 20, y: 40, w: 120, h: 100 },
+        { id: "layout-b", sourceNodeId: "source-b", family: "custom", representation: "compound", x: 300, y: 40, w: 120, h: 100 },
+      ],
+      edges: [{ id: "layout-edge", sourceEdgeId: "source-edge", source: "layout-a", target: "layout-b", route: { kind: "direct", points: [{ x: 140, y: 90 }, { x: 300, y: 90 }] } }],
+    },
+  });
+  const plan = buildVisioRenderPlan(figurePlan, { documentPath: "C:\\project\\existing.vsdx" });
+
+  assert.equal(plan.shapes[0].shapeData.sourceNodeId, "source-a");
+  assert.equal(plan.shapes[1].shapeData.sourceNodeId, "source-b");
+  assert.equal(plan.connectors[0].sourceEdgeId, "source-edge");
+  assert.equal(plan.connectors[0].sourceNodeId, "source-a");
+  assert.equal(plan.connectors[0].targetNodeId, "source-b");
+  assert.equal(plan.connectors[0].sourceShapeId, "outer::layout-a");
+  assert.equal(plan.connectors[0].targetShapeId, "outer::layout-b");
+  assert.equal(plan.shapes[0].shapeKind, "compound");
+  assert.equal(plan.shapes[0].x, 20);
+  assert.equal(plan.shapes[0].w, 120);
 });
 
 test("Visio plan carries semantic role, style profile, label slots, and geometry evidence", () => {
