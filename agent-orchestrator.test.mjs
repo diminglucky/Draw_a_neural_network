@@ -14,7 +14,7 @@ function dependencies(overrides = {}) {
     inspect: async (value) => ({ source: value.source, evidence: [{ status: "confirmed" }] }),
     extract: (value) => ({ ...value, nodes: [{ id: "input", family: "input" }] }),
     normalize: (value) => ({ ...value, nodes: [{ id: "input", family: "input" }] }),
-    plan: (value) => ({ nodes: [{ id: "n1", sourceNodeId: "input" }], edges: [], ir: value }),
+    plan: (value) => ({ figurePlan: { nodes: [{ id: "n1", sourceNodeId: "input" }], edges: [] }, ir: value }),
     render: async (value) => ({ renderId: "render-1", figurePlan: value }),
     readback: async (_plan, rendered) => ({ renderId: rendered.renderId, nodes: [{ sourceNodeId: "input" }], connectors: [] }),
     ...overrides,

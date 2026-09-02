@@ -15,13 +15,14 @@ export function createEvidenceRecord(input = {}) {
   };
 }
 
-export function createEvidenceGraph({ input, records = [], nodes = [], edges = [], diagnostics = [] } = {}) {
+export function createEvidenceGraph({ input, records = [], nodes = [], edges = [], diagnostics = [], figure } = {}) {
   return {
     version: VERSION,
     input,
     records: records.map(createEvidenceRecord),
     nodes: nodes.map((node) => ({ ...node })),
     edges: edges.map((edge) => ({ ...edge })),
+    figure: figure ? { ...figure } : undefined,
     diagnostics: [...diagnostics],
   };
 }
@@ -35,7 +36,7 @@ export function evidenceGraphToUniversalIR(graph = {}) {
   });
   const nodes = (graph.nodes || []).map((node) => ({ ...node, evidence: evidence(node.evidence) }));
   const edges = (graph.edges || []).map((edge) => ({ ...edge, evidence: evidence(edge.evidence) }));
-  const ir = createUniversalIR({ nodes, edges, diagnostics: graph.diagnostics || [] }, {
+  const ir = createUniversalIR({ nodes, edges, figure: graph.figure, diagnostics: graph.diagnostics || [] }, {
     sourceKind: graph.input?.framework || graph.input?.kind || "unknown",
     source: { input: graph.input },
   });

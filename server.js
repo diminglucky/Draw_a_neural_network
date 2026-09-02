@@ -68,6 +68,7 @@ async function handleRenderVisio(request, response) {
     return;
   }
 
+  const figurePlan = analysis.figurePlan || analysis.canvasDocument?.figurePlan;
   const figureLayout = analysis.figureLayout || layoutUniversalFigure(analysis.ir);
   if (!figureLayout.validation?.ok) {
     sendJson(response, 422, {

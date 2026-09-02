@@ -57,7 +57,8 @@ export async function runAgentPipeline(run) {
       current.ir = current.normalize?.ir || current.normalize;
     }
     if (stage === "plan") {
-      current.figurePlan = current.plan;
+      current.planOutput = current.plan;
+      current.figurePlan = current.plan?.figurePlan || current.plan;
       if (current.plan?.ir) current.ir = current.plan.ir;
     }
   }
@@ -201,6 +202,7 @@ function resultOf(run) {
     input: clone(run.input),
     ir: clone(run.ir),
     figurePlan: clone(run.figurePlan),
+    planOutput: clone(run.planOutput),
     renderResult: clone(run.renderResult),
     readback: clone(run.readback),
   };
