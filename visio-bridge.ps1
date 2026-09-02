@@ -714,7 +714,8 @@ function Draw-CompoundModule([object]$Page, [object]$Spec, [double]$X, [double]$
     faceRole = "front"
   }
   Set-ShapeStyle $frame $frameSpec $Scale
-  $frame.CellsU("FillTransparency").FormulaU = "35"
+  $frame.CellsU("FillForegndTrans").FormulaU = "35%"
+  $frame.CellsU("FillBkgndTrans").FormulaU = "35%"
   $frame.CellsU("LinePattern").FormulaU = "2"
   return @($frame)
 }

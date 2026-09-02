@@ -176,6 +176,15 @@ test("Visio bridge renders semantic roles with publication geometry and external
   assert.match(script, /feature-map/i);
 });
 
+test("Visio compound frames use valid foreground and background transparency cells", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  const body = script.match(/function Draw-CompoundModule[\s\S]*?\n}\n\nfunction Draw-UnresolvedModule/);
+  assert.ok(body, "expected compound module renderer");
+  assert.doesNotMatch(body[0], /CellsU\("FillTransparency"\)/);
+  assert.match(body[0], /FillForegndTrans/);
+  assert.match(body[0], /FillBkgndTrans/);
+});
+
 test("Visio bridge gives vectorization a funnel silhouette and bolds stage labels", () => {
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
   const flattenBody = script.match(/function Draw-FlattenRibbon[\s\S]*?\n}\n\nfunction Draw-/);

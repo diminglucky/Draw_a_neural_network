@@ -193,6 +193,7 @@ async function handleRenderVisio(request, response) {
     pageName: body.pageName || "Page-1",
     renderId: body.renderId,
     unitScale: body.unitScale,
+    previewPath: body.previewPath,
     scriptPath: process.env.VISIO_BRIDGE_SCRIPT,
   };
   const plan = buildVisioRenderPlan(renderPlan, options);

@@ -68,6 +68,19 @@ test("default agent service extracts source topology before producing a Figure P
   assert.equal(payload.figurePlan.validation.ok, true);
 });
 
+test("default agent service stops prompt-only input for confirmation without planning fabricated topology", async () => {
+  const service = createAgentService();
+  const { response, payload } = await requestAgent(service, "/api/agent-run", {
+    kind: "prompt",
+    prompt: "draw an LSTM with attention",
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, "needs-confirmation");
+  assert.equal(payload.stage, "extract");
+  assert.equal(payload.figurePlan, undefined);
+  assert.ok(payload.diagnostics.some((item) => item.kind === "needs-confirmation"));
+});
+
 test("agent service exposes needs-confirmation and resumes confirmation", async () => {
   const service = createAgentService({ dependencies: agentDependencies({
     extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
@@ -257,6 +270,7 @@ test("/api/render-visio produces an existing-document plan without creating a ca
     body: JSON.stringify({
       documentPath: "C:\\project\\existing.vsdx",
       pageName: "Page-1",
+      previewPath: "C:\\project\\existing-preview.png",
       ir: {
         nodes: [
           { id: "input", op: "Input", family: "input", stage: 0 },
@@ -273,6 +287,7 @@ test("/api/render-visio produces an existing-document plan without creating a ca
   assert.equal(payload.plan.createDocument, false);
   assert.equal(payload.plan.preserveExisting, true);
   assert.equal(payload.plan.documentPath, "C:\\project\\existing.vsdx");
+  assert.equal(payload.plan.previewPath, "C:\\project\\existing-preview.png");
   assert.ok(payload.plan.shapes.some((shape) => shape.shapeData.sourceNodeId === "custom"));
   assert.deepEqual(
     payload.plan.shapes.filter((shape) => shape.parentNodeId === "").map((shape) => shape.shapeData.sourceNodeId).sort(),
