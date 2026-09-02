@@ -10,12 +10,13 @@ test("creates bounded confirmed evidence with stable explicit IDs", () => {
   assert.equal(first.confidence, 1);
 });
 
-test("preserves unresolved records and conflict diagnostics in a graph and IR", () => {
+test("preserves unresolved records, compound markers, and conflict diagnostics in a graph and IR", () => {
   const unresolved = createEvidenceRecord({ evidenceId: "u-1", source: "trace", status: "unresolved", confidence: 0.4, family: "mystery" });
   const graph = createEvidenceGraph({
     input: { kind: "source", source: "model.py" }, records: [unresolved],
-    nodes: [{ id: "n1", op: "MysteryBlock", evidence: [unresolved.evidenceId], confidence: 0.4 }],
-    edges: [], diagnostics: [{ kind: "conflict", evidenceId: "u-1" }],
+    nodes: [{ id: "n1", op: "MysteryBlock", family: "conv", compoundKind: "unresolved", evidence: [unresolved.evidenceId], confidence: 0.4 }],
+    edges: [{ id: "e1", source: "n1", target: "n1", type: "signal", evidence: [unresolved.evidenceId], confidence: 0.25 }],
+    diagnostics: [{ kind: "conflict", evidenceId: "u-1" }],
   });
   assert.equal(graph.records[0].status, "unresolved");
   assert.deepEqual(graph.diagnostics, [{ kind: "conflict", evidenceId: "u-1" }]);
@@ -23,5 +24,7 @@ test("preserves unresolved records and conflict diagnostics in a graph and IR", 
   assert.equal(ir.nodes[0].compoundKind, "unresolved");
   assert.equal(ir.nodes[0].evidence[0].evidenceId, "u-1");
   assert.equal(ir.nodes[0].confidence, 0.4);
+  assert.equal(ir.edges[0].evidence[0].evidenceId, "u-1");
+  assert.equal(ir.edges[0].confidence, 0.25);
   assert.deepEqual(ir.diagnostics, graph.diagnostics);
 });

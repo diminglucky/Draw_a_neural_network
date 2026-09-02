@@ -6,8 +6,8 @@ export function normalizeArchitectureInput(input) {
     throw invalidInput("kind must be source, ir, image, or prompt");
   }
   const result = Object.fromEntries(FIELDS.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
-  const valid = (input.kind === "source" && input.source !== undefined)
-    || (input.kind === "ir" && input.ir !== undefined)
+  const valid = (input.kind === "source" && typeof input.source === "string" && input.source.trim().length > 0)
+    || (input.kind === "ir" && input.ir !== null && typeof input.ir === "object" && !Array.isArray(input.ir))
     || (input.kind === "image" && Array.isArray(input.images) && input.images.length > 0)
     || (input.kind === "prompt" && typeof input.prompt === "string" && input.prompt.trim().length > 0);
   if (!valid) throw invalidInput(`missing payload for ${input.kind}`);

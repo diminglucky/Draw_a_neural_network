@@ -76,3 +76,33 @@ Output: no whitespace errors.
 ## Commit hashes
 
 - Task implementation commit: `3536fa433635a819e7c54d7bf393823249ada908`
+
+## Review fixes (2026-09-02)
+
+Addressed the review findings with a TDD red-green cycle:
+
+- Preserved pre-existing `compoundKind` markers during `evidenceGraphToUniversalIR`, including `unresolved` markers on otherwise known families.
+- Added coverage proving edge evidence and confidence survive conversion.
+- Tightened source validation to require a non-empty string after trimming.
+- Tightened IR validation to require a non-null, non-array object.
+
+RED command:
+
+```text
+node --test input-adapters.test.mjs evidence-graph.test.mjs network-ir.test.mjs
+```
+
+Output: exit code `1`; 5 passed and 2 failed, specifically the compound marker preservation and strict input validation assertions.
+
+GREEN and regression commands:
+
+```text
+node --test input-adapters.test.mjs evidence-graph.test.mjs network-ir.test.mjs
+node --test universal-ir.test.mjs
+```
+
+Output: focused `tests 7`, `pass 7`, `fail 0`; Universal IR `tests 5`, `pass 5`, `fail 0`; both exit code `0`.
+
+Fix commit: `TODO_REPLACED_AFTER_COMMIT`
+
+Remaining concerns are unchanged: explicit evidence IDs are recommended for cross-record identity, and no host/UI or rendered-figure acceptance was performed.

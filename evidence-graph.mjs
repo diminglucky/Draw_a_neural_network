@@ -35,10 +35,15 @@ export function evidenceGraphToUniversalIR(graph = {}) {
   });
   const nodes = (graph.nodes || []).map((node) => ({ ...node, evidence: evidence(node.evidence) }));
   const edges = (graph.edges || []).map((edge) => ({ ...edge, evidence: evidence(edge.evidence) }));
-  return createUniversalIR({ nodes, edges, diagnostics: graph.diagnostics || [] }, {
+  const ir = createUniversalIR({ nodes, edges, diagnostics: graph.diagnostics || [] }, {
     sourceKind: graph.input?.framework || graph.input?.kind || "unknown",
     source: { input: graph.input },
   });
+  ir.nodes.forEach((node, index) => {
+    const marker = graph.nodes?.[index]?.compoundKind;
+    if (marker !== undefined) node.compoundKind = marker;
+  });
+  return ir;
 }
 
 function stableEvidenceId(input) {

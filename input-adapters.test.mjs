@@ -15,4 +15,8 @@ test("normalizes IR, image, and prompt inputs", () => {
 
 test("rejects malformed architecture input with a structured error", () => {
   assert.throws(() => normalizeArchitectureInput({ kind: "source" }), (error) => error.kind === "invalid-input");
+  assert.throws(() => normalizeArchitectureInput({ kind: "source", source: "  " }), (error) => error.kind === "invalid-input");
+  assert.throws(() => normalizeArchitectureInput({ kind: "source", source: 42 }), (error) => error.kind === "invalid-input");
+  assert.throws(() => normalizeArchitectureInput({ kind: "ir", ir: null }), (error) => error.kind === "invalid-input");
+  assert.throws(() => normalizeArchitectureInput({ kind: "ir", ir: [] }), (error) => error.kind === "invalid-input");
 });
