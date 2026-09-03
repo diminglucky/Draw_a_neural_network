@@ -3,9 +3,70 @@ import test from "node:test";
 import {
   createUniversalIR,
   normalizeUniversalIR,
+  normalizeRecurrentEvidence,
+  recurrentEvidenceForNode,
   projectUniversalIRToCanvas,
   validateUniversalIR,
 } from "./universal-ir.mjs";
+
+test("Universal IR normalizes explicit recurrent evidence without inferring topology from names", () => {
+  const node = {
+    id: "cell",
+    family: "recurrent",
+    op: "LSTMCell",
+    attributes: {
+      repetition: { axis: "time", instances: ["t-1", "t", "t+1"], sharedParameters: true },
+      stateTransitions: [{ sourcePort: "h_prev", targetPort: "h_next", kind: "carry", sourceEdgeId: "state-edge" }],
+      internalGraph: {
+        nodes: [{ id: "actual", op: "Linear" }],
+        edges: [],
+        ports: { inputs: ["x"], states: ["h_prev"], outputs: ["h_next"] },
+      },
+    },
+  };
+  const edges = [{ id: "state-edge", source: "cell", target: "cell", type: "state", ports: { source: "h_prev", target: "h_next" } }];
+
+  const evidence = normalizeRecurrentEvidence(node, edges);
+  assert.equal(evidence.repetition.axis, "time");
+  assert.deepEqual(evidence.repetition.instances, ["t-1", "t", "t+1"]);
+  assert.deepEqual(evidence.stateTransitions[0].sourceEndpointIds, { source: "h_prev", target: "h_next" });
+  assert.equal(evidence.internalGraph.nodes[0].id, "actual");
+  assert.equal(evidence.internalGraph.nodes.some((child) => /gate|forget|input|output/i.test(child.id)), false);
+  assert.deepEqual(recurrentEvidenceForNode(node, edges), evidence);
+});
+
+test("Universal IR drops invalid internal edges and marks missing internal topology unresolved", () => {
+  const evidence = normalizeRecurrentEvidence({
+    id: "opaque",
+    family: "recurrent",
+    op: "GRU",
+    attributes: {
+      internalGraph: {
+        nodes: [{ id: "known" }],
+        edges: [
+          { id: "valid", source: "known", target: "known" },
+          { id: "ghost", source: "known", target: "missing" },
+        ],
+      },
+    },
+  }, []);
+  assert.deepEqual(evidence.internalGraph.edges.map((edge) => edge.id), ["valid"]);
+  assert.equal(evidence.internalGraph.nodes.some((node) => node.id === "missing"), false);
+  assert.ok(evidence.internalGraph.diagnostics.some((item) => item.kind === "invalid-internal-edge"));
+
+  const unresolved = recurrentEvidenceForNode({ id: "r", family: "recurrent", op: "LSTMCell" }, []);
+  assert.equal(unresolved.internalGraph.status, "unresolved");
+  assert.match(unresolved.internalGraph.reason, /internal topology/i);
+});
+
+test("Universal IR keeps transition edge and endpoint identities stable", () => {
+  const evidence = normalizeRecurrentEvidence({
+    id: "cell",
+    attributes: { stateTransitions: [{ sourcePort: "h_prev", targetPort: "h_next", sourceEdgeId: "source-state" }] },
+  }, [{ id: "layout-state", sourceEdgeId: "source-state", ports: { source: "hidden-out", target: "hidden-in" } }]);
+  assert.equal(evidence.stateTransitions[0].sourceEdgeId, "source-state");
+  assert.deepEqual(evidence.stateTransitions[0].sourceEndpointIds, { source: "hidden-out", target: "hidden-in" });
+});
 
 const customGraph = {
   figure: {
@@ -129,4 +190,59 @@ test("Universal IR preserves explicit recurrent loop edges", () => {
     edges: [{ id: "state-loop", source: "cell", target: "cell", type: "loop" }],
   });
   assert.equal(report.ok, true);
+});
+
+test("Universal IR canvas projection preserves semantic input primitives", () => {
+  const ir = normalizeUniversalIR({
+    nodes: [
+      { id: "image", family: "input", label: "pixels", shape: { output: [1, 3, 224, 224] } },
+      { id: "sequence", family: "input", label: "tokens", ports: { outputs: ["tokens", "time"] } },
+      { id: "state", family: "input", label: "hidden state", ports: { outputs: ["h_prev", "c_prev"] } },
+      { id: "vector", family: "input", shape: { output: [1, 128] } },
+      { id: "volume", family: "input", label: "voxel volume", shape: { output: [1, 1, 64, 64, 64] } },
+      { id: "unknown", family: "input", shape: { output: [1, 7, 11] } },
+    ],
+    edges: [],
+  });
+  const canvas = projectUniversalIRToCanvas(ir);
+  assert.deepEqual(
+    canvas.nodes.map((node) => [node.id, node.visualRole, node.type]),
+    [
+      ["image", "image-input", "image-input"],
+      ["sequence", "sequence-input", "sequence-input"],
+      ["state", "state-input", "state-input"],
+      ["vector", "vector-input", "vector-input"],
+      ["volume", "volume-input", "volume-input"],
+      ["unknown", "unknown-input", "unknown-input"],
+    ],
+  );
+  assert.equal(canvas.nodes[0].geometryData.inputGrammar, "image-input");
+  assert.equal(canvas.nodes[0].geometryData.channelCount, 3);
+});
+
+test("Universal IR normalizes source identities before any renderer projection", () => {
+  const ir = normalizeUniversalIR({
+    nodes: [{ id: "layout-input", sourceNodeId: "source-input", sourceNodeIds: ["source-input", "alias-input"], family: "input" }],
+    edges: [{ id: "layout-edge", sourceEdgeId: "source-edge", source: "layout-input", target: "layout-input", sourceEndpointIds: { source: "state-out", target: "state-in" }, type: "loop" }],
+  });
+  assert.equal(ir.nodes[0].sourceNodeId, "source-input");
+  assert.deepEqual(ir.nodes[0].sourceNodeIds, ["source-input", "alias-input"]);
+  assert.equal(ir.edges[0].sourceEdgeId, "source-edge");
+  assert.deepEqual(ir.edges[0].sourceEndpointIds, { source: "state-out", target: "state-in" });
+});
+
+test("Universal IR derives endpoint identities from evidenced edge ports", () => {
+  const ir = normalizeUniversalIR({
+    nodes: [
+      { id: "sequence", family: "input" },
+      { id: "cell", family: "recurrent" },
+    ],
+    edges: [{
+      id: "sequence-cell",
+      source: "sequence",
+      target: "cell",
+      ports: { source: "tokens", target: "x" },
+    }],
+  });
+  assert.deepEqual(ir.edges[0].sourceEndpointIds, { source: "tokens", target: "x" });
 });

@@ -1,5 +1,7 @@
 const VERSION = "universal-neural-ir/v1";
 
+import { compileSemanticVisualNodes } from "./semantic-visual-grammar.mjs";
+
 const FAMILY_ALIASES = [
   ["input", /^(input|tensor|placeholder|source)$/i],
   ["output", /^(output|prediction|logits|softmax)$/i],
@@ -35,6 +37,87 @@ export function createUniversalIR(document = {}, options = {}) {
     groups: Array.isArray(document.groups) ? document.groups : [],
     diagnostics: Array.isArray(document.diagnostics) ? document.diagnostics : [],
   });
+}
+
+export function recurrentEvidenceForNode(node = {}, edges = []) {
+  return normalizeRecurrentEvidence(node, edges);
+}
+
+export function normalizeRecurrentEvidence(node = {}, edges = []) {
+  const attributes = isRecord(node.attributes) ? node.attributes : {};
+  const repetition = isRecord(attributes.repetition)
+    ? { ...attributes.repetition, evidence: copyEvidence(attributes.repetition.evidence) }
+    : { axis: "unknown", instances: [], sharedParameters: false, evidence: [] };
+  const sourceEdges = Array.isArray(edges) ? edges : [];
+  const edgeById = new Map();
+  sourceEdges.forEach((edge) => {
+    if (edge?.id !== undefined) edgeById.set(String(edge.id), edge);
+    if (edge?.sourceEdgeId !== undefined) edgeById.set(String(edge.sourceEdgeId), edge);
+  });
+  const stateTransitions = Array.isArray(attributes.stateTransitions)
+    ? attributes.stateTransitions.map((transition, index) => {
+      const sourceEdgeId = transition?.sourceEdgeId === undefined
+        ? undefined
+        : String(transition.sourceEdgeId);
+      const edge = sourceEdgeId ? edgeById.get(sourceEdgeId) : undefined;
+      return {
+        ...transition,
+        ...(sourceEdgeId ? { sourceEdgeId } : {}),
+        ...(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports
+          ? { sourceEndpointIds: normalizeEndpointIds(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports) }
+          : {}),
+        id: String(transition?.id || sourceEdgeId || `state-transition-${index + 1}`),
+      };
+    })
+    : [];
+  const graphValue = attributes.internalGraph ?? node.internalGraph;
+  if (!isRecord(graphValue)) {
+    return {
+      repetition,
+      stateTransitions,
+      internalGraph: { nodes: [], edges: [], ports: {}, status: "unresolved", reason: "internal topology evidence is absent", diagnostics: [] },
+    };
+  }
+  const nodes = Array.isArray(graphValue.nodes)
+    ? graphValue.nodes.map((child, index) => ({
+      ...child,
+      id: String(child?.id || child?.sourceNodeId || `internal-node-${index + 1}`),
+      ...(child?.sourceNodeId !== undefined ? { sourceNodeId: String(child.sourceNodeId) } : {}),
+    }))
+    : [];
+  const nodeIds = new Set(nodes.map((child) => child.id));
+  const diagnostics = [];
+  const graphEdges = Array.isArray(graphValue.edges)
+    ? graphValue.edges.flatMap((edge, index) => {
+      const source = String(edge?.source || "");
+      const target = String(edge?.target || "");
+      if (!nodeIds.has(source) || !nodeIds.has(target)) {
+        diagnostics.push({ kind: "invalid-internal-edge", edgeId: String(edge?.id || `internal-edge-${index + 1}`), source, target });
+        return [];
+      }
+      const id = String(edge?.id || edge?.sourceEdgeId || `internal-edge-${index + 1}`);
+      return [{
+        ...edge,
+        id,
+        sourceEdgeId: String(edge?.sourceEdgeId || id),
+        ...(normalizeEndpointIds(edge?.sourceEndpointIds || edge?.ports) ? { sourceEndpointIds: normalizeEndpointIds(edge?.sourceEndpointIds || edge?.ports) } : {}),
+        source,
+        target,
+      }];
+    })
+    : [];
+  return {
+    repetition,
+    stateTransitions,
+    internalGraph: {
+      ...graphValue,
+      nodes,
+      edges: graphEdges,
+      ports: isRecord(graphValue.ports) ? { ...graphValue.ports } : {},
+      status: graphValue.status || "resolved",
+      diagnostics: [...(Array.isArray(graphValue.diagnostics) ? graphValue.diagnostics : []), ...diagnostics],
+    },
+  };
 }
 
 export function normalizeUniversalIR(ir = {}) {
@@ -106,7 +189,8 @@ export function validateUniversalIR(ir = {}) {
 
 export function projectUniversalIRToCanvas(ir = {}) {
   const normalized = normalizeUniversalIR(ir);
-  const nodes = normalized.nodes.map((node, index) => {
+  const semanticNodes = compileSemanticVisualNodes(normalized.nodes, normalized.edges);
+  const nodes = semanticNodes.map((node, index) => {
     const typeInfo = canvasTypeForFamily(node.family, node);
     return {
       id: node.id,
@@ -117,12 +201,17 @@ export function projectUniversalIRToCanvas(ir = {}) {
       w: Number.isFinite(node.w) ? node.w : typeInfo.w,
       h: Number.isFinite(node.h) ? node.h : typeInfo.h,
       stage: Number.isFinite(node.stage) ? node.stage : index,
-      label: node.label,
-      subtitle: node.subtitle || shapeLabel(node.shape),
+      label: node.figureLabel || node.label,
+      subtitle: node.figureSubtitle || node.subtitle || shapeLabel(node.shape),
       color: node.color || typeInfo.color,
       op: node.op,
       family: node.family,
       semanticRole: node.semanticRole,
+      visualRole: node.visualRole,
+      inputGrammar: node.inputGrammar,
+      styleProfile: node.styleProfile,
+      labelSlots: node.labelSlots,
+      geometryData: node.geometryData,
       shape: node.shape,
       ports: node.ports,
       attributes: node.attributes,
@@ -174,8 +263,12 @@ function normalizeNode(node = {}, index) {
       provenance: node.provenance,
       confidence: Number.isFinite(node.confidence) ? node.confidence : 1,
       status: String(node.status || "confirmed"),
-      note: String(node.note || ""),
+    note: String(node.note || ""),
   };
+  normalized.sourceNodeId = String(node.sourceNodeId || normalized.id);
+  normalized.sourceNodeIds = Array.isArray(node.sourceNodeIds)
+    ? node.sourceNodeIds.map(String)
+    : [normalized.sourceNodeId];
   if (node.shape !== undefined) normalized.shape = normalizeShape(node.shape);
   if (node.compoundKind !== undefined) normalized.compoundKind = String(node.compoundKind);
   ["x", "y", "w", "h"].forEach((key) => {
@@ -190,6 +283,10 @@ function normalizeNode(node = {}, index) {
 function normalizeEdge(edge = {}, index) {
   return {
     id: String(edge.id || `ir-edge-${index + 1}`),
+    sourceEdgeId: String(edge.sourceEdgeId || edge.id || `ir-edge-${index + 1}`),
+    sourceEndpointIds: normalizeEndpointIds(edge.sourceEndpointIds)
+      || normalizeEndpointIds({ source: edge.sourceEndpointId, target: edge.targetEndpointId })
+      || normalizeEndpointIds(edge.ports),
     source: String(edge.source || ""),
     target: String(edge.target || ""),
     type: String(edge.type || "signal"),
@@ -200,6 +297,19 @@ function normalizeEdge(edge = {}, index) {
     confidence: Number.isFinite(edge.confidence) ? edge.confidence : 1,
     status: String(edge.status || "confirmed"),
   };
+}
+
+function normalizeEndpointIds(value) {
+  if (!isRecord(value)) return undefined;
+  const normalized = {};
+  for (const key of ["source", "target"]) {
+    if (value[key] !== undefined && value[key] !== null && String(value[key])) normalized[key] = String(value[key]);
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function copyEvidence(value) {
+  return Array.isArray(value) ? value.map((item) => (isRecord(item) ? { ...item } : item)) : [];
 }
 
 function normalizeGroup(group = {}, index) {
@@ -236,7 +346,18 @@ function normalizeShape(shape) {
 
 function canvasTypeForFamily(family, node) {
   const common = { w: 160, h: 110, color: "#a855ff" };
-  if (family === "input") return { type: "tensor", w: 122, h: 188, color: "#00e5ff" };
+  if (family === "input") {
+    const inputTypes = {
+      "image-input": ["image-input", 122, 214, "#4D9DBB"],
+      "sequence-input": ["sequence-input", 150, 72, "#4D9DBB"],
+      "state-input": ["state-input", 86, 132, "#815AA0"],
+      "vector-input": ["vector-input", 58, 150, "#5C9A69"],
+      "volume-input": ["volume-input", 132, 204, "#43878C"],
+      "unknown-input": ["unknown-input", 104, 160, "#9D8A65"],
+    };
+    const [type, w, h, color] = inputTypes[node.visualRole] || ["unknown-input", 104, 160, "#9D8A65"];
+    return { type, w, h, color };
+  }
   if (family === "output") return { type: "output", w: 110, h: 148, color: "#ff4fd8" };
   if (family === "conv") return { type: "conv", w: 86, h: 220, color: "#ff2aa3" };
   if (family === "volume") return { type: "volume-stack", w: 138, h: 230, color: "#2f6bff" };

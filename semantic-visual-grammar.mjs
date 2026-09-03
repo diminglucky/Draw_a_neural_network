@@ -1,4 +1,30 @@
+import { normalizeRecurrentEvidence } from "./universal-ir.mjs";
+
 const ROLE_SPECS = Object.freeze({
+  "image-input": {
+    styleProfile: "image-input",
+    labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
+  "sequence-input": {
+    styleProfile: "sequence-input",
+    labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
+  "state-input": {
+    styleProfile: "state-input",
+    labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
+  "vector-input": {
+    styleProfile: "vector-input",
+    labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
+  "volume-input": {
+    styleProfile: "volume-input",
+    labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
+  "unknown-input": {
+    styleProfile: "unknown-input",
+    labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
   "input-tensor": {
     styleProfile: "input-tensor",
     labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
@@ -59,7 +85,7 @@ const ROLE_SPECS = Object.freeze({
 
 export function visualRoleForNode(node = {}, context = {}) {
   const family = String(node.family || node.type || "custom").toLowerCase();
-  if (family === "input") return "input-tensor";
+  if (family === "input") return inputVisualGrammarForNode(node, context).kind;
   if (["merge", "concat", "add", "sum"].includes(family)) return "merge";
   if (family === "pool") return "pool-downsample";
   if (family === "flatten") return "vectorize";
@@ -79,6 +105,48 @@ export function visualRoleForNode(node = {}, context = {}) {
   return "operator";
 }
 
+export function inputVisualGrammarForNode(node = {}, context = {}) {
+  const dimensions = shapeDimensions(node.shape, node.subtitle);
+  const symbolicImage = String(node.subtitle || "").match(/\b(?:h|height)\s*[x×]\s*(?:w|width)\s*[x×]\s*(1|3|4)\b/i);
+  const tensorRank = dimensions.length || (symbolicImage ? 3 : null);
+  const channelCount = channelDimension(node.shape, node.subtitle)
+    || (symbolicImage ? Number(symbolicImage[1]) : null);
+  const spatialSize = spatialDimension(node.shape, node.subtitle);
+  const text = inputEvidenceText(node);
+  const explicitModality = explicitInputModality(node);
+
+  if (explicitModality === "image") return inputGrammar("image-input", "explicit image modality evidence", tensorRank, spatialSize, channelCount, 0.99);
+  if (explicitModality === "sequence") return inputGrammar("sequence-input", "explicit sequence modality evidence", tensorRank, spatialSize, channelCount, 0.99);
+  if (explicitModality === "state") return inputGrammar("state-input", "explicit recurrent state modality evidence", tensorRank, spatialSize, channelCount, 0.99);
+  if (explicitModality === "volume") return inputGrammar("volume-input", "explicit volumetric modality evidence", tensorRank, spatialSize, channelCount, 0.99);
+  if (explicitModality === "vector") return inputGrammar("vector-input", "explicit vector modality evidence", tensorRank, spatialSize, channelCount, 0.99);
+
+  if (/(^|[\s_.-])(h_prev|c_prev|state|hidden|cell)(\b|[\s_.-])/i.test(text)
+    || /(?:^|[\s_.-])(h|c)(?:\s*[_-]?\s*(?:prev|state|hidden|cell))?(?:$|[\s_.-])/i.test(text)
+      && /(port|state|hidden|cell|recurrent|lstm|gru)/i.test(text)) {
+    return inputGrammar("state-input", "state port or hidden/cell evidence", tensorRank, spatialSize, channelCount, 0.96);
+  }
+  if (/(sequence|token|time[-_ ]?step|timesteps?|temporal|embedding)/i.test(text)) {
+    return inputGrammar("sequence-input", "sequence or time-axis evidence", tensorRank, spatialSize, channelCount, 0.94);
+  }
+  if (Array.isArray(context.outgoingEdges) && context.outgoingEdges.some((edge) => (
+    /^(recurrent|rnn|lstm|gru)$/i.test(String(edge?.targetFamily || ""))
+      && !/(state|hidden|cell|h_prev|c_prev)/i.test(`${edge?.type || ""} ${edge?.label || ""} ${edge?.targetPort || ""}`)
+  ))) {
+    return inputGrammar("sequence-input", "input port connected to a recurrent operator", tensorRank, spatialSize, channelCount, 0.91);
+  }
+  if (/(voxel|volume|volumetric|ct|mri|medical|depth)/i.test(text) || dimensions.length >= 4) {
+    return inputGrammar("volume-input", "volumetric or rank-four-plus tensor evidence", tensorRank, spatialSize, channelCount, 0.92);
+  }
+  if ((dimensions.length === 3 || symbolicImage) && [1, 3, 4].includes(channelCount)) {
+    return inputGrammar("image-input", "rank-three tensor with image channel count", tensorRank, spatialSize, channelCount, 0.9);
+  }
+  if (dimensions.length === 1) {
+    return inputGrammar("vector-input", "one-dimensional feature vector evidence", tensorRank, spatialSize, channelCount, 0.9);
+  }
+  return inputGrammar("unknown-input", "insufficient modality evidence for a specialized input glyph", tensorRank, spatialSize, channelCount, 0.35);
+}
+
 export function styleProfileForRole(role) {
   return ROLE_SPECS[role]?.styleProfile || ROLE_SPECS.operator.styleProfile;
 }
@@ -91,18 +159,32 @@ export function labelSlotsForRole(role) {
 export function compileSemanticVisualNode(node = {}, context = {}) {
   const visualRole = visualRoleForNode(node, context);
   const internalGraph = node.attributes?.internalGraph || node.internalGraph;
+  const recurrentEvidence = ["recurrent-state"].includes(visualRole)
+    ? normalizeRecurrentEvidence(node, context.edges || [])
+    : undefined;
   const preferredSize = preferredSizeForRole(visualRole, node);
+  const inputGrammar = String(node.family || node.type || "").toLowerCase() === "input"
+    ? inputVisualGrammarForNode(node, context)
+    : undefined;
   return {
     ...node,
     visualRole,
+    ...(recurrentEvidence ? { recurrentEvidence } : {}),
+    ...(inputGrammar ? { inputGrammar } : {}),
     styleProfile: styleProfileForRole(visualRole),
     labelSlots: labelSlotsForRole(visualRole),
     geometryData: {
       repeatCount: positiveCount(node.repeatCount ?? node.layers),
+      ...(inputGrammar ? {
+        inputGrammar: inputGrammar.kind,
+        modalityReason: inputGrammar.reason,
+      } : {}),
       ...(visualRole === "recurrent-state" ? {
         timeAxis: "left-to-right",
         stateFlow: "feedback-loop",
         preservesStateFlow: true,
+        recurrentEvidenceStatus: recurrentEvidence.internalGraph.status,
+        recurrentEvidenceReason: recurrentEvidence.internalGraph.reason || "",
       } : {}),
       hasInternalTopology: hasInternalTopology(node),
       internalNodeCount: Array.isArray(internalGraph?.nodes) ? internalGraph.nodes.length : 0,
@@ -112,13 +194,17 @@ export function compileSemanticVisualNode(node = {}, context = {}) {
           .filter(Boolean)
           .slice(0, 8)
         : [],
-      tensorRank: tensorRank(node.shape, node.subtitle),
-      spatialSize: spatialDimension(node.shape, node.subtitle),
-      channelCount: channelDimension(node.shape, node.subtitle),
+      tensorRank: inputGrammar?.tensorRank ?? tensorRank(node.shape, node.subtitle),
+      spatialSize: inputGrammar?.spatialSize ?? spatialDimension(node.shape, node.subtitle),
+      channelCount: inputGrammar?.channelCount ?? channelDimension(node.shape, node.subtitle),
       preferredWidth: preferredSize.width,
       preferredHeight: preferredSize.height,
     },
   };
+}
+
+export function recurrentEvidenceForNode(node = {}, edges = []) {
+  return normalizeRecurrentEvidence(node, edges);
 }
 
 export function compileSemanticVisualNodes(nodes = [], edges = []) {
@@ -129,10 +215,26 @@ export function compileSemanticVisualNodes(nodes = [], edges = []) {
     outgoing.set(source, outgoing.get(source) + 1);
   }
   const counters = new Map();
+  const nodesById = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [String(node?.id || ""), node]));
+  const outgoingEdges = new Map();
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    const source = String(edge?.source || "");
+    const target = nodesById.get(String(edge?.target || ""));
+    if (!outgoingEdges.has(source)) outgoingEdges.set(source, []);
+    outgoingEdges.get(source).push({
+      ...edge,
+      targetFamily: target?.family || target?.type || "",
+      targetPort: edge?.ports?.target || edge?.targetPort || "",
+    });
+  }
   return (Array.isArray(nodes) ? nodes : []).map((node) => {
     const sourceId = String(node?.id || "");
     const terminal = (outgoing.get(sourceId) || 0) === 0;
-    const compiled = compileSemanticVisualNode(node, { terminal });
+    const compiled = compileSemanticVisualNode(node, {
+      terminal,
+      edges,
+      outgoingEdges: outgoingEdges.get(sourceId) || [],
+    });
     const role = compiled.visualRole;
     const ordinal = (counters.get(role) || 0) + 1;
     counters.set(role, ordinal);
@@ -146,6 +248,12 @@ export function compileSemanticVisualNodes(nodes = [], edges = []) {
 
 function publicationLabel(node, ordinal) {
   switch (node.visualRole) {
+    case "image-input": return node.label || "Image";
+    case "sequence-input": return node.label || "Sequence";
+    case "state-input": return node.label || "State";
+    case "vector-input": return node.label || "Vector";
+    case "volume-input": return node.label || "Volume";
+    case "unknown-input": return node.label || "Input";
     case "input-tensor": return node.label || "Input";
     case "feature-map-stage": return /conv|convolution/i.test(`${node.family} ${node.op} ${node.label}`)
       ? `CONV ${ordinal}`
@@ -164,7 +272,7 @@ function publicationSubtitle(node) {
   // repeat semantics already belong to the stage title or geometry; repeating
   // them below a thin tensor volume turns the label into a competing card.
   const dimensions = tensorShape.length ? tensorShape : parseDimensionEvidence(node.subtitle);
-  if (node.visualRole === "input-tensor" && dimensions.length >= 3) {
+  if (["image-input", "input-tensor"].includes(node.visualRole) && dimensions.length >= 3) {
     return `${dimensions.at(-1) === 3 ? "RGB image\n" : ""}${dimensions.join("×")}`;
   }
   if (node.visualRole === "feature-map-stage" && dimensions.length >= 3) {
@@ -191,6 +299,9 @@ function publicationSubtitle(node) {
   if (scalarEvidence && node.visualRole === "neuron-layer") return `${scalarEvidence} units`;
   if (scalarEvidence && node.visualRole === "output-distribution") return `${scalarEvidence} outputs`;
   if (node.visualRole === "vectorize" && dimensions.length > 0) return `${dimensions.join("×")} vector`;
+  if (["sequence-input", "state-input", "vector-input", "volume-input", "unknown-input"].includes(node.visualRole)) {
+    return dimensions.length ? dimensions.join("×") : String(node.subtitle || "").replace(/\s+x\s+/gi, "×");
+  }
   return String(node.subtitle || "").replace(/\s+x\s+/gi, "×");
 }
 
@@ -206,6 +317,12 @@ function preferredSizeForRole(role, node) {
   const currentHeight = Number(node.h) || 0;
   const spatial = spatialDimension(node.shape, node.subtitle);
   const channels = channelDimension(node.shape, node.subtitle);
+  if (role === "image-input") return { width: 122, height: 214 };
+  if (role === "sequence-input") return { width: 150, height: 72 };
+  if (role === "state-input") return { width: 86, height: 132 };
+  if (role === "vector-input") return { width: 58, height: 150 };
+  if (role === "volume-input") return { width: 132, height: 204 };
+  if (role === "unknown-input") return { width: 104, height: 160 };
   if (role === "input-tensor") return { width: 104, height: 238 };
   if (role === "feature-map-stage") {
     const height = spatial
@@ -268,6 +385,39 @@ function parseDimensionEvidence(text = "") {
   const match = String(text).match(/(\d+)\s*[x×]\s*(\d+)(?:\s*[x×]\s*(\d+))?/i);
   if (!match) return [];
   return match.slice(1).filter(Boolean).map(Number).filter((item) => Number.isFinite(item) && item > 0);
+}
+
+function inputEvidenceText(node = {}) {
+  const evidence = Array.isArray(node.evidence) ? node.evidence : [];
+  return [
+    node.label,
+    node.op,
+    node.subtitle,
+    node.attributes?.modality,
+    node.attributes?.inputKind,
+    node.ports?.inputs?.join(" "),
+    node.ports?.outputs?.join(" "),
+    ...evidence.flatMap((item) => [item?.modality, item?.kind, item?.operation, item?.variable, item?.claim]),
+  ].filter(Boolean).join(" ");
+}
+
+function explicitInputModality(node = {}) {
+  const evidenceModality = (Array.isArray(node.evidence) ? node.evidence : [])
+    .map((item) => item?.modality)
+    .find((item) => item !== undefined && item !== null);
+  const value = [evidenceModality, node.attributes?.modality, node.attributes?.inputKind, node.modality]
+    .find((item) => item !== undefined && item !== null);
+  const normalized = String(value || "").toLowerCase();
+  if (/image|rgb|pixel/.test(normalized)) return "image";
+  if (/sequence|token|temporal/.test(normalized)) return "sequence";
+  if (/state|hidden|cell/.test(normalized)) return "state";
+  if (/volume|voxel|3d/.test(normalized)) return "volume";
+  if (/vector|embedding/.test(normalized)) return "vector";
+  return "";
+}
+
+function inputGrammar(kind, reason, tensorRank, spatialSize, channelCount, confidence) {
+  return { kind, confidence, reason, tensorRank, spatialSize, channelCount };
 }
 
 function positiveCount(value) {

@@ -3,10 +3,29 @@ import test from "node:test";
 import {
   compileSemanticVisualNode,
   compileSemanticVisualNodes,
+  inputVisualGrammarForNode,
+  recurrentEvidenceForNode,
   labelSlotsForRole,
   styleProfileForRole,
   visualRoleForNode,
 } from "./semantic-visual-grammar.mjs";
+
+test("semantic grammar exposes normalized recurrent evidence and preserves uncertainty", () => {
+  const compiled = compileSemanticVisualNode({
+    id: "recurrent",
+    family: "recurrent",
+    op: "NamedButOpaqueCell",
+    attributes: {
+      repetition: { axis: "iteration", instances: ["previous", "current", "next"] },
+      stateTransitions: [{ sourcePort: "s", targetPort: "s2", kind: "update", sourceEdgeId: "e1" }],
+    },
+  });
+
+  assert.deepEqual(compiled.recurrentEvidence.repetition.instances, ["previous", "current", "next"]);
+  assert.equal(compiled.recurrentEvidence.stateTransitions[0].sourceEdgeId, "e1");
+  assert.equal(compiled.recurrentEvidence.internalGraph.status, "unresolved");
+  assert.equal(recurrentEvidenceForNode(compiled).internalGraph.status, "unresolved");
+});
 
 test("semantic grammar maps spatial operators to a feature-map visual role", () => {
   const node = {
@@ -172,4 +191,84 @@ test("semantic grammar preserves recurrent time-step and state-flow layout seman
   assert.equal(compiled.geometryData.timeAxis, "left-to-right");
   assert.equal(compiled.geometryData.stateFlow, "feedback-loop");
   assert.equal(compiled.geometryData.preservesStateFlow, true);
+});
+
+test("semantic grammar derives an image plane for an RGB tensor input", () => {
+  const grammar = inputVisualGrammarForNode({
+    family: "input",
+    op: "Input",
+    label: "Input",
+    subtitle: "224 x 224 x 3",
+    shape: { output: [1, 3, 224, 224] },
+  });
+
+  assert.equal(grammar.kind, "image-input");
+  assert.equal(grammar.channelCount, 3);
+  assert.equal(grammar.spatialSize, 224);
+  assert.equal(grammar.tensorRank, 3);
+  assert.match(grammar.reason, /RGB|channel|image/i);
+});
+
+test("semantic grammar distinguishes sequence, state, vector, volume, and unknown inputs", () => {
+  assert.equal(inputVisualGrammarForNode({ family: "input", label: "tokens", ports: { outputs: ["tokens", "time"] } }).kind, "sequence-input");
+  assert.equal(inputVisualGrammarForNode({ family: "input", label: "hidden state", ports: { outputs: ["h_prev", "c_prev"] } }).kind, "state-input");
+  assert.equal(inputVisualGrammarForNode({ family: "input", shape: { output: [1, 128] } }).kind, "vector-input");
+  assert.equal(inputVisualGrammarForNode({ family: "input", label: "voxel volume", shape: { output: [1, 1, 96, 128, 128] } }).kind, "volume-input");
+  assert.equal(inputVisualGrammarForNode({ family: "input", shape: { output: [1, 7, 11] } }).kind, "unknown-input");
+});
+
+test("compiled input nodes expose their input grammar and role-specific geometry", () => {
+  const compiled = compileSemanticVisualNode({
+    id: "image",
+    family: "input",
+    label: "RGB",
+    subtitle: "224 x 224 x 3",
+    shape: { output: [1, 3, 224, 224] },
+  });
+
+  assert.equal(compiled.visualRole, "image-input");
+  assert.equal(compiled.inputGrammar.kind, "image-input");
+  assert.equal(compiled.geometryData.inputGrammar, "image-input");
+  assert.equal(compiled.geometryData.channelCount, 3);
+});
+
+test("explicit evidence modality outranks ambiguous shape and port hints", () => {
+  const grammar = inputVisualGrammarForNode({
+    family: "input",
+    label: "x",
+    shape: { output: [1, 3, 224, 224] },
+    ports: { outputs: ["tokens"] },
+    evidence: [{ modality: "sequence", kind: "source-annotation" }],
+  });
+
+  assert.equal(grammar.kind, "sequence-input");
+  assert.match(grammar.reason, /explicit.*sequence/i);
+});
+
+test("symbolic H x W x 3 source evidence remains an image input", () => {
+  const grammar = inputVisualGrammarForNode({
+    family: "input",
+    op: "tensor",
+    label: "Input",
+    subtitle: "H x W x 3",
+  });
+
+  assert.equal(grammar.kind, "image-input");
+  assert.equal(grammar.tensorRank, 3);
+  assert.equal(grammar.channelCount, 3);
+});
+
+test("recurrent topology distinguishes sequence input from state inputs", () => {
+  const nodes = [
+    { id: "x", family: "input", label: "x", ports: { outputs: ["x"] } },
+    { id: "state", family: "input", label: "state", ports: { outputs: ["state"] } },
+    { id: "cell", family: "recurrent", op: "RecurrentCell", ports: { inputs: ["x", "state"] } },
+  ];
+  const compiled = compileSemanticVisualNodes(nodes, [
+    { source: "x", target: "cell", label: "x", type: "signal" },
+    { source: "state", target: "cell", label: "state", type: "state" },
+  ]);
+
+  assert.equal(compiled.find((node) => node.id === "x").visualRole, "sequence-input");
+  assert.equal(compiled.find((node) => node.id === "state").visualRole, "state-input");
 });
