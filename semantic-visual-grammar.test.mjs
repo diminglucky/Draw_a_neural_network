@@ -27,6 +27,17 @@ test("semantic grammar exposes normalized recurrent evidence and preserves uncer
   assert.equal(recurrentEvidenceForNode(compiled).internalGraph.status, "unresolved");
 });
 
+test("semantic grammar fails closed for recurrent modules with invalid internal edges", () => {
+  const compiled = compileSemanticVisualNode({
+    id: "broken-cell",
+    family: "recurrent",
+    attributes: { internalGraph: { nodes: [{ id: "known" }], edges: [{ source: "known", target: "ghost" }] } },
+  });
+  assert.equal(compiled.visualRole, "unresolved-module");
+  assert.equal(compiled.geometryData.hasInternalTopology, false);
+  assert.equal(compiled.recurrentEvidence.internalGraph.status, "unresolved");
+});
+
 test("semantic grammar maps spatial operators to a feature-map visual role", () => {
   const node = {
     id: "spatial-op",

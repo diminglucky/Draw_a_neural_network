@@ -86,6 +86,15 @@ test("Universal IR fails closed when a state transition references an unknown ed
   assert.ok(evidence.diagnostics.some((item) => item.kind === "missing-state-transition-edge"));
 });
 
+test("Universal IR rejects a signal edge masquerading as a state transition", () => {
+  const evidence = normalizeRecurrentEvidence({
+    id: "cell",
+    attributes: { stateTransitions: [{ sourcePort: "h_prev", targetPort: "h_next", sourceEdgeId: "signal-edge" }] },
+  }, [{ id: "signal-edge", source: "input", target: "cell", type: "signal", ports: { source: "x", target: "h_prev" } }]);
+  assert.equal(evidence.stateTransitions[0].status, "unresolved");
+  assert.ok(evidence.diagnostics.some((item) => item.kind === "invalid-state-transition-edge"));
+});
+
 const customGraph = {
   figure: {
     title: "Custom multimodal graph",

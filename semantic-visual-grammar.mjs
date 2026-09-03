@@ -93,7 +93,10 @@ export function visualRoleForNode(node = {}, context = {}) {
   }
   if (["attention", "cross-attention"].includes(family)) return "attention";
   if (["token", "sequence"].includes(family)) return "token-sequence";
-  if (["recurrent", "rnn", "lstm", "gru"].includes(family)) return "recurrent-state";
+  if (["recurrent", "rnn", "lstm", "gru"].includes(family)) {
+    const evidence = context.recurrentEvidence || normalizeRecurrentEvidence(node, context.edges || []);
+    return hasInvalidInternalEvidence(evidence) ? "unresolved-module" : "recurrent-state";
+  }
   if (family === "skip" || family === "residual" || family === "shortcut") return "skip-connection";
   if (family === "custom" || node.compoundKind) {
     if (node.compoundKind === "unresolved" || !hasInternalTopology(node)) return "unresolved-module";
@@ -155,11 +158,11 @@ export function labelSlotsForRole(role) {
 }
 
 export function compileSemanticVisualNode(node = {}, context = {}) {
-  const visualRole = visualRoleForNode(node, context);
-  const internalGraph = node.attributes?.internalGraph || node.internalGraph;
-  const recurrentEvidence = ["recurrent-state"].includes(visualRole)
+  const recurrentEvidence = isRecurrentNode(node)
     ? normalizeRecurrentEvidence(node, context.edges || [])
     : undefined;
+  const visualRole = visualRoleForNode(node, { ...context, recurrentEvidence });
+  const internalGraph = node.attributes?.internalGraph || node.internalGraph;
   const preferredSize = preferredSizeForRole(visualRole, node);
   const inputGrammar = String(node.family || node.type || "").toLowerCase() === "input"
     ? inputVisualGrammarForNode(node, context)
@@ -177,15 +180,19 @@ export function compileSemanticVisualNode(node = {}, context = {}) {
         inputGrammar: inputGrammar.kind,
         modalityReason: inputGrammar.reason,
       } : {}),
-      ...(visualRole === "recurrent-state" ? {
+      ...(recurrentEvidence ? {
         timeAxis: "left-to-right",
         stateFlow: "feedback-loop",
         preservesStateFlow: true,
         recurrentEvidenceStatus: recurrentEvidence.internalGraph.status,
         recurrentEvidenceReason: recurrentEvidence.internalGraph.reason || "",
       } : {}),
-      hasInternalTopology: hasInternalTopology(node),
-      internalNodeCount: Array.isArray(internalGraph?.nodes) ? internalGraph.nodes.length : 0,
+      hasInternalTopology: recurrentEvidence
+        ? recurrentEvidence.internalGraph.status === "resolved" && recurrentEvidence.internalGraph.nodes.length > 0
+        : hasInternalTopology(node),
+      internalNodeCount: recurrentEvidence
+        ? recurrentEvidence.internalGraph.nodes.length
+        : (Array.isArray(internalGraph?.nodes) ? internalGraph.nodes.length : 0),
       internalOperatorLabels: Array.isArray(internalGraph?.nodes)
         ? internalGraph.nodes
           .map((child) => String(child?.label || child?.op || child?.family || "Operator"))
@@ -221,11 +228,27 @@ export function normalizeRecurrentEvidence(node = {}, edges = []) {
     ? attributes.stateTransitions.map((transition, index) => {
       const sourceEdgeId = transition?.sourceEdgeId === undefined ? undefined : String(transition.sourceEdgeId);
       const edge = sourceEdgeId ? edgeById.get(sourceEdgeId) : undefined;
-      if (sourceEdgeId && !edge) diagnostics.push({ kind: "missing-state-transition-edge", sourceEdgeId });
+      const edgeType = String(edge?.type || "").toLowerCase();
+      const edgeEndpoints = normalizeEndpointIds(edge?.sourceEndpointIds || edge?.ports);
+      const declaredEndpoints = normalizeEndpointIds(transition?.sourceEndpointIds)
+        || (transition?.sourcePort || transition?.targetPort
+          ? { source: String(transition.sourcePort || ""), target: String(transition.targetPort || "") }
+          : undefined);
+      const invalidReason = !edge
+        ? "missing-edge"
+        : !["state", "loop", "recurrent-state"].includes(edgeType)
+          ? "invalid-edge-type"
+          : (transition?.source !== undefined && String(transition.source) !== String(edge.source))
+            || (transition?.target !== undefined && String(transition.target) !== String(edge.target))
+            ? "node-mismatch"
+          : declaredEndpoints && edgeEndpoints && (declaredEndpoints.source !== edgeEndpoints.source || declaredEndpoints.target !== edgeEndpoints.target)
+            ? "endpoint-mismatch"
+            : undefined;
+      if (invalidReason) diagnostics.push({ kind: invalidReason === "missing-edge" ? "missing-state-transition-edge" : "invalid-state-transition-edge", sourceEdgeId, reason: invalidReason });
       return {
         ...transition,
         ...(sourceEdgeId ? { sourceEdgeId } : {}),
-        ...(sourceEdgeId && !edge ? { status: "unresolved" } : {}),
+        ...(invalidReason ? { status: "unresolved" } : {}),
         ...(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports
           ? { sourceEndpointIds: normalizeEndpointIds(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports) }
           : {}),
@@ -413,6 +436,15 @@ function preferredSizeForRole(role, node) {
 function hasInternalTopology(node = {}) {
   const graph = node.attributes?.internalGraph || node.internalGraph;
   return Array.isArray(graph?.nodes) && graph.nodes.length > 0;
+}
+
+function isRecurrentNode(node = {}) {
+  return ["recurrent", "rnn", "lstm", "gru"].includes(String(node.family || node.type || "").toLowerCase());
+}
+
+function hasInvalidInternalEvidence(evidence = {}) {
+  return evidence.internalGraph?.status === "invalid"
+    || evidence.internalGraph?.diagnostics?.some((item) => item?.kind === "invalid-internal-edge");
 }
 
 function hasSpatialTensor(node = {}) {
