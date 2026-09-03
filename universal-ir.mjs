@@ -2,6 +2,8 @@ const VERSION = "universal-neural-ir/v1";
 
 import { compileSemanticVisualNodes } from "./semantic-visual-grammar.mjs";
 
+export { normalizeRecurrentEvidence, recurrentEvidenceForNode } from "./semantic-visual-grammar.mjs";
+
 const FAMILY_ALIASES = [
   ["input", /^(input|tensor|placeholder|source)$/i],
   ["output", /^(output|prediction|logits|softmax)$/i],
@@ -37,87 +39,6 @@ export function createUniversalIR(document = {}, options = {}) {
     groups: Array.isArray(document.groups) ? document.groups : [],
     diagnostics: Array.isArray(document.diagnostics) ? document.diagnostics : [],
   });
-}
-
-export function recurrentEvidenceForNode(node = {}, edges = []) {
-  return normalizeRecurrentEvidence(node, edges);
-}
-
-export function normalizeRecurrentEvidence(node = {}, edges = []) {
-  const attributes = isRecord(node.attributes) ? node.attributes : {};
-  const repetition = isRecord(attributes.repetition)
-    ? { ...attributes.repetition, evidence: copyEvidence(attributes.repetition.evidence) }
-    : { axis: "unknown", instances: [], sharedParameters: false, evidence: [] };
-  const sourceEdges = Array.isArray(edges) ? edges : [];
-  const edgeById = new Map();
-  sourceEdges.forEach((edge) => {
-    if (edge?.id !== undefined) edgeById.set(String(edge.id), edge);
-    if (edge?.sourceEdgeId !== undefined) edgeById.set(String(edge.sourceEdgeId), edge);
-  });
-  const stateTransitions = Array.isArray(attributes.stateTransitions)
-    ? attributes.stateTransitions.map((transition, index) => {
-      const sourceEdgeId = transition?.sourceEdgeId === undefined
-        ? undefined
-        : String(transition.sourceEdgeId);
-      const edge = sourceEdgeId ? edgeById.get(sourceEdgeId) : undefined;
-      return {
-        ...transition,
-        ...(sourceEdgeId ? { sourceEdgeId } : {}),
-        ...(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports
-          ? { sourceEndpointIds: normalizeEndpointIds(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports) }
-          : {}),
-        id: String(transition?.id || sourceEdgeId || `state-transition-${index + 1}`),
-      };
-    })
-    : [];
-  const graphValue = attributes.internalGraph ?? node.internalGraph;
-  if (!isRecord(graphValue)) {
-    return {
-      repetition,
-      stateTransitions,
-      internalGraph: { nodes: [], edges: [], ports: {}, status: "unresolved", reason: "internal topology evidence is absent", diagnostics: [] },
-    };
-  }
-  const nodes = Array.isArray(graphValue.nodes)
-    ? graphValue.nodes.map((child, index) => ({
-      ...child,
-      id: String(child?.id || child?.sourceNodeId || `internal-node-${index + 1}`),
-      ...(child?.sourceNodeId !== undefined ? { sourceNodeId: String(child.sourceNodeId) } : {}),
-    }))
-    : [];
-  const nodeIds = new Set(nodes.map((child) => child.id));
-  const diagnostics = [];
-  const graphEdges = Array.isArray(graphValue.edges)
-    ? graphValue.edges.flatMap((edge, index) => {
-      const source = String(edge?.source || "");
-      const target = String(edge?.target || "");
-      if (!nodeIds.has(source) || !nodeIds.has(target)) {
-        diagnostics.push({ kind: "invalid-internal-edge", edgeId: String(edge?.id || `internal-edge-${index + 1}`), source, target });
-        return [];
-      }
-      const id = String(edge?.id || edge?.sourceEdgeId || `internal-edge-${index + 1}`);
-      return [{
-        ...edge,
-        id,
-        sourceEdgeId: String(edge?.sourceEdgeId || id),
-        ...(normalizeEndpointIds(edge?.sourceEndpointIds || edge?.ports) ? { sourceEndpointIds: normalizeEndpointIds(edge?.sourceEndpointIds || edge?.ports) } : {}),
-        source,
-        target,
-      }];
-    })
-    : [];
-  return {
-    repetition,
-    stateTransitions,
-    internalGraph: {
-      ...graphValue,
-      nodes,
-      edges: graphEdges,
-      ports: isRecord(graphValue.ports) ? { ...graphValue.ports } : {},
-      status: graphValue.status || "resolved",
-      diagnostics: [...(Array.isArray(graphValue.diagnostics) ? graphValue.diagnostics : []), ...diagnostics],
-    },
-  };
 }
 
 export function normalizeUniversalIR(ir = {}) {

@@ -1,5 +1,3 @@
-import { normalizeRecurrentEvidence } from "./universal-ir.mjs";
-
 const ROLE_SPECS = Object.freeze({
   "image-input": {
     styleProfile: "image-input",
@@ -205,6 +203,78 @@ export function compileSemanticVisualNode(node = {}, context = {}) {
 
 export function recurrentEvidenceForNode(node = {}, edges = []) {
   return normalizeRecurrentEvidence(node, edges);
+}
+
+export function normalizeRecurrentEvidence(node = {}, edges = []) {
+  const attributes = isRecord(node.attributes) ? node.attributes : {};
+  const repetition = isRecord(attributes.repetition)
+    ? { ...attributes.repetition, evidence: copyEvidence(attributes.repetition.evidence) }
+    : { axis: "unknown", instances: [], sharedParameters: false, evidence: [] };
+  const sourceEdges = Array.isArray(edges) ? edges : [];
+  const edgeById = new Map();
+  sourceEdges.forEach((edge) => {
+    if (edge?.id !== undefined) edgeById.set(String(edge.id), edge);
+    if (edge?.sourceEdgeId !== undefined) edgeById.set(String(edge.sourceEdgeId), edge);
+  });
+  const diagnostics = [];
+  const stateTransitions = Array.isArray(attributes.stateTransitions)
+    ? attributes.stateTransitions.map((transition, index) => {
+      const sourceEdgeId = transition?.sourceEdgeId === undefined ? undefined : String(transition.sourceEdgeId);
+      const edge = sourceEdgeId ? edgeById.get(sourceEdgeId) : undefined;
+      if (sourceEdgeId && !edge) diagnostics.push({ kind: "missing-state-transition-edge", sourceEdgeId });
+      return {
+        ...transition,
+        ...(sourceEdgeId ? { sourceEdgeId } : {}),
+        ...(sourceEdgeId && !edge ? { status: "unresolved" } : {}),
+        ...(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports
+          ? { sourceEndpointIds: normalizeEndpointIds(transition?.sourceEndpointIds || edge?.sourceEndpointIds || edge?.ports) }
+          : {}),
+        id: String(transition?.id || sourceEdgeId || `state-transition-${index + 1}`),
+      };
+    })
+    : [];
+  const graphValue = attributes.internalGraph ?? node.internalGraph;
+  if (!isRecord(graphValue)) {
+    return {
+      repetition,
+      stateTransitions,
+      diagnostics,
+      internalGraph: { nodes: [], edges: [], ports: {}, status: "unresolved", reason: "internal topology evidence is absent", diagnostics: [] },
+    };
+  }
+  const nodes = Array.isArray(graphValue.nodes) ? graphValue.nodes.map((child, index) => ({
+    ...child,
+    id: String(child?.id || child?.sourceNodeId || `internal-node-${index + 1}`),
+    ...(child?.sourceNodeId !== undefined ? { sourceNodeId: String(child.sourceNodeId) } : {}),
+  })) : [];
+  const nodeIds = new Set(nodes.map((child) => child.id));
+  const invalidEdges = [];
+  const graphEdges = Array.isArray(graphValue.edges) ? graphValue.edges.flatMap((edge, index) => {
+    const source = String(edge?.source || "");
+    const target = String(edge?.target || "");
+    if (!nodeIds.has(source) || !nodeIds.has(target)) {
+      invalidEdges.push({ kind: "invalid-internal-edge", edgeId: String(edge?.id || `internal-edge-${index + 1}`), source, target });
+      return [];
+    }
+    const id = String(edge?.id || edge?.sourceEdgeId || `internal-edge-${index + 1}`);
+    const sourceEndpointIds = normalizeEndpointIds(edge?.sourceEndpointIds || edge?.ports);
+    return [{ ...edge, id, sourceEdgeId: String(edge?.sourceEdgeId || id), ...(sourceEndpointIds ? { sourceEndpointIds } : {}), source, target }];
+  }) : [];
+  const graphDiagnostics = [...(Array.isArray(graphValue.diagnostics) ? graphValue.diagnostics : []), ...invalidEdges];
+  return {
+    repetition,
+    stateTransitions,
+    diagnostics,
+    internalGraph: {
+      ...graphValue,
+      nodes,
+      edges: graphEdges,
+      ports: isRecord(graphValue.ports) ? { ...graphValue.ports } : {},
+      status: invalidEdges.length ? "unresolved" : (graphValue.status || "resolved"),
+      ...(invalidEdges.length ? { reason: "internal topology contains invalid edge references" } : {}),
+      diagnostics: graphDiagnostics,
+    },
+  };
 }
 
 export function compileSemanticVisualNodes(nodes = [], edges = []) {
@@ -418,6 +488,23 @@ function explicitInputModality(node = {}) {
 
 function inputGrammar(kind, reason, tensorRank, spatialSize, channelCount, confidence) {
   return { kind, confidence, reason, tensorRank, spatialSize, channelCount };
+}
+
+function normalizeEndpointIds(value) {
+  if (!isRecord(value)) return undefined;
+  const normalized = {};
+  for (const key of ["source", "target"]) {
+    if (value[key] !== undefined && value[key] !== null && String(value[key])) normalized[key] = String(value[key]);
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function copyEvidence(value) {
+  return Array.isArray(value) ? value.map((item) => (isRecord(item) ? { ...item } : item)) : [];
+}
+
+function isRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
 }
 
 function positiveCount(value) {

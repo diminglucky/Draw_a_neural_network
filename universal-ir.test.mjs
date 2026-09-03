@@ -68,6 +68,24 @@ test("Universal IR keeps transition edge and endpoint identities stable", () => 
   assert.deepEqual(evidence.stateTransitions[0].sourceEndpointIds, { source: "hidden-out", target: "hidden-in" });
 });
 
+test("Universal IR marks invalid internal topology unresolved", () => {
+  const evidence = normalizeRecurrentEvidence({
+    id: "cell",
+    attributes: { internalGraph: { nodes: [{ id: "known" }], edges: [{ id: "ghost", source: "known", target: "missing" }] } },
+  }, []);
+  assert.match(evidence.internalGraph.status, /unresolved|invalid/);
+  assert.ok(evidence.internalGraph.diagnostics.some((item) => item.kind === "invalid-internal-edge"));
+});
+
+test("Universal IR fails closed when a state transition references an unknown edge", () => {
+  const evidence = normalizeRecurrentEvidence({
+    id: "cell",
+    attributes: { stateTransitions: [{ sourcePort: "h_prev", targetPort: "h_next", sourceEdgeId: "missing-edge" }] },
+  }, []);
+  assert.equal(evidence.stateTransitions[0].status, "unresolved");
+  assert.ok(evidence.diagnostics.some((item) => item.kind === "missing-state-transition-edge"));
+});
+
 const customGraph = {
   figure: {
     title: "Custom multimodal graph",
