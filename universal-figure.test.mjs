@@ -64,6 +64,23 @@ test("selectFigureGrammar chooses recurrent-flow for recurrent evidence before g
   }
 });
 
+test("selectFigureGrammar exposes control-flow grammar for conditional topology", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      { id: "input", family: "input", stage: 0 },
+      { id: "condition", family: "custom", compoundKind: "unresolved", stage: 1, attributes: { controlKind: "conditional" } },
+      { id: "output", family: "output", stage: 2 },
+    ],
+    edges: [
+      { id: "in", source: "input", target: "condition", type: "signal" },
+      { id: "yes", source: "condition", target: "output", type: "alternative" },
+    ],
+  });
+
+  assert.equal(layout.grammar.id, "control-flow");
+  assert.equal(layout.edges.find((edge) => edge.id === "yes").route.kind, "skip-lane");
+});
+
 test("layoutUniversalFigure keeps recurrent flow grammar, metadata, and loop routing", () => {
   const layout = layoutUniversalFigure({
     nodes: [
@@ -83,6 +100,73 @@ test("layoutUniversalFigure keeps recurrent flow grammar, metadata, and loop rou
   assert.equal(cell.geometryData.stateFlow, "feedback-loop");
   assert.equal(cell.geometryData.preservesStateFlow, true);
   assert.equal(layout.edges.find((edge) => edge.id === "cell-loop").route.kind, "loop");
+  assert.equal(layout.recurrentLayout.stateRails.find((rail) => rail.sourceEdgeId === "cell-loop").kind, "carry");
+});
+
+test("layoutUniversalFigure unrolls recurrent evidence into three stable instances and one expanded current step", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [{
+      id: "cell",
+      family: "recurrent",
+      op: "LSTMCell",
+      label: "Opaque recurrent cell",
+      stage: 0,
+      attributes: {
+        repetition: { axis: "time", instances: ["t-1", "t", "t+1"], sharedParameters: true },
+        stateTransitions: [{
+          id: "carry-transition",
+          sourcePort: "h_prev",
+          targetPort: "h_next",
+          kind: "carry",
+          sourceEdgeId: "carry-edge",
+        }],
+        internalGraph: {
+          nodes: [{ id: "actual-linear", op: "Linear", label: "Evidence-only operation" }],
+          edges: [],
+          ports: { inputs: ["x"], states: ["h_prev"], outputs: ["h_next"] },
+        },
+      },
+    }],
+    edges: [{
+      id: "carry-edge",
+      source: "cell",
+      target: "cell",
+      type: "state",
+      ports: { source: "h_prev", target: "h_next" },
+    }],
+  });
+
+  assert.equal(layout.grammar.id, "recurrent-flow");
+  assert.deepEqual(layout.recurrentLayout.timeAxis, {
+    axis: "time",
+    direction: "left-to-right",
+    labels: ["previous", "current", "next"],
+  });
+  assert.deepEqual(layout.recurrentLayout.instances.map((instance) => instance.role), ["previous", "expanded", "next"]);
+  assert.equal(layout.recurrentLayout.instances.length, 3);
+  assert.equal(layout.recurrentLayout.instances.filter((instance) => instance.expanded).length, 1);
+  assert.equal(layout.recurrentLayout.expandedInstanceId, "cell:expanded");
+  assert.deepEqual(layout.recurrentLayout.instances.map((instance) => instance.sourceNodeId), ["cell", "cell", "cell"]);
+  assert.ok(layout.recurrentLayout.instances[0].x < layout.recurrentLayout.instances[1].x);
+  assert.ok(layout.recurrentLayout.instances[1].w > layout.recurrentLayout.instances[0].w);
+  assert.equal(layout.recurrentLayout.stateRails[0].sourceEdgeId, "carry-edge");
+  assert.equal(layout.recurrentLayout.stateRails[0].kind, "carry");
+  assert.ok(layout.recurrentLayout.stateRails[0].points.length >= 3);
+  assert.deepEqual(layout.recurrentLayout.expandedInternalGraph.nodes.map((node) => node.id), ["actual-linear"]);
+  assert.equal(layout.recurrentLayout.expandedInternalGraph.status, "resolved");
+  assert.equal(layout.edges.find((edge) => edge.id === "carry-edge").route.kind, "loop");
+});
+
+test("layoutUniversalFigure marks recurrent expansion unresolved without internal evidence", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [{ id: "opaque-cell", family: "recurrent", op: "GRU", stage: 0 }],
+    edges: [],
+  });
+
+  assert.equal(layout.recurrentLayout.expandedInternalGraph.status, "unresolved");
+  assert.equal(layout.recurrentLayout.uncertainty.unresolved, true);
+  assert.match(layout.recurrentLayout.uncertainty.reason, /internal topology/i);
+  assert.equal(layout.nodes[0].inner.kind, "unresolved");
 });
 
 test("layoutUniversalFigure preserves arbitrary internal topology inside a compound node", () => {
@@ -164,6 +248,80 @@ test("universal figure keeps pooling geometry distinct from merge symbols", () =
 
   assert.equal(layout.nodes.find((node) => node.id === "pool").representation, "pool-prism");
   assert.equal(layout.nodes.find((node) => node.id === "merge").representation, "operator-symbol");
+});
+
+test("universal figure maps each input visual role to a distinct representation and geometry", () => {
+  const nodes = [
+    {
+      id: "image",
+      family: "input",
+      stage: 0,
+      label: "Image",
+      shape: { output: [1, 3, 224, 224] },
+    },
+    {
+      id: "sequence",
+      family: "input",
+      stage: 1,
+      label: "tokens",
+      ports: { outputs: ["tokens", "time"] },
+    },
+    {
+      id: "state",
+      family: "input",
+      stage: 2,
+      label: "hidden state",
+      ports: { outputs: ["h_prev", "c_prev"] },
+    },
+    {
+      id: "vector",
+      family: "input",
+      stage: 3,
+      shape: { output: [1, 128] },
+    },
+    {
+      id: "volume",
+      family: "input",
+      stage: 4,
+      label: "voxel volume",
+      shape: { output: [1, 1, 96, 128, 128] },
+    },
+    {
+      id: "unknown",
+      family: "input",
+      stage: 5,
+      shape: { output: [1, 7, 11] },
+    },
+  ];
+  const edges = nodes.slice(0, -1).map((node, index) => ({
+    id: `input-edge-${index}`,
+    source: node.id,
+    target: nodes[index + 1].id,
+    type: "signal",
+  }));
+
+  const layout = layoutUniversalFigure({ nodes, edges });
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+
+  assert.deepEqual(
+    [...byId.values()].map((node) => [node.visualRole, node.representation]),
+    [
+      ["image-input", "image-plane"],
+      ["sequence-input", "sequence-strip"],
+      ["state-input", "state-vector"],
+      ["vector-input", "vector-column"],
+      ["volume-input", "volume"],
+      ["unknown-input", "unknown-outline"],
+    ],
+  );
+  assert.equal(byId.get("image").geometryData.inputGrammar, "image-input");
+  assert.equal(byId.get("image").geometryData.tensorRank, 3);
+  assert.equal(byId.get("image").geometryData.channelCount, 3);
+  assert.equal(byId.get("image").geometryData.spatialSize, 224);
+  assert.equal(byId.get("state").geometryData.modalityReason, "state port or hidden/cell evidence");
+  assert.equal(byId.get("volume").geometryData.tensorRank, 4);
+  assert.equal(byId.get("unknown").geometryData.inputGrammar, "unknown-input");
+  assert.equal(layout.validation.ok, true);
 });
 
 test("universal figure groups linear convolution runs into evidence-backed stages", () => {

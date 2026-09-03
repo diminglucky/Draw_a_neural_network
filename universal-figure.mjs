@@ -1,6 +1,7 @@
 import {
   compileSemanticVisualNode,
   compileSemanticVisualNodes,
+  recurrentEvidenceForNode,
 } from "./semantic-visual-grammar.mjs";
 
 const DEFAULT_ARTBOARD = Object.freeze({ x: 170, y: 160, width: 2260, height: 1060 });
@@ -33,9 +34,14 @@ export function selectFigureGrammar(ir = {}) {
   const hasTensor = families.has("conv") || families.has("volume") || families.has("pool");
   const hasRecurrentFlow = families.has("recurrent")
     || edges.some((edge) => /^(state|recurrent-state|loop)$/i.test(String(edge.type || "")));
+  const hasControlFlow = edges.some((edge) => /^(control|alternative|branch)$/i.test(String(edge.type || "")))
+    || nodes.some((node) => node.attributes?.controlKind);
 
   if (hasRecurrentFlow) {
     return grammar("recurrent-flow", "recurrent nodes or state/loop edges are present", 0.95);
+  }
+  if (hasControlFlow) {
+    return grammar("control-flow", "conditional or iterative control-flow evidence is present", 0.9);
   }
   if (hasAttention) {
     return grammar("token-attention", "attention or token interaction edges are present", 0.94);
@@ -99,6 +105,22 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
 
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
   const edges = sourceEdges.map((edge, index) => routeEdge(edge, nodeMap, index, fittedArtboard));
+  const recurrentLayout = grammar.id === "recurrent-flow"
+    ? buildRecurrentFigureLayout(sourceNodes, nodes, sourceEdges, fittedArtboard)
+    : undefined;
+  if (recurrentLayout?.uncertainty.unresolved) {
+    const recurrentNode = nodes.find((node) => node.id === recurrentLayout.instances[1]?.sourceNodeId);
+    if (recurrentNode) {
+      recurrentNode.representation = "compound";
+      recurrentNode.inner = {
+        kind: "unresolved",
+        nodes: [],
+        edges: [],
+        message: recurrentLayout.uncertainty.reason,
+      };
+      recurrentNode.note = `unresolved structure · ${recurrentLayout.uncertainty.reason}`;
+    }
+  }
   const validation = validateFigureLayout(nodes, edges, fittedArtboard);
   return {
     version: PLAN_VERSION,
@@ -108,6 +130,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     nodes,
     edges,
     validation,
+    ...(recurrentLayout ? { recurrentLayout } : {}),
   };
 }
 
@@ -324,6 +347,12 @@ function compareNode(left, right) {
 
 function representationFor(node) {
   if (node.visualRole === "output-distribution" || node.family === "output") return "softmax-prism";
+  if (node.visualRole === "image-input") return "image-plane";
+  if (node.visualRole === "sequence-input") return "sequence-strip";
+  if (node.visualRole === "state-input") return "state-vector";
+  if (node.visualRole === "vector-input") return "vector-column";
+  if (node.visualRole === "unknown-input") return "unknown-outline";
+  if (node.visualRole === "volume-input") return "volume";
   if (node.visualRole === "input-tensor" || node.visualRole === "feature-map-stage" || node.family === "volume") return "volume";
   if (node.visualRole === "pool-downsample" || node.family === "pool") return "pool-prism";
   if (node.family === "merge") return "operator-symbol";
@@ -465,6 +494,151 @@ function layoutInnerGraph(node) {
   return { kind: "topology", nodes: innerNodes, edges: innerEdges };
 }
 
+function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, artboard) {
+  const recurrentNode = sourceNodes.find((node) => isRecurrentLayoutNode(node))
+    || sourceNodes.find((node) => sourceEdges.some((edge) => isStateEdge(edge) && String(edge.source) === String(node.id)));
+  if (!recurrentNode) return undefined;
+
+  const positioned = positionedNodes.find((node) => node.id === recurrentNode.id);
+  if (!positioned) return undefined;
+  const evidence = recurrentNode.recurrentEvidence || recurrentEvidenceForNode(recurrentNode, sourceEdges);
+  const axis = ["time", "iteration", "unknown"].includes(String(evidence.repetition?.axis))
+    ? String(evidence.repetition.axis)
+    : "unknown";
+  const collapsedWidth = Math.max(92, Math.min(132, Math.round(positioned.w * 0.4)));
+  const expandedWidth = Math.max(positioned.w, collapsedWidth + 72);
+  const gap = 44;
+  const instances = [
+    { role: "previous", expanded: false, x: positioned.x - gap - collapsedWidth, w: collapsedWidth },
+    { role: "expanded", expanded: true, x: positioned.x, w: expandedWidth },
+    { role: "next", expanded: false, x: positioned.x + expandedWidth + gap, w: collapsedWidth },
+  ].map((instance) => ({
+    id: `${recurrentNode.id}:${instance.role}`,
+    sourceNodeId: String(recurrentNode.sourceNodeId || recurrentNode.id),
+    role: instance.role,
+    x: Math.round(instance.x),
+    y: Math.round(positioned.y),
+    w: Math.round(instance.w),
+    h: Math.round(positioned.h),
+    expanded: instance.expanded,
+  }));
+
+  const edgeById = new Map(sourceEdges.map((edge) => [String(edge.sourceEdgeId || edge.id || ""), edge]));
+  const transitions = Array.isArray(evidence.stateTransitions) ? evidence.stateTransitions : [];
+  const railSources = new Map();
+  transitions.forEach((transition) => {
+    const sourceEdgeId = String(transition?.sourceEdgeId || "");
+    const edge = edgeById.get(sourceEdgeId);
+    if (edge && !transition.status && isStateEdge(edge)) {
+      railSources.set(sourceEdgeId, {
+        kind: normalizeRailKind(transition.kind),
+        sourceEdgeId,
+        sourceEndpointIds: cloneValue(transition.sourceEndpointIds || edge.sourceEndpointIds || edge.ports || {}),
+      });
+    }
+  });
+  sourceEdges.forEach((edge) => {
+    if (!isStateEdge(edge)) return;
+    const source = String(edge.source || "");
+    const target = String(edge.target || "");
+    if (source !== recurrentNode.id && target !== recurrentNode.id) return;
+    const sourceEdgeId = String(edge.sourceEdgeId || edge.id || "");
+    if (!railSources.has(sourceEdgeId)) {
+      railSources.set(sourceEdgeId, {
+        kind: normalizeRailKind(edge.type),
+        sourceEdgeId,
+        sourceEndpointIds: cloneValue(edge.sourceEndpointIds || edge.ports || {}),
+      });
+    }
+  });
+  const stateRails = [...railSources.values()].map((rail, index) => ({
+    id: `${recurrentNode.id}:state-rail:${rail.sourceEdgeId || index + 1}`,
+    kind: rail.kind,
+    sourceEdgeId: rail.sourceEdgeId,
+    sourceEndpointIds: rail.sourceEndpointIds,
+    points: railPoints(instances, index),
+  }));
+  const expandedInternalGraph = expandedInternalGraphFor(recurrentNode, evidence);
+  const unresolved = expandedInternalGraph.status !== "resolved";
+  const reason = expandedInternalGraph.reason || "internal topology evidence is absent";
+
+  return {
+    timeAxis: {
+      axis,
+      direction: "left-to-right",
+      labels: ["previous", "current", "next"],
+    },
+    instances,
+    expandedInstanceId: `${recurrentNode.id}:expanded`,
+    stateRails,
+    expandedInternalGraph,
+    uncertainty: { unresolved, reason: unresolved ? reason : "" },
+  };
+}
+
+function isRecurrentLayoutNode(node = {}) {
+  const family = String(node.family || node.type || "").toLowerCase();
+  return ["recurrent", "rnn", "lstm", "gru"].includes(family)
+    || isRecord(node.attributes?.repetition)
+    || Array.isArray(node.attributes?.stateTransitions);
+}
+
+function isStateEdge(edge = {}) {
+  return /^(state|recurrent-state|loop)$/i.test(String(edge.type || ""));
+}
+
+function normalizeRailKind(kind) {
+  return ["carry", "feedback", "update"].includes(String(kind)) ? String(kind) : "carry";
+}
+
+function railPoints(instances, index) {
+  const y = Math.round(instances[0].y + 20 + index * 18);
+  return [
+    { x: instances[0].x + instances[0].w / 2, y },
+    { x: instances[1].x + instances[1].w / 2, y },
+    { x: instances[2].x + instances[2].w / 2, y },
+  ];
+}
+
+function expandedInternalGraphFor(node, evidence) {
+  const graph = evidence?.internalGraph || {};
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes.map((child, index) => ({
+    ...child,
+    id: String(child?.id || child?.sourceNodeId || `${node.id}:internal-${index + 1}`),
+    ...(child?.sourceNodeId !== undefined ? { sourceNodeId: String(child.sourceNodeId) } : {}),
+  })) : [];
+  const nodeIds = new Set(nodes.map((child) => child.id));
+  const edges = Array.isArray(graph.edges)
+    ? graph.edges
+      .filter((edge) => nodeIds.has(String(edge?.source || "")) && nodeIds.has(String(edge?.target || "")))
+      .map((edge, index) => ({
+        ...edge,
+        id: String(edge?.id || edge?.sourceEdgeId || `${node.id}:internal-edge-${index + 1}`),
+        sourceEdgeId: String(edge?.sourceEdgeId || edge?.id || `${node.id}:internal-edge-${index + 1}`),
+        source: String(edge.source),
+        target: String(edge.target),
+      }))
+    : [];
+  const status = graph.status === "resolved" && nodes.length > 0 ? "resolved" : "unresolved";
+  return {
+    nodes,
+    edges,
+    ports: cloneValue(graph.ports || {}),
+    status,
+    diagnostics: cloneValue(graph.diagnostics || []),
+    ...(status === "unresolved" ? { reason: String(graph.reason || "internal topology evidence is absent") } : {}),
+  };
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function cloneValue(value) {
+  if (value === undefined) return undefined;
+  return structuredClone(value);
+}
+
 function routeEdge(edge, nodeMap, index, artboard) {
   const source = nodeMap.get(edge.source);
   const target = nodeMap.get(edge.target);
@@ -485,7 +659,7 @@ function routeEdge(edge, nodeMap, index, artboard) {
         to,
       ],
     };
-  } else if (edge.type === "skip" || edge.type === "residual") {
+  } else if (["skip", "residual", "control", "alternative", "branch"].includes(String(edge.type).toLowerCase())) {
     const laneY = artboard.y + 36 + index * 24;
     result.route = {
       kind: "skip-lane",
