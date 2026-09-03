@@ -143,8 +143,8 @@ test("createFigurePlan marks the recurrent node unresolved when expansion has no
 
   assert.equal(plan.recurrentLayout.uncertainty.unresolved, true);
   assert.equal(node.unresolved, true);
-  assert.equal(node.visualRole, "unresolved-module");
-  assert.equal(node.compoundKind, "unresolved");
+  assert.equal(node.visualRole, "recurrent-state");
+  assert.equal(figurePlanForCanvas(plan).nodes.find((item) => item.sourceNodeId === "opaque-cell").compoundKind, "operator");
   assert.equal(node.unresolvedMarker.kind, "unresolved-module");
   assert.match(node.unresolvedMarker.reason, /internal topology/i);
 });

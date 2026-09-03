@@ -24,7 +24,11 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
       || node.compoundKind === "unresolved"
       || node.visualRole === "unresolved-module"
       || recurrentUnresolvedSourceIds.has(String(node.sourceNodeId || node.id || ""));
-    const visualRole = unresolved ? "unresolved-module" : String(node.visualRole || "operator");
+    const recurrentShellUnresolved = recurrentUnresolvedSourceIds.has(String(node.sourceNodeId || node.id || ""))
+      && String(node.visualRole || "") === "recurrent-state";
+    const visualRole = recurrentShellUnresolved
+      ? "recurrent-state"
+      : unresolved ? "unresolved-module" : String(node.visualRole || "operator");
     return {
       id: String(node.id || sourceNodeId),
       sourceNodeId,
@@ -36,7 +40,9 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
       subtitle: String(node.figureSubtitle || node.subtitle || ""),
       family: String(node.family || source?.family || "custom"),
       op: String(node.op || source?.op || node.label || "UnknownOperator"),
-      compoundKind: unresolved ? "unresolved" : (node.compoundKind || source?.compoundKind),
+      compoundKind: recurrentShellUnresolved
+        ? (node.compoundKind || source?.compoundKind || "operator")
+        : unresolved ? "unresolved" : (node.compoundKind || source?.compoundKind),
       stage: finiteOr(node.stage, finiteOr(source?.stage, index)),
       order: finiteOr(node.order, finiteOr(source?.order, index)),
       ports: clonePorts(node.ports || source?.ports),
