@@ -635,7 +635,16 @@ function titleCase(value) {
 
 const DEFAULT_INPUT_SHAPE = [224, 224, 3];
 
-function inferShapes(nodes, edges) {
+// LLM 可能输出带 batch 维的 shape（[1, 224, 224, 3] 或 [null, 224, 224, 3]），
+// 而 shape 传播约定是 channels-last 无 batch 的 [H, W, C]。剥掉显式的 batch 维。
+function normalizeInputShape(shape) {
+  if (shape.length === 4 && (shape[0] === null || shape[0] === undefined || shape[0] === 1 || shape[0] === -1)) {
+    return shape.slice(1);
+  }
+  return shape;
+}
+
+export function inferShapes(nodes, edges, options = {}) {
   const incoming = new Map(nodes.map((node) => [node.id, []]));
   for (const edge of edges) {
     if (incoming.has(edge.target)) incoming.get(edge.target).push(edge.source);
@@ -648,13 +657,16 @@ function inferShapes(nodes, edges) {
   const shapeByNode = new Map();
   for (const node of ordered) {
     if (node.family === "input") {
-      shapeByNode.set(node.id, [...DEFAULT_INPUT_SHAPE]);
+      const explicit = node.shape?.output || node.attributes?.inputShape || node.attributes?.shape;
+      const raw = Array.isArray(explicit) && explicit.length ? explicit : DEFAULT_INPUT_SHAPE;
+      const seed = normalizeInputShape(raw);
+      shapeByNode.set(node.id, [...seed]);
       continue;
     }
     const predecessors = (incoming.get(node.id) || []).map((id) => shapeByNode.get(id)).filter(Boolean);
     const inputShape = predecessors[0];
     if (!inputShape) continue;
-    const outputShape = computeOutputShape(node, inputShape);
+    const outputShape = computeOutputShape(node, inputShape, predecessors);
     if (outputShape && outputShape.length) shapeByNode.set(node.id, outputShape);
   }
   for (const node of nodes) {
@@ -663,7 +675,123 @@ function inferShapes(nodes, edges) {
   }
 }
 
-function computeOutputShape(node, inputShape) {
+// 与 inferShapes 相同的传播逻辑，但记录每个「算不出 shape」节点的原因，
+// 供闭环反馈使用——这是「验证」环节，让 LLM 输出的 IR 被规则验算并暴露矛盾。
+export function diagnoseShapes(nodes, edges, options = {}) {
+  const incoming = new Map(nodes.map((node) => [node.id, []]));
+  for (const edge of edges) {
+    if (incoming.has(edge.target)) incoming.get(edge.target).push(edge.source);
+  }
+  const ordered = [...nodes].sort((left, right) => (
+    (Number(left.stage) - Number(right.stage)) || (Number(left.order) - Number(right.order))
+  ));
+  const shapeByNode = new Map();
+  const issues = [];
+  for (const node of ordered) {
+    if (node.family === "input") {
+      const explicit = node.shape?.output || node.attributes?.inputShape || node.attributes?.shape;
+      const raw = Array.isArray(explicit) && explicit.length ? explicit : DEFAULT_INPUT_SHAPE;
+      const seed = normalizeInputShape(raw);
+      shapeByNode.set(node.id, [...seed]);
+      continue;
+    }
+    const predecessors = (incoming.get(node.id) || []).map((id) => shapeByNode.get(id)).filter(Boolean);
+    const inputShape = predecessors[0];
+    if (!inputShape) {
+      if ((incoming.get(node.id) || []).length > 0) {
+        issues.push({ kind: "no-input-shape", nodeId: node.id, op: node.op, family: node.family });
+      }
+      continue;
+    }
+    const outputShape = computeOutputShape(node, inputShape, predecessors);
+    if (outputShape && outputShape.length) {
+      shapeByNode.set(node.id, outputShape);
+    } else {
+      issues.push({
+        kind: "shape-gap",
+        nodeId: node.id,
+        op: node.op,
+        family: node.family,
+        reason: classifyShapeGap(node, inputShape, predecessors),
+      });
+    }
+  }
+  for (const node of nodes) {
+    const shape = shapeByNode.get(node.id);
+    if (shape && shape.length) node.shape = { output: shape };
+  }
+  return { ok: issues.length === 0, issues, shapeByNode: Object.fromEntries(shapeByNode) };
+}
+
+function classifyShapeGap(node, inputShape, inputs) {
+  const family = String(node.family || "");
+  const op = String(node.op || "").toLowerCase();
+  if (family === "merge") {
+    const shapes = (inputs || []).filter(Boolean);
+    if (!/concat|concatenate|cat|join/.test(op) && shapes.length > 1) {
+      const first = shapes[0];
+      if (shapes.some((shape) => !sameShape(shape, first))) return "mismatched-merge";
+    }
+  }
+  if (family === "conv" || family === "dense" || family === "recurrent" || family === "graph") {
+    const args = parseLayerArgs(node.attributes?.constructorArgs || node.subtitle || "");
+    const missing = [];
+    if (family === "conv") {
+      if (!Number.isFinite(numericArg(args, 1))) missing.push("out_channels");
+      const kernel = firstFinite(numericArg(args, 2), kwargNumber(args, "kernel_size"));
+      if (!Number.isFinite(kernel)) missing.push("kernel_size");
+    } else if (family === "dense") {
+      const out = firstFinite(
+        numericArg(args, 1), kwargNumber(args, "out_features"),
+        numericArg(args, 0), kwargNumber(args, "units"),
+      );
+      if (!Number.isFinite(out)) missing.push("out_features");
+    } else if (family === "recurrent") {
+      const hidden = firstFinite(
+        numericArg(args, 1), kwargNumber(args, "hidden_size"), kwargNumber(args, "hidden"),
+        numericArg(args, 0), kwargNumber(args, "units"),
+      );
+      if (!Number.isFinite(hidden)) missing.push("hidden_size");
+    } else if (family === "graph") {
+      const out = firstFinite(
+        numericArg(args, 1), kwargNumber(args, "out_features"), kwargNumber(args, "out_channels"),
+        numericArg(args, 0), kwargNumber(args, "units"),
+      );
+      if (!Number.isFinite(out)) missing.push("out_features");
+    }
+    if (missing.length) return "missing-parameter";
+  }
+  return "unsupported-operator";
+}
+
+// 把诊断结果转成一段可供 LLM 自纠的自然语言反馈。
+export function buildShapeFeedback(issues, shapeByNode = {}) {
+  if (!issues || !issues.length) return "";
+  const lines = ["Shape inference found the following inconsistencies in your IR:"];
+  for (const issue of issues) {
+    const where = `node "${issue.nodeId}" (${issue.op || issue.family})`;
+    switch (issue.reason) {
+      case "mismatched-merge":
+        lines.push(`- ${where}: an element-wise merge (add/sum) receives branch shapes that do not match. Fix the branch tensors so both sides have identical dimensions, or mark the merge as concat if it is channel concatenation.`);
+        break;
+      case "missing-parameter":
+        lines.push(`- ${where}: missing layer parameters (channels/kernel/out_features/hidden_size). Provide explicit numeric constructor arguments.`);
+        break;
+      case "unsupported-operator":
+        lines.push(`- ${where}: the operator could not be shaped. Decompose it into primitive layers (conv/pool/dense/flatten/norm/activation/attention/merge) with explicit parameters.`);
+        break;
+      case "no-input-shape":
+        lines.push(`- ${where}: no incoming tensor shape could be resolved (an upstream node is unresolved). Fix the upstream operator first.`);
+        break;
+      default:
+        lines.push(`- ${where}: could not be shaped (${issue.reason || "unknown"}).`);
+    }
+  }
+  lines.push("Return the corrected full IR JSON with the same figure/nodes/edges structure.");
+  return lines.join("\n");
+}
+
+function computeOutputShape(node, inputShape, inputs = [inputShape]) {
   const family = String(node.family || "");
   const op = String(node.op || "").toLowerCase();
   const args = parseLayerArgs(node.attributes?.constructorArgs || node.subtitle || "");
@@ -675,51 +803,38 @@ function computeOutputShape(node, inputShape) {
     return inputShape;
   }
 
-  if (family === "conv") {
-    const outChannels = numericArg(args, 1);
-    const kernel = numericArg(args, 2);
-    const stride = firstFinite(numericArg(args, 3), kwargNumber(args, "stride"), 1);
-    const padding = firstFinite(kwargNumber(args, "padding"), numericArg(args, 4), 0);
-    if (!Number.isFinite(outChannels) || !Number.isFinite(kernel)) return null;
-    const [height, width] = spatialOf(inputShape);
-    const [kh, kw] = pairOf(kernel);
-    const [ph, pw] = pairOf(padding);
-    return [
-      convDimension(height, kh, ph, stride),
-      convDimension(width, kw, pw, stride),
-      Math.round(outChannels),
-    ];
-  }
+  if (family === "conv") return convShape(op, args, inputShape);
 
-  if (family === "pool") {
-    const channels = channelsOf(inputShape);
-    if (/adaptive|global/.test(op)) {
-      const target = numericArg(args, 0);
-      if (Number.isFinite(target)) return [target, target, channels];
-      const tuple = tupleArg(args, 0);
-      if (tuple && tuple.length >= 2) return [tuple[0], tuple[1], channels];
-      return [1, 1, channels];
-    }
-    const kernel = numericArg(args, 0);
-    const stride = firstFinite(numericArg(args, 1), kwargNumber(args, "stride"), kernel);
-    const padding = firstFinite(kwargNumber(args, "padding"), numericArg(args, 2), 0);
-    if (!Number.isFinite(kernel)) return null;
-    const [height, width] = spatialOf(inputShape);
-    const [kh, kw] = pairOf(kernel);
-    return [
-      poolDimension(height, kh, stride),
-      poolDimension(width, kw, stride),
-      channels,
-    ];
+  if (family === "pool") return poolShape(op, args, inputShape);
+
+  if (family === "merge") return mergeShape(op, inputs);
+
+  if (family === "recurrent") return recurrentShape(op, args, inputShape);
+
+  if (family === "graph") return graphShape(op, args, inputShape);
+
+  if (family === "attention") {
+    // Transformer 注意力：QKV 头拆分后再拼接回 d_model，输出保持输入形状（seq_len × d_model）。
+    return inputShape;
   }
 
   if (family === "flatten" || op === "flatten" || op === "view" || op === "reshape") {
+    if (op === "view" || op === "reshape") {
+      const target = reshapeTarget(args, inputShape);
+      if (target) return target;
+    }
     const total = productOf(inputShape);
     return Number.isFinite(total) ? [total] : null;
   }
 
   if (family === "dense") {
-    const outFeatures = numericArg(args, 1);
+    // PyTorch Linear(in, out) -> 位置 1；Keras Dense(units) -> 位置 0 或 units kwarg。
+    const outFeatures = firstFinite(
+      numericArg(args, 1),
+      kwargNumber(args, "out_features"),
+      numericArg(args, 0),
+      kwargNumber(args, "units"),
+    );
     return Number.isFinite(outFeatures) ? [Math.round(outFeatures)] : null;
   }
 
@@ -728,12 +843,152 @@ function computeOutputShape(node, inputShape) {
   return null;
 }
 
-function convDimension(size, kernel, padding, stride) {
+function convShape(op, args, inputShape) {
+  if (inputShape.length >= 4) return null; // 3D 数据（volume/video）：2D 公式会取错维，安全失败交给闭环。
+  const isTranspose = /transpose|transposed|deconv/i.test(op);
+  const outChannels = numericArg(args, 1);
+  const kernel = firstFinite(numericArg(args, 2), kwargNumber(args, "kernel_size"));
+  const stride = firstFinite(numericArg(args, 3), kwargNumber(args, "stride"), 1);
+  const padding = resolvePadding(args.kwargs.padding ?? args.positional[4] ?? 0, kernel);
+  const dilation = firstFinite(kwargNumber(args, "dilation"), 1);
+  const outputPadding = firstFinite(kwargNumber(args, "output_padding"), 0);
+  if (!Number.isFinite(outChannels) || !Number.isFinite(kernel)) return null;
+  const [height, width] = spatialOf(inputShape);
+  const [kh, kw] = pairOf(kernel);
+  const [ph, pw] = pairOf(padding);
+  const [dh, dw] = pairOf(dilation);
+  const [oh, ow] = pairOf(outputPadding);
+  if (isTranspose) {
+    return [
+      transposedDimension(height, kh, ph, dh, oh, stride),
+      transposedDimension(width, kw, pw, dw, ow, stride),
+      Math.round(outChannels),
+    ];
+  }
+  return [
+    convDimension(height, kh, ph, stride, dh),
+    convDimension(width, kw, pw, stride, dw),
+    Math.round(outChannels),
+  ];
+}
+
+function poolShape(op, args, inputShape) {
+  if (inputShape.length >= 4) return null; // 3D 数据：2D 公式会取错维，安全失败交给闭环。
+  const channels = channelsOf(inputShape);
+  if (/upsample|interpolate/i.test(op)) {
+    const sizeTuple = tupleArg(args, 0) || kwargTuple(args, "size");
+    if (sizeTuple && sizeTuple.length >= 2) return [sizeTuple[0], sizeTuple[1], channels];
+    const size = firstFinite(numericArg(args, 0), kwargNumber(args, "size"));
+    const scale = firstFinite(kwargNumber(args, "scale_factor"), 1);
+    const [height, width] = spatialOf(inputShape);
+    if (Number.isFinite(size)) return [size, size, channels];
+    return [Math.round(height * scale), Math.round(width * scale), channels];
+  }
+  if (/adaptive|global/.test(op)) {
+    const target = numericArg(args, 0);
+    if (Number.isFinite(target)) return [target, target, channels];
+    const tuple = tupleArg(args, 0);
+    if (tuple && tuple.length >= 2) return [tuple[0], tuple[1], channels];
+    return [1, 1, channels];
+  }
+  const kernel = firstFinite(numericArg(args, 0), kwargNumber(args, "kernel_size"));
+  const stride = firstFinite(numericArg(args, 1), kwargNumber(args, "stride"), kernel);
+  const padding = resolvePadding(args.kwargs.padding ?? args.positional[2] ?? 0, kernel);
+  if (!Number.isFinite(kernel)) return null;
+  const [height, width] = spatialOf(inputShape);
+  const [kh, kw] = pairOf(kernel);
+  const [ph, pw] = pairOf(padding);
+  return [
+    poolDimension(height, kh, stride, ph),
+    poolDimension(width, kw, stride, pw),
+    channels,
+  ];
+}
+
+function mergeShape(op, inputs) {
+  const shapes = (inputs || []).filter(Boolean);
+  if (!shapes.length) return null;
+  if (/concat|concatenate|cat|join/.test(op)) {
+    // 拼接在通道（最后一）维；空间维取第一个输入。
+    const rank = Math.max(...shapes.map((shape) => shape.length));
+    const spatial = rank >= 2 ? shapes[0].slice(0, rank - 1) : [];
+    const totalChannels = shapes.reduce((acc, shape) => acc + (shape[shape.length - 1] ?? 1), 0);
+    return rank >= 2 ? [...spatial, totalChannels] : [totalChannels];
+  }
+  // add / sum / merge（逐元素）：要求所有输入形状一致，否则保持未解决。
+  const first = shapes[0];
+  const consistent = shapes.every((shape) => sameShape(shape, first));
+  return consistent ? first : null;
+}
+
+function isTruthy(value) {
+  if (value === true) return true;
+  if (typeof value === "number") return value !== 0;
+  return /^(?:true|yes|1)$/i.test(String(value));
+}
+
+function recurrentShape(op, args, inputShape) {
+  // RNN 输入是序列 [seq_len, input_size]；空间维公式不适用，需 2 维否则安全失败。
+  if (!Array.isArray(inputShape) || inputShape.length !== 2) return null;
+  const seqLen = inputShape[0];
+  const bidirectional = /bidirectional/i.test(op) || isTruthy(args.kwargs.bidirectional);
+  // hidden_size：PyTorch LSTM(in, hidden) 位置 1；Keras LSTM(units) 位置 0 或 units kwarg。
+  const hidden = firstFinite(
+    numericArg(args, 1),
+    kwargNumber(args, "hidden_size"),
+    kwargNumber(args, "hidden"),
+    numericArg(args, 0),
+    kwargNumber(args, "units"),
+  );
+  if (!Number.isFinite(hidden)) return null;
+  const hiddenOut = Math.round(hidden) * (bidirectional ? 2 : 1);
+  // return_sequences 默认 true（PyTorch 语义：返回整序列）；显式 false（Keras 默认）才缩短。
+  // op 名无法区分框架（两边都叫 LSTM/GRU），故只信显式声明。
+  const returnSequences = !/^(?:false|no|0)$/i.test(String(args.kwargs.return_sequences));
+  if (returnSequences && Number.isFinite(seqLen)) return [Math.round(seqLen), hiddenOut];
+  return [hiddenOut];
+}
+
+function graphShape(op, args, inputShape) {
+  // GCN/GAT 输入 [num_nodes, in_features]；节点数不变，只换特征维。
+  if (!Array.isArray(inputShape) || inputShape.length !== 2) return null;
+  const numNodes = inputShape[0];
+  const outFeatures = firstFinite(
+    numericArg(args, 1),
+    kwargNumber(args, "out_features"),
+    kwargNumber(args, "out_channels"),
+    numericArg(args, 0),
+    kwargNumber(args, "units"),
+  );
+  if (!Number.isFinite(outFeatures) || !Number.isFinite(numNodes)) return null;
+  return [Math.round(numNodes), Math.round(outFeatures)];
+}
+
+function convDimension(size, kernel, padding, stride, dilation = 1) {
+  const effective = kernel + (kernel - 1) * (dilation - 1);
+  return Math.floor((size + 2 * padding - effective) / stride) + 1;
+}
+
+function poolDimension(size, kernel, stride, padding = 0) {
   return Math.floor((size + 2 * padding - kernel) / stride) + 1;
 }
 
-function poolDimension(size, kernel, stride) {
-  return Math.floor((size - kernel) / stride) + 1;
+// Keras/TF 常用 padding='same'（输出 = ceil(size/stride)，等价 padding=(kernel-1)/2）
+// 或 'valid'（padding=0）。PyTorch 用显式整数 padding。
+function resolvePadding(paddingValue, kernel) {
+  if (typeof paddingValue === "string" && /same/i.test(paddingValue)) {
+    const k = Array.isArray(kernel) ? kernel[0] : kernel;
+    return Number.isFinite(k) ? (k - 1) / 2 : 0;
+  }
+  return Number.isFinite(paddingValue) ? paddingValue : 0;
+}
+
+function transposedDimension(size, kernel, padding, dilation, outputPadding, stride) {
+  return (size - 1) * stride - 2 * padding + (kernel - 1) * dilation + 1 + outputPadding;
+}
+
+function sameShape(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function spatialOf(shape) {
@@ -824,4 +1079,31 @@ function kwargNumber(args, key) {
 function tupleArg(args, index) {
   const value = args.positional[index];
   return Array.isArray(value) ? value : null;
+}
+
+function kwargTuple(args, key) {
+  const value = args.kwargs[key];
+  return Array.isArray(value) ? value : null;
+}
+
+function reshapeTarget(args, inputShape) {
+  const first = args.positional[0];
+  if (Array.isArray(first)) return resolveReshape(first, inputShape);
+  const dims = args.positional.filter((value) => typeof value === "number");
+  return dims.length > 1 ? resolveReshape(dims, inputShape) : null;
+}
+
+function resolveReshape(dims, inputShape) {
+  const total = productOf(inputShape);
+  let unknown = -1;
+  let known = 1;
+  dims.forEach((dim, index) => {
+    if (dim === -1) { if (unknown === -1) unknown = index; }
+    else known *= dim;
+  });
+  if (unknown === -1) return dims.map((dim) => Math.round(dim));
+  if (known === 0 || total % known !== 0) return null;
+  const resolved = dims.slice();
+  resolved[unknown] = total / known;
+  return resolved.map((dim) => Math.round(dim));
 }

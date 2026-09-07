@@ -563,3 +563,35 @@ test("single-lane layout projects tensor depth as an overlapping east face witho
   assert.ok(pool.x - (conv.x + conv.w) >= 8, "pool sits past the source tensor front face");
   assert.ok(nextConv.x - (pool.x + pool.w) >= 20, "next tensor sits past the pool front face");
 });
+
+test("skip/residual edges route as a smooth upward arc, not a 3-point dogleg", () => {
+  const layout = layoutUniversalFigure({
+    figure: { title: "flat residual" },
+    nodes: [
+      { id: "input", op: "Input", family: "input", stage: 0, label: "x" },
+      { id: "c1", op: "Conv2d", family: "conv", stage: 1, label: "3×3,64" },
+      { id: "bn", op: "BatchNorm2d", family: "norm", stage: 2, label: "BN" },
+      { id: "add", op: "Add", family: "merge", stage: 3, label: "+" },
+      { id: "output", op: "Output", family: "output", stage: 4, label: "y" },
+    ],
+    edges: [
+      { id: "e1", source: "input", target: "c1", type: "signal" },
+      { id: "e2", source: "c1", target: "bn", type: "signal" },
+      { id: "e3", source: "bn", target: "add", type: "signal" },
+      { id: "skip", source: "input", target: "add", type: "residual" },
+      { id: "e4", source: "add", target: "output", type: "signal" },
+    ],
+  });
+
+  const skip = layout.edges.find((edge) => edge.id === "skip");
+  assert.equal(skip.route.kind, "skip-lane");
+  assert.ok(skip.route.points.length >= 12, `bezier-sampled arc should be dense, got ${skip.route.points.length}`);
+  const [start, end] = [skip.route.points[0], skip.route.points.at(-1)];
+  const apexY = Math.min(...skip.route.points.map((point) => point.y));
+  // 弧线向上拱起：顶点 y 明显高于首尾端点的 y。
+  assert.ok(apexY < start.y - 50, `arc should crest well above the source, apex=${apexY} start=${start.y}`);
+  assert.ok(apexY < end.y - 50, `arc should crest well above the target, apex=${apexY} end=${end.y}`);
+  // 首尾点与端点一致（起点在 source 右侧，终点在 target 左侧）。
+  assert.equal(start.x, layout.nodes.find((node) => node.id === "input").x + layout.nodes.find((node) => node.id === "input").w);
+  assert.equal(end.y, start.y, "arc returns to the same baseline as the main branch");
+});

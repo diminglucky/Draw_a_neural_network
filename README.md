@@ -23,10 +23,24 @@
 node server.js
 ```
 
-打开 `http://127.0.0.1:4173/`，填写已有 Visio 文档路径和页面名称，然后提交源码或参考图像。
+打开 `http://127.0.0.1:4173/`，填写已有 Visio 文档路径和页面名称，然后提交源码、架构描述或参考图像。
+
+### 接入大模型分析（可选）
+
+不配置时，代码走内置规则提取、图片返回 `needs_external_vision`。配置任意 OpenAI-compatible 端点后，源码、自然语言描述和图片都改由大模型理解并输出结构化 IR，再由内置 shape inference 精确计算特征图尺寸：
+
+```bash
+export LLM_BASE_URL=https://api.deepseek.com/v1   # 兼容 OpenAI / DeepSeek / Ollama / vLLM
+export LLM_API_KEY=sk-...                          # 或沿用 OPENAI_API_KEY
+export LLM_MODEL=deepseek-chat                     # 或沿用 OPENAI_VISION_MODEL
+node server.js
+```
+
+三个环境变量都可选：未配置 `LLM_API_KEY` 时自动回退到规则提取，不影响已有功能。
 
 ## 能力
 
+- 可选大模型分析：源码、自然语言描述、参考图像统一由 LLM 理解成结构化 IR（残差、封装展开、注意力、函数式调用），再由规则 shape inference 精确计算特征图尺寸。
 - PyTorch 与 Keras/TensorFlow 源码拓扑提取。
 - `forward()` 顺序、Sequential 展开、分支、合并、跳连和符号形状传播。
 - 自定义模块的源码内部拓扑证据；没有证据时保留 unresolved 状态。
@@ -49,6 +63,7 @@ node server.js
 index.html                     输入与 Visio 控制面
 app.js                         输入、状态和 Visio 执行
 server.js                      HTTP 服务与 Agent API
+llm-analyzer.mjs               可配置 OpenAI-compatible 大模型分析（代码/描述/图片 → IR）
 agent-pipeline.mjs             统一分析入口
 agent-orchestrator.mjs         可恢复运行状态机
 input-adapters.mjs             输入归一化

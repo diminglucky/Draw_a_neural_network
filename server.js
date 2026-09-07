@@ -12,11 +12,17 @@ import { createAgentRun, persistAgentRun, resumeAgentRun, runAgentPipeline } fro
 import { createMemoryRunStore } from "./run-store.mjs";
 import { validateFigurePlan } from "./figure-plan.mjs";
 import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
+import { createLLMAnalyzer } from "./llm-analyzer.mjs";
+import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./generic-source-topology.mjs";
 
 const port = Number(process.env.PORT || 4173);
 const root = process.cwd();
-const openAIKey = process.env.OPENAI_API_KEY;
-const model = process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini";
+const llmConfig = {
+  baseUrl: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
+  apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "",
+  model: process.env.LLM_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini",
+};
+const llmAnalyzer = createLLMAnalyzer(llmConfig);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -97,27 +103,68 @@ export function createAgentService({ dependencies = {}, runStore: configuredRunS
 function createDefaultAgentDependencies() {
   return {
     inspect: async (input) => input,
-    extract: async (input) => input?.kind === "image"
-      ? extractImageEvidenceThroughProvider(input)
-      : extractArchitectureEvidence(input),
+    extract: async (input) => {
+      if (input?.kind === "image") return extractImageEvidenceThroughProvider(input);
+      if (llmAnalyzer.available && (input?.kind === "source" || input?.kind === "prompt")) {
+        return extractThroughLLM(input);
+      }
+      return extractArchitectureEvidence(input);
+    },
     normalize: (evidence) => normalizeArchitectureEvidence(evidence),
     plan: (normalized) => planArchitectureFigure(normalized),
   };
 }
 
 async function extractImageEvidenceThroughProvider(input) {
-  const vision = await requestVisionIR(input);
-  if (vision.status) return {
-    kind: "image",
-    status: vision.status,
-    diagnostics: vision.diagnostics,
-    input,
-  };
+  const result = await llmAnalyzer.analyze(input);
+  if (result.status) {
+    return {
+      kind: "image",
+      status: "needs_external_vision",
+      diagnostics: result.diagnostics || [{ kind: "vision-analyzer-required", message: "Image input requires a configured vision analyzer." }],
+      input,
+    };
+  }
   return extractArchitectureEvidence({
     kind: "ir",
-    ir: vision.ir,
-    diagnostics: vision.diagnostics,
+    ir: applyShapeInference(result.ir),
+    diagnostics: result.diagnostics,
   });
+}
+
+const MAX_SHAPE_CORRECTION_ROUNDS = 3;
+
+async function extractThroughLLM(input) {
+  const result = await llmAnalyzer.analyze(input);
+  if (result.status) return extractArchitectureEvidence(input);
+  let ir = applyShapeInference(result.ir);
+  const diagnostics = Array.isArray(result.diagnostics) ? [...result.diagnostics] : [];
+  // 自纠闭环：规则验算 → 发现问题 → 带回反馈重问 LLM → 修正，直到自洽或达到上限。
+  for (let round = 0; round < MAX_SHAPE_CORRECTION_ROUNDS; round += 1) {
+    const diagnosis = diagnoseShapes(ir?.nodes || [], ir?.edges || []);
+    if (diagnosis.ok) break;
+    const feedback = buildShapeFeedback(diagnosis.issues, diagnosis.shapeByNode);
+    const correction = await llmAnalyzer.refine(input, ir, feedback);
+    if (!correction?.ir) {
+      diagnostics.push({ kind: "shape-correction-failed", message: "Shape self-correction round did not return a revised IR." });
+      break;
+    }
+    ir = applyShapeInference(correction.ir);
+    diagnostics.push({ kind: "shape-corrected", round: round + 1, issueCount: diagnosis.issues.length });
+  }
+  return extractArchitectureEvidence({
+    kind: "ir",
+    ir,
+    diagnostics,
+  });
+}
+
+function applyShapeInference(ir) {
+  const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
+  const edges = Array.isArray(ir?.edges) ? ir.edges : [];
+  if (!nodes.length) return ir;
+  inferShapes(nodes, edges);
+  return { ...ir, nodes, edges };
 }
 
 async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runStore) {
@@ -321,164 +368,6 @@ async function handleAnalyzeCode(request, response) {
   const result = analyzeArchitectureInput(await readJson(request));
   const status = result.status === "invalid_input" ? 422 : 200;
   sendJson(response, status, result);
-}
-
-async function requestVisionIR(body = {}) {
-  const images = Array.isArray(body.images) ? body.images.slice(0, 6) : [];
-  if (!images.length) {
-    return {
-      status: "needs_external_vision",
-      diagnostics: [{ kind: "vision-analyzer-required", message: "No images provided." }],
-    };
-  }
-  if (!openAIKey) {
-    return {
-      status: "needs_external_vision",
-      diagnostics: [{ kind: "vision-analyzer-required", message: "Image input requires a configured vision analyzer." }],
-    };
-  }
-
-  const apiResponse = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${openAIKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      input: [{
-        role: "user",
-        content: [
-          { type: "input_text", text: buildVisionPrompt(body) },
-          ...images.map((image) => ({ type: "input_image", image_url: image.dataUrl })),
-        ],
-      }],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "editable_neural_diagram",
-          schema: diagramSchema(),
-          strict: false,
-        },
-      },
-    }),
-  });
-
-  if (!apiResponse.ok) {
-    throw new Error(`${apiResponse.status}: ${(await apiResponse.text()).slice(0, 1000)}`);
-  }
-  const payload = await apiResponse.json();
-  const text = payload.output_text
-    || payload.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
-  if (!text) throw new Error("Vision model returned no diagram JSON");
-  const candidate = JSON.parse(text);
-  return { ir: candidate.ir || candidate, diagnostics: candidate.diagnostics };
-}
-
-function buildVisionPrompt(body) {
-  return [
-    "You are converting uploaded neural-network diagrams, sketches, or multiple reference images into a framework-neutral Universal Neural Network IR for Synapse Studio.",
-    "Return only the JSON required by the schema. Do not return drawing markup or Markdown.",
-    "Preserve arbitrary operations, custom modules, multi-input/multi-output ports, tensor shapes, branch and merge topology, source evidence, and confidence. Use a known family when justified; use family custom and compoundKind unresolved when internal structure is not visible.",
-    "Preserve labels and important arrows when visible. If ambiguous, infer a clean neural architecture rather than copying visual noise.",
-    "Return one Universal IR object with nodes and edges; the Agent generates renderer-neutral Figure Plan geometry before Visio rendering.",
-    "Prefer real neural-network topology over generic boxes, but never invent hidden internal layers without evidence.",
-    `Mode: ${body.mode || "auto"}.`,
-    `User instruction: ${body.prompt || "Generate a clear editable neural-network diagram."}`,
-  ].join("\n");
-}
-
-function diagramSchema() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["ir"],
-    properties: {
-      figure: {
-        type: "object",
-        additionalProperties: false,
-        required: ["title", "subtitle", "stages"],
-        properties: {
-          title: { type: "string" },
-          subtitle: { type: "string" },
-          stages: { type: "array", items: { type: "string" } },
-        },
-      },
-      paletteName: { type: "string", enum: ["dopamine", "aurora", "citrus"] },
-      nodes: {
-        type: "array",
-        minItems: 2,
-        maxItems: 40,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "type", "x", "y", "w", "h", "label", "subtitle", "stage", "color"],
-          properties: {
-            id: { type: "string" },
-            type: { type: "string" },
-            x: { type: "number" },
-            y: { type: "number" },
-            w: { type: "number" },
-            h: { type: "number" },
-            label: { type: "string" },
-            subtitle: { type: "string" },
-            stage: { type: "number" },
-            color: { type: "string" },
-            depth: { type: "number" },
-            z: { type: "number" },
-            layers: { type: "number" },
-            badge: { type: "string" },
-            note: { type: "string" },
-            channels: { type: "string" },
-            op: { type: "string" },
-            family: { type: "string" },
-            compoundKind: { type: "string" },
-            inputs: { type: "array", items: { type: "string" } },
-            outputs: { type: "array", items: { type: "string" } },
-            ports: { type: "object", additionalProperties: true },
-            shape: { type: "object", additionalProperties: true },
-            attributes: { type: "object", additionalProperties: true },
-            source: { type: "object", additionalProperties: true },
-            evidence: { type: "array", items: { type: "object", additionalProperties: true } },
-            confidence: { type: "number", minimum: 0, maximum: 1 },
-          },
-        },
-      },
-      edges: {
-        type: "array",
-        maxItems: 80,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["id", "source", "target", "label", "type", "color"],
-          properties: {
-            id: { type: "string" },
-            source: { type: "string" },
-            target: { type: "string" },
-            label: { type: "string" },
-            type: { type: "string" },
-            color: { type: "string" },
-            ports: { type: "object", additionalProperties: true },
-            confidence: { type: "number", minimum: 0, maximum: 1 },
-            evidence: { type: "array", items: { type: "object", additionalProperties: true } },
-          },
-        },
-      },
-      ir: {
-        type: "object",
-        additionalProperties: true,
-        required: ["nodes", "edges"],
-        properties: {
-          version: { type: "string" },
-          source: { type: "object", additionalProperties: true },
-          nodes: { type: "array", minItems: 1 },
-          edges: { type: "array" },
-          groups: { type: "array" },
-          diagnostics: { type: "array" },
-        },
-      },
-    },
-  };
 }
 
 async function serveStatic(request, response) {

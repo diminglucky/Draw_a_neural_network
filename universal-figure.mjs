@@ -752,9 +752,17 @@ function routeEdge(edge, nodeMap, index, artboard) {
     };
   } else if (["skip", "residual", "control", "alternative", "branch"].includes(String(edge.type).toLowerCase())) {
     const laneY = artboard.y + 36 + index * 24;
+    // 平滑上绕弧线：从 source 右侧垂直上扬、越过顶部水平段、再垂直降到 target 左侧。
+    // 用三次贝塞尔采样（kind 保持 "skip-lane" 以兼容既有消费者），折线点密集即视觉平滑。
     result.route = {
       kind: "skip-lane",
-      points: [from, { x: from.x + 20, y: laneY }, { x: to.x - 20, y: laneY }, to],
+      points: bezierCurve(
+        from,
+        { x: from.x, y: laneY },
+        { x: to.x, y: laneY },
+        to,
+        20,
+      ),
     };
   } else if (Math.abs(to.y - from.y) > Math.max(source.h, target.h) * 0.8) {
     // Vertically separated endpoints (multi-row or cross-stage layouts): route
@@ -768,6 +776,23 @@ function routeEdge(edge, nodeMap, index, artboard) {
     result.route = { kind: "direct", points: [from, to] };
   }
   return result;
+}
+
+function bezierCurve(p0, p1, p2, p3, segments = 20) {
+  const points = [];
+  for (let index = 0; index <= segments; index += 1) {
+    const t = index / segments;
+    const u = 1 - t;
+    const a = u * u * u;
+    const b = 3 * u * u * t;
+    const c = 3 * u * t * t;
+    const d = t * t * t;
+    points.push({
+      x: Math.round(a * p0.x + b * p1.x + c * p2.x + d * p3.x),
+      y: Math.round(a * p0.y + b * p1.y + c * p2.y + d * p3.y),
+    });
+  }
+  return points;
 }
 
 function validateFigureLayout(nodes, edges, artboard) {
