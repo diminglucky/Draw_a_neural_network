@@ -70,6 +70,7 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
         },
       } : {}),
       inner: cloneValue(node.inner),
+      ...(node.recurrentLayout ? { recurrentLayout: cloneValue(node.recurrentLayout) } : {}),
       evidence: cloneValue(node.evidence || source?.evidence || []),
     };
   });
@@ -103,6 +104,7 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
     edges,
     diagnostics: cloneValue(diagnostics),
     ...(recurrentLayout ? { recurrentLayout: cloneValue(recurrentLayout) } : {}),
+    ...(layout.recurrentLayouts ? { recurrentLayouts: cloneValue(layout.recurrentLayouts) } : {}),
   };
 }
 
@@ -110,6 +112,7 @@ export function validateFigurePlan(plan = {}) {
   const issues = [];
   const nodes = Array.isArray(plan.nodes) ? plan.nodes : [];
   const edges = Array.isArray(plan.edges) ? plan.edges : [];
+  if (nodes.length === 0) issues.push({ code: "empty-figure-plan", message: "Figure Plan must contain at least one node." });
   const checkUnique = (items, property, duplicateCode, missingCode) => {
     const seen = new Set();
     for (const [index, item] of items.entries()) {
@@ -156,108 +159,6 @@ export function validateFigurePlan(plan = {}) {
   };
 }
 
-export function figurePlanForBrowser(plan = {}) {
-  return projectFigurePlan(plan, { renderer: "browser" });
-}
-
-export function figurePlanForCanvas(plan = {}) {
-  const projected = projectFigurePlan(plan, { renderer: "canvas" });
-  const nodes = projected.nodes.map((node) => ({
-    ...node,
-    type: canvasTypeForRole(node.visualRole, node.family),
-    compoundKind: node.compoundKind || (node.visualRole === "recurrent-state" ? "operator" : undefined),
-    w: node.w || 160,
-    h: node.h || 110,
-  }));
-  const sourceToLayout = new Map();
-  nodes.forEach((node) => {
-    sourceToLayout.set(node.sourceNodeId, node.id);
-    (node.sourceNodeIds || []).forEach((sourceId) => sourceToLayout.set(String(sourceId), node.id));
-  });
-  return {
-    ...projected,
-    nodes,
-    edges: projected.edges.map((edge) => ({
-      ...edge,
-      source: sourceToLayout.get(edge.sourceNodeId) || edge.source,
-      target: sourceToLayout.get(edge.targetNodeId) || edge.target,
-    })),
-  };
-}
-
-export function mergeCanvasStateIntoFigurePlan(plan = {}, { figure = {}, nodes = [], edges = [] } = {}) {
-  const currentNodes = Array.isArray(nodes) ? nodes : [];
-  const currentEdges = Array.isArray(edges) ? edges : [];
-  const planNodes = Array.isArray(plan.nodes) ? plan.nodes : [];
-  const planEdges = Array.isArray(plan.edges) ? plan.edges : [];
-  const planById = new Map(planNodes.map((node) => [String(node.id || ""), node]));
-  const planBySourceId = new Map(planNodes.map((node) => [String(node.sourceNodeId || ""), node]));
-  const currentById = new Map(currentNodes.map((node) => [String(node.id || ""), node]));
-  const nextNodes = currentNodes
-    .filter((node) => node && node.id)
-    .map((current) => {
-      const id = String(current.id);
-      const previous = planById.get(id) || planBySourceId.get(String(current.sourceNodeId || ""));
-      const sourceNodeId = String(previous?.sourceNodeId || current.sourceNodeId || id);
-      return {
-        ...(previous ? cloneValue(previous) : {}),
-        ...cloneValue(current),
-        id,
-        sourceNodeId,
-        sourceNodeIds: Array.isArray(previous?.sourceNodeIds)
-          ? previous.sourceNodeIds.map(String)
-          : Array.isArray(current.sourceNodeIds) ? current.sourceNodeIds.map(String) : [sourceNodeId],
-        x: finiteOr(current.x, previous?.x ?? 0),
-        y: finiteOr(current.y, previous?.y ?? 0),
-        w: finiteOr(current.w, previous?.w ?? 160),
-        h: finiteOr(current.h, previous?.h ?? 110),
-        label: String(current.label || previous?.label || "Operator"),
-        subtitle: String(current.subtitle || previous?.subtitle || ""),
-        color: String(current.color || previous?.color || ""),
-      };
-    });
-  const nextById = new Map(nextNodes.map((node) => [String(node.id || ""), node]));
-  const previousEdges = new Map();
-  planEdges.forEach((edge) => {
-    previousEdges.set(String(edge.id || ""), edge);
-    previousEdges.set(String(edge.sourceEdgeId || ""), edge);
-  });
-  const nextEdges = currentEdges
-    .filter((edge) => edge && edge.source && edge.target && nextById.has(String(edge.source)) && nextById.has(String(edge.target)))
-    .map((current, index) => {
-      const previous = previousEdges.get(String(current.id || ""))
-        || previousEdges.get(String(current.sourceEdgeId || ""));
-      const source = nextById.get(String(current.source));
-      const target = nextById.get(String(current.target));
-      const edgeId = String(current.id || previous?.id || `figure-edge-${index + 1}`);
-      return {
-        ...(previous ? cloneValue(previous) : {}),
-        ...cloneValue(current),
-        id: edgeId,
-        sourceEdgeId: String(previous?.sourceEdgeId || current.sourceEdgeId || edgeId),
-        source: String(source.id),
-        target: String(target.id),
-        sourceNodeId: String(source.sourceNodeId || source.id),
-        targetNodeId: String(target.sourceNodeId || target.id),
-        sourceEndpointIds: cloneValue(current.sourceEndpointIds || previous?.sourceEndpointIds || {}),
-        ports: cloneValue(current.ports || previous?.ports || {}),
-        type: String(current.type || previous?.type || "signal"),
-        label: String(current.label || previous?.label || ""),
-        route: routeForCurrentEdge({
-          ...(previous ? cloneValue(previous) : {}),
-          ...cloneValue(current),
-          type: String(current.type || previous?.type || "signal"),
-        }, source, target),
-      };
-    });
-  return {
-    ...cloneValue(plan),
-    figure: Object.keys(figure || {}).length ? cloneValue(figure) : cloneValue(plan.figure || {}),
-    nodes: nextNodes,
-    edges: nextEdges,
-  };
-}
-
 export function figurePlanForVisio(plan = {}, options = {}) {
   return projectFigurePlan(plan, {
     renderer: "visio",
@@ -268,36 +169,22 @@ export function figurePlanForVisio(plan = {}, options = {}) {
 }
 
 function projectFigurePlan(plan, projection) {
+  const recurrentLayouts = plan.recurrentLayouts || (plan.recurrentLayout
+    ? { [String(plan.recurrentLayout.instances?.[0]?.sourceNodeId || "")]: plan.recurrentLayout }
+    : {});
   return {
     ...cloneValue(plan),
     projection,
-    nodes: (plan.nodes || []).map((node) => cloneValue(node)),
+    nodes: (plan.nodes || []).map((node) => {
+      const projected = cloneValue(node);
+      const recurrentLayout = recurrentLayouts[String(projected.sourceNodeId || "")];
+      if (recurrentLayout) {
+        projected.recurrentLayout = cloneValue(recurrentLayout);
+      }
+      return projected;
+    }),
     edges: (plan.edges || []).map((edge) => cloneValue(edge)),
   };
-}
-
-function canvasTypeForRole(role, family) {
-  const byRole = {
-    "image-input": "image-input",
-    "sequence-input": "sequence-input",
-    "state-input": "state-input",
-    "vector-input": "vector-input",
-    "volume-input": "volume-input",
-    "unknown-input": "unknown-input",
-    "feature-map-stage": "conv",
-    "pool-downsample": "pool",
-    vectorize: "flatten",
-    "neuron-layer": "dense-layer",
-    "output-distribution": "output",
-    "merge-symbol": "concat",
-    "compound-module": "compound",
-    "unresolved-module": "compound",
-    "recurrent-state": "compound",
-    "token-sequence": "token",
-    "attention": "compound",
-    "skip-connection": "block",
-  };
-  return byRole[role] || (family === "volume" ? "volume-stack" : "compound");
 }
 
 function geometryFor(node) {
@@ -308,23 +195,6 @@ function geometryFor(node) {
     height: finiteOr(node.h, 0),
     ...(node.geometryData ? { data: cloneValue(node.geometryData) } : {}),
   };
-}
-
-function routeForCurrentEdge(edge, source, target) {
-  if (!source || !target) return cloneValue(edge.route || { kind: "unrouted", points: [] });
-  const from = { x: finiteOr(source.x, 0) + finiteOr(source.w, 0), y: finiteOr(source.y, 0) + finiteOr(source.h, 0) / 2 };
-  const to = { x: finiteOr(target.x, 0), y: finiteOr(target.y, 0) + finiteOr(target.h, 0) / 2 };
-  const kind = String(edge.type || edge.route?.kind || "signal").toLowerCase();
-  if (source.id === target.id || kind === "loop") {
-    const laneX = from.x + 34;
-    const laneY = Math.min(source.y, target.y) - 28;
-    return { kind: "loop", points: [from, { x: laneX, y: from.y }, { x: laneX, y: laneY }, { x: source.x + source.w / 2, y: laneY }, to] };
-  }
-  if (/skip|residual|shortcut|control|alternative/.test(kind)) {
-    const laneY = Math.min(source.y, target.y) - 24;
-    return { kind: "skip-lane", points: [from, { x: from.x + 20, y: laneY }, { x: to.x - 20, y: laneY }, to] };
-  }
-  return { kind: Math.abs(from.y - to.y) <= 12 ? "straight" : "orthogonal", points: [from, to] };
 }
 
 function clonePorts(ports = {}) {

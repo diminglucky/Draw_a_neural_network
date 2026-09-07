@@ -33,7 +33,8 @@ export function selectFigureGrammar(ir = {}) {
   const hasEncoderDecoder = nodes.some((node) => /encoder|decoder|upsample|downsample/i.test(`${node.family} ${node.op} ${node.label}`));
   const hasTensor = families.has("conv") || families.has("volume") || families.has("pool");
   const hasRecurrentFlow = families.has("recurrent")
-    || edges.some((edge) => /^(state|recurrent-state|loop)$/i.test(String(edge.type || "")));
+    || edges.some((edge) => /^(state|recurrent-state|loop)$/i.test(String(edge.type || "")))
+    || nodes.some((node) => isRecurrentEvidence(node));
   const hasControlFlow = edges.some((edge) => /^(control|alternative|branch)$/i.test(String(edge.type || "")))
     || nodes.some((node) => node.attributes?.controlKind);
 
@@ -69,11 +70,11 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     compileSemanticVisualNodes(condensed.nodes, condensed.edges),
   );
   const sourceEdges = condensed.edges;
-  const singleLane = canUseSingleLaneLayout(sourceNodes, sourceEdges);
-  const fittedArtboard = singleLane ? fitSingleLaneArtboard(artboard, sourceNodes) : artboard;
+  const linear = isLinearChain(sourceNodes, sourceEdges);
+  const fittedArtboard = linear ? fitSingleLaneArtboard(artboard, sourceNodes) : artboard;
   const stages = stageOrder(sourceNodes);
   const stageGap = stages.length > 1 ? (fittedArtboard.width - 260) / (stages.length - 1) : 0;
-  const singleLaneX = singleLane ? packSingleLaneX(sourceNodes, fittedArtboard) : new Map();
+  const singleLaneX = linear ? packSingleLaneX(sourceNodes, fittedArtboard) : new Map();
   const nodes = [];
 
   stages.forEach((stage, stageIndex) => {
@@ -85,7 +86,8 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     let cursor = fittedArtboard.y + Math.max(60, Math.floor((fittedArtboard.height - totalHeight - gap * Math.max(0, members.length - 1)) / 2));
     members.forEach((node) => {
       const visualWidth = compactVisualWidth(node);
-      const rawX = singleLaneX.get(node.id) ?? Math.round(fittedArtboard.x + 130 + stageGap * stageIndex - visualWidth / 2);
+      const rawX = singleLaneX.get(node.id)
+        ?? Math.round(fittedArtboard.x + 130 + stageGap * stageIndex - visualWidth / 2);
       const x = Math.max(fittedArtboard.x, Math.min(fittedArtboard.x + fittedArtboard.width - visualWidth, rawX));
       const y = Math.round(cursor);
       const positioned = {
@@ -105,11 +107,16 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
 
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
   const edges = sourceEdges.map((edge, index) => routeEdge(edge, nodeMap, index, fittedArtboard));
-  const recurrentLayout = grammar.id === "recurrent-flow"
-    ? buildRecurrentFigureLayout(sourceNodes, nodes, sourceEdges, fittedArtboard)
-    : undefined;
-  if (recurrentLayout?.uncertainty.unresolved) {
-    const recurrentNode = nodes.find((node) => node.id === recurrentLayout.instances[1]?.sourceNodeId);
+  const recurrentLayouts = grammar.id === "recurrent-flow"
+    ? buildRecurrentFigureLayouts(sourceNodes, nodes, sourceEdges, fittedArtboard)
+    : {};
+  const recurrentLayout = Object.values(recurrentLayouts)[0];
+  nodes.forEach((node) => {
+    const layoutForNode = recurrentLayouts[node.id];
+    if (layoutForNode) node.recurrentLayout = layoutForNode;
+  });
+  if (recurrentLayout?.uncertainty?.unresolved) {
+    const recurrentNode = nodes.find((node) => node.id === recurrentLayout.instances[1]?.layoutNodeId);
     if (recurrentNode) {
       recurrentNode.representation = "compound";
       recurrentNode.inner = {
@@ -131,6 +138,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     edges,
     validation,
     ...(recurrentLayout ? { recurrentLayout } : {}),
+    ...(Object.keys(recurrentLayouts).length ? { recurrentLayouts } : {}),
   };
 }
 
@@ -192,7 +200,7 @@ function compareStageThenOrder(left, right) {
   return compareStage(left, right) || compareNode(left, right);
 }
 
-function canUseSingleLaneLayout(nodes, edges) {
+function isLinearChain(nodes, edges) {
   if (nodes.length < 2 || edges.length !== nodes.length - 1) return false;
   const ordered = [...nodes].sort((left, right) => compareStage(left, right) || compareNode(left, right));
   if (new Set(ordered.map((node) => String(node.stage))).size !== ordered.length) return false;
@@ -227,7 +235,10 @@ function packSingleLaneX(nodes, artboard) {
   for (let index = 0; index < ordered.length; index += 1) {
     const node = ordered[index];
     positions.set(node.id, Math.round(cursor));
-    cursor += compactVisualWidth(node) + visualRightOutset(node);
+    // The east face is a translucent perspective projection that overlaps the
+    // next tensor (PlotNeuralNet convention), so it does not consume layout
+    // width. Only the front face advances the cursor.
+    cursor += compactVisualWidth(node);
     const next = ordered[index + 1];
     if (next) cursor += publicationGapAfter(node, next, minimumGap) + visualLeftOutset(next);
   }
@@ -239,7 +250,7 @@ function singleLaneFootprintWidth(nodes, minimumGap) {
   let width = visualLeftOutset(nodes[0]);
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index];
-    width += compactVisualWidth(node) + visualRightOutset(node);
+    width += compactVisualWidth(node);
     const next = nodes[index + 1];
     if (next) width += publicationGapAfter(node, next, minimumGap) + visualLeftOutset(next);
   }
@@ -248,11 +259,11 @@ function singleLaneFootprintWidth(nodes, minimumGap) {
 
 function publicationGapAfter(previous, next, fallbackGap) {
   const role = String(next.visualRole || next.family || "").toLowerCase();
-  if (role === "pool-downsample") return 12;
-  if (role === "feature-map-stage") return 96;
-  if (role === "vectorize") return 48;
-  if (role === "neuron-layer") return 96;
-  if (role === "output-distribution") return 55;
+  if (role === "pool-downsample") return 8;
+  if (role === "feature-map-stage") return 20;
+  if (role === "vectorize") return 28;
+  if (role === "neuron-layer") return 24;
+  if (role === "output-distribution") return 32;
   return fallbackGap;
 }
 
@@ -363,9 +374,7 @@ function representationFor(node) {
 }
 
 function condenseLinearConvRuns(nodes, edges) {
-  const ordered = [...nodes].sort((left, right) => (
-    compareStage(left, right) || compareNode(left, right)
-  ));
+  const ordered = [...nodes].sort(compareStageThenOrder);
   const outgoing = new Map();
   const incoming = new Map();
   edges.forEach((edge) => {
@@ -377,64 +386,88 @@ function condenseLinearConvRuns(nodes, edges) {
 
   const replacement = new Map();
   const condensedNodes = [];
-  for (let index = 0; index < ordered.length;) {
-    const first = ordered[index];
-    const run = [first];
-    while (index + run.length < ordered.length) {
-      const previous = run[run.length - 1];
-      const next = ordered[index + run.length];
-      if (!isConvFamily(previous.family) || !isConvFamily(next.family) || previous.family !== next.family) break;
-      const link = outgoing.get(previous.id) || [];
-      const targetIncoming = incoming.get(next.id) || [];
-      if (link.length !== 1 || targetIncoming.length !== 1 || link[0].target !== next.id) break;
-      run.push(next);
-    }
+  let index = 0;
 
-    if (run.length < 2) {
+  while (index < ordered.length) {
+    const first = ordered[index];
+
+    // Only conv/volume/dense primaries absorb a trailing activation/norm.
+    if (!isFoldablePrimary(first.family)) {
       condensedNodes.push(first);
       index += 1;
       continue;
     }
 
-    const last = run[run.length - 1];
-    const groupId = `stage-${run[0].id}-${last.id}`;
+    // One unit: the primary plus its trailing modifier(s), in source order.
+    const firstModifiers = collectTrailingModifiers(first, index + 1, ordered, outgoing, incoming);
+    const sequence = [first, ...firstModifiers.modifiers];
+    let cursor = firstModifiers.nextIndex;
+
+    // Conv/volume chains repeat-merge consecutive structurally-identical
+    // units; dense layers absorb their trailing modifier but keep one card
+    // each (FC layers have distinct dimensions and must stay separate).
+    if (isConvFamily(first.family)) {
+      while (cursor < ordered.length) {
+        const next = ordered[cursor];
+        if (!isConvFamily(next.family) || next.family !== first.family) break;
+        if (!isSingleLinearLink(sequence[sequence.length - 1].id, next.id, outgoing, incoming)) break;
+        const nextModifiers = collectTrailingModifiers(next, cursor + 1, ordered, outgoing, incoming);
+        if (modifierShape(nextModifiers.modifiers) !== modifierShape(firstModifiers.modifiers)) break;
+        sequence.push(next, ...nextModifiers.modifiers);
+        cursor = nextModifiers.nextIndex;
+      }
+    }
+
+    if (sequence.length === 1) {
+      // A lone primary with no trailing modifier and no repeat stays as-is.
+      condensedNodes.push(first);
+      index += 1;
+      continue;
+    }
+
+    const primaryCount = sequence.filter((child) => isFoldablePrimary(child.family)).length;
+    const modifierOps = [...new Set(sequence
+      .filter((child) => isModifierFamily(child.family))
+      .map((child) => child.op || child.label || child.family))];
+    const last = sequence[sequence.length - 1];
+    const groupId = `stage-${sequence[0].id}-${last.id}`;
     const internalEdges = [];
-    for (let childIndex = 0; childIndex < run.length - 1; childIndex += 1) {
-      const childEdge = (outgoing.get(run[childIndex].id) || []).find((edge) => edge.target === run[childIndex + 1].id);
+    for (let childIndex = 0; childIndex < sequence.length - 1; childIndex += 1) {
+      const childEdge = (outgoing.get(sequence[childIndex].id) || []).find((edge) => edge.target === sequence[childIndex + 1].id);
       if (childEdge) internalEdges.push({ ...childEdge });
     }
-    const children = run.map((child, childIndex) => ({
+    const children = sequence.map((child, childIndex) => ({
       ...child,
       x: 20 + childIndex * (Math.max(64, Math.min(92, child.w)) + 14),
       y: 74,
       w: Math.max(64, Math.min(92, child.w)),
       h: Math.max(96, Math.min(156, child.h)),
     }));
+    const familyName = first.family === "volume" ? "Volume" : first.family === "dense" ? "FC" : "Conv";
+    const modifierSuffix = modifierOps.length ? `+${modifierOps.join("+")}` : "";
+    const repeatSuffix = primaryCount > 1 ? ` ×${primaryCount}` : "";
     const grouped = {
       ...first,
       id: groupId,
-      label: `${first.family === "volume" ? "Volume" : "Conv"} ×${run.length}`,
+      label: `${familyName}${modifierSuffix}${repeatSuffix}`,
       subtitle: last.subtitle || shapeLabel(last.shape),
       shape: last.shape || first.shape,
       order: first.order,
       stage: first.stage,
-      // Spatial stages are intentionally tall and narrow. The repeated
-      // operators remain available in internalGraph/repeatCount; their
-      // horizontal footprint must not turn a feature-map volume into a card.
-      w: Math.max(104, 26 + run.length * 36),
+      w: Math.max(104, 26 + primaryCount * 36),
       h: Math.max(96, first.h),
-      repeatCount: run.length,
-      layers: run.length,
+      repeatCount: primaryCount,
+      layers: primaryCount,
       renderInternalGraph: false,
       attributes: {
         ...first.attributes,
         internalGraph: { nodes: children, edges: internalEdges },
-        groupedFrom: run.map((child) => child.id),
+        groupedFrom: sequence.map((child) => child.id),
       },
     };
-    run.forEach((child) => replacement.set(child.id, groupId));
+    sequence.forEach((child) => replacement.set(child.id, groupId));
     condensedNodes.push(grouped);
-    index += run.length;
+    index = cursor;
   }
 
   const condensedEdges = edges
@@ -451,6 +484,38 @@ function condenseLinearConvRuns(nodes, edges) {
 
 function isConvFamily(family) {
   return family === "conv" || family === "volume";
+}
+
+function isFoldablePrimary(family) {
+  return isConvFamily(family) || family === "dense";
+}
+
+function isModifierFamily(family) {
+  return family === "activation" || family === "norm";
+}
+
+function isSingleLinearLink(sourceId, targetId, outgoing, incoming) {
+  const sourceOut = outgoing.get(sourceId) || [];
+  const targetIn = incoming.get(targetId) || [];
+  return sourceOut.length === 1 && targetIn.length === 1 && sourceOut[0].target === targetId;
+}
+
+function collectTrailingModifiers(primary, startIndex, ordered, outgoing, incoming) {
+  const modifiers = [];
+  let cursor = startIndex;
+  let previous = primary;
+  while (cursor < ordered.length && isModifierFamily(ordered[cursor].family)) {
+    const next = ordered[cursor];
+    if (!isSingleLinearLink(previous.id, next.id, outgoing, incoming)) break;
+    modifiers.push(next);
+    previous = next;
+    cursor += 1;
+  }
+  return { modifiers, nextIndex: cursor };
+}
+
+function modifierShape(modifiers) {
+  return modifiers.map((modifier) => modifier.family).join(",");
 }
 
 function compareStage(left, right) {
@@ -496,11 +561,12 @@ function layoutInnerGraph(node) {
 
 function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, artboard) {
   const recurrentNode = sourceNodes.find((node) => isRecurrentLayoutNode(node))
-    || sourceNodes.find((node) => sourceEdges.some((edge) => isStateEdge(edge) && String(edge.source) === String(node.id)));
+    || sourceNodes.find((candidate) => sourceEdges.some((edge) => isStateEdge(edge) && String(edge.source) === String(candidate.id) && String(edge.target) === String(candidate.id)));
   if (!recurrentNode) return undefined;
 
   const positioned = positionedNodes.find((node) => node.id === recurrentNode.id);
   if (!positioned) return undefined;
+  const sourceNodeId = String(recurrentNode.sourceNodeId || recurrentNode.id);
   const evidence = recurrentNode.recurrentEvidence || recurrentEvidenceForNode(recurrentNode, sourceEdges);
   const axis = ["time", "iteration", "unknown"].includes(String(evidence.repetition?.axis))
     ? String(evidence.repetition.axis)
@@ -513,8 +579,9 @@ function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, a
     { role: "expanded", expanded: true, x: positioned.x, w: expandedWidth },
     { role: "next", expanded: false, x: positioned.x + expandedWidth + gap, w: collapsedWidth },
   ].map((instance) => ({
-    id: `${recurrentNode.id}:${instance.role}`,
-    sourceNodeId: String(recurrentNode.sourceNodeId || recurrentNode.id),
+    id: `${sourceNodeId}:${instance.role}`,
+    layoutNodeId: recurrentNode.id,
+    sourceNodeId,
     role: instance.role,
     x: Math.round(instance.x),
     y: Math.round(positioned.y),
@@ -522,6 +589,14 @@ function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, a
     h: Math.round(positioned.h),
     expanded: instance.expanded,
   }));
+  const instanceMinX = Math.min(...instances.map((instance) => instance.x));
+  const instanceMaxX = Math.max(...instances.map((instance) => instance.x + instance.w));
+  const minX = artboard.x;
+  const maxX = artboard.x + artboard.width;
+  const shiftX = instanceMinX < minX
+    ? minX - instanceMinX
+    : instanceMaxX > maxX ? maxX - instanceMaxX : 0;
+  instances.forEach((instance) => { instance.x += shiftX; });
 
   const edgeById = new Map(sourceEdges.map((edge) => [String(edge.sourceEdgeId || edge.id || ""), edge]));
   const transitions = Array.isArray(evidence.stateTransitions) ? evidence.stateTransitions : [];
@@ -541,7 +616,7 @@ function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, a
     if (!isStateEdge(edge)) return;
     const source = String(edge.source || "");
     const target = String(edge.target || "");
-    if (source !== recurrentNode.id && target !== recurrentNode.id) return;
+    if (source !== recurrentNode.id || target !== recurrentNode.id) return;
     const sourceEdgeId = String(edge.sourceEdgeId || edge.id || "");
     if (!railSources.has(sourceEdgeId)) {
       railSources.set(sourceEdgeId, {
@@ -552,7 +627,7 @@ function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, a
     }
   });
   const stateRails = [...railSources.values()].map((rail, index) => ({
-    id: `${recurrentNode.id}:state-rail:${rail.sourceEdgeId || index + 1}`,
+    id: `${sourceNodeId}:state-rail:${rail.sourceEdgeId || index + 1}`,
     kind: rail.kind,
     sourceEdgeId: rail.sourceEdgeId,
     sourceEndpointIds: rail.sourceEndpointIds,
@@ -569,18 +644,34 @@ function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, a
       labels: ["previous", "current", "next"],
     },
     instances,
-    expandedInstanceId: `${recurrentNode.id}:expanded`,
+    expandedInstanceId: `${sourceNodeId}:expanded`,
     stateRails,
     expandedInternalGraph,
     uncertainty: { unresolved, reason: unresolved ? reason : "" },
   };
 }
 
+function buildRecurrentFigureLayouts(sourceNodes, positionedNodes, sourceEdges, artboard) {
+  const layouts = {};
+  sourceNodes.filter(isRecurrentLayoutNode).forEach((recurrentNode) => {
+    const layout = buildRecurrentFigureLayout([recurrentNode], positionedNodes, sourceEdges, artboard);
+    if (layout) layouts[String(recurrentNode.id)] = layout;
+  });
+  return layouts;
+}
+
 function isRecurrentLayoutNode(node = {}) {
   const family = String(node.family || node.type || "").toLowerCase();
   return ["recurrent", "rnn", "lstm", "gru"].includes(family)
-    || isRecord(node.attributes?.repetition)
-    || Array.isArray(node.attributes?.stateTransitions);
+    || isRecurrentEvidence(node);
+}
+
+function isRecurrentEvidence(node = {}) {
+  const attributes = node.attributes || {};
+  return isRecord(attributes.repetition)
+    || Array.isArray(attributes.stateTransitions)
+    || isRecord(node.recurrentEvidence?.repetition)
+    || Array.isArray(node.recurrentEvidence?.stateTransitions);
 }
 
 function isStateEdge(edge = {}) {
@@ -608,8 +699,9 @@ function expandedInternalGraphFor(node, evidence) {
     ...(child?.sourceNodeId !== undefined ? { sourceNodeId: String(child.sourceNodeId) } : {}),
   })) : [];
   const nodeIds = new Set(nodes.map((child) => child.id));
-  const edges = Array.isArray(graph.edges)
-    ? graph.edges
+  const rawEdges = Array.isArray(graph.edges) ? graph.edges : [];
+  const invalidEdges = rawEdges.filter((edge) => !nodeIds.has(String(edge?.source || "")) || !nodeIds.has(String(edge?.target || "")));
+  const edges = rawEdges
       .filter((edge) => nodeIds.has(String(edge?.source || "")) && nodeIds.has(String(edge?.target || "")))
       .map((edge, index) => ({
         ...edge,
@@ -618,14 +710,13 @@ function expandedInternalGraphFor(node, evidence) {
         source: String(edge.source),
         target: String(edge.target),
       }))
-    : [];
-  const status = graph.status === "resolved" && nodes.length > 0 ? "resolved" : "unresolved";
+  const status = graph.status === "resolved" && nodes.length > 0 && invalidEdges.length === 0 ? "resolved" : "unresolved";
   return {
     nodes,
     edges,
     ports: cloneValue(graph.ports || {}),
     status,
-    diagnostics: cloneValue(graph.diagnostics || []),
+    diagnostics: cloneValue([...(graph.diagnostics || []), ...invalidEdges.map((edge) => ({ kind: "invalid-internal-edge", edge }))]),
     ...(status === "unresolved" ? { reason: String(graph.reason || "internal topology evidence is absent") } : {}),
   };
 }
@@ -664,6 +755,14 @@ function routeEdge(edge, nodeMap, index, artboard) {
     result.route = {
       kind: "skip-lane",
       points: [from, { x: from.x + 20, y: laneY }, { x: to.x - 20, y: laneY }, to],
+    };
+  } else if (Math.abs(to.y - from.y) > Math.max(source.h, target.h) * 0.8) {
+    // Vertically separated endpoints (multi-row or cross-stage layouts): route
+    // orthogonally instead of as a long diagonal across the gutter.
+    const turnY = Math.round((from.y + to.y) / 2);
+    result.route = {
+      kind: "wrap",
+      points: [from, { x: from.x, y: turnY }, { x: to.x, y: turnY }, to],
     };
   } else {
     result.route = { kind: "direct", points: [from, to] };

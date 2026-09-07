@@ -1,177 +1,71 @@
 # Draw_a_neural_network
 
-Draw_a_neural_network is an editable neural-network architecture canvas for creating publication-style diagrams. It focuses on real neural-network visual semantics: feature-map stacks, tensor shapes, convolution kernels, pooling, flatten vectors, dense layers, residual skips, concat nodes, attention blocks, and 3D volumetric networks.
+这是一个以 Microsoft Visio 为唯一绘图后端的神经网络架构 Agent。所有最终图形都通过 PowerShell/COM 写入已有 `.vsdx`，生成原生 Shape、连接器和 Shape Data，并执行回读校验。
 
-The app is designed for people who want diagrams closer to PlotNeuralNet, NN-SVG, VisualKeras, and Netron-inspired architecture figures, while still keeping every generated element editable on a canvas.
+## 主链路
 
-## Highlights
+```text
+源码 / 图像 / IR
+    -> 证据提取
+    -> Universal IR
+    -> 语义图形语法
+    -> Figure Plan
+    -> Visio PowerShell/COM
+    -> 原生 Shape / Connector / Shape Data
+    -> 回读验证
+```
 
-- Paper-style neural network diagrams with visible feature maps, channels, kernels, shape labels, skip paths, concat nodes, and 3D volumes.
-- Editable SVG canvas with zoom, pan, minimap, node drag/resize, connection mode, inspector controls, and palette switching.
-- Code-to-diagram generation for common PyTorch and Keras/TensorFlow model code.
-- PyTorch `forward()` ordering, `nn.Sequential(...)` expansion, residual add detection, `torch.cat(...)` concat detection, and symbolic shape flow such as `H/2 x W/2 x 64`.
-- Vision-assisted diagram reconstruction from paper screenshots, sketches, or multiple reference images.
-- Universal Neural Network IR: arbitrary operators, custom modules, ports, tensor shapes, evidence, confidence, branches, merges, and explicit unresolved states.
-- Universal publication figure planner: selects tensor-flow, residual-graph, encoder-decoder, token-attention, or generic-DAG grammar from topology evidence and preserves arbitrary internal compound graphs.
-- Native Microsoft Visio bridge: writes the Universal IR into an existing `.vsdx` through Visio COM, uses native Shapes/connectors/Shape Data, saves, and reads back the rendered node IDs.
-- Export to SVG, PNG, and JSON; import JSON to continue editing.
-- Built-in templates for CNN, ResNet, U-Net, 3D Medical U-Net, Hybrid ViT, GAN, Diffusion U-Net, and MLP are retained as manual demo/fixture starting points; production Agent requests do not select topology from this registry.
+网页只负责输入、参数、状态和 Visio 执行控制，不生成或保存网络图形。
 
-## Quick Start
-
-This is a lightweight vanilla JavaScript project. No build step is required.
+## 快速开始
 
 ```bash
 node server.js
 ```
 
-Then open:
+打开 `http://127.0.0.1:4173/`，填写已有 Visio 文档路径和页面名称，然后提交源码或参考图像。
+
+## 能力
+
+- PyTorch 与 Keras/TensorFlow 源码拓扑提取。
+- `forward()` 顺序、Sequential 展开、分支、合并、跳连和符号形状传播。
+- 自定义模块的源码内部拓扑证据；没有证据时保留 unresolved 状态。
+- 图像视觉分析接入统一 IR 边界；没有视觉能力时不会猜测固定网络。
+- 卷积特征图、池化、向量化、全连接、注意力、循环状态、循环边、体数据和复合模块的语义几何。
+- 稳定的 sourceNodeId/sourceEdgeId、端口、连接器胶合关系和 Shape Data 回读。
+- 现有文档内的 Agent 管理范围同步，不创建隐式空白文档。
+
+## API
+
+- `POST /api/analyze-code`：源码或 IR 分析。
+- `POST /api/render-visio`：将 Figure Plan 写入已有 Visio 文档。
+- `POST /api/agent-run`：可恢复的完整 Agent 运行。
+
+核心状态为 `ready_for_preview`、`needs_confirmation`、`needs_external_vision` 和 `invalid_input`。未确认的结构不会被伪造或静默展开。
+
+## 关键文件
 
 ```text
-http://127.0.0.1:4173/
+index.html                     输入与 Visio 控制面
+app.js                         输入、状态和 Visio 执行
+server.js                      HTTP 服务与 Agent API
+agent-pipeline.mjs             统一分析入口
+agent-orchestrator.mjs         可恢复运行状态机
+input-adapters.mjs             输入归一化
+evidence-graph.mjs             证据图
+universal-ir.mjs               通用 IR 归一化与校验
+semantic-visual-grammar.mjs    语义视觉角色与输入语法
+universal-figure.mjs           拓扑驱动的 Figure Plan 几何
+figure-plan.mjs                Figure Plan 契约与校验
+visio-client.mjs               Visio 请求边界
+visio-bridge.mjs               Visio 计划、COM 执行和回读校验
+visio-bridge.ps1               原生 Visio Shape/Connector bridge
 ```
 
-You can also open `index.html` directly for the static canvas experience.
-
-## Optional Vision Backend
-
-To enable AI vision analysis for uploaded diagrams, set `OPENAI_API_KEY` before starting the server:
+## 验证
 
 ```bash
-OPENAI_API_KEY=your_key node server.js
+node --test
 ```
 
-Without an API key, image analysis stops with an explicit `needs_external_vision` status. The app does not fabricate a CNN, U-Net, or other fixed topology from an image it cannot inspect.
-
-## Code Generation
-
-Paste PyTorch or Keras model code into the "Code Generation" panel and click "Draw from Code".
-
-Supported patterns include:
-
-- `nn.Conv1d/2d/3d`, `Conv1D/2D/3D`
-- `nn.BatchNorm*`, `BatchNormalization`, `LayerNorm`
-- `nn.ReLU`, `F.relu`, `Activation("relu")`, GELU, SiLU, Softmax
-- `nn.MaxPool*`, `MaxPooling*`, average/adaptive pooling
-- `nn.Linear`, `Dense`
-- `nn.Sequential(...)`
-- `torch.flatten`, `.flatten(...)`, `.view(...)`, `.reshape(...)`
-- `out = out + identity`, `torch.add(...)`, `Add(...)`
-- `torch.cat([x, skip], dim=1)`, `Concatenate(...)`
-- `nn.MultiheadAttention`, `MultiHeadAttention`
-- `ConvTranspose*`, `Upsample`, `UpSampling*`
-
-The browser parser now emits a framework-neutral Universal Neural Network IR before projecting to the editable canvas. Known operations are mapped to semantic primitives; custom PyTorch/Keras modules remain explicit unresolved compound operators with source evidence, ports, and confidence instead of silently becoming generic blocks.
-
-When a PyTorch file contains the source definition of a custom module, the
-Agent now extracts the visible submodule assignments and forward-call order
-into `attributes.internalGraph`. The browser and Visio paths can therefore
-draw the evidenced `Conv / Norm / Attention / Merge` internals of that module.
-If the class body is not available, the module remains explicitly unresolved.
-
-The parser is still static and is not a full Python runtime or `torch.fx`/ONNX executor. Conditional control flow, loops, data-dependent routing, and opaque third-party operators are preserved as low-confidence unresolved compounds with source evidence and IR diagnostics; runtime tracing or user confirmation is required for exact expansion. This is intentional: the Agent must surface uncertainty rather than fabricate a topology.
-
-The stable generation boundary is:
-
-```text
-code / model file / image / prompt
-    -> Universal Neural Network IR
-    -> validation + evidence + confidence
-    -> semantic canvas projection
-    -> publication layout
-```
-
-For a Windows machine with Microsoft Visio installed, the native editable path is:
-
-```text
-Universal IR
-    -> semantic figure grammar + geometry plan
-    -> POST /api/render-visio
-    -> bind existing .vsdx with Visio COM
-    -> native Shape / connector / Shape Data creation
-    -> save + readback validation
-```
-
-The production Agent service uses one resumable run for inspection, evidence
-extraction, IR normalization, Figure Plan generation, rendering, and readback.
-Confirmation resumes from the latest valid snapshot; readback diagnostics can
-invoke a bounded, reason-specific Figure Plan repair before rendering again.
-Recurrent evidence selects the `recurrent-flow` grammar and preserves state
-ports, loop routes, and time-step metadata. The default Run Store is in-memory
-and replaceable, so persistence across process restarts is an explicit
-deployment concern rather than an implicit claim.
-
-`/api/render-visio` requires `documentPath`; it never creates an implicit blank
-Visio canvas. Repeated syncs to the same document and page use a stable
-agent-owned render scope, so only the Agent's previous Shapes are replaced.
-Existing user Shapes are outside that scope. The browser's **同步到 Visio**
-panel exposes this path after a code or image analysis has produced Universal
-IR.
-
-Unknown operators are rendered as explicit compound frames. If an internal
-graph is present in `attributes.internalGraph`, its actual child nodes and
-edges are placed inside the frame. If no evidence exists, the frame remains
-`unresolved` with confidence/evidence Shape Data; the Agent does not invent
-hidden layers.
-
-All code, IR, prompt, and image requests use the same agent entry point:
-
-```text
-analyzeArchitectureInput(input)
-    -> ready_for_preview
-    -> needs_confirmation
-    -> needs_external_vision
-    -> invalid_input
-```
-
-`POST /api/analyze-code` exposes this boundary for source and IR clients. A
-vision provider response is also validated and projected through the same
-boundary before it reaches the canvas. Prompt-only requests are retained as
-low-confidence unresolved hypotheses; they are never treated as evidence of a
-specific model family.
-
-## Editing Workflow
-
-1. Start from a template, uploaded image, or code snippet.
-2. Use the canvas to drag, resize, zoom, pan, and inspect nodes.
-3. Click internal stack slices to adjust visible feature-map or neuron counts.
-4. Use connection mode to draw new signal, attention, skip, or concat paths.
-5. Export as SVG/PNG for papers, slides, or documentation.
-6. Export JSON if you want to keep editing later.
-
-## Project Structure
-
-```text
-.
-├── index.html        # App shell and panels
-├── styles.css        # Canvas, panel, node, and export styles
-├── app.js            # SVG canvas rendering and editing interactions
-├── models.js         # Built-in neural architecture templates
-├── code-workflow.js  # PyTorch/Keras code-to-diagram generation
-├── agent-pipeline.mjs # Unified source/IR/image/prompt routing and status policy
-├── universal-ir.mjs  # Framework-neutral IR, validation, and canvas projection
-├── universal-figure.mjs # Topology-driven figure grammar selection and geometry
-├── visio-bridge.mjs  # Existing-document Visio render plan, COM runner, readback validation
-├── visio-bridge.ps1  # Windows Visio COM native Shape/connector/Shape Data bridge
-├── visio-client.mjs  # Browser request boundary for same-document Visio sync
-├── ai-workflow.js    # Image upload and vision-assisted diagram workflow
-├── server.js         # Static server and optional OpenAI vision endpoint
-└── favicon.svg
-```
-
-## Design Goals
-
-- Make the neural network itself visually rich, not just the surrounding UI.
-- Preserve editability after every automatic generation step.
-- Prefer architecture semantics over generic flowchart blocks.
-- Keep the project easy to run, inspect, and extend without a heavy framework.
-
-## Roadmap
-
-- Deeper Python backend parsing with `torch.fx` or ONNX/Netron-style graph extraction.
-- More precise shape inference for padding, dilation, grouped convolution, and complex branches.
-- More paper presets for U-Net variants, Transformers, diffusion models, and multimodal models.
-- Better automatic layout for very large models.
-- Layer-level import/export interoperability with common model visualization formats.
-- ONNX / torch.fx runtime extraction for expanding unresolved dynamic modules with evidence.
-
+测试覆盖 IR、证据、语义图形、循环网络、Visio 计划、Shape Data、连接器端点、运行恢复和 HTTP 边界。真实 Visio 验收仍需要 Windows 上已安装并可自动化的 Microsoft Visio，以及一个明确存在的 `.vsdx` 文档。

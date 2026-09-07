@@ -38,6 +38,12 @@ function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
     "feature-map" { "#FFC47A"; break }
     "feature-map-band" { "#E65034"; break }
     "input-tensor" { "#FFE6A6"; break }
+    "image-input" { "#DCEAF4"; break }
+    "sequence-input" { "#E2EEF8"; break }
+    "state-input" { "#E8DDF5"; break }
+    "vector-input" { "#E2F3E7"; break }
+    "volume-input" { "#D9EEF0"; break }
+    "unknown-input" { "#F5F0E7"; break }
     "pool" { "#E65034"; break }
     "vectorize" { "#7A238C"; break }
     "neuron" { "#9563C8"; break }
@@ -55,6 +61,12 @@ function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
       if ($profile -eq "feature-map") { return "#FFE7BF" }
       if ($profile -eq "feature-map-band" -or $profile -eq "pool") { return "#F5815A" }
       if ($profile -eq "input-tensor") { return "#FFF3D0" }
+      if ($profile -eq "image-input") { return "#F5FBFF" }
+      if ($profile -eq "sequence-input") { return "#F6FBFF" }
+      if ($profile -eq "state-input") { return "#F5EEFC" }
+      if ($profile -eq "vector-input") { return "#F0FAF2" }
+      if ($profile -eq "volume-input") { return "#EFFBFC" }
+      if ($profile -eq "unknown-input") { return "#FBF8F0" }
       if ($profile -eq "neuron") { return "#B88AE0" }
       if ($profile -eq "vectorize" -or $profile -eq "output") { return "#A854B9" }
       return $base
@@ -63,6 +75,12 @@ function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
       if ($profile -eq "feature-map") { return "#BC5F32" }
       if ($profile -eq "feature-map-band" -or $profile -eq "pool") { return "#9E271A" }
       if ($profile -eq "input-tensor") { return "#D89D43" }
+      if ($profile -eq "image-input") { return "#6E91AA" }
+      if ($profile -eq "sequence-input") { return "#6E91AA" }
+      if ($profile -eq "state-input") { return "#815AA0" }
+      if ($profile -eq "vector-input") { return "#5C9A69" }
+      if ($profile -eq "volume-input") { return "#43878C" }
+      if ($profile -eq "unknown-input") { return "#9D8A65" }
       if ($profile -eq "neuron") { return "#70459B" }
       if ($profile -eq "vectorize" -or $profile -eq "output") { return "#4C0F5A" }
       return $base
@@ -281,8 +299,8 @@ function Draw-PrismFaces([object]$Page, [double]$X, [double]$Y, [double]$W, [dou
   return @($front, $top, $side)
 }
 
-function Project-PlotNeuralNetTensorPoint([double]$X, [double]$Y, [double]$Flow, [double]$Vertical, [double]$DepthCoordinate) {
-  # Exact PGF/TikZ default basis used by PlotNeuralNet:
+function Project-PublicationTensorTensorPoint([double]$X, [double]$Y, [double]$Flow, [double]$Vertical, [double]$DepthCoordinate) {
+  # Exact PGF/TikZ default basis used by PublicationTensor:
   # x=(1,0), y=(0,1), z=(-0.385,-0.385).
   return [pscustomobject]@{
     x = $X + $Flow + ($DepthCoordinate * -0.385)
@@ -290,7 +308,7 @@ function Project-PlotNeuralNetTensorPoint([double]$X, [double]$Y, [double]$Flow,
   }
 }
 
-function New-PlotNeuralNetFaceSpec([object]$Spec, [string]$ShapeKind, [string]$FaceRole, [double]$FillOpacity = 0.4) {
+function New-PublicationTensorFaceSpec([object]$Spec, [string]$ShapeKind, [string]$FaceRole, [double]$FillOpacity = 0.4) {
   return [pscustomobject]@{
     label = ""
     subtitle = ""
@@ -306,7 +324,7 @@ function New-PlotNeuralNetFaceSpec([object]$Spec, [string]$ShapeKind, [string]$F
   }
 }
 
-function Draw-PlotNeuralNetPolygon([object]$Page, [object[]]$Points, [object]$Spec, [double]$Scale) {
+function Draw-PublicationTensorPolygon([object]$Page, [object[]]$Points, [object]$Spec, [double]$Scale) {
   $coordinates = New-Object 'System.Collections.Generic.List[double]'
   foreach ($point in $Points) {
     $coordinates.Add([double]$point.x) | Out-Null
@@ -319,7 +337,7 @@ function Draw-PlotNeuralNetPolygon([object]$Page, [object[]]$Points, [object]$Sp
   return $shape
 }
 
-function Draw-PlotNeuralNetFarEdge([object]$Page, [object]$Start, [object]$End, [object]$Spec) {
+function Draw-PublicationTensorFarEdge([object]$Page, [object]$Start, [object]$End, [object]$Spec) {
   $edge = $Page.DrawLine([double]$Start.x, [double]$Start.y, [double]$End.x, [double]$End.y)
   $edge.CellsU("LineColor").FormulaU = Get-RgbFormula $Spec.line
   $edge.CellsU("LineWeight").FormulaU = "0.006 in"
@@ -328,8 +346,8 @@ function Draw-PlotNeuralNetFarEdge([object]$Page, [object]$Start, [object]$End, 
   return $edge
 }
 
-function Draw-PlotNeuralNetTensorBox([object]$Page, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$TensorDepth, [object]$Spec, [double]$Scale, [string]$FaceKind, [bool]$DrawEastFace = $false) {
-  # This is a direct native-Visio transcription of PlotNeuralNet Box.sty:
+function Draw-PublicationTensorTensorBox([object]$Page, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$TensorDepth, [object]$Spec, [double]$Scale, [string]$FaceKind, [bool]$DrawEastFace = $false) {
+  # This is a direct native-Visio transcription of PublicationTensor Box.sty:
   # a,b,c,d are the near tensor plane; e,f,g,h are the far tensor plane.
   # Each CNN cell receives the same geometry, rather than a copied full plane.
   $originX = $X + (0.385 * $TensorDepth / 2)
@@ -337,29 +355,29 @@ function Draw-PlotNeuralNetTensorBox([object]$Page, [double]$X, [double]$Y, [dou
   $halfDepth = $TensorDepth / 2
   $baseOpacity = 0.4
   try { if ($null -ne $Spec.fillOpacity) { $baseOpacity = [double]$Spec.fillOpacity } } catch {}
-  $pointA = Project-PlotNeuralNetTensorPoint $originX $originY 0 $H $halfDepth
-  $pointB = Project-PlotNeuralNetTensorPoint $originX $originY 0 0 $halfDepth
-  $pointC = Project-PlotNeuralNetTensorPoint $originX $originY $W 0 $halfDepth
-  $pointD = Project-PlotNeuralNetTensorPoint $originX $originY $W $H $halfDepth
-  $pointE = Project-PlotNeuralNetTensorPoint $originX $originY $W $H (-$halfDepth)
-  $pointF = Project-PlotNeuralNetTensorPoint $originX $originY $W 0 (-$halfDepth)
-  $pointG = Project-PlotNeuralNetTensorPoint $originX $originY 0 0 (-$halfDepth)
-  $pointH = Project-PlotNeuralNetTensorPoint $originX $originY 0 $H (-$halfDepth)
+  $pointA = Project-PublicationTensorTensorPoint $originX $originY 0 $H $halfDepth
+  $pointB = Project-PublicationTensorTensorPoint $originX $originY 0 0 $halfDepth
+  $pointC = Project-PublicationTensorTensorPoint $originX $originY $W 0 $halfDepth
+  $pointD = Project-PublicationTensorTensorPoint $originX $originY $W $H $halfDepth
+  $pointE = Project-PublicationTensorTensorPoint $originX $originY $W $H (-$halfDepth)
+  $pointF = Project-PublicationTensorTensorPoint $originX $originY $W 0 (-$halfDepth)
+  $pointG = Project-PublicationTensorTensorPoint $originX $originY 0 0 (-$halfDepth)
+  $pointH = Project-PublicationTensorTensorPoint $originX $originY 0 $H (-$halfDepth)
 
   $created = New-Object 'System.Collections.Generic.List[object]'
-  $near = Draw-PlotNeuralNetPolygon $Page @($pointD, $pointA, $pointB, $pointC) (New-PlotNeuralNetFaceSpec $Spec "$FaceKind-near" "front" $baseOpacity) $Scale
+  $near = Draw-PublicationTensorPolygon $Page @($pointD, $pointA, $pointB, $pointC) (New-PublicationTensorFaceSpec $Spec "$FaceKind-near" "front" $baseOpacity) $Scale
   $created.Add($near) | Out-Null
-  $top = Draw-PlotNeuralNetPolygon $Page @($pointD, $pointA, $pointH, $pointE) (New-PlotNeuralNetFaceSpec $Spec "$FaceKind-top" "top" $baseOpacity) $Scale
+  $top = Draw-PublicationTensorPolygon $Page @($pointD, $pointA, $pointH, $pointE) (New-PublicationTensorFaceSpec $Spec "$FaceKind-top" "top" $baseOpacity) $Scale
   $created.Add($top) | Out-Null
   foreach ($edge in @(
-      (Draw-PlotNeuralNetFarEdge $Page $pointF $pointG (New-PlotNeuralNetFaceSpec $Spec "$FaceKind-far-edge" "far-edge" $baseOpacity)),
-      (Draw-PlotNeuralNetFarEdge $Page $pointB $pointG (New-PlotNeuralNetFaceSpec $Spec "$FaceKind-far-edge" "far-edge" $baseOpacity)),
-      (Draw-PlotNeuralNetFarEdge $Page $pointH $pointG (New-PlotNeuralNetFaceSpec $Spec "$FaceKind-far-edge" "far-edge" $baseOpacity))
+      (Draw-PublicationTensorFarEdge $Page $pointF $pointG (New-PublicationTensorFaceSpec $Spec "$FaceKind-far-edge" "far-edge" $baseOpacity)),
+      (Draw-PublicationTensorFarEdge $Page $pointB $pointG (New-PublicationTensorFaceSpec $Spec "$FaceKind-far-edge" "far-edge" $baseOpacity)),
+      (Draw-PublicationTensorFarEdge $Page $pointH $pointG (New-PublicationTensorFaceSpec $Spec "$FaceKind-far-edge" "far-edge" $baseOpacity))
     )) {
     $created.Add($edge) | Out-Null
   }
   if ($DrawEastFace) {
-    $east = Draw-PlotNeuralNetPolygon $Page @($pointD, $pointE, $pointF, $pointC) (New-PlotNeuralNetFaceSpec $Spec "$FaceKind-east" "side" $baseOpacity) $Scale
+    $east = Draw-PublicationTensorPolygon $Page @($pointD, $pointE, $pointF, $pointC) (New-PublicationTensorFaceSpec $Spec "$FaceKind-east" "side" $baseOpacity) $Scale
     $created.Add($east) | Out-Null
   }
   return $created.ToArray()
@@ -400,10 +418,95 @@ function Draw-InputTensor([object]$Page, [object]$Spec, [double]$X, [double]$Y, 
   return $created.ToArray()
 }
 
+function Draw-ImageInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  $shape.CellsU("LineWeight").FormulaU = "0.016 in"
+  $count = 4
+  try { if ([int]$Spec.shapeData.channelCount -gt 0) { $count = [Math]::Min(4, [int]$Spec.shapeData.channelCount) } } catch {}
+  for ($index = 1; $index -lt $count; $index += 1) {
+    $xLine = $X + ($W * $index / $count)
+    $line = $Page.DrawLine($xLine, $Y, $xLine, $Y + $H)
+    $line.CellsU("LineColor").FormulaU = Get-RgbFormula "#6E91AA"
+    $line.CellsU("LineWeight").FormulaU = "0.006 in"
+    Set-PlanData $line $Spec.shapeData
+  }
+  return @($shape)
+}
+
+function Draw-SequenceInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $rail = $Page.DrawLine($X, $Y + $H / 2, $X + $W, $Y + $H / 2)
+  $rail.CellsU("LineColor").FormulaU = Get-RgbFormula "#6E91AA"
+  $rail.CellsU("LineWeight").FormulaU = "0.014 in"
+  Set-PlanData $rail $Spec.shapeData
+  $tokens = 5
+  try { if ([int]$Spec.shapeData.repeatCount -gt 0) { $tokens = [Math]::Min(8, [int]$Spec.shapeData.repeatCount) } } catch {}
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $created.Add($rail) | Out-Null
+  $tokenW = [Math]::Max(0.12, $W / ($tokens * 1.45))
+  for ($index = 0; $index -lt $tokens; $index += 1) {
+    $tokenX = $X + ($index + 0.5) * $W / $tokens
+    $token = $Page.DrawRectangle($tokenX - $tokenW / 2, $Y + $H * 0.18, $tokenX + $tokenW / 2, $Y + $H * 0.82)
+    $tokenSpec = [pscustomobject]@{ label = "t$($index + 1)"; subtitle = ""; fill = $Spec.fill; line = $Spec.line; shapeKind = "sequence-token"; visualRole = $Spec.visualRole; styleProfile = "sequence-input"; shapeData = $Spec.shapeData; labelOutside = $false }
+    Set-ShapeStyle $token $tokenSpec $Scale
+    $created.Add($token) | Out-Null
+  }
+  return $created.ToArray()
+}
+
+function Draw-StateInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  $shape.CellsU("LinePattern").FormulaU = "2"
+  $stateLabel = $Page.DrawRectangle($X + $W * 0.18, $Y + $H * 0.38, $X + $W * 0.82, $Y + $H * 0.62)
+  $stateLabel.Text = "h / c"
+  $stateLabel.CellsU("FillPattern").FormulaU = "0"
+  $stateLabel.CellsU("LinePattern").FormulaU = "0"
+  $stateLabel.CellsU("Char.Size").FormulaU = "8 pt"
+  Set-PlanData $stateLabel $Spec.shapeData
+  return @($shape, $stateLabel)
+}
+
+function Draw-VectorInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $count = 6
+  try { if ([int]$Spec.shapeData.tensorRank -gt 0) { $count = [Math]::Max(4, [Math]::Min(10, [int]$Spec.shapeData.tensorRank * 2)) } } catch {}
+  for ($index = 0; $index -lt $count; $index += 1) {
+    $barHeight = [Math]::Max(0.08, $H * (0.25 + (($index * 13) % 60) / 100))
+    $bar = $Page.DrawRectangle($X + $W * 0.18, $Y + $H - $barHeight - $index * 0.01, $X + $W * 0.82, $Y + $H - $index * 0.01)
+    $barSpec = [pscustomobject]@{ label = if ($index -eq 0) { $Spec.label } else { "" }; subtitle = if ($index -eq 0) { $Spec.subtitle } else { "" }; fill = $Spec.fill; line = $Spec.line; shapeKind = "vector-component"; visualRole = $Spec.visualRole; styleProfile = "vector-input"; shapeData = $Spec.shapeData; labelOutside = if ($index -eq 0) { $Spec.labelOutside } else { $false } }
+    Set-ShapeStyle $bar $barSpec $Scale
+    $created.Add($bar) | Out-Null
+  }
+  return $created.ToArray()
+}
+
+function Draw-VolumeInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $depth = [Math]::Max(0.12, [Math]::Min(0.42, $W * 0.45))
+  return @(Draw-PublicationTensorTensorBox $Page $X $Y $W $H $depth $Spec $Scale "volume-input" $true)
+}
+
+function Draw-UnknownInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $cut = [Math]::Min($W * 0.2, $H * 0.16)
+  $points = [double[]]@(
+    ($X + $cut), $Y,
+    ($X + $W - $cut), $Y,
+    ($X + $W), ($Y + $H / 2),
+    ($X + $W - $cut), ($Y + $H),
+    ($X + $cut), ($Y + $H),
+    $X, ($Y + $H / 2),
+    ($X + $cut), $Y
+  )
+  $shape = $Page.DrawPolyline($points, 0)
+  Set-ShapeStyle $shape $Spec $Scale
+  $shape.CellsU("LinePattern").FormulaU = "2"
+  return @($shape)
+}
+
 function Draw-FeatureMapStack([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   $created = New-Object 'System.Collections.Generic.List[object]'
   $repeatCount = Get-RepeatCount $Spec
-  # PlotNeuralNet RightBandedBox: repeated operators are contiguous tensor
+  # PublicationTensor RightBandedBox: repeated operators are contiguous tensor
   # cells along x.  Tensor depth follows the spatial height, never card width.
   $cellCount = $repeatCount
   $cellWidth = $W / $cellCount
@@ -429,7 +532,7 @@ function Draw-FeatureMapStack([object]$Page, [object]$Spec, [double]$X, [double]
 
 function Draw-RightBandedTensorCell([object]$Page, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Depth, [object]$Spec, [double]$Scale, [bool]$IsLast) {
   $created = New-Object 'System.Collections.Generic.List[object]'
-  foreach ($face in @(Draw-PlotNeuralNetTensorBox $Page $X $Y $W $H $Depth $Spec $Scale "feature-map-cell" $IsLast)) {
+  foreach ($face in @(Draw-PublicationTensorTensorBox $Page $X $Y $W $H $Depth $Spec $Scale "feature-map-cell" $IsLast)) {
     $created.Add($face) | Out-Null
   }
   # Direct translation of RightBandedBox: the right third has a distinct
@@ -440,32 +543,32 @@ function Draw-RightBandedTensorCell([object]$Page, [double]$X, [double]$Y, [doub
   $originX = $X + (0.385 * $Depth / 2)
   $originY = $Y + (0.385 * $Depth / 2)
   $halfDepth = $Depth / 2
-  $art = Project-PlotNeuralNetTensorPoint $originX $originY ($W - $bandWidth) $H $halfDepth
-  $brt = Project-PlotNeuralNetTensorPoint $originX $originY ($W - $bandWidth) 0 $halfDepth
-  $a = Project-PlotNeuralNetTensorPoint $originX $originY 0 $H $halfDepth
-  $b = Project-PlotNeuralNetTensorPoint $originX $originY 0 0 $halfDepth
-  $c = Project-PlotNeuralNetTensorPoint $originX $originY $W 0 $halfDepth
-  $d = Project-PlotNeuralNetTensorPoint $originX $originY $W $H $halfDepth
-  $e = Project-PlotNeuralNetTensorPoint $originX $originY $W $H (-$halfDepth)
-  $f = Project-PlotNeuralNetTensorPoint $originX $originY $W 0 (-$halfDepth)
-  $pointH = Project-PlotNeuralNetTensorPoint $originX $originY 0 $H (-$halfDepth)
-  $hrt = Project-PlotNeuralNetTensorPoint $originX $originY ($W - $bandWidth) $H (-$halfDepth)
-  $band = Draw-PlotNeuralNetPolygon $Page @($d, $art, $brt, $c) $bandSpec $Scale
+  $art = Project-PublicationTensorTensorPoint $originX $originY ($W - $bandWidth) $H $halfDepth
+  $brt = Project-PublicationTensorTensorPoint $originX $originY ($W - $bandWidth) 0 $halfDepth
+  $a = Project-PublicationTensorTensorPoint $originX $originY 0 $H $halfDepth
+  $b = Project-PublicationTensorTensorPoint $originX $originY 0 0 $halfDepth
+  $c = Project-PublicationTensorTensorPoint $originX $originY $W 0 $halfDepth
+  $d = Project-PublicationTensorTensorPoint $originX $originY $W $H $halfDepth
+  $e = Project-PublicationTensorTensorPoint $originX $originY $W $H (-$halfDepth)
+  $f = Project-PublicationTensorTensorPoint $originX $originY $W 0 (-$halfDepth)
+  $pointH = Project-PublicationTensorTensorPoint $originX $originY 0 $H (-$halfDepth)
+  $hrt = Project-PublicationTensorTensorPoint $originX $originY ($W - $bandWidth) $H (-$halfDepth)
+  $band = Draw-PublicationTensorPolygon $Page @($d, $art, $brt, $c) $bandSpec $Scale
   $created.Add($band) | Out-Null
   $topSpec = [pscustomobject]@{ label = ""; subtitle = ""; fill = "#E65034"; line = "#802218"; shapeKind = "feature-map-band-top"; visualRole = "feature-map-stage"; styleProfile = "feature-map-band"; shapeData = $Spec.shapeData; faceRole = "top"; fillOpacity = 0.6 }
-  $top = Draw-PlotNeuralNetPolygon $Page @($d, $art, $hrt, $e) $topSpec $Scale
+  $top = Draw-PublicationTensorPolygon $Page @($d, $art, $hrt, $e) $topSpec $Scale
   $created.Add($top) | Out-Null
   # RightBandedBox redraws its body outlines after the translucent band.
-  $outlineSpec = New-PlotNeuralNetFaceSpec $Spec "feature-map-cell-outline" "front" 0
+  $outlineSpec = New-PublicationTensorFaceSpec $Spec "feature-map-cell-outline" "front" 0
   foreach ($outline in @(
-      (Draw-PlotNeuralNetPolygon $Page @($d, $a, $b, $c) $outlineSpec $Scale),
-      (Draw-PlotNeuralNetPolygon $Page @($d, $a, $pointH, $e) $outlineSpec $Scale)
+      (Draw-PublicationTensorPolygon $Page @($d, $a, $b, $c) $outlineSpec $Scale),
+      (Draw-PublicationTensorPolygon $Page @($d, $a, $pointH, $e) $outlineSpec $Scale)
     )) {
     $created.Add($outline) | Out-Null
   }
   if ($IsLast) {
     $sideSpec = [pscustomobject]@{ label = ""; subtitle = ""; fill = "#E65034"; line = "#802218"; shapeKind = "feature-map-band-side"; visualRole = "feature-map-stage"; styleProfile = "feature-map-band"; shapeData = $Spec.shapeData; faceRole = "side"; fillOpacity = 0.6 }
-    $side = Draw-PlotNeuralNetPolygon $Page @($d, $e, $f, $c) $sideSpec $Scale
+    $side = Draw-PublicationTensorPolygon $Page @($d, $e, $f, $c) $sideSpec $Scale
     $created.Add($side) | Out-Null
   }
   return $created.ToArray()
@@ -509,11 +612,11 @@ function Draw-DownsampleFrustum([object]$Page, [object]$Spec, [double]$X, [doubl
   $sourceAnchor = Get-PlanString $Spec.shapeData.sourceAnchor
   $targetAnchor = Get-PlanString $Spec.shapeData.targetAnchor
   try { if ([double]$Spec.shapeData.targetHeight -gt 0) { $targetHeight = [double]$Spec.shapeData.targetHeight * $Scale } } catch {}
-  # PlotNeuralNet's pooling primitive is a smaller Box representing the
+  # PublicationTensor's pooling primitive is a smaller Box representing the
   # downsampled tensor, not a source-to-target trapezium.
   $depth = $targetHeight
   $poolSpec = [pscustomobject]@{ label = $Spec.label; subtitle = $Spec.subtitle; fill = $Spec.fill; line = $Spec.line; shapeKind = "pool-box"; visualRole = "pool-downsample"; styleProfile = "pool"; labelOutside = $Spec.labelOutside; shapeData = $Spec.shapeData; fillOpacity = 0.5 }
-  return @(Draw-PlotNeuralNetTensorBox $Page $X $Y $W $targetHeight $depth $poolSpec $Scale "pool-box" $true)
+  return @(Draw-PublicationTensorTensorBox $Page $X $Y $W $targetHeight $depth $poolSpec $Scale "pool-box" $true)
 }
 
 function Draw-NeuronColumn([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
@@ -748,7 +851,90 @@ function Draw-UnresolvedModule([object]$Page, [object]$Spec, [double]$X, [double
   }
   Set-ShapeStyle $glyph $glyphSpec $Scale
   $glyph.CellsU("LinePattern").FormulaU = "2"
-  return @($glyph)
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $created.Add($glyph) | Out-Null
+  foreach ($marker in @(Draw-RecurrentPortMarkers $Page $Spec $X $Y $W $H $Scale $true)) {
+    if ($null -ne $marker) { $created.Add($marker) | Out-Null }
+  }
+  return $created.ToArray()
+}
+
+function Draw-RecurrentPortMarkers([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale, [bool]$Unresolved) {
+  # Port markers are evidence labels, not an invented cell schematic. They
+  # make the known contract visible even when the source does not expose the
+  # recurrent operator's internal gates.
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $inputs = @(Get-PlanString $Spec.shapeData.inputPorts -split '\|' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $outputs = @(Get-PlanString $Spec.shapeData.outputPorts -split '\|' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $inputCount = [Math]::Max(1, $inputs.Count)
+  $outputCount = [Math]::Max(1, $outputs.Count)
+  $markerW = [Math]::Max(0.16, [Math]::Min(0.34, $W * 0.11))
+  $markerH = [Math]::Max(0.10, [Math]::Min(0.18, $H * 0.055))
+  for ($index = 0; $index -lt $inputs.Count; $index += 1) {
+    $label = [string]$inputs[$index]
+    $centerY = $Y + ($H * ($index + 1) / ($inputCount + 1))
+    $port = $Page.DrawOval($X - ($markerW / 2), $centerY - ($markerH / 2), $X + ($markerW / 2), $centerY + ($markerH / 2))
+    $portSpec = [pscustomobject]@{ label = $label; subtitle = ""; fill = if ($label -match '(^|_)(h|c)(_|$)|state|hidden|cell' ) { "#E8DDF5" } else { "#E2EEF8" }; line = "#46647E"; shapeKind = "recurrent-port"; visualRole = "recurrent-port"; styleProfile = "recurrent-port"; shapeData = $Spec.shapeData; labelOutside = $false }
+    Set-ShapeStyle $port $portSpec $Scale
+    $port.CellsU("Char.Size").FormulaU = "6 pt"
+    $created.Add($port) | Out-Null
+    $caption = Draw-TextAnnotation $Page $label ($X - ($markerW * 2.9)) ($centerY - ($markerH * 0.7)) ($markerW * 2.2) ($markerH * 1.4) "6 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "recurrent-input-port"
+    if ($null -ne $caption) { $created.Add($caption) | Out-Null }
+  }
+  for ($index = 0; $index -lt $outputs.Count; $index += 1) {
+    $label = [string]$outputs[$index]
+    $centerY = $Y + ($H * ($index + 1) / ($outputCount + 1))
+    $port = $Page.DrawOval($X + $W - ($markerW / 2), $centerY - ($markerH / 2), $X + $W + ($markerW / 2), $centerY + ($markerH / 2))
+    $portSpec = [pscustomobject]@{ label = $label; subtitle = ""; fill = "#D8F3DC"; line = "#467A5B"; shapeKind = "recurrent-port"; visualRole = "recurrent-port"; styleProfile = "recurrent-port"; shapeData = $Spec.shapeData; labelOutside = $false }
+    Set-ShapeStyle $port $portSpec $Scale
+    $port.CellsU("Char.Size").FormulaU = "6 pt"
+    $created.Add($port) | Out-Null
+    $caption = Draw-TextAnnotation $Page $label ($X + $W + ($markerW * 0.7)) ($centerY - ($markerH * 0.7)) ($markerW * 2.2) ($markerH * 1.4) "6 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "recurrent-output-port"
+    if ($null -ne $caption) { $created.Add($caption) | Out-Null }
+  }
+  if ($Unresolved) {
+    $unknown = $Page.DrawOval($X + ($W * 0.38), $Y + ($H * 0.34), $X + ($W * 0.62), $Y + ($H * 0.58))
+    $unknown.Text = "?"
+    $unknown.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#FFF4CC"
+    $unknown.CellsU("FillBkgnd").FormulaU = Get-RgbFormula "#FFF4CC"
+    $unknown.CellsU("LineColor").FormulaU = Get-RgbFormula "#B27A00"
+    $unknown.CellsU("Char.Size").FormulaU = "16 pt"
+    $unknown.CellsU("Char.Style").FormulaU = "1"
+    $unknown.CellsU("Para.HorzAlign").FormulaU = "1"
+    $unknown.CellsU("VerticalAlign").FormulaU = "1"
+    Set-PlanData $unknown $Spec.shapeData
+    $created.Add($unknown) | Out-Null
+    $note = Draw-TextAnnotation $Page "structure unresolved" ($X + ($W * 0.2)) ($Y + ($H * 0.68)) ($W * 0.6) 0.2 "7 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "uncertainty-note"
+    if ($null -ne $note) { $created.Add($note) | Out-Null }
+  }
+  return $created.ToArray()
+}
+
+function Draw-RecurrentInstance([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $expanded = [bool]$Spec.recurrentExpanded
+  if ($expanded -and -not [string]::IsNullOrWhiteSpace((Get-PlanString $Spec.shapeData.unresolvedReason))) {
+    return @(Draw-UnresolvedModule $Page $Spec $X $Y $W $H $Scale)
+  }
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  $instanceSpec = [pscustomobject]@{
+    label = $Spec.label
+    subtitle = $Spec.subtitle
+    fill = if ($expanded) { "#D8F3DC" } else { "#DDE7F2" }
+    line = if ($expanded) { "#D18B00" } else { "#6B7C93" }
+    shapeKind = "recurrent-instance"
+    visualRole = "recurrent-instance"
+    styleProfile = if ($expanded) { "recurrent-expanded" } else { "recurrent-collapsed" }
+    labelOutside = $false
+    shapeData = $Spec.shapeData
+  }
+  Set-ShapeStyle $shape $instanceSpec $Scale
+  if (-not $expanded) { $shape.CellsU("LinePattern").FormulaU = "2" }
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $created.Add($shape) | Out-Null
+  foreach ($marker in @(Draw-RecurrentPortMarkers $Page $Spec $X $Y $W $H $Scale $false)) {
+    if ($null -ne $marker) { $created.Add($marker) | Out-Null }
+  }
+  return $created.ToArray()
 }
 
 function Draw-OperatorGlyph([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
@@ -769,9 +955,16 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
     return @(Draw-DownsampleFrustum $Page $Spec $x $y $w $h $Scale)
   }
   $visualRole = Get-PlanString $Spec.visualRole
+  if ($visualRole -eq "image-input") { return @(Draw-ImageInput $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "sequence-input") { return @(Draw-SequenceInput $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "state-input") { return @(Draw-StateInput $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "vector-input") { return @(Draw-VectorInput $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "volume-input") { return @(Draw-VolumeInput $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "unknown-input") { return @(Draw-UnknownInput $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "vectorize" -or $kind -eq "flatten-ribbon") { return @(Draw-FlattenRibbon $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "input-tensor") { return @(Draw-InputTensor $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "feature-map-stage" -or $kind -match "volume|tensor") { return @(Draw-FeatureMapStack $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "recurrent-instance" -or $kind -eq "recurrent-instance") { return @(Draw-RecurrentInstance $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "compound-module" -or $kind -eq "compound") { return @(Draw-CompoundModule $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "unresolved-module") { return @(Draw-UnresolvedModule $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "operator-symbol") {
@@ -805,7 +998,7 @@ function Draw-PlanConnector([object]$Page, [object]$Spec, [double]$Scale, [hasht
       ([double]$to.x * $Scale),
       ([double]$to.y * $Scale)
     )
-    $line.CellsU("LineColor").FormulaU = if ($Spec.type -match "skip|residual") { "RGB(36,130,112)" } else { "RGB(63,84,112)" }
+    $line.CellsU("LineColor").FormulaU = if ($Spec.recurrentRailKind -eq "feedback") { "RGB(231,126,34)" } elseif ($Spec.recurrentRailKind -eq "update") { "RGB(0,160,120)" } elseif ($Spec.recurrentRailKind -eq "carry") { "RGB(44,150,190)" } elseif ($Spec.type -match "skip|residual") { "RGB(36,130,112)" } else { "RGB(63,84,112)" }
     $line.CellsU("LineWeight").FormulaU = "0.009 in"
     if ($index -eq $points.Count - 2) { $line.CellsU("EndArrow").FormulaU = "13" }
     $segmentRole = if ($points.Count -eq 2) { "direct" } elseif ($index -eq 0) { "begin" } elseif ($index -eq $points.Count - 2) { "end" } else { "middle" }
@@ -814,12 +1007,16 @@ function Draw-PlanConnector([object]$Page, [object]$Spec, [double]$Scale, [hasht
     Set-PlanData $line ([pscustomobject]@{
       renderId = $Spec.renderId
       edgeId = $Spec.id
+      sourceEdgeId = $Spec.sourceEdgeId
       sourceNodeId = $Spec.sourceNodeId
       targetNodeId = $Spec.targetNodeId
       visualRole = "connector"
       edgeType = $Spec.type
+      recurrentRailKind = $Spec.recurrentRailKind
       sourceShapeId = $Spec.sourceShapeId
       targetShapeId = $Spec.targetShapeId
+      sourceEndpointId = if ($null -ne $Spec.sourceEndpointIds) { Get-PlanString $Spec.sourceEndpointIds.source } else { "" }
+      targetEndpointId = if ($null -ne $Spec.sourceEndpointIds) { Get-PlanString $Spec.sourceEndpointIds.target } else { "" }
       segmentRole = $segmentRole
       evidenceCount = $Spec.evidenceCount
       planVersion = "visio-native-bridge/v1"
@@ -953,6 +1150,20 @@ if (-not [string]::IsNullOrWhiteSpace([string]$plan.previewPath)) {
     throw "The existing Visio page was rendered, but preview export failed: $($_.Exception.Message)"
   }
 }
+
+# Persisted-document acceptance: release the writing session and reopen the
+# saved .vsdx before performing the independent Shape Data/readback pass.
+$reopenedVisio = New-Object -ComObject Visio.Application
+try {
+  $doc.Close()
+  $doc = $reopenedVisio.Documents.Open([string]$plan.documentPath)
+  $page = $doc.Pages.ItemU([string]$plan.pageName)
+} catch {
+  try { $reopenedVisio.Quit() } catch {}
+  throw "The Visio document was saved but could not be reopened for independent readback: $($_.Exception.Message)"
+}
+$readbackSession = "reopened-document"
+$reopened = $true
 $doc.Application.Visible = $true
 $windowActivated = $false
 foreach ($window in $doc.Application.Windows) {
@@ -968,6 +1179,7 @@ foreach ($window in $doc.Application.Windows) {
 
 [System.Collections.Generic.List[string]]$readbackSourceNodeIds = New-Object 'System.Collections.Generic.List[string]'
 [System.Collections.Generic.List[string]]$readbackEdgeIds = New-Object 'System.Collections.Generic.List[string]'
+$readbackConnectorEndpoints = @{}
 [System.Collections.Generic.List[string]]$gluedBeginEdgeIds = New-Object 'System.Collections.Generic.List[string]'
 [System.Collections.Generic.List[string]]$gluedEndEdgeIds = New-Object 'System.Collections.Generic.List[string]'
 $readbackConnectorCount = 0
@@ -982,6 +1194,17 @@ for ($index = 1; $index -le $page.Shapes.Count; $index++) {
         $edgeId = $shape.CellsU("Prop.edgeId").ResultStr("")
         if ($edgeId) {
           $readbackEdgeIds.Add($edgeId) | Out-Null
+          $sourceEndpointId = ""
+          $targetEndpointId = ""
+          try { if ([int]$shape.CellExistsU("Prop.sourceEndpointId", 0) -ne 0) { $sourceEndpointId = $shape.CellsU("Prop.sourceEndpointId").ResultStr("") } } catch {}
+          try { if ([int]$shape.CellExistsU("Prop.targetEndpointId", 0) -ne 0) { $targetEndpointId = $shape.CellsU("Prop.targetEndpointId").ResultStr("") } } catch {}
+          $sourceEdgeId = $edgeId
+          try { if ([int]$shape.CellExistsU("Prop.sourceEdgeId", 0) -ne 0) { $sourceEdgeId = $shape.CellsU("Prop.sourceEdgeId").ResultStr("") } } catch {}
+          $readbackConnectorEndpoints[$sourceEdgeId] = [pscustomobject]@{
+            sourceEdgeId = $sourceEdgeId
+            sourceEndpointId = $sourceEndpointId
+            targetEndpointId = $targetEndpointId
+          }
           $segmentRole = ""
           try { if ([int]$shape.CellExistsU("Prop.segmentRole", 0) -ne 0) { $segmentRole = $shape.CellsU("Prop.segmentRole").ResultStr("") } } catch {}
           $connectCount = 0
@@ -1012,13 +1235,16 @@ for ($index = 1; $index -le $page.Shapes.Count; $index++) {
   agentCleanup = $agentCleanup
   legacyCleanup = $legacyCleanup
   windowActivated = $windowActivated
+  reopened = $reopened
+  readbackSession = $readbackSession
   readback = [pscustomobject]@{
     renderId = [string]$plan.renderId
     sourceNodeIds = @($readbackSourceNodeIds | Sort-Object -Unique)
     edgeIds = @($readbackEdgeIds | Sort-Object -Unique)
+    connectorEndpoints = $readbackConnectorEndpoints
     gluedBeginEdgeIds = @($gluedBeginEdgeIds | Sort-Object -Unique)
     gluedEndEdgeIds = @($gluedEndEdgeIds | Sort-Object -Unique)
     connectorCount = $readbackConnectorCount
     shapeCount = @($readbackSourceNodeIds | Sort-Object -Unique).Count
   }
-} | ConvertTo-Json -Compress
+} | ConvertTo-Json -Compress -Depth 10

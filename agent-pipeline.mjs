@@ -1,14 +1,9 @@
-import { diagramFromCode } from "./code-workflow.js";
 import { extractGenericSourceTopology } from "./generic-source-topology.mjs";
 import { normalizeArchitectureInput } from "./input-adapters.mjs";
 import { createEvidenceGraph, evidenceGraphToUniversalIR } from "./evidence-graph.mjs";
 import { createFigurePlan, validateFigurePlan } from "./figure-plan.mjs";
-import { layoutDocumentForCanvas } from "./publication-layout-browser.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
 import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
-import {
-  projectUniversalIRToCanvas,
-} from "./universal-ir.mjs";
 
 const STATUS = Object.freeze({
   READY: "ready_for_preview",
@@ -59,19 +54,28 @@ export function extractArchitectureEvidence(input = {}, options = {}) {
   normalizeArchitectureInput({ ...input, kind });
 
   if (kind === "source") {
-    const document = diagramFromCode(input.source, input.framework || "auto");
     const genericTopology = extractGenericSourceTopology(input.source, input.framework || "auto");
-    const rawIR = shouldPreferGenericTopology(genericTopology, document) ? genericTopology : document.ir;
+    const rawIR = genericTopology || {
+      nodes: [{
+        id: "unresolved-source",
+        op: "UnresolvedSourceGraph",
+        family: "custom",
+        compoundKind: "unresolved",
+        label: "Unresolved source graph",
+        stage: 0,
+        confidence: 0.15,
+        evidence: [{ kind: "source", textLength: String(input.source || "").length }],
+      }],
+      edges: [],
+      diagnostics: [{ kind: "unresolved-source", severity: "warning", message: "Source topology could not be extracted." }],
+    };
     return {
       kind,
       rawIR,
       nodes: rawIR?.nodes || [],
       edges: rawIR?.edges || [],
-      source: document,
-      baseDiagnostics: [
-        ...(Array.isArray(document.diagnostics) ? document.diagnostics : []),
-        ...(Array.isArray(genericTopology?.diagnostics) ? genericTopology.diagnostics : []),
-      ],
+      source: rawIR.source,
+      baseDiagnostics: Array.isArray(rawIR.diagnostics) ? rawIR.diagnostics : [],
       input,
     };
   }
@@ -123,8 +127,6 @@ export function normalizeArchitectureEvidence(evidence = {}) {
 export function planArchitectureFigure(normalized = {}) {
   if (normalized.status === STATUS.VISION) return normalized;
   const ir = normalized.ir || normalized;
-  const rawCanvasDocument = projectUniversalIRToCanvas(ir);
-  const laidOutCanvasDocument = layoutDocumentForCanvas(rawCanvasDocument);
   const figureLayout = layoutUniversalFigure(ir);
   const diagnostics = [
     ...(Array.isArray(normalized.evidenceGraph?.diagnostics) ? normalized.evidenceGraph.diagnostics : []),
@@ -138,14 +140,6 @@ export function planArchitectureFigure(normalized = {}) {
   return {
     ir: publicIR(ir),
     source: normalized.source,
-    rawCanvasDocument,
-    canvasDocument: {
-      ...laidOutCanvasDocument,
-      ir: publicIR(ir),
-      layoutValidation: laidOutCanvasDocument.validation,
-      universalFigureLayout: figureLayout,
-      figurePlan,
-    },
     figureLayout,
     figurePlan: { ...figurePlan, validation: figurePlanValidation },
     figurePlanValidation,
@@ -161,41 +155,27 @@ function analyzeSourceInput(input) {
     ]);
   }
 
-  const document = diagramFromCode(input.source, input.framework || "auto");
   const genericTopology = extractGenericSourceTopology(input.source, input.framework || "auto");
-  const selectedIR = shouldPreferGenericTopology(genericTopology, document) ? genericTopology : document.ir;
-  return finalizeResult(selectedIR, {
-    source: document,
-    baseDiagnostics: [
-      ...(Array.isArray(document.diagnostics) ? document.diagnostics : []),
-      ...(Array.isArray(genericTopology?.diagnostics) ? genericTopology.diagnostics : []),
-    ],
+  const rawIR = genericTopology || {
+    nodes: [{
+      id: "unresolved-source",
+      op: "UnresolvedSourceGraph",
+      family: "custom",
+      compoundKind: "unresolved",
+      label: "Unresolved source graph",
+      stage: 0,
+      confidence: 0.15,
+      evidence: [{ kind: "source", textLength: input.source.length }],
+    }],
+    edges: [],
+    diagnostics: [{ kind: "unresolved-source", severity: "warning", message: "Source topology could not be extracted." }],
+  };
+  return finalizeResult(rawIR, {
+    source: rawIR.source,
+    baseDiagnostics: rawIR.diagnostics,
     sourceKind: "source",
     input,
   });
-}
-
-function shouldPreferGenericTopology(topology, document = {}) {
-  if (!topology || !Array.isArray(topology.nodes) || !topology.nodes.length) return false;
-  const operations = topology.nodes.filter((node) => (
-    !["input", "output"].includes(node.family) && !isSourceExampleNode(node)
-  ));
-  const genericCustom = operations.filter((node) => node.family === "custom");
-  const documentOperations = Array.isArray(document.ir?.nodes)
-    ? document.ir.nodes.filter((node) => !["input", "output"].includes(node.family))
-    : [];
-  const containerOnly = genericCustom.length > 0
-    && genericCustom.every((node) => /^(Sequential|ModuleList|ModuleDict)$/i.test(String(node.op || node.label || "")));
-  if (containerOnly && documentOperations.length > operations.length) return false;
-  return operations.some((node) => node.family === "custom")
-    || operations.some((node) => node.ports?.inputs?.length > 1 || node.ports?.outputs?.length > 1)
-    || topology.edges.length > Math.max(0, topology.nodes.length - 1);
-}
-
-function isSourceExampleNode(node = {}) {
-  return /^(?:randn|zeros|ones|empty|full|tensor|arange|linspace|rand|randint)$/i.test(
-    String(node.op || node.label || "").trim()
-  );
 }
 
 function analyzeIRInput(input) {
@@ -234,7 +214,6 @@ function analyzeImageInput(input, options) {
     status: STATUS.VISION,
     readyForPreview: false,
     ir: null,
-    canvasDocument: null,
     validation: null,
     diagnostics: [diagnostic(
       "vision-analyzer-required",
@@ -257,7 +236,7 @@ function analyzePromptInput(input) {
 
   // Prompt-only input has no grounded topology. Keep one unresolved semantic
   // operator as a reviewable hypothesis rather than fabricating a CNN or a
-  // template-specific graph.
+  // topology-specific graph.
   const ir = promptHypothesisIR(input);
   return finalizeResult(ir, { sourceKind: "prompt", input });
 }
@@ -313,22 +292,23 @@ function finalizeResult(rawIR, context = {}) {
   const uniqueDiagnostics = dedupeDiagnostics(diagnostics);
   const hasUncertainty = uniqueDiagnostics.some((item) =>
     item.kind === "unresolved-operator" || item.kind === "dynamic-control-flow" || item.kind === "prompt-topology-unresolved"
+  ) || ir.nodes.some((node) => isUnresolvedNode(node) || unresolvedRecurrentNode(node));
+
+  const reviewableUncertainty = hasUncertainty && validation.issues.every((issue) =>
+    ["low-confidence-edge", "missing-edge-evidence", "unresolved-edge"].includes(issue.kind)
   );
 
-  if (!validation.ok) {
+  if (!validation.ok && !reviewableUncertainty) {
     return {
       status: STATUS.INVALID,
       readyForPreview: false,
       ir: publicIR(ir),
-      canvasDocument: null,
       validation,
       diagnostics: uniqueDiagnostics,
       summary: summaryFor(ir, context.sourceKind),
     };
   }
 
-  const rawCanvasDocument = projectUniversalIRToCanvas(ir);
-  const laidOutCanvasDocument = layoutDocumentForCanvas(rawCanvasDocument);
   const figureLayout = layoutUniversalFigure(ir);
   const figurePlan = createFigurePlan({ ir, layout: figureLayout, diagnostics: uniqueDiagnostics });
   const figurePlanValidation = validateFigurePlan(figurePlan);
@@ -336,13 +316,6 @@ function finalizeResult(rawIR, context = {}) {
     status: hasUncertainty ? STATUS.CONFIRM : STATUS.READY,
     readyForPreview: true,
     ir: publicIR(ir),
-    canvasDocument: {
-      ...laidOutCanvasDocument,
-      ir: publicIR(ir),
-      layoutValidation: laidOutCanvasDocument.validation,
-      universalFigureLayout: figureLayout,
-      figurePlan,
-    },
     figureLayout,
     figurePlan: { ...figurePlan, validation: figurePlanValidation },
     figurePlanValidation,
@@ -355,7 +328,7 @@ function finalizeResult(rawIR, context = {}) {
 
 function unresolvedDiagnostics(ir) {
   return ir.nodes
-    .filter((node) => node.family === "custom" || node.compoundKind === "unresolved")
+    .filter((node) => isUnresolvedNode(node) || unresolvedRecurrentNode(node))
     .map((node) => diagnostic(
       "unresolved-operator",
       "warning",
@@ -364,12 +337,24 @@ function unresolvedDiagnostics(ir) {
     ));
 }
 
+function isUnresolvedNode(node = {}) {
+  if (node.compoundKind === "unresolved" || node.status === "unresolved") return true;
+  if (node.family !== "custom") return false;
+  const graph = node.attributes?.internalGraph || node.internalGraph;
+  return !(node.compoundKind === "module" && graph?.status === "resolved" && Array.isArray(graph.nodes) && graph.nodes.length > 0);
+}
+
+function unresolvedRecurrentNode(node = {}) {
+  if (!["recurrent", "rnn", "lstm", "gru"].includes(String(node.family || "").toLowerCase())) return false;
+  const graph = node.attributes?.internalGraph || node.internalGraph;
+  return !graph || graph.status === "unresolved" || !Array.isArray(graph.nodes) || graph.nodes.length === 0;
+}
+
 function invalidResult(diagnostics) {
   return {
     status: STATUS.INVALID,
     readyForPreview: false,
     ir: null,
-    canvasDocument: null,
     validation: { ok: false, issues: diagnostics, summary: {} },
     diagnostics,
     summary: { inputKind: "unknown" },
@@ -413,5 +398,3 @@ function dedupeDiagnostics(items) {
     return true;
   });
 }
-
-export { STATUS };

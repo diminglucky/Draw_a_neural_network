@@ -35,9 +35,9 @@ class Net(nn.Module):
   assert.ok(result.ir.edges.some((edge) => edge.ports?.source === "text" && edge.target === fuse.id));
   assert.ok(result.ir.edges.some((edge) => edge.source === fuse.id && edge.target === decoder.id));
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-operator"));
-  assert.equal(result.canvasDocument.nodes.find((node) => node.op === "WaveletEncoder").compoundKind, "unresolved");
-  assert.ok(result.canvasDocument.edges.some((edge) => edge.ports?.source === "text" && edge.target === fuse.id));
-  assert.equal(result.canvasDocument.layoutValidation.ok, true);
+  assert.equal(result.figurePlan.nodes.find((node) => node.op === "WaveletEncoder").compoundKind, "unresolved");
+  assert.ok(result.figurePlan.edges.some((edge) => edge.sourceEndpointIds?.source === "text" && edge.targetNodeId === fuse.sourceNodeId));
+  assert.equal(result.figurePlan.validation.ok, true);
 });
 
 test("generic source extraction preserves arbitrary Keras layer names and list-valued merges", () => {
@@ -112,11 +112,70 @@ class LSTMNet(nn.Module):
 `,
   });
 
-  assert.equal(result.status, "ready_for_preview");
+  assert.equal(result.status, "needs_confirmation");
   const recurrent = result.ir.nodes.find((node) => node.family === "recurrent");
   assert.ok(recurrent);
   assert.deepEqual(recurrent.ports.inputs, ["x", "state"]);
   assert.deepEqual(recurrent.ports.outputs, ["h", "c"]);
   assert.ok(recurrent.evidence.some((item) => item.kind === "source-call" && item.operation === "LSTMCell"));
   assert.equal(result.figurePlan.nodes.find((node) => node.sourceNodeId === recurrent.id).visualRole, "recurrent-state");
+  const stateEdge = result.figurePlan.edges.find((edge) => edge.sourceNodeId.includes("state") && edge.targetNodeId === recurrent.id);
+  assert.deepEqual(stateEdge.sourceEndpointIds, { source: "state", target: "state" });
+  assert.ok(result.figurePlan.edges.some((edge) => edge.sourceEndpointIds?.source === "h"));
+  assert.ok(result.figurePlan.edges.some((edge) => edge.sourceEndpointIds?.source === "c"));
+});
+
+test("generic source extraction expands evidenced nested modules without a model-specific template", () => {
+  const result = analyzeArchitectureInput({
+    kind: "source",
+    framework: "pytorch",
+    source: `
+class CellBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = nn.Linear(8, 8)
+    def forward(self, x):
+        return self.proj(x)
+
+class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.block = CellBlock()
+    def forward(self, x):
+        y = self.block(x)
+        return y
+`,
+  });
+
+  const block = result.ir.nodes.find((node) => node.op === "CellBlock");
+  assert.ok(block);
+  assert.ok(Array.isArray(block.attributes.internalGraph?.nodes));
+  assert.ok(block.attributes.internalGraph.nodes.some((node) => node.op === "Linear"));
+  assert.ok(block.attributes.internalGraph.nodes
+    .filter((node) => node.family !== "input" && node.family !== "output")
+    .every((node) => node.evidence?.some((item) => item.kind === "source-call")));
+  assert.equal(block.compoundKind, "module");
+  assert.equal(result.status, "ready_for_preview");
+});
+
+test("generic source extraction blocks partially parsed expressions instead of dropping topology", () => {
+  const result = analyzeArchitectureInput({
+    kind: "source",
+    framework: "pytorch",
+    source: `
+class ResidualNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 8, 3)
+    def forward(self, x, residual):
+        x = self.conv(x)
+        x = x + residual
+        return x
+`,
+  });
+
+  assert.equal(result.status, "needs_confirmation");
+  assert.ok(result.ir.nodes.some((node) => node.compoundKind === "unresolved"));
+  assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-source-statement"));
+  assert.equal(result.readyForPreview, true);
 });

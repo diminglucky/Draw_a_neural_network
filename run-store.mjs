@@ -21,9 +21,6 @@ export function createMemoryRunStore() {
   };
 }
 
-export const memoryRunStore = createMemoryRunStore;
-export const createRunStore = createMemoryRunStore;
-
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
 }

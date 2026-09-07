@@ -1,7 +1,5 @@
 const VERSION = "universal-neural-ir/v1";
 
-import { compileSemanticVisualNodes } from "./semantic-visual-grammar.mjs";
-
 export { normalizeRecurrentEvidence, recurrentEvidenceForNode } from "./semantic-visual-grammar.mjs";
 
 const FAMILY_ALIASES = [
@@ -80,6 +78,15 @@ export function validateUniversalIR(ir = {}) {
     if (!normalized.nodeIds.has(edge.source) || !normalized.nodeIds.has(edge.target)) {
       issues.push({ kind: "missing-edge-endpoint", edgeId: edge.id, source: edge.source, target: edge.target });
     }
+    if (edge.status.toLowerCase() === "unresolved") {
+      issues.push({ kind: "unresolved-edge", edgeId: edge.id });
+    }
+    if (edge.confidence < 0.85) {
+      issues.push({ kind: "low-confidence-edge", edgeId: edge.id, confidence: edge.confidence });
+    }
+    if (edge.evidenceExplicit && edge.evidence.length === 0) {
+      issues.push({ kind: "missing-edge-evidence", edgeId: edge.id });
+    }
   });
   const inputIds = normalized.nodes.filter((node) => node.family === "input").map((node) => node.id);
   const reachable = new Set(inputIds);
@@ -108,57 +115,19 @@ export function validateUniversalIR(ir = {}) {
   };
 }
 
-export function projectUniversalIRToCanvas(ir = {}) {
-  const normalized = normalizeUniversalIR(ir);
-  const semanticNodes = compileSemanticVisualNodes(normalized.nodes, normalized.edges);
-  const nodes = semanticNodes.map((node, index) => {
-    const typeInfo = canvasTypeForFamily(node.family, node);
-    return {
-      id: node.id,
-      type: typeInfo.type,
-      compoundKind: node.compoundKind || typeInfo.compoundKind,
-      x: Number.isFinite(node.x) ? node.x : 280 + index * 220,
-      y: Number.isFinite(node.y) ? node.y : 620,
-      w: Number.isFinite(node.w) ? node.w : typeInfo.w,
-      h: Number.isFinite(node.h) ? node.h : typeInfo.h,
-      stage: Number.isFinite(node.stage) ? node.stage : index,
-      label: node.figureLabel || node.label,
-      subtitle: node.figureSubtitle || node.subtitle || shapeLabel(node.shape),
-      color: node.color || typeInfo.color,
-      op: node.op,
-      family: node.family,
-      semanticRole: node.semanticRole,
-      visualRole: node.visualRole,
-      inputGrammar: node.inputGrammar,
-      styleProfile: node.styleProfile,
-      labelSlots: node.labelSlots,
-      geometryData: node.geometryData,
-      shape: node.shape,
-      ports: node.ports,
-      attributes: node.attributes,
-      source: node.source,
-      evidence: node.evidence,
-      confidence: node.confidence,
-      note: node.note || (node.compoundKind === "unresolved" ? "structure requires review" : ""),
-    };
-  });
-  return {
-    figure: normalized.figure,
-    paletteName: "dopamine",
-    nodes,
-    edges: normalized.edges.map((edge) => ({
-      ...edge,
-      color: edge.color || (edge.type === "skip" ? "#00d4aa" : edge.type === "attention" ? "#ff2aa3" : "#2846d8"),
-    })),
-    ir: normalized,
-  };
-}
-
 export function classifyOperation(op = "", family = "") {
-  const declaredFamily = String(family || "").trim().toLowerCase();
+  const declaredFamily = canonicalFamily(family);
   if (KNOWN_FAMILIES.has(declaredFamily) && declaredFamily !== "unknown") return declaredFamily;
   const normalized = String(op).trim();
   return FAMILY_ALIASES.find(([, pattern]) => pattern.test(normalized))?.[0] || "custom";
+}
+
+function canonicalFamily(family) {
+  const value = String(family || "").trim().toLowerCase();
+  if (["recurrent", "rnn", "lstm", "gru"].includes(value)) return "recurrent";
+  if (["attention", "cross-attention", "cross_attention"].includes(value)) return "attention";
+  if (["merge", "concat", "concatenate", "add", "sum", "join"].includes(value)) return "merge";
+  return value;
 }
 
 function normalizeNode(node = {}, index) {
@@ -214,6 +183,9 @@ function normalizeEdge(edge = {}, index) {
     label: String(edge.label || ""),
     ports: edge.ports ? { ...edge.ports } : undefined,
     evidence: Array.isArray(edge.evidence) ? edge.evidence.map((item) => ({ ...item })) : [],
+    evidenceExplicit: edge.evidenceExplicit !== undefined
+      ? edge.evidenceExplicit === true
+      : Object.prototype.hasOwnProperty.call(edge, "evidence"),
     provenance: edge.provenance,
     confidence: Number.isFinite(edge.confidence) ? edge.confidence : 1,
     status: String(edge.status || "confirmed"),
@@ -265,33 +237,6 @@ function normalizeShape(shape) {
   return { ...shape };
 }
 
-function canvasTypeForFamily(family, node) {
-  const common = { w: 160, h: 110, color: "#a855ff" };
-  if (family === "input") {
-    const inputTypes = {
-      "image-input": ["image-input", 122, 214, "#4D9DBB"],
-      "sequence-input": ["sequence-input", 150, 72, "#4D9DBB"],
-      "state-input": ["state-input", 86, 132, "#815AA0"],
-      "vector-input": ["vector-input", 58, 150, "#5C9A69"],
-      "volume-input": ["volume-input", 132, 204, "#43878C"],
-      "unknown-input": ["unknown-input", 104, 160, "#9D8A65"],
-    };
-    const [type, w, h, color] = inputTypes[node.visualRole] || ["unknown-input", 104, 160, "#9D8A65"];
-    return { type, w, h, color };
-  }
-  if (family === "output") return { type: "output", w: 110, h: 148, color: "#ff4fd8" };
-  if (family === "conv") return { type: "conv", w: 86, h: 220, color: "#ff2aa3" };
-  if (family === "volume") return { type: "volume-stack", w: 138, h: 230, color: "#2f6bff" };
-  if (family === "pool") return { type: "pool", w: 92, h: 92, color: "#ffe94a" };
-  if (family === "flatten") return { type: "flatten", w: 150, h: 138, color: "#ff2aa3" };
-  if (family === "dense") return { type: "dense-layer", w: 132, h: 210, color: "#2f6bff" };
-  if (family === "merge") return { type: "concat", w: 82, h: 82, color: "#00d4aa" };
-  if (family === "attention") return { type: "compound", compoundKind: node.compoundKind || "attention", w: 320, h: 250, color: "#a855ff" };
-  if (family === "recurrent" || family === "graph") return { type: "compound", compoundKind: "operator", w: 320, h: 250, color: "#a855ff" };
-  if (family === "custom" || node.compoundKind === "unresolved") return { type: "compound", compoundKind: "unresolved", w: 320, h: 250, color: "#a855ff" };
-  return { ...common, type: "compound", compoundKind: "operator" };
-}
-
 function semanticRoleForFamily(family) {
   if (family === "input") return "input";
   if (family === "output") return "output";
@@ -299,11 +244,6 @@ function semanticRoleForFamily(family) {
   if (family === "attention") return "contextual_interaction";
   if (family === "custom") return "unresolved_operator";
   return "feature_transform";
-}
-
-function shapeLabel(shape) {
-  const value = shape?.output || shape?.input;
-  return Array.isArray(value) ? value.join(" × ") : "";
 }
 
 function isRecord(value) {

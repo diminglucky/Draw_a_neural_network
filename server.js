@@ -23,7 +23,6 @@ const mimeTypes = {
   ".js": "text/javascript; charset=utf-8",
   ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -49,15 +48,26 @@ export function createAgentService({ dependencies = {}, runStore: configuredRunS
         return renderVisioThroughAgent(body, stageDependencies, runs, runStore);
       }
       if (url.pathname === "/api/agent-run") {
+        const documentPath = String(body?.documentPath || "").trim();
+        const runDependencies = documentPath
+          ? withVisioExecution(stageDependencies, {
+              documentPath,
+              pageName: body?.pageName || "Page-1",
+              renderId: body?.renderId,
+              unitScale: body?.unitScale,
+              previewPath: body?.previewPath,
+              scriptPath: process.env.VISIO_BRIDGE_SCRIPT,
+            })
+          : stageDependencies;
         let run;
         try {
-          run = createAgentRun(body, stageDependencies, { runStore });
+          run = createAgentRun(body, runDependencies, { runStore });
         } catch (error) {
           return jsonResponse(422, { status: "invalid_input", code: "invalid-input", message: error.message });
         }
         runs.set(run.id, run);
         const result = await runAgentPipeline(run);
-        return jsonResponse(200, result);
+        return jsonResponse(200, { ...result, status: agentRunStatus(result) });
       }
       const match = url.pathname.match(/^\/api\/agent-run\/([^/]+)\/resume$/);
       if (!match) return jsonResponse(404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
@@ -84,13 +94,30 @@ export function createAgentService({ dependencies = {}, runStore: configuredRunS
   };
 }
 
-export function createDefaultAgentDependencies() {
+function createDefaultAgentDependencies() {
   return {
     inspect: async (input) => input,
-    extract: (input) => extractArchitectureEvidence(input),
+    extract: async (input) => input?.kind === "image"
+      ? extractImageEvidenceThroughProvider(input)
+      : extractArchitectureEvidence(input),
     normalize: (evidence) => normalizeArchitectureEvidence(evidence),
     plan: (normalized) => planArchitectureFigure(normalized),
   };
+}
+
+async function extractImageEvidenceThroughProvider(input) {
+  const vision = await requestVisionIR(input);
+  if (vision.status) return {
+    kind: "image",
+    status: vision.status,
+    diagnostics: vision.diagnostics,
+    input,
+  };
+  return extractArchitectureEvidence({
+    kind: "ir",
+    ir: vision.ir,
+    diagnostics: vision.diagnostics,
+  });
 }
 
 async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runStore) {
@@ -99,7 +126,17 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
     return jsonResponse(400, { error: "documentPath is required; rendering never creates an implicit Visio document." });
   }
 
-  const input = body.ir
+  if (body.figurePlan) {
+    return jsonResponse(422, {
+      status: "invalid_input",
+      code: "figure-plan-not-accepted",
+      error: "Client-supplied Figure Plans are not accepted; render must start from source, image, or Universal IR through Agent Run.",
+    });
+  }
+
+  const input = body.images
+    ? { kind: "image", images: body.images, prompt: body.prompt, metadata: body.metadata }
+    : body.ir
     ? { kind: "ir", ir: body.ir, diagnostics: body.diagnostics }
     : { kind: "source", source: body.source, framework: body.framework };
   let options;
@@ -121,13 +158,31 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
       run = createAgentRun(input, {
       ...stageDependencies,
       render: (figurePlan, current) => render(figurePlan, { ...current, visioOptions: options }),
-      readback: (figurePlan, renderResult, current) => readback(figurePlan, renderResult, { ...current, visioOptions: options }),
-      }, { runStore, allowUnresolved: true });
+      ...(readback ? {
+        readback: (figurePlan, renderResult, current) => readback(figurePlan, renderResult, { ...current, visioOptions: options }),
+      } : {}),
+      }, { runStore });
     } catch (error) {
       return jsonResponse(422, { status: "invalid_input", code: "invalid-input", message: error.message });
     }
     runs.set(run.id, run);
     const result = await runAgentPipeline(run);
+    if (result.status === "needs-confirmation" || result.status === "needs_confirmation") {
+      return jsonResponse(409, {
+        status: "needs_confirmation",
+        error: "Architecture evidence requires confirmation; Visio was not modified.",
+        diagnostics: result.diagnostics,
+        ...nextResult(result),
+      });
+    }
+    if (result.status === "needs_external_vision") {
+      return jsonResponse(409, {
+        status: "needs_external_vision",
+        error: "Image evidence requires an available vision analyzer; Visio was not modified.",
+        diagnostics: result.diagnostics,
+        ...nextResult(result),
+      });
+    }
     if (!result.figurePlan) {
       return jsonResponse(422, {
         status: "invalid_layout",
@@ -165,6 +220,28 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
   } catch (error) {
     return jsonResponse(503, { status: "visio_unavailable", error: error.message });
   }
+}
+
+function withVisioExecution(stageDependencies, options) {
+  const render = stageDependencies.render || defaultVisioRender;
+  const readback = process.env.VISIO_DRY_RUN === "1"
+    ? undefined
+    : (stageDependencies.readback || defaultVisioReadback);
+  return {
+    ...stageDependencies,
+    render: (figurePlan, current) => render(figurePlan, { ...current, visioOptions: options }),
+    ...(readback ? {
+      readback: (figurePlan, renderResult, current) => readback(figurePlan, renderResult, { ...current, visioOptions: options }),
+    } : {}),
+  };
+}
+
+function agentRunStatus(result = {}) {
+  if (result.status !== "completed") return result.status;
+  if (!result.renderResult) return "plan_ready";
+  if (result.renderResult.status === "dry_run") return "dry_run";
+  if (!result.readback) return "rendered";
+  return "completed";
 }
 
 async function defaultVisioRender(figurePlan, current = {}) {
@@ -215,16 +292,16 @@ const server = createServer(async (request, response) => {
       await handleAgentRequest(request, response);
       return;
     }
-    if (request.method === "POST" && request.url === "/api/analyze-diagram") {
-      await handleAnalyze(request, response);
-      return;
-    }
     if (request.method === "POST" && request.url === "/api/analyze-code") {
       await handleAnalyzeCode(request, response);
       return;
     }
     if (request.method === "POST" && request.url === "/api/render-visio") {
       await handleAgentRequest(request, response);
+      return;
+    }
+    if (request.method === "POST") {
+      sendJson(response, 404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
       return;
     }
     await serveStatic(request, response);
@@ -246,21 +323,21 @@ async function handleAnalyzeCode(request, response) {
   sendJson(response, status, result);
 }
 
-async function handleAnalyze(request, response) {
-  if (!openAIKey) {
-    const body = await readJson(request);
-    sendJson(response, 200, analyzeArchitectureInput({ ...body, kind: "image" }));
-    return;
-  }
-
-  const body = await readJson(request);
+async function requestVisionIR(body = {}) {
   const images = Array.isArray(body.images) ? body.images.slice(0, 6) : [];
   if (!images.length) {
-    sendJson(response, 400, { error: "No images provided" });
-    return;
+    return {
+      status: "needs_external_vision",
+      diagnostics: [{ kind: "vision-analyzer-required", message: "No images provided." }],
+    };
+  }
+  if (!openAIKey) {
+    return {
+      status: "needs_external_vision",
+      diagnostics: [{ kind: "vision-analyzer-required", message: "Image input requires a configured vision analyzer." }],
+    };
   }
 
-  const prompt = buildVisionPrompt(body);
   const apiResponse = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -272,7 +349,7 @@ async function handleAnalyze(request, response) {
       input: [{
         role: "user",
         content: [
-          { type: "input_text", text: prompt },
+          { type: "input_text", text: buildVisionPrompt(body) },
           ...images.map((image) => ({ type: "input_image", image_url: image.dataUrl })),
         ],
       }],
@@ -288,102 +365,27 @@ async function handleAnalyze(request, response) {
   });
 
   if (!apiResponse.ok) {
-    const text = await apiResponse.text();
-    sendJson(response, apiResponse.status, { error: "OpenAI vision request failed", detail: text.slice(0, 1000) });
-    return;
+    throw new Error(`${apiResponse.status}: ${(await apiResponse.text()).slice(0, 1000)}`);
   }
-
   const payload = await apiResponse.json();
-  const text = payload.output_text || payload.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
-  if (!text) {
-    sendJson(response, 502, { error: "Vision model returned no diagram JSON" });
-    return;
-  }
+  const text = payload.output_text
+    || payload.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
+  if (!text) throw new Error("Vision model returned no diagram JSON");
   const candidate = JSON.parse(text);
-  const analysis = analyzeArchitectureInput({
-    kind: "ir",
-    ir: candidate.ir || candidate,
-    diagnostics: candidate.diagnostics,
-  });
-  if (analysis.status === "invalid_input") {
-    sendJson(response, 422, {
-      error: "Vision model returned invalid Universal IR",
-      ...analysis,
-    });
-    return;
-  }
-  sendJson(response, 200, analysis);
+  return { ir: candidate.ir || candidate, diagnostics: candidate.diagnostics };
 }
 
 function buildVisionPrompt(body) {
   return [
     "You are converting uploaded neural-network diagrams, sketches, or multiple reference images into a framework-neutral Universal Neural Network IR for Synapse Studio.",
-    "Return only the JSON required by the schema. Do not return SVG or Markdown.",
+    "Return only the JSON required by the schema. Do not return drawing markup or Markdown.",
     "Preserve arbitrary operations, custom modules, multi-input/multi-output ports, tensor shapes, branch and merge topology, source evidence, and confidence. Use a known family when justified; use family custom and compoundKind unresolved when internal structure is not visible.",
     "Preserve labels and important arrows when visible. If ambiguous, infer a clean neural architecture rather than copying visual noise.",
-    "Return one Universal IR object with nodes and edges; canvas coordinates are optional and the client will lay out the graph deterministically.",
+    "Return one Universal IR object with nodes and edges; the Agent generates renderer-neutral Figure Plan geometry before Visio rendering.",
     "Prefer real neural-network topology over generic boxes, but never invent hidden internal layers without evidence.",
     `Mode: ${body.mode || "auto"}.`,
     `User instruction: ${body.prompt || "Generate a clear editable neural-network diagram."}`,
   ].join("\n");
-}
-
-function synthesizeFallbackDiagram(body) {
-  const imageCount = Array.isArray(body.images) ? body.images.length : 1;
-  const wants3D = body.mode === "3d" || is3DPrompt(body.prompt || "");
-  const title = wants3D ? "AI Draft 3D Neural Network" : imageCount > 1 ? "AI Draft Merged Architecture" : "AI Draft Neural Architecture";
-  const nodes = wants3D ? [
-    node("srv-vol-input", "volume", 250, 650, 145, 210, "CT / MRI", "128 x 128 x 96", 0, { depth: 80, z: 56, note: "voxels" }),
-    node("srv-vol-e1", "volume-stack", 525, 610, 108, 250, "3D Conv", "32 channels", 1, { depth: 106, z: 74, layers: 6, note: "downsample" }),
-    node("srv-vol-e2", "volume-stack", 875, 560, 102, 310, "3D Conv", "64 channels", 2, { depth: 132, z: 88, layers: 7, note: "pool" }),
-    node("srv-vol-core", "volume", 1235, 610, 165, 210, "Latent Cube", "128 channels", 3, { depth: 150, z: 94, note: "context" }),
-    node("srv-vol-cat2", "concat", 1570, 680, 82, 82, "Concat", "skip e2", 4),
-    node("srv-vol-d2", "volume-stack", 1740, 560, 102, 310, "3D UpConv", "64 channels", 5, { depth: 132, z: 88, layers: 7, note: "decode" }),
-    node("srv-vol-cat1", "concat", 2075, 690, 78, 78, "Concat", "skip e1", 6),
-    node("srv-vol-d1", "volume-stack", 2215, 610, 108, 250, "3D UpConv", "32 channels", 7, { depth: 106, z: 74, layers: 6, note: "decode" }),
-    node("srv-vol-output", "volume", 2395, 650, 100, 190, "Mask", "voxel labels", 8, { depth: 58, z: 42, note: "1x1x1" }),
-  ] : [
-    node("srv-input", "tensor", 260, 660, 122, 188, "Input", "224 x 224 x 3", 0, { depth: 24, note: "uploaded image" }),
-    node("srv-stem", "conv", 500, 640, 78, 220, "Conv Stem", "112 x 112 x 64", 1, { depth: 96, layers: 8, note: "7x7 / s2", channels: "64 maps" }),
-    node("srv-pool", "pool", 770, 704, 92, 92, "MaxPool", "56 x 56", 2),
-    node("srv-stage1", "conv", 1010, 600, 76, 285, "Feature Block", "56 x 56 x 128", 3, { depth: 118, layers: 9, note: "3x3 conv", channels: "128 maps" }),
-    node("srv-flat", "flatten", 1345, 650, 154, 150, "Flatten", "feature vector", 4, { layers: 13 }),
-    node("srv-attn", "attention", 1635, 635, 210, 138, "Attention", "optional / detected", 5, { note: "context" }),
-    node("srv-head", "dense-layer", 2220, 625, 128, 210, "Classifier", "softmax", 6, { layers: 7, note: "probabilities" }),
-  ];
-  const sequential = nodes.slice(0, -1).map((item, index) => edge(item.id, nodes[index + 1].id, index === 3 ? "features" : "signal", index === 3 ? "attention" : "signal"));
-  const skips = wants3D
-    ? [edge("srv-vol-e2", "srv-vol-cat2", "skip concat", "skip"), edge("srv-vol-e1", "srv-vol-cat1", "skip concat", "skip")]
-    : [edge("srv-stage1", "srv-head", "residual / readout", "skip")];
-  return {
-    figure: {
-      title,
-      subtitle: `Server fallback generated from ${imageCount} image${imageCount > 1 ? "s" : ""}. Configure OPENAI_API_KEY for real vision analysis.`,
-      stages: nodes.map((item) => item.label),
-    },
-    paletteName: "dopamine",
-    nodes,
-    edges: [...sequential, ...skips],
-  };
-}
-
-function node(id, type, x, y, w, h, label, subtitle, stage, extras = {}) {
-  return { id, type, x, y, w, h, label, subtitle, stage, color: "#b79cff", ...extras };
-}
-
-function edge(source, target, label, type) {
-  return {
-    id: `srv-${source}-${target}`,
-    source,
-    target,
-    label,
-    type,
-    color: type === "skip" ? "#20c7a8" : type === "attention" ? "#ff3d9a" : "#4555a6",
-  };
-}
-
-function is3DPrompt(prompt = "") {
-  return /(^|\W)(3d|ct|mri)(\W|$)|volume|volumetric|体数据|体素|医学|u-net|unet/i.test(prompt);
 }
 
 function diagramSchema() {

@@ -419,11 +419,14 @@ function preferredSizeForRole(role, node) {
   if (role === "input-tensor") return { width: 104, height: 238 };
   if (role === "feature-map-stage") {
     const height = spatial
-      ? Math.max(96, Math.round(320 * Math.pow(Math.max(1, spatial) / 224, 0.4)))
+      ? Math.max(80, Math.round(240 * Math.pow(Math.max(1, spatial) / 224, 0.4)))
       : Math.max(180, currentHeight || 220);
-    const width = spatial
-      ? Math.max(54, Math.round(height * 0.24) + Math.round(Math.sqrt(Math.max(1, channels || 64)) * 0.95))
-      : Math.max(86, currentWidth || 120);
+    // A feature map is a thin slab, not a wide card: front width tracks the
+    // number of stacked conv layers (RightBandedBox bands), while spatial
+    // height carries the 224 → 7 progression. Keeping width narrow matches
+    // PlotNeuralNet's width=1..N convention and keeps a deep chain compact.
+    const repeat = Math.max(1, Number(node.repeatCount) || Number(node.layers) || 1);
+    const width = Math.max(44, repeat * 24);
     return { width, height };
   }
   if (role === "pool-downsample") return { width: 88, height: 0 };

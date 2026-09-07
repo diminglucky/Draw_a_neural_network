@@ -11,7 +11,6 @@ export function createAgentRun(input, dependencies = {}, options = {}) {
     id: `agent-run-${Date.now().toString(36)}-${nextRunId++}`,
     input: clone(normalizeArchitectureInput(input)),
     dependencies: { ...dependencies },
-    allowUnresolved: Boolean(options.allowUnresolved),
     status: "ready",
     stage: "inspect",
     snapshots: freezeSnapshots([]),
@@ -68,7 +67,7 @@ export async function runAgentPipeline(run, options = {}) {
       await saveRun(current, runtime.runStore);
       return rememberResult(current, runtime);
     }
-    if (stage === "extract" && containsUnresolved(current.extract) && !current.allowUnresolved) {
+    if (stage === "extract" && containsUnresolved(current.extract)) {
       current.status = "needs-confirmation";
       current.diagnostics = uniqueDiagnostics([...current.diagnostics, {
         kind: "needs-confirmation", code: "unresolved-evidence", severity: "warning",
@@ -115,8 +114,6 @@ export function resumeAgentRun(run, event = {}) {
 export async function continueAgentRun(run, options = {}) {
   return runAgentPipeline(run, { ...options, force: true });
 }
-
-export const resumeAgentPipeline = continueAgentRun;
 
 export async function persistAgentRun(run) {
   const runtime = runtimeFor(run);
@@ -279,7 +276,7 @@ function resultOf(run) {
 }
 
 function publicState(run) {
-  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), figurePlan: clone(run.figurePlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason, allowUnresolved: run.allowUnresolved };
+  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), figurePlan: clone(run.figurePlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
 }
 
 async function invoke(dependency, value, run) { return typeof dependency === "function" ? dependency(value, run) : value; }
@@ -289,6 +286,10 @@ function containsUnresolved(value) {
   if (Array.isArray(value)) return value.some(containsUnresolved);
   if (value.status === "unresolved" || value.kind === "unresolved-operator" || value.code === "unresolved-operator") return true;
   if (value.family === "custom" || value.compoundKind === "unresolved") return true;
+  if (["recurrent", "rnn", "lstm", "gru"].includes(String(value.family || "").toLowerCase())) {
+    const graph = value.attributes?.internalGraph || value.internalGraph;
+    if (!graph || graph.status === "unresolved" || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return true;
+  }
   return Array.isArray(value.diagnostics) && value.diagnostics.some(containsUnresolved) || Array.isArray(value.nodes) && value.nodes.some(containsUnresolved);
 }
 

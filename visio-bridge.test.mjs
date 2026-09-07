@@ -7,6 +7,7 @@ import {
   validateVisioReadback,
 } from "./visio-bridge.mjs";
 import { createFigurePlan } from "./figure-plan.mjs";
+import { layoutUniversalFigure } from "./universal-figure.mjs";
 
 const layout = {
   grammar: { id: "residual-graph" },
@@ -77,6 +78,124 @@ test("Visio consumes Figure Plan source identities for shapes and connectors", (
   assert.equal(plan.shapes[0].shapeKind, "compound");
   assert.equal(plan.shapes[0].x, 20);
   assert.equal(plan.shapes[0].w, 120);
+});
+
+test("Visio connectors preserve endpoint identities into native Shape Data", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "endpoint-aware" },
+    nodes: [
+      { id: "a", sourceNodeId: "source-a", family: "recurrent", x: 20, y: 40, w: 120, h: 100 },
+      { id: "b", sourceNodeId: "source-b", family: "output", x: 260, y: 40, w: 120, h: 100 },
+    ],
+    edges: [{
+      id: "edge-ab",
+      sourceEdgeId: "source-edge-ab",
+      source: "a",
+      target: "b",
+      sourceNodeId: "source-a",
+      targetNodeId: "source-b",
+      sourceEndpointIds: { source: "state-out", target: "prediction-in" },
+      route: { points: [{ x: 140, y: 90 }, { x: 260, y: 90 }] },
+    }],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+
+  assert.deepEqual(plan.connectors[0].sourceEndpointIds, {
+    source: "state-out",
+    target: "prediction-in",
+  });
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /sourceEndpointId\s*=\s*if[\s\S]*?\$Spec\.sourceEndpointIds\.source/);
+  assert.match(script, /targetEndpointId\s*=\s*if[\s\S]*?\$Spec\.sourceEndpointIds\.target/);
+  assert.match(script, /sourceEdgeId\s*=\s*\$Spec\.sourceEdgeId/);
+  assert.match(script, /sourceEdgeId\s*=\s*\$shape\.CellsU\("Prop\.sourceEdgeId"\)/);
+  assert.match(script, /connectorEndpoints\s*=\s*\$readbackConnectorEndpoints/);
+  assert.match(script, /ConvertTo-Json\s+-Compress\s+-Depth\s+10/);
+});
+
+test("Visio render plan projects recurrent instances and state rails with source identities", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "recurrent-flow" },
+    nodes: [{
+      id: "cell",
+      sourceNodeId: "source-cell",
+      family: "custom",
+      representation: "compound",
+      visualRole: "recurrent-state",
+      x: 200,
+      y: 300,
+      w: 320,
+      h: 250,
+      recurrentLayout: {
+        instances: [
+          { id: "source-cell:previous", sourceNodeId: "source-cell", role: "previous", expanded: false, x: 18, y: 76, w: 118, h: 184 },
+          { id: "source-cell:expanded", sourceNodeId: "source-cell", role: "expanded", expanded: true, x: 164, y: 76, w: 340, h: 184 },
+          { id: "source-cell:next", sourceNodeId: "source-cell", role: "next", expanded: false, x: 532, y: 76, w: 118, h: 184 },
+        ],
+        expandedInstanceId: "source-cell:expanded",
+        stateRails: [{ id: "source-cell:rail:carry", kind: "carry", sourceEdgeId: "carry-edge", points: [{ x: 77, y: 58 }, { x: 334, y: 58 }, { x: 591, y: 58 }] }],
+        expandedInternalGraph: { status: "unresolved", nodes: [], edges: [], diagnostics: [], reason: "missing internal topology" },
+        uncertainty: { unresolved: true, reason: "missing internal topology" },
+      },
+    }],
+    edges: [],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+
+  const instances = plan.shapes.filter((shape) => shape.shapeData.recurrentInstanceRole);
+  assert.deepEqual(instances.map((shape) => shape.shapeData.recurrentInstanceRole), ["previous", "expanded", "next"]);
+  assert.ok(instances.every((shape) => shape.shapeData.sourceNodeId === "source-cell"));
+  assert.equal(instances.find((shape) => shape.shapeData.recurrentInstanceRole === "expanded").shapeData.unresolvedReason, "missing internal topology");
+  assert.equal(plan.connectors.length, 1);
+  assert.equal(plan.connectors[0].sourceEdgeId, "carry-edge");
+  assert.equal(plan.connectors[0].recurrentRailKind, "carry");
+  assert.deepEqual(plan.connectors[0].sourceEndpointIds, undefined);
+});
+
+test("Visio bridge routes external recurrent edges to the expanded instance", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "recurrent-flow" },
+    nodes: [
+      { id: "input", sourceNodeId: "input", family: "input", x: 20, y: 100, w: 80, h: 80 },
+      {
+        id: "cell", sourceNodeId: "cell", family: "recurrent", visualRole: "recurrent-state", x: 120, y: 100, w: 180, h: 180,
+        recurrentLayout: {
+          instances: [
+            { id: "cell:previous", role: "previous", x: 120, y: 100, w: 80, h: 120, expanded: false },
+            { id: "cell:expanded", role: "expanded", x: 220, y: 100, w: 140, h: 120, expanded: true },
+            { id: "cell:next", role: "next", x: 380, y: 100, w: 80, h: 120, expanded: false },
+          ],
+          stateRails: [],
+          uncertainty: { unresolved: false },
+        },
+      },
+      { id: "output", sourceNodeId: "output", family: "output", x: 500, y: 100, w: 80, h: 80 },
+    ],
+    edges: [
+      { id: "input-cell", source: "input", target: "cell", sourceNodeId: "input", targetNodeId: "cell" },
+      { id: "cell-output", source: "cell", target: "output", sourceNodeId: "cell", targetNodeId: "output" },
+    ],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+
+  assert.equal(plan.connectors.find((edge) => edge.sourceEdgeId === "input-cell").targetShapeId, "recurrent-instance::cell::expanded");
+  assert.equal(plan.connectors.find((edge) => edge.sourceEdgeId === "cell-output").sourceShapeId, "recurrent-instance::cell::expanded");
+});
+
+test("Visio bridge preserves recurrent rail endpoint identity", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "recurrent-flow" },
+    nodes: [{
+      id: "cell", sourceNodeId: "cell", family: "recurrent", visualRole: "recurrent-state", x: 100, y: 100, w: 180, h: 180,
+      recurrentLayout: {
+        instances: [
+          { id: "cell:previous", role: "previous", x: 100, y: 100, w: 80, h: 120, expanded: false },
+          { id: "cell:expanded", role: "expanded", x: 200, y: 100, w: 120, h: 120, expanded: true },
+          { id: "cell:next", role: "next", x: 340, y: 100, w: 80, h: 120, expanded: false },
+        ],
+        stateRails: [{ id: "h-rail", kind: "carry", sourceEdgeId: "h-loop", sourceEndpointIds: { source: "h_prev", target: "h_next" }, points: [{ x: 140, y: 80 }, { x: 260, y: 80 }, { x: 380, y: 80 }] }],
+        uncertainty: { unresolved: false },
+      },
+    }], edges: [],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+  assert.deepEqual(plan.connectors[0].sourceEndpointIds, { source: "h_prev", target: "h_next" });
 });
 
 test("Visio plan carries semantic role, style profile, label slots, and geometry evidence", () => {
@@ -176,6 +295,98 @@ test("Visio bridge renders semantic roles with publication geometry and external
   assert.match(script, /feature-map/i);
 });
 
+test("Visio bridge renders recurrent instances and state rails from a Figure Plan", () => {
+  const source = {
+    figure: { title: "LSTM" },
+    nodes: [
+      { id: "input", family: "input", op: "Input", stage: 0 },
+      { id: "cell", family: "recurrent", op: "LSTMCell", stage: 1 },
+    ],
+    edges: [
+      { id: "flow", source: "input", target: "cell" },
+      { id: "state-loop", source: "cell", target: "cell", type: "loop" },
+    ],
+  };
+  const plan = createFigurePlan({ ir: source, layout: layoutUniversalFigure(source) });
+  const visioPlan = buildVisioRenderPlan(plan, { documentPath: "C:/model.vsdx" });
+
+  assert.equal(visioPlan.shapes.filter((shape) => shape.shapeData.recurrentInstanceRole).length, 3);
+  assert.equal(visioPlan.connectors.filter((edge) => edge.recurrentRailKind).length, 1);
+});
+
+test("Visio bridge treats recurrent expansion as the visible composite primitive", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "recurrent-flow" },
+    nodes: [{
+      id: "cell",
+      sourceNodeId: "cell",
+      family: "recurrent",
+      visualRole: "recurrent-state",
+      x: 100, y: 100, w: 320, h: 250,
+      recurrentLayout: {
+        instances: [
+          { id: "cell:previous", role: "previous", x: 100, y: 100, w: 100, h: 180, expanded: false },
+          { id: "cell:expanded", role: "expanded", x: 220, y: 100, w: 180, h: 180, expanded: true },
+          { id: "cell:next", role: "next", x: 420, y: 100, w: 100, h: 180, expanded: false },
+        ],
+        stateRails: [],
+        uncertainty: { unresolved: false },
+      },
+    }],
+    edges: [],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+  assert.equal(plan.shapes.some((shape) => shape.id === "outer::cell"), false);
+  assert.deepEqual(plan.shapes.map((shape) => shape.shapeData.recurrentInstanceRole).filter(Boolean), ["previous", "expanded", "next"]);
+});
+
+test("Visio bridge renders unresolved recurrent expansion with the unresolved glyph", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "recurrent-flow" },
+    nodes: [{
+      id: "cell", sourceNodeId: "cell", family: "recurrent", visualRole: "recurrent-state",
+      recurrentLayout: {
+        instances: [{ id: "cell:expanded", role: "expanded", x: 100, y: 100, w: 180, h: 180, expanded: true }],
+        uncertainty: { unresolved: true, reason: "missing gates" },
+      },
+      x: 100, y: 100, w: 180, h: 180,
+    }], edges: [],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+  const expanded = plan.shapes.find((shape) => shape.shapeData.recurrentInstanceRole === "expanded");
+  assert.equal(expanded.visualRole, "unresolved-module");
+  assert.equal(expanded.shapeKind, "unresolved-module");
+});
+
+test("unresolved recurrent plans retain port semantics for a non-empty native glyph", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "recurrent-flow" },
+    nodes: [{
+      id: "cell", sourceNodeId: "cell", family: "recurrent", op: "LSTMCell",
+      label: "LSTMCell", subtitle: "128, 64", ports: {
+        inputs: ["x", "h_prev", "c_prev"],
+        outputs: ["h", "c"],
+      },
+      recurrentLayout: {
+        instances: [
+          { id: "cell:previous", role: "previous", x: 100, y: 100, w: 90, h: 180, expanded: false },
+          { id: "cell:expanded", role: "expanded", x: 220, y: 100, w: 220, h: 180, expanded: true },
+          { id: "cell:next", role: "next", x: 470, y: 100, w: 90, h: 180, expanded: false },
+        ],
+        uncertainty: { unresolved: true, reason: "internal topology evidence is absent" },
+      },
+    }], edges: [],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+
+  const expanded = plan.shapes.find((shape) => shape.shapeData.recurrentInstanceRole === "expanded");
+  assert.equal(expanded.shapeData.inputPorts, "x|h_prev|c_prev");
+  assert.equal(expanded.shapeData.outputPorts, "h|c");
+  assert.equal(expanded.shapeData.unresolvedReason, "internal topology evidence is absent");
+
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /Draw-RecurrentPortMarkers/);
+  assert.match(script, /inputPorts/);
+  assert.match(script, /outputPorts/);
+});
+
 test("Visio compound frames use valid foreground and background transparency cells", () => {
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
   const body = script.match(/function Draw-CompoundModule[\s\S]*?\n}\n\nfunction Draw-UnresolvedModule/);
@@ -202,7 +413,7 @@ test("Visio bridge gives vectorization a funnel silhouette and bolds stage label
   assert.match(script, /pool-downsample/);
   const downsampleBody = script.match(/function Draw-DownsampleFrustum[\s\S]*?\n}\n\nfunction Draw-NeuronColumn/);
   assert.ok(downsampleBody, "expected an isolated pooling transition renderer");
-  assert.match(downsampleBody[0], /Draw-PlotNeuralNetTensorBox/);
+  assert.match(downsampleBody[0], /Draw-PublicationTensorTensorBox/);
   assert.doesNotMatch(downsampleBody[0], /pool-frustum-side/);
   const labelBody = script.match(/function Draw-PlanLabel[\s\S]*?\n}\n\nfunction Draw-CompoundModule/);
   assert.ok(labelBody, "expected the external caption renderer");
@@ -218,7 +429,7 @@ test("Visio bridge translates generic neural roles into the tensor-flow visual g
     '"neuron" { "#9563C8"',
     '"output" { "#7A238C"',
   ]) {
-    assert.ok(script.includes(token), `expected PlotNeuralNet-style role color ${token}`);
+    assert.ok(script.includes(token), `expected PublicationTensor-style role color ${token}`);
   }
   const featureMapBody = script.match(/function Draw-FeatureMapStack[\s\S]*?\n}\n\nfunction Draw-FeatureMapGrid/);
   assert.ok(featureMapBody, "expected an isolated feature-map renderer");
@@ -233,29 +444,29 @@ test("Visio bridge translates generic neural roles into the tensor-flow visual g
   assert.doesNotMatch(script, /VGG16|ResNet|U-Net|Transformer/);
 });
 
-test("CNN tensors use the PlotNeuralNet Box and RightBandedBox projection rather than compressed prisms", () => {
+test("CNN tensors use the PublicationTensor Box and RightBandedBox projection rather than compressed prisms", () => {
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
-  const tensorBox = script.match(/function Draw-PlotNeuralNetTensorBox[\s\S]*?\n}\n\nfunction Draw-InputTensor/);
+  const tensorBox = script.match(/function Draw-PublicationTensorTensorBox[\s\S]*?\n}\n\nfunction Draw-InputTensor/);
   const bandedCell = script.match(/function Draw-RightBandedTensorCell[\s\S]*?\n}\n\nfunction Draw-FeatureMapGrid/);
   const poolBox = script.match(/function Draw-DownsampleFrustum[\s\S]*?\n}\n\nfunction Draw-NeuronColumn/);
 
-  assert.match(script, /function Project-PlotNeuralNetTensorPoint/);
-  assert.ok(tensorBox, "expected a dedicated translation of PlotNeuralNet Box vertices");
+  assert.match(script, /function Project-PublicationTensorTensorPoint/);
+  assert.ok(tensorBox, "expected a dedicated translation of PublicationTensor Box vertices");
   assert.match(tensorBox[0], /near|far/i);
   assert.match(tensorBox[0], /densely-dashed|far-edge/i);
-  assert.doesNotMatch(tensorBox[0], /\$h\s*=\s*Project-PlotNeuralNetTensorPoint/, "PowerShell treats $H and $h as the same variable");
-  assert.ok(bandedCell, "expected a dedicated translation of PlotNeuralNet RightBandedBox cells");
-  assert.match(bandedCell[0], /Draw-PlotNeuralNetTensorBox/);
+  assert.doesNotMatch(tensorBox[0], /\$h\s*=\s*Project-PublicationTensorTensorPoint/, "PowerShell treats $H and $h as the same variable");
+  assert.ok(bandedCell, "expected a dedicated translation of PublicationTensor RightBandedBox cells");
+  assert.match(bandedCell[0], /Draw-PublicationTensorTensorBox/);
   assert.match(bandedCell[0], /right third|bandWidth/i);
   assert.ok(poolBox, "expected a dedicated pooling Box renderer");
-  assert.match(poolBox[0], /Draw-PlotNeuralNetTensorBox/);
+  assert.match(poolBox[0], /Draw-PublicationTensorTensorBox/);
   assert.doesNotMatch(bandedCell[0], /Draw-PrismFaces/);
   assert.doesNotMatch(poolBox[0], /Draw-PrismFaces/);
 });
 
-test("PlotNeuralNet transplant keeps its exact z basis, opacity, cell loop, and east-face paint order", () => {
+test("PublicationTensor transplant keeps its exact z basis, opacity, cell loop, and east-face paint order", () => {
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
-  const projection = script.match(/function Project-PlotNeuralNetTensorPoint[\s\S]*?\n}\n\nfunction New-PlotNeuralNetFaceSpec/);
+  const projection = script.match(/function Project-PublicationTensorTensorPoint[\s\S]*?\n}\n\nfunction New-PublicationTensorFaceSpec/);
   const featureMap = script.match(/function Draw-FeatureMapStack[\s\S]*?\n}\n\nfunction Draw-RightBandedTensorCell/);
   const bandedCell = script.match(/function Draw-RightBandedTensorCell[\s\S]*?\n}\n\nfunction Draw-FeatureMapGrid/);
 
@@ -265,14 +476,14 @@ test("PlotNeuralNet transplant keeps its exact z basis, opacity, cell loop, and 
   assert.ok(featureMap, "expected the direct RightBandedBox cell loop");
   assert.doesNotMatch(featureMap[0], /\$cellCount\s*=\s*\[Math\]::Min\(4/);
   assert.ok(bandedCell, "expected the direct RightBandedBox cell implementation");
-  assert.match(bandedCell[0], /Draw-PlotNeuralNetTensorBox[\s\S]*\$IsLast/);
+  assert.match(bandedCell[0], /Draw-PublicationTensorTensorBox[\s\S]*\$IsLast/);
   assert.match(bandedCell[0], /fillOpacity\s*=\s*0\.6/);
   assert.doesNotMatch(bandedCell[0], /\$\w+Spec\.fillOpacity\s*=/, "PowerShell PSCustomObject opacity must be declared in its literal");
-  assert.doesNotMatch(bandedCell[0], /\$h\s*=\s*Project-PlotNeuralNetTensorPoint/, "PowerShell must not alias the far h vertex to the H height parameter");
+  assert.doesNotMatch(bandedCell[0], /\$h\s*=\s*Project-PublicationTensorTensorPoint/, "PowerShell must not alias the far h vertex to the H height parameter");
   assert.match(script, /\$FillOpacity\s*=\s*0\.4/);
 });
 
-test("PlotNeuralNet fill opacity targets the native Visio foreground and background transparency cells", () => {
+test("PublicationTensor fill opacity targets the native Visio foreground and background transparency cells", () => {
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
   const style = script.match(/function Set-ShapeStyle[\s\S]*?\n}\n\nfunction Set-PageLayout/);
 
@@ -282,7 +493,7 @@ test("PlotNeuralNet fill opacity targets the native Visio foreground and backgro
   assert.doesNotMatch(style[0], /CellsU\("FillTransparency"\)/);
 });
 
-test("Visio opacity is opt-in so the PlotNeuralNet CNN transplant cannot erase other semantic roles", () => {
+test("Visio opacity is opt-in so the PublicationTensor CNN transplant cannot erase other semantic roles", () => {
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
   const style = script.match(/function Set-ShapeStyle[\s\S]*?\n}\n\nfunction Set-PageLayout/);
 
@@ -416,6 +627,20 @@ test("Visio bridge can export a preview from the current page after an in-place 
   assert.match(script, /previewPath/i);
 });
 
+test("Visio bridge saves, closes, reopens, and reads back the persisted document", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  const saveIndex = script.indexOf("$doc.Save() | Out-Null");
+  const reopenIndex = script.indexOf("$reopenedVisio = New-Object -ComObject Visio.Application");
+  const reopenOpenIndex = script.indexOf("$doc = $reopenedVisio.Documents.Open");
+  const readbackIndex = script.indexOf("$readbackSourceNodeIds =");
+  assert.ok(saveIndex >= 0);
+  assert.ok(reopenIndex > saveIndex);
+  assert.ok(reopenOpenIndex > reopenIndex);
+  assert.ok(readbackIndex > reopenOpenIndex);
+  assert.match(script, /reopened\s*=\s*\$true/);
+  assert.match(script, /readbackSession\s*=\s*"reopened-document"/);
+});
+
 test("Visio page height follows a compact publication artboard instead of a fixed letter page", () => {
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
   assert.match(script, /pageHeight\s*=\s*\[Math\]::Max\(4\.8/);
@@ -444,4 +669,113 @@ test("validateVisioReadback rejects reported connectors without glued endpoints"
   assert.equal(report.ok, false);
   assert.deepEqual(report.missingGluedBeginEdgeIds, ["outer-edge::edge-1"]);
   assert.deepEqual(report.missingGluedEndEdgeIds, ["outer-edge::edge-1"]);
+});
+
+test("validateVisioReadback rejects connector endpoint identity mismatches", () => {
+  const plan = buildVisioRenderPlan({
+    ...layout,
+    edges: [{
+      id: "edge-ports",
+      source: "n1",
+      target: "n1",
+      type: "loop",
+      sourceEndpointIds: { source: "h-out", target: "h-in" },
+      route: { points: [{ x: 1, y: 1 }, { x: 2, y: 2 }] },
+    }],
+  }, { documentPath: "C:\\project\\existing.vsdx", renderId: "run-endpoints" });
+  const report = validateVisioReadback(plan, {
+    renderId: "run-endpoints",
+    sourceNodeIds: ["n1"],
+    edgeIds: ["outer-edge::edge-ports"],
+    connectors: [{ sourceEdgeId: "edge-ports", sourceEndpointId: "wrong-out", targetEndpointId: "h-in" }],
+  });
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.endpointMismatches, [{
+    sourceEdgeId: "edge-ports",
+    side: "source",
+    expected: "h-out",
+    actual: "wrong-out",
+    reason: "endpoint-identity-mismatch",
+  }]);
+});
+
+test("Visio render plan preserves input grammar and geometry evidence for every input role", () => {
+  const roles = [
+    ["image-input", { tensorRank: 3, channelCount: 3, spatialSize: 224 }],
+    ["sequence-input", { tensorRank: 2, channelCount: null, spatialSize: null }],
+    ["state-input", { tensorRank: 1, channelCount: null, spatialSize: null }],
+    ["vector-input", { tensorRank: 1, channelCount: null, spatialSize: null }],
+    ["volume-input", { tensorRank: 4, channelCount: 1, spatialSize: 64 }],
+    ["unknown-input", { tensorRank: 3, channelCount: 7, spatialSize: 11 }],
+  ];
+  const nodes = roles.map(([kind, dimensions], index) => ({
+    id: `input-${index}`,
+    sourceNodeId: `source-input-${index}`,
+    family: "input",
+    label: kind,
+    visualRole: kind,
+    inputGrammar: {
+      kind,
+      confidence: 0.8,
+      reason: `${kind} evidence`,
+      ...dimensions,
+    },
+    geometryData: {
+      inputGrammar: kind,
+      modalityReason: `${kind} evidence`,
+      ...dimensions,
+    },
+    x: index * 160,
+    y: 0,
+    w: 100,
+    h: 100,
+  }));
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "input-grammar" },
+    nodes,
+    edges: [{ id: "input-edge", source: "input-0", target: "input-1", sourceNodeId: "source-input-0", targetNodeId: "source-input-1" }],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+
+  assert.deepEqual(plan.shapes.map((shape) => shape.visualRole), roles.map(([kind]) => kind));
+  for (const [index, [kind, dimensions]] of roles.entries()) {
+    const shape = plan.shapes[index];
+    assert.equal(shape.shapeKind, kind);
+    assert.equal(shape.inputGrammar.kind, kind);
+    assert.equal(shape.geometryData.inputGrammar, kind);
+    assert.equal(shape.shapeData.inputGrammar, kind);
+    assert.equal(shape.shapeData.tensorRank, dimensions.tensorRank ?? "");
+    assert.equal(shape.shapeData.channelCount, dimensions.channelCount ?? "");
+    assert.equal(shape.shapeData.spatialSize, dimensions.spatialSize ?? "");
+    assert.equal(shape.shapeData.modalityReason, `${kind} evidence`);
+    assert.equal(shape.shapeData.sourceNodeId, `source-input-${index}`);
+  }
+  assert.equal(plan.connectors[0].sourceEdgeId, "input-edge");
+  assert.equal(plan.connectors[0].sourceNodeId, "source-input-0");
+  assert.equal(plan.connectors[0].targetNodeId, "source-input-1");
+});
+
+test("Visio bridge dispatches every input grammar to a distinct native primitive", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  for (const primitive of [
+    "Draw-ImageInput",
+    "Draw-SequenceInput",
+    "Draw-StateInput",
+    "Draw-VectorInput",
+    "Draw-VolumeInput",
+    "Draw-UnknownInput",
+  ]) {
+    assert.match(script, new RegExp(`function ${primitive}`), `missing Visio primitive ${primitive}`);
+  }
+  const dispatch = script.match(/function Draw-PlanShape[\s\S]*?\r?\n}\r?\n\r?\nfunction Glue-Endpoint/);
+  assert.ok(dispatch, "expected Draw-PlanShape dispatch body");
+  for (const role of ["image-input", "sequence-input", "state-input", "vector-input", "volume-input", "unknown-input"]) {
+    assert.match(dispatch[0], new RegExp(role));
+  }
+  assert.doesNotMatch(script, /VGG16|LSTM|GRU/);
+});
+
+test("Visio input renderers use COM-supported drawing methods", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.doesNotMatch(script, /DrawRoundedRectangle/);
+  assert.match(script, /DrawRectangle\(/);
 });

@@ -2,7 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
 
-test("agent pipeline routes source code through Universal IR and returns a previewable canvas", () => {
+test("agent pipeline returns a renderer-neutral Figure Plan for direct IR", () => {
+  const result = analyzeArchitectureInput({
+    kind: "ir",
+    ir: {
+      nodes: [
+        { id: "input", family: "input", op: "Input", stage: 0 },
+        { id: "cell", family: "recurrent", op: "LSTMCell", stage: 1 },
+      ],
+      edges: [
+        { id: "flow", source: "input", target: "cell", type: "signal" },
+        { id: "loop", source: "cell", target: "cell", type: "loop" },
+      ],
+    },
+  });
+
+  assert.equal(result.figurePlan.version, "figure-plan/v1");
+  assert.equal(result.figurePlan.nodes.find((node) => node.sourceNodeId === "cell").compoundKind, "operator");
+  assert.equal(result.figurePlan.edges.find((edge) => edge.sourceEdgeId === "loop").route.kind, "loop");
+});
+
+test("agent pipeline routes source code through Universal IR and returns a Visio-ready Figure Plan", () => {
   const result = analyzeArchitectureInput({
     kind: "source",
     framework: "pytorch",
@@ -19,7 +39,7 @@ class Net(nn.Module):
   assert.equal(result.status, "needs_confirmation");
   assert.equal(result.readyForPreview, true);
   assert.ok(result.ir.nodes.some((node) => node.compoundKind === "unresolved"));
-  assert.ok(result.canvasDocument.nodes.some((node) => node.compoundKind === "unresolved"));
+  assert.ok(result.figurePlan.nodes.some((node) => node.compoundKind === "unresolved"));
   assert.equal(result.figureLayout.grammar.id, "generic-dag");
   assert.ok(result.figureLayout.nodes.some((node) => node.representation === "compound"));
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-operator"));
@@ -102,11 +122,11 @@ example = torch.randn(1, 3, 224, 224)
   assert.ok(result.ir.nodes.some((node) => node.family === "conv"));
   assert.ok(result.ir.nodes.some((node) => node.family === "pool"));
   assert.ok(result.ir.nodes.some((node) => node.family === "dense"));
-  assert.equal(result.ir.nodes.find((node) => node.family === "input").subtitle, "224 x 224 x 3");
+  assert.equal(result.ir.nodes.find((node) => node.family === "input").subtitle, "source tensor");
   assert.equal(result.figureLayout.grammar.id, "tensor-flow");
 });
 
-test("agent pipeline validates IR input without requiring a model template", () => {
+test("agent pipeline validates IR input without requiring a model registry", () => {
   const result = analyzeArchitectureInput({
     kind: "ir",
     ir: {
@@ -118,10 +138,10 @@ test("agent pipeline validates IR input without requiring a model template", () 
     },
   });
 
-  assert.equal(result.status, "ready_for_preview");
+  assert.equal(result.status, "needs_confirmation");
   assert.equal(result.readyForPreview, true);
   assert.equal(result.validation.ok, true);
-  assert.equal(result.canvasDocument.nodes.find((node) => node.id === "loop").compoundKind, "operator");
+  assert.equal(result.figurePlan.nodes.find((node) => node.sourceNodeId === "loop").compoundKind, "operator");
 });
 
 test("agent pipeline refuses to invent a diagram from an image without a vision analyzer", () => {

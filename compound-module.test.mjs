@@ -71,7 +71,7 @@ test("unknown compound kinds remain explicit instead of silently becoming blocks
   assert.equal(layout.children.length, 1);
 });
 
-test("custom compounds render their evidenced internal graph instead of a fixed template", () => {
+test("custom compounds render their evidenced internal graph instead of invented children", () => {
   const layout = getCompoundLayout({
     id: "wavelet",
     type: "compound",
@@ -98,6 +98,67 @@ test("custom compounds render their evidenced internal graph instead of a fixed 
   assert.deepEqual(layout.edges.map((edge) => edge.kind), ["signal", "attention", "residual"]);
   assert.equal(layout.edges.every((edge) => layout.children.some((child) => child.id === edge.source)), true);
   assert.equal(layout.edges.every((edge) => layout.children.some((child) => child.id === edge.target)), true);
+});
+
+test("recurrent compounds render three time instances and expand only the evidenced current step", () => {
+  const layout = getCompoundLayout({
+    id: "cell",
+    sourceNodeId: "source-cell",
+    type: "compound",
+    compoundKind: "operator",
+    label: "Recurrent Cell",
+    recurrentLayout: {
+      instances: [
+        { id: "source-cell:previous", role: "previous", expanded: false },
+        { id: "source-cell:expanded", role: "expanded", expanded: true },
+        { id: "source-cell:next", role: "next", expanded: false },
+      ],
+      expandedInstanceId: "source-cell:expanded",
+      stateRails: [{ id: "source-cell:state-rail:carry", kind: "carry", sourceEdgeId: "carry" }],
+      expandedInternalGraph: {
+        status: "resolved",
+        nodes: [
+          { id: "input", family: "input", label: "xₜ" },
+          { id: "mix", family: "operator", label: "Evidence operator" },
+          { id: "output", family: "projection", label: "hₜ" },
+        ],
+        edges: [{ id: "inner-flow", source: "input", target: "mix", type: "signal" }, { id: "inner-out", source: "mix", target: "output", type: "signal" }],
+      },
+    },
+  });
+
+  assert.equal(layout.kind, "recurrent");
+  assert.deepEqual(layout.instances.map((instance) => instance.role), ["previous", "expanded", "next"]);
+  assert.equal(layout.instances.filter((instance) => instance.expanded).length, 1);
+  assert.equal(layout.expandedInstanceId, "source-cell:expanded");
+  assert.equal(layout.stateRails[0].kind, "carry");
+  assert.deepEqual(layout.children.map((child) => child.label), ["xₜ", "Evidence operator", "hₜ"]);
+  assert.equal(layout.edges.length, 2);
+  assert.equal(layout.uncertainty.unresolved, false);
+});
+
+test("recurrent compounds keep an unresolved current-step marker when internal evidence is absent", () => {
+  const layout = getCompoundLayout({
+    id: "opaque-cell",
+    type: "compound",
+    compoundKind: "operator",
+    label: "Opaque Cell",
+    recurrentLayout: {
+      instances: [
+        { id: "opaque-cell:previous", role: "previous", expanded: false },
+        { id: "opaque-cell:expanded", role: "expanded", expanded: true },
+        { id: "opaque-cell:next", role: "next", expanded: false },
+      ],
+      expandedInstanceId: "opaque-cell:expanded",
+      stateRails: [],
+      expandedInternalGraph: { status: "unresolved", nodes: [], edges: [], diagnostics: [], reason: "internal topology evidence is absent" },
+      uncertainty: { unresolved: true, reason: "internal topology evidence is absent" },
+    },
+  });
+
+  assert.equal(layout.kind, "recurrent");
+  assert.equal(layout.uncertainty.unresolved, true);
+  assert.ok(layout.children.some((child) => child.kind === "unresolved"));
 });
 
 test("internalGraph evidence is accepted directly and unknown children stay unresolved", () => {

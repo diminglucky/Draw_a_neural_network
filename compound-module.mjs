@@ -53,6 +53,10 @@ export function getCompoundLayout(node = {}) {
   const width = Math.max(normalized.w || 0, minSize.width);
   const height = Math.max(normalized.h || 0, minSize.height);
 
+  if (normalized.recurrentLayout) {
+    return recurrentLayout(normalized, width, height);
+  }
+
   const evidencedLayout = layoutFromInternalGraph(normalized, width, height);
   if (evidencedLayout) return evidencedLayout;
 
@@ -83,6 +87,104 @@ export function getCompoundLayout(node = {}) {
     }],
     edges: [],
   };
+}
+
+function recurrentLayout(node, baseWidth, baseHeight) {
+  const plan = node.recurrentLayout || {};
+  const rawInstances = Array.isArray(plan.instances) ? plan.instances : [];
+  const roles = ["previous", "expanded", "next"];
+  const expandedInstanceId = String(plan.expandedInstanceId || "");
+  const sourceNodeId = String(node.sourceNodeId || node.id || "compound");
+  const expandedGraph = plan.expandedInternalGraph || {};
+  const resolved = expandedGraph.status === "resolved" && Array.isArray(expandedGraph.nodes) && expandedGraph.nodes.length > 0;
+  const collapsedWidth = 118;
+  const expandedWidth = Math.max(baseWidth, 340);
+  const gap = 28;
+  const width = Math.max(baseWidth, collapsedWidth * 2 + expandedWidth + gap * 2 + 36);
+  const height = Math.max(baseHeight, 330);
+  const instanceHeight = Math.min(184, height - 108);
+  const instanceSpecs = roles.map((role, index) => {
+    const declared = rawInstances.find((item) => String(item?.role || "") === role) || {};
+    const expanded = role === "expanded";
+    const id = String(declared.id || `${sourceNodeId}:${role}`);
+    return {
+      id,
+      sourceNodeId: String(declared.sourceNodeId || sourceNodeId),
+      role,
+      expanded,
+      x: 18 + (index === 0 ? 0 : index === 1 ? collapsedWidth + gap : collapsedWidth + gap + expandedWidth + gap),
+      y: 76,
+      w: expanded ? expandedWidth : collapsedWidth,
+      h: instanceHeight,
+      expandedInstanceId: expanded ? (expandedInstanceId || id) : undefined,
+    };
+  });
+  const expandedInstance = instanceSpecs[1];
+  const children = resolved
+    ? normalizeInternalChildren({ ...node, id: expandedInstance.id }, expandedGraph.nodes, expandedInstance.w - 24, expandedInstance.h - 24)
+    : [{
+      id: `${expandedInstance.id}:unresolved`,
+      kind: "unresolved",
+      label: node.label || "Unresolved recurrent step",
+      subtitle: String(expandedGraph.reason || plan.uncertainty?.reason || "internal topology evidence is absent"),
+      x: expandedInstance.x + 18,
+      y: expandedInstance.y + 54,
+      w: expandedInstance.w - 36,
+      h: Math.max(64, expandedInstance.h - 74),
+    }];
+
+  if (resolved) {
+    positionInternalChildren(children, normalizedRecurrentEdges(expandedGraph.edges, children), expandedInstance.w - 24, expandedInstance.h - 24);
+    children.forEach((child) => {
+      child.x += expandedInstance.x;
+      child.y += expandedInstance.y;
+    });
+  }
+  const childIds = new Set(children.map((child) => child.id));
+  const edges = normalizedRecurrentEdges(expandedGraph.edges, children, expandedInstance);
+  const stateRails = (Array.isArray(plan.stateRails) ? plan.stateRails : []).map((rail, index) => ({
+    id: String(rail.id || `${sourceNodeId}:state-rail:${index + 1}`),
+    kind: String(rail.kind || "carry"),
+    sourceEdgeId: String(rail.sourceEdgeId || ""),
+    points: [
+      { x: instanceSpecs[0].x + instanceSpecs[0].w / 2, y: 58 + index * 16 },
+      { x: instanceSpecs[1].x + instanceSpecs[1].w / 2, y: 58 + index * 16 },
+      { x: instanceSpecs[2].x + instanceSpecs[2].w / 2, y: 58 + index * 16 },
+    ],
+  }));
+  return {
+    kind: "recurrent",
+    width,
+    height,
+    title: node.label || "Recurrent module",
+    subtitle: node.subtitle || "time-unrolled state transition",
+    repeat: node.badge || null,
+    instances: instanceSpecs.map(({ expandedInstanceId: _expandedInstanceId, ...instance }) => instance),
+    expandedInstanceId: expandedInstanceId || instanceSpecs[1].id,
+    stateRails,
+    children: children.filter((child) => childIds.has(child.id)),
+    edges,
+    uncertainty: {
+      unresolved: !resolved || Boolean(plan.uncertainty?.unresolved),
+      reason: !resolved
+        ? String(expandedGraph.reason || plan.uncertainty?.reason || "internal topology evidence is absent")
+        : String(plan.uncertainty?.reason || ""),
+    },
+  };
+}
+
+function normalizedRecurrentEdges(rawEdges, children, expandedInstance) {
+  const childIds = new Set(children.map((child) => child.id));
+  return (Array.isArray(rawEdges) ? rawEdges : [])
+    .map((item, index) => ({
+      id: String(item?.id || `recurrent-inner-edge-${index + 1}`),
+      source: String(item?.source || ""),
+      target: String(item?.target || ""),
+      kind: internalEdgeKind(item?.type || item?.kind),
+      label: String(item?.label || ""),
+    }))
+    .filter((edge) => childIds.has(edge.source) && childIds.has(edge.target))
+    .map((edge) => expandedInstance ? { ...edge, expandedInstanceId: expandedInstance.id } : edge);
 }
 
 function layoutFromInternalGraph(node, width, height) {

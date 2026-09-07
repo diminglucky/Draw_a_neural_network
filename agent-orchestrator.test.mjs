@@ -127,6 +127,19 @@ test("unresolved evidence stops before rendering and asks for confirmation", asy
   assert.equal(rendered, false);
 });
 
+test("legacy allowUnresolved options cannot bypass the confirmation gate", async () => {
+  let rendered = false;
+  const run = createAgentRun(input, dependencies({
+    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
+    render: () => { rendered = true; return {}; },
+  }), { allowUnresolved: true });
+
+  const result = await runAgentPipeline(run);
+
+  assert.equal(result.status, "needs-confirmation");
+  assert.equal(rendered, false);
+});
+
 test("resume creates a new run and bounds repair attempts without changing source IR", async () => {
   const run = createAgentRun(input, dependencies());
   const result = await runAgentPipeline(run);

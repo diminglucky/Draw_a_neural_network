@@ -3,287 +3,45 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Synapse Studio | 神经网络画布</title>
-    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <title>Synapse Studio | Visio Neural Network Agent</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <main class="control-shell">
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"></span>
-          <div>
-            <p class="eyebrow">Neural Architecture Canvas</p>
-            <h1>Synapse Studio</h1>
-          </div>
+          <div><p class="eyebrow">VISIO-NATIVE AGENT</p><h1>Synapse Studio</h1></div>
         </div>
-        <div class="topbar-actions">
-          <button class="ghost-button" id="togglePanelsButton" type="button">隐藏侧栏</button>
-          <button class="ghost-button" id="saveJsonButton" type="button">导出 JSON</button>
-          <button class="ghost-button" id="exportSvgButton" type="button">导出 SVG</button>
-          <button class="primary-button" id="exportPngButton" type="button">导出 PNG</button>
-        </div>
+        <div class="status-pill" id="statusText">等待输入模型证据</div>
       </header>
-
-      <aside class="left-panel">
-        <section class="panel-card ai-panel">
-          <div class="section-heading">
-            <h3>AI 自动绘制</h3>
-            <span class="beta-pill">Vision</span>
-          </div>
-          <p class="panel-note">上传论文图、草图或多张参考图，自动分析并生成可编辑画布。</p>
-          <label class="ai-upload-zone" for="aiImageInput">
-            <strong>拖入或选择图片</strong>
-            <span>支持 PNG / JPG / WebP，多图会自动融合结构。</span>
-            <input id="aiImageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple />
-          </label>
-          <div id="aiPreviewList" class="ai-preview-list" aria-live="polite"></div>
-          <label class="ai-field" for="aiModeInput">
-            分析目标
-            <select id="aiModeInput">
-              <option value="auto">自动判断：论文图 / 草图 / 多图融合</option>
-              <option value="paper">论文截图复刻为可编辑图</option>
-              <option value="sketch">草图美化为专业架构图</option>
-              <option value="merge">多图拼接为统一模型</option>
-              <option value="3d">强调 3D 神经网络体块</option>
-            </select>
-          </label>
-          <label class="ai-field" for="aiPromptInput">
-            绘制要求
-            <textarea id="aiPromptInput" rows="3" placeholder="例如：更像论文图，保留 skip connection，改成多巴胺配色，生成 3D U-Net 风格"></textarea>
-          </label>
-          <button id="aiAnalyzeButton" class="primary-button ai-action" type="button">分析并绘制到画布</button>
-          <p id="aiStatusText" class="ai-status">等待上传图片。</p>
-        </section>
-
-        <section class="panel-card code-panel">
-          <div class="section-heading">
-            <h3>代码生成</h3>
-            <span class="beta-pill">PyTorch / Keras</span>
-          </div>
-          <p class="panel-note">粘贴模型代码，自动解析 Conv / Pool / BN / ReLU / Linear / Add / Concat，并绘制为可编辑论文风网络图。</p>
-          <label class="ai-field" for="codeFrameworkInput">
-            框架
-            <select id="codeFrameworkInput">
-              <option value="auto">自动识别 PyTorch / Keras</option>
-              <option value="pytorch">PyTorch / torch.nn</option>
-              <option value="keras">Keras / TensorFlow</option>
-            </select>
-          </label>
-          <label class="ai-field" for="modelCodeInput">
-            模型代码
-            <textarea id="modelCodeInput" rows="7" spellcheck="false" placeholder="例如：class Net(nn.Module):&#10;    self.conv1 = nn.Conv2d(3, 64, 3, padding=1)&#10;    self.bn1 = nn.BatchNorm2d(64)&#10;    self.pool = nn.MaxPool2d(2)&#10;    self.fc = nn.Linear(64, 10)"></textarea>
-          </label>
-          <div class="code-action-row">
-            <button id="codeGenerateButton" class="primary-button ai-action" type="button">从代码绘制</button>
-            <label class="ghost-button code-file-button">
-              导入 .py
-              <input id="codeFileInput" type="file" accept=".py,.txt,.js,.json" />
-            </label>
-          </div>
-          <p id="codeStatusText" class="ai-status">等待粘贴模型代码。</p>
-        </section>
-
-        <section class="panel-card visio-panel">
-          <div class="section-heading">
-            <h3>同步到 Visio</h3>
-            <span class="beta-pill">Native</span>
-          </div>
-          <p class="panel-note">填写已经打开或已存在的 `.vsdx` 路径。Agent 会在同一文档中写入原生 Shape，不会创建新的空白画布。</p>
-          <label class="ai-field" for="visioDocumentPathInput">
-            已有 Visio 文档路径
-            <input id="visioDocumentPathInput" type="text" placeholder="C:\\项目\\model.vsdx" />
-          </label>
-          <label class="ai-field" for="visioPageInput">
-            页面
-            <input id="visioPageInput" type="text" value="Page-1" />
-          </label>
-          <button id="visioRenderButton" class="primary-button ai-action" type="button">同步当前网络到 Visio</button>
-          <p id="visioStatusText" class="ai-status">等待选择已有 Visio 文档。</p>
-        </section>
-
+      <section class="control-grid">
         <section class="panel-card">
-          <h3>模型库</h3>
-          <p class="panel-note">从论文常用结构开始，再拖拽、缩放和连线微调。</p>
-          <div class="button-grid" id="modelLibrary"></div>
+          <div class="section-heading"><h2>1 · 输入模型证据</h2><span class="beta-pill">Universal IR</span></div>
+          <p class="panel-note">Agent 从源码或图像中提取有证据的拓扑，未知结构会保留为待确认模块，不根据模型名称猜测内部结构。</p>
+          <label class="field" for="codeFrameworkInput">框架<select id="codeFrameworkInput"><option value="auto">自动识别 PyTorch / Keras</option><option value="pytorch">PyTorch / torch.nn</option><option value="keras">Keras / TensorFlow</option></select></label>
+          <label class="field" for="modelCodeInput">模型源码<textarea id="modelCodeInput" rows="16" spellcheck="false" placeholder="粘贴 PyTorch / Keras 模型源码，例如 LSTM、GRU、Transformer 或 CNN"></textarea></label>
+          <div class="action-row"><button id="codeGenerateButton" class="primary-button" type="button">分析源码并绘制到 Visio</button><label class="ghost-button file-button">导入源码<input id="codeFileInput" type="file" accept=".py,.txt,.js,.json" /></label></div>
+          <p id="codeStatusText" class="status-text">尚未分析源码。</p>
+          <div class="divider"><span>或</span></div>
+          <label class="field" for="aiImageInput">参考图像<input id="aiImageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple /></label>
+          <label class="field" for="aiPromptInput">图像分析要求<textarea id="aiPromptInput" rows="3" placeholder="描述需要保留的分支、状态、内部模块和连接关系"></textarea></label>
+          <button id="aiAnalyzeButton" class="secondary-button" type="button">分析图像并绘制到 Visio</button>
+          <p id="aiStatusText" class="status-text">尚未选择参考图像。</p>
         </section>
-
-        <section class="panel-card">
-          <h3>网络图配色</h3>
-          <div class="button-grid">
-            <button class="tool-button" data-palette="dopamine" type="button">
-              <span>Dopamine Pop</span>
-              <small>作用于层、张量和连接线</small>
-            </button>
-            <button class="tool-button" data-palette="aurora" type="button">
-              <span>Aurora Candy</span>
-              <small>论文图结构的高饱和映射</small>
-            </button>
-            <button class="tool-button" data-palette="citrus" type="button">
-              <span>Citrus Beam</span>
-              <small>3D 体块和 skip 更醒目</small>
-            </button>
-          </div>
+        <section class="panel-card visio-card">
+          <div class="section-heading"><h2>2 · 操控 Visio</h2><span class="beta-pill native">Native COM</span></div>
+          <p class="panel-note">必须指定已经存在的 Visio 文档。Agent 将通过 PowerShell/COM 写入原生 Shape、连接器、Shape Data 和可回读身份。</p>
+          <label class="field" for="visioDocumentPathInput">已有 Visio 文档路径<input id="visioDocumentPathInput" type="text" placeholder="C:\项目\model.vsdx" /></label>
+          <label class="field" for="visioPageInput">页面名称<input id="visioPageInput" type="text" value="Page-1" /></label>
+          <button id="visioRenderButton" class="primary-button" type="button">提交证据并执行 Visio</button>
+          <button id="visioConfirmButton" class="secondary-button" type="button" hidden>确认当前结构并继续</button>
+          <p id="visioStatusText" class="status-text">等待 Figure Plan。</p>
+          <div class="evidence-panel"><h3>当前证据摘要</h3><dl id="evidenceSummary"><div><dt>状态</dt><dd id="evidenceStatus">未分析</dd></div><div><dt>节点</dt><dd id="evidenceNodeCount">0</dd></div><div><dt>连接</dt><dd id="evidenceEdgeCount">0</dd></div><div><dt>待确认</dt><dd id="evidenceUnresolvedCount">0</dd></div></dl></div>
         </section>
-
-        <section class="panel-card">
-          <h3>绘制工具</h3>
-          <div class="stacked-actions">
-            <button id="addLayerButton" class="wide-button" type="button">添加神经元层</button>
-            <button id="addBlockButton" class="wide-button" type="button">添加模块块</button>
-            <button id="addVolumeButton" class="wide-button" type="button">添加 3D 体块</button>
-            <button id="connectButton" class="wide-button" type="button">连接模式</button>
-            <button id="autoLayoutButton" class="wide-button" type="button">自动美化布局</button>
-          </div>
-        </section>
-
-        <section class="panel-card">
-          <h3>文件</h3>
-          <div class="stacked-actions">
-            <label class="wide-button file-button">
-              导入 JSON
-              <input id="importJsonInput" type="file" accept="application/json,.json" />
-            </label>
-            <button id="resetButton" class="wide-button danger-soft" type="button">重置画布</button>
-          </div>
-        </section>
-      </aside>
-
-      <main class="canvas-wrap">
-        <div class="canvas-toolbar">
-          <div class="status-pill" id="statusText">滚轮缩放，Shift 拖动画布，选择元素后可在右侧编辑</div>
-          <div class="mini-actions">
-            <button id="panButton" class="icon-button" type="button">手型工具</button>
-            <button id="snapButton" class="icon-button is-active" type="button">网格吸附</button>
-            <button id="zoomOutButton" class="icon-button" type="button">-</button>
-            <button id="zoomResetButton" class="icon-button" type="button">100%</button>
-            <button id="zoomInButton" class="icon-button" type="button">+</button>
-            <button id="fitButton" class="icon-button" type="button">适配图形</button>
-            <button id="deleteButton" class="icon-button danger-soft" type="button">删除</button>
-          </div>
-        </div>
-        <div class="canvas-frame" id="canvasFrame">
-          <svg
-            id="networkCanvas"
-            class="network-canvas"
-            viewBox="0 0 2600 1500"
-            role="img"
-            aria-label="可编辑神经网络架构图画布"
-          ></svg>
-          <div class="canvas-hud" aria-label="画布导航信息">
-            <div class="hud-readout">
-              <span>Viewport</span>
-              <strong id="viewportReadout">x0 y0 · 100%</strong>
-            </div>
-            <svg
-              id="minimap"
-              class="minimap"
-              viewBox="0 0 260 150"
-              role="button"
-              tabindex="0"
-              aria-label="点击导航到画布区域"
-            ></svg>
-          </div>
-        </div>
-      </main>
-
-      <aside class="right-panel">
-        <section class="panel-card inspector">
-          <p class="eyebrow">Inspector</p>
-          <h2 id="inspectorTitle">未选择元素</h2>
-          <p id="inspectorHint">点击画布里的节点或连接线，修改它的标签、形状和颜色。</p>
-
-          <div id="nodeInspector" class="form-grid is-hidden">
-            <label for="nodeLabelInput">
-              标题
-              <input id="nodeLabelInput" type="text" />
-            </label>
-            <label for="nodeSubtitleInput">
-              副标题
-              <input id="nodeSubtitleInput" type="text" />
-            </label>
-            <label for="nodeTypeInput">
-              形状
-              <select id="nodeTypeInput">
-                <option value="tensor">Tensor</option>
-                <option value="conv">3D Conv Stack</option>
-                <option value="pool">Pooling / Sampling</option>
-                <option value="flatten">Flatten Vector</option>
-                <option value="dense-layer">Dense Layer</option>
-                <option value="concat">Concat / Merge</option>
-                <option value="volume">3D Volume</option>
-                <option value="volume-stack">3D Volume Stack</option>
-                <option value="patch-grid">Patch Grid</option>
-                <option value="token">Token</option>
-                <option value="encoder">Encoder Stack</option>
-                <option value="block">Block</option>
-                <option value="attention">Attention</option>
-                <option value="neuron">Neuron</option>
-                <option value="output">Output</option>
-              </select>
-            </label>
-            <label for="nodeColorInput">
-              颜色
-              <input id="nodeColorInput" type="color" />
-            </label>
-            <label for="nodeWidthInput">
-              宽度
-              <input id="nodeWidthInput" type="range" min="42" max="320" />
-            </label>
-            <label for="nodeHeightInput">
-              高度
-              <input id="nodeHeightInput" type="range" min="42" max="260" />
-            </label>
-            <label for="nodeDepthInput">
-              3D 深度
-              <input id="nodeDepthInput" type="range" min="12" max="180" />
-            </label>
-            <label for="nodeZInput">
-              透视厚度
-              <input id="nodeZInput" type="range" min="10" max="120" />
-            </label>
-            <label for="nodeLayersInput">
-              可视堆叠数量
-              <input id="nodeLayersInput" type="range" min="1" max="64" />
-            </label>
-            <label for="nodeNoteInput">
-              注释
-              <input id="nodeNoteInput" type="text" />
-            </label>
-          </div>
-
-          <div id="edgeInspector" class="form-grid is-hidden">
-            <label for="edgeLabelInput">
-              连接标签
-              <input id="edgeLabelInput" type="text" />
-            </label>
-            <label for="edgeColorInput">
-              线条颜色
-              <input id="edgeColorInput" type="color" />
-            </label>
-            <label for="edgeTypeInput">
-              线条样式
-              <select id="edgeTypeInput">
-                <option value="signal">Signal</option>
-                <option value="skip">Skip</option>
-                <option value="attention">Attention</option>
-              </select>
-            </label>
-          </div>
-        </section>
-
-        <section class="panel-card">
-          <h3>快捷操作</h3>
-          <ul class="shortcut-list">
-            <li><kbd>拖拽</kbd><span>移动节点</span></li>
-            <li><kbd>Delete</kbd><span>删除选中元素</span></li>
-            <li><kbd>连接模式</kbd><span>依次点击两个节点</span></li>
-            <li><kbd>JSON</kbd><span>保存后可继续编辑</span></li>
-          </ul>
-        </section>
-      </aside>
-    </div>
-
+      </section>
+      <section class="panel-card architecture-note"><div><p class="eyebrow">RENDERING CONTRACT</p><h2>Visio 是唯一绘图后端</h2><p class="panel-note">网页仅承担输入、参数和执行反馈。拓扑分析进入 Universal IR，布局进入 Figure Plan，最终图形只由 Visio 原生对象生成。</p></div><ol class="pipeline-steps"><li>源码 / 图像</li><li>Agent 证据提取</li><li>Universal IR</li><li>Figure Plan</li><li>Visio COM</li></ol></section>
+    </main>
     <script src="./app.js" type="module"></script>
   </body>
 </html>

@@ -7,3 +7,9 @@ coverage/
 .playwright-mcp/
 .worktrees/
 synapse-*.png
+
+# Rendering artifacts and scratch output
+artifacts/
+tmp/
+*.bak
+~$*

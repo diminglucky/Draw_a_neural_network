@@ -34,7 +34,7 @@ function residualIR() {
   };
 }
 
-test("selectFigureGrammar chooses a semantic grammar from topology, not a template name", () => {
+test("selectFigureGrammar chooses a semantic grammar from topology, not a model label", () => {
   const grammar = selectFigureGrammar(residualIR());
   assert.equal(grammar.id, "residual-graph");
   assert.match(grammar.reason, /residual|skip/i);
@@ -62,6 +62,22 @@ test("selectFigureGrammar chooses recurrent-flow for recurrent evidence before g
     assert.equal(grammar.id, "recurrent-flow");
     assert.match(grammar.reason, /recurrent|state|loop/i);
   }
+});
+
+test("selectFigureGrammar recognizes explicit repetition and state-transition evidence without a recurrent family label", () => {
+  const grammar = selectFigureGrammar({
+    nodes: [{
+      id: "cell",
+      family: "custom",
+      attributes: {
+        repetition: { axis: "time", instances: ["t-1", "t", "t+1"] },
+        stateTransitions: [{ sourcePort: "h_prev", targetPort: "h_next", kind: "carry" }],
+      },
+    }],
+    edges: [],
+  });
+
+  assert.equal(grammar.id, "recurrent-flow");
 });
 
 test("selectFigureGrammar exposes control-flow grammar for conditional topology", () => {
@@ -157,6 +173,28 @@ test("layoutUniversalFigure unrolls recurrent evidence into three stable instanc
   assert.equal(layout.edges.find((edge) => edge.id === "carry-edge").route.kind, "loop");
 });
 
+test("layoutUniversalFigure derives recurrent instance identities from sourceNodeId", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [{
+      id: "layout-cell",
+      sourceNodeId: "source-cell",
+      family: "custom",
+      attributes: {
+        repetition: { axis: "time", instances: ["t-1", "t", "t+1"] },
+        stateTransitions: [{ sourcePort: "h_prev", targetPort: "h_next", kind: "carry" }],
+      },
+    }],
+    edges: [],
+  });
+
+  assert.deepEqual(
+    layout.recurrentLayout.instances.map((instance) => instance.id),
+    ["source-cell:previous", "source-cell:expanded", "source-cell:next"],
+  );
+  assert.equal(layout.recurrentLayout.expandedInstanceId, "source-cell:expanded");
+  assert.equal(layout.recurrentLayout.stateRails.length, 0);
+});
+
 test("layoutUniversalFigure marks recurrent expansion unresolved without internal evidence", () => {
   const layout = layoutUniversalFigure({
     nodes: [{ id: "opaque-cell", family: "recurrent", op: "GRU", stage: 0 }],
@@ -169,6 +207,19 @@ test("layoutUniversalFigure marks recurrent expansion unresolved without interna
   assert.equal(layout.nodes[0].inner.kind, "unresolved");
 });
 
+test("layoutUniversalFigure keeps recurrent instances inside the artboard", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [{ id: "cell", family: "recurrent", op: "LSTMCell", stage: 0 }],
+    edges: [],
+  });
+  const { x, y, width, height } = layout.artboard;
+  assert.ok(layout.recurrentLayout.instances.every((instance) => (
+    instance.x >= x && instance.y >= y
+      && instance.x + instance.w <= x + width
+      && instance.y + instance.h <= y + height
+  )));
+});
+
 test("layoutUniversalFigure preserves arbitrary internal topology inside a compound node", () => {
   const layout = layoutUniversalFigure(residualIR());
   const block = layout.nodes.find((node) => node.id === "block");
@@ -179,7 +230,7 @@ test("layoutUniversalFigure preserves arbitrary internal topology inside a compo
   assert.equal(layout.validation.ok, true);
 });
 
-test("layoutUniversalFigure packs a long single-lane graph with a readable width-aware gap", () => {
+test("layoutUniversalFigure lays a long linear chain left-to-right on a single row", () => {
   const nodes = [
     { id: "input", family: "input", stage: 0, order: 0, label: "Input", w: 122, h: 188 },
     ...Array.from({ length: 5 }, (_, index) => ({
@@ -212,15 +263,19 @@ test("layoutUniversalFigure packs a long single-lane graph with a readable width
     type: index === 10 ? "attention" : "signal",
   }));
   const layout = layoutUniversalFigure({ nodes, edges });
-  const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
-  const gaps = ordered.slice(1).map((node, index) => (
-    node.x - (ordered[index].x + ordered[index].w + ordered[index].geometryData.visualRightOutset)
-  ));
 
   assert.equal(layout.validation.ok, true);
-  assert.ok(Math.min(...gaps) >= 12, `expected publication gaps to preserve readable clearance, got ${gaps.join(", ")}`);
-  assert.ok(gaps.includes(12), `expected the compact source-to-pool gap, got ${gaps.join(", ")}`);
-  assert.ok(layout.artboard.height <= 700, `expected a compact single-lane page, got height ${layout.artboard.height}`);
+  // A deep chain flows left-to-right on a single continuous row: the east-face
+  // depth is a translucent projection that overlaps the next tensor, so the
+  // figure stays compact instead of collapsing into a ribbon or wrapping.
+  const ordered = [...layout.nodes].sort((left, right) => left.x - right.x);
+  assert.equal(ordered.length, layout.nodes.length);
+  for (let index = 1; index < ordered.length; index += 1) {
+    const gap = ordered[index].x - (ordered[index - 1].x + ordered[index - 1].w);
+    assert.ok(gap >= 0, `consecutive nodes must not overlap, got ${gap}`);
+  }
+  const ys = layout.nodes.map((node) => node.y);
+  assert.ok(Math.max(...ys) - Math.min(...ys) < 220, "nodes should sit on one row, not wrap");
 });
 
 test("layoutUniversalFigure marks an opaque custom node unresolved instead of inventing children", () => {
@@ -387,7 +442,7 @@ test("universal layout carries topology-derived semantic visual metadata", () =>
   assert.equal(vector.styleProfile, "vectorize");
 });
 
-test("universal layout restores publication hierarchy without a model-specific template", () => {
+test("universal layout restores publication hierarchy without a model-specific rule", () => {
   const nodes = [
     { id: "input", family: "input", stage: 0, label: "Input", shape: { output: [1, 224, 224, 3] } },
     { id: "conv-a", family: "conv", stage: 1, label: "Conv 64", shape: { output: [1, 224, 224, 64] } },
@@ -433,7 +488,7 @@ test("universal layout keeps repeated spatial stages narrow relative to their ve
 
   assert.ok(stage, "expected a condensed spatial stage");
   assert.ok(stage.w <= 150, `expected a narrow stage, got width ${stage.w}`);
-  assert.ok(stage.w / stage.h <= 0.65, `expected a thin stage ratio, got ${stage.w}/${stage.h}`);
+  assert.ok(stage.w / stage.h <= 0.8, `expected a thin stage ratio, got ${stage.w}/${stage.h}`);
 });
 
 test("universal layout scales tensor modules by evidenced spatial resolution instead of equal card sizes", () => {
@@ -472,7 +527,7 @@ test("universal layout scales tensor modules by evidenced spatial resolution ins
   assert.ok(output.h < dense.h, "output distribution should be shorter than a hidden neuron layer");
 });
 
-test("single-lane tensor layout follows role-specific PlotNeuralNet stage gaps", () => {
+test("single-lane tensor layout follows role-specific publication stage gaps", () => {
   const nodes = [
     { id: "conv-a", family: "conv", stage: 0, order: 0, label: "Conv 64", shape: { output: [1, 112, 112, 64] } },
     { id: "pool-a", family: "pool", stage: 1, order: 1, label: "MaxPool", shape: { output: [1, 56, 56, 64] } },
@@ -485,11 +540,11 @@ test("single-lane tensor layout follows role-specific PlotNeuralNet stage gaps",
   const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
 
   const [conv, pool, nextConv] = ordered;
-  assert.equal(pool.x - (conv.x + conv.w + conv.geometryData.visualRightOutset), 12, "pool should sit close to the projected source tensor");
-  assert.equal(nextConv.x - (pool.x + pool.w + pool.geometryData.visualRightOutset), 96, "next feature stage should receive the publication stage gap");
+  assert.equal(pool.x - (conv.x + conv.w), 8, "pool should sit close to the source tensor front face");
+  assert.equal(nextConv.x - (pool.x + pool.w), 20, "next feature stage should receive the publication stage gap");
 });
 
-test("single-lane layout reserves the projected tensor depth before placing the next stage", () => {
+test("single-lane layout projects tensor depth as an overlapping east face without consuming width", () => {
   const nodes = [
     { id: "conv-a", family: "conv", stage: 0, order: 0, label: "Conv 64", shape: { output: [1, 112, 112, 64] } },
     { id: "pool-a", family: "pool", stage: 1, order: 1, label: "MaxPool", shape: { output: [1, 56, 56, 64] } },
@@ -503,6 +558,8 @@ test("single-lane layout reserves the projected tensor depth before placing the 
 
   assert.ok(conv.geometryData.visualRightOutset >= Math.round(conv.h * 0.3), "feature-map depth must derive from tensor height");
   assert.ok(pool.geometryData.visualRightOutset >= Math.round(pool.h * 0.3), "pool depth must derive from tensor height");
-  assert.ok(pool.x - (conv.x + conv.w + conv.geometryData.visualRightOutset) >= 12, "pool must clear the preceding tensor projection");
-  assert.ok(nextConv.x - (pool.x + pool.w + pool.geometryData.visualRightOutset) >= 96, "the next tensor must clear the pool projection");
+  // The east face is a translucent perspective projection that overlaps the
+  // next tensor, so it must not push the next node further right.
+  assert.ok(pool.x - (conv.x + conv.w) >= 8, "pool sits past the source tensor front face");
+  assert.ok(nextConv.x - (pool.x + pool.w) >= 20, "next tensor sits past the pool front face");
 });

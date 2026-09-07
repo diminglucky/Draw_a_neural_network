@@ -5,13 +5,10 @@ const VERSION = "evidence-graph/v1";
 export function createEvidenceRecord(input = {}) {
   const confidence = Number.isFinite(input.confidence) ? Math.max(0, Math.min(1, input.confidence)) : 1;
   return {
+    ...input,
     evidenceId: String(input.evidenceId || stableEvidenceId(input)),
-    source: input.source,
     confidence,
     status: String(input.status || "confirmed"),
-    ...input,
-    confidence,
-    evidenceId: String(input.evidenceId || stableEvidenceId(input)),
   };
 }
 
@@ -35,7 +32,11 @@ export function evidenceGraphToUniversalIR(graph = {}) {
     return item;
   });
   const nodes = (graph.nodes || []).map((node) => ({ ...node, evidence: evidence(node.evidence) }));
-  const edges = (graph.edges || []).map((edge) => ({ ...edge, evidence: evidence(edge.evidence) }));
+  const edges = (graph.edges || []).map((edge) => ({
+    ...edge,
+    evidence: evidence(edge.evidence),
+    evidenceExplicit: Object.prototype.hasOwnProperty.call(edge, "evidence"),
+  }));
   const ir = createUniversalIR({ nodes, edges, figure: graph.figure, diagnostics: graph.diagnostics || [] }, {
     sourceKind: graph.input?.framework || graph.input?.kind || "unknown",
     source: { input: graph.input },
