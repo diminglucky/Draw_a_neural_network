@@ -252,3 +252,52 @@ test("Universal IR derives endpoint identities from evidenced edge ports", () =>
   });
   assert.deepEqual(ir.edges[0].sourceEndpointIds, { source: "tokens", target: "x" });
 });
+
+test("Universal IR classifies upsample and pool as distinct families", () => {
+  const ir = normalizeUniversalIR({
+    nodes: [
+      { id: "u1", op: "Upsample" },
+      { id: "u2", op: "F.interpolate" },
+      { id: "u3", op: "PixelShuffle" },
+      { id: "p1", op: "MaxPool2d" },
+      { id: "p2", op: "AvgPool2d" },
+      { id: "p3", op: "AdaptiveAvgPool2d" },
+      { id: "c", op: "ConvTranspose2d" },
+    ],
+  });
+  const familyOf = (id) => ir.nodes.find((node) => node.id === id).family;
+  assert.equal(familyOf("u1"), "upsample");
+  assert.equal(familyOf("u2"), "upsample");
+  assert.equal(familyOf("u3"), "upsample");
+  assert.equal(familyOf("p1"), "pool");
+  assert.equal(familyOf("p2"), "pool");
+  assert.equal(familyOf("p3"), "pool");
+  // Transposed conv stays in `conv` — its shape math is a convolution in reverse.
+  assert.equal(familyOf("c"), "conv");
+});
+
+test("Universal IR validates group membership without duplicating nodes across groups", () => {
+  const ok = validateUniversalIR({
+    nodes: [{ id: "a", family: "input" }, { id: "b", family: "output" }],
+    edges: [{ id: "e", source: "a", target: "b" }],
+    groups: [{ id: "g", label: "Backbone", kind: "backbone", nodeIds: ["a", "b"] }],
+  });
+  assert.equal(ok.ok, true);
+
+  const missing = validateUniversalIR({
+    nodes: [{ id: "a", family: "input" }],
+    edges: [],
+    groups: [{ id: "g", label: "Backbone", kind: "backbone", nodeIds: ["ghost"] }],
+  });
+  assert.ok(missing.issues.some((issue) => issue.kind === "missing-group-node"));
+
+  const duplicated = validateUniversalIR({
+    nodes: [{ id: "a", family: "input" }, { id: "b", family: "output" }],
+    edges: [],
+    groups: [
+      { id: "g1", label: "G1", kind: "module", nodeIds: ["a"] },
+      { id: "g2", label: "G2", kind: "module", nodeIds: ["a"] },
+    ],
+  });
+  assert.ok(duplicated.issues.some((issue) => issue.kind === "node-in-multiple-groups"));
+});

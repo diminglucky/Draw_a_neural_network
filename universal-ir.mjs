@@ -6,7 +6,11 @@ const FAMILY_ALIASES = [
   ["input", /^(input|tensor|placeholder|source)$/i],
   ["output", /^(output|prediction|logits|softmax)$/i],
   ["conv", /conv|convolution/i],
-  ["pool", /pool|downsample|upsample|interpolate/i],
+  // Upsample precedes pool so interpolation/upscaling is never classified as
+  // downsampling. Transposed conv (ConvTranspose2d) still matches `conv` above,
+  // which is intentional: its shape math is a convolution in reverse.
+  ["upsample", /upsample|up.?sample|interpolate|pixel.?shuffle|unpool/i],
+  ["pool", /pool|downsample|max.?pool|avg.?pool|adaptive.?pool|global.?pool/i],
   ["dense", /linear|dense|dense-layer|neuron|fully.?connected|classifier/i],
   ["attention", /attention|mhsa|mha|transformer/i],
   ["merge", /concat|concatenate|add|sum|merge|join/i],
@@ -19,8 +23,8 @@ const FAMILY_ALIASES = [
 ];
 
 const KNOWN_FAMILIES = new Set([
-  "input", "output", "conv", "pool", "dense", "attention", "merge", "flatten",
-  "norm", "activation", "recurrent", "graph", "volume", "custom", "unknown",
+  "input", "output", "conv", "upsample", "pool", "dense", "attention", "merge",
+  "flatten", "norm", "activation", "recurrent", "graph", "volume", "custom", "unknown",
 ]);
 
 export function createUniversalIR(document = {}, options = {}) {
@@ -87,6 +91,17 @@ export function validateUniversalIR(ir = {}) {
     if (edge.evidenceExplicit && edge.evidence.length === 0) {
       issues.push({ kind: "missing-edge-evidence", edgeId: edge.id });
     }
+  });
+  const groupedNodeIds = new Set();
+  normalized.groups.forEach((group) => {
+    group.nodeIds.forEach((nodeId) => {
+      if (!normalized.nodeIds.has(nodeId)) {
+        issues.push({ kind: "missing-group-node", groupId: group.id, nodeId });
+      } else if (groupedNodeIds.has(nodeId)) {
+        issues.push({ kind: "node-in-multiple-groups", groupId: group.id, nodeId });
+      }
+      groupedNodeIds.add(nodeId);
+    });
   });
   const inputIds = normalized.nodes.filter((node) => node.family === "input").map((node) => node.id);
   const reachable = new Set(inputIds);

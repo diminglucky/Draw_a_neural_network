@@ -339,3 +339,47 @@ test("inferShapes honors a per-dimension 3D kernel tuple", () => {
   // no padding: floor((size-3)/1)+1 => 14, 30, 30
   assert.deepEqual(shapes.c, [14, 30, 30, 64]);
 });
+
+test("inferShapes upsampling increases spatial resolution via scale_factor", () => {
+  const nodes = [
+    { id: "in", family: "input", op: "Input", attributes: { inputShape: [56, 56, 64] } },
+    { id: "up", family: "upsample", op: "Upsample", attributes: { constructorArgs: "scale_factor=2" }, stage: 1, order: 0 },
+  ];
+  const edges = [{ source: "in", target: "up" }];
+  const shapes = run(nodes, edges);
+  assert.deepEqual(shapes.up, [112, 112, 64]);
+});
+
+test("inferShapes propagates through a compound module's internal graph", () => {
+  const nodes = [
+    { id: "in", family: "input", op: "Input", attributes: { inputShape: [56, 56, 64] } },
+    {
+      id: "c2f", family: "custom", op: "C2f", compoundKind: "module",
+      attributes: {
+        internalGraph: {
+          nodes: [
+            { id: "cv1", family: "conv", op: "Conv2d", attributes: { constructorArgs: "64, 64, 1, 1, 0" } },
+            { id: "cv2", family: "conv", op: "Conv2d", attributes: { constructorArgs: "64, 64, 3, 1, 1" } },
+            { id: "cat", family: "merge", op: "Concat" },
+          ],
+          edges: [
+            { source: "cv1", target: "cv2" },
+            { source: "cv2", target: "cat" },
+            { source: "cv1", target: "cat" },
+          ],
+        },
+      },
+      stage: 1, order: 0,
+    },
+    { id: "out", family: "output", op: "Output", stage: 2, order: 0 },
+  ];
+  const edges = [
+    { source: "in", target: "c2f" },
+    { source: "c2f", target: "out" },
+  ];
+  const shapes = run(nodes, edges);
+  // cv1 (1x1, pad 0) and cv2 (3x3, pad 1) both keep [56,56,64];
+  // concat doubles channels -> [56,56,128].
+  assert.deepEqual(shapes.c2f, [56, 56, 128]);
+  assert.deepEqual(shapes.out, [56, 56, 128]);
+});

@@ -885,6 +885,8 @@ function computeOutputShape(node, inputShape, inputs = [inputShape]) {
 
   if (family === "conv") return convShape(op, args, inputShape, node.attributes?.framework);
 
+  if (family === "upsample") return upsampleShape(op, args, inputShape);
+
   if (family === "pool") return poolShape(op, args, inputShape);
 
   if (family === "merge") return mergeShape(op, inputs);
@@ -920,7 +922,57 @@ function computeOutputShape(node, inputShape, inputs = [inputShape]) {
 
   if (family === "output") return inputShape;
 
+  if (family === "custom" || node.compoundKind) {
+    const inner = compoundShape(node, inputShape);
+    if (inner && inner.length) return inner;
+  }
+
   return null;
+}
+
+// 复合模块（C2f / SPPF / Bottleneck 等）：穿透 internalGraph，用模块输入 shape 作为
+// 内部入口的 seed，在内部图上做一次拓扑 shape 传播，返回内部输出节点的 shape。
+function compoundShape(node, inputShape) {
+  const graph = node.attributes?.internalGraph || node.internalGraph;
+  if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return null;
+  const innerNodes = graph.nodes.map((child, index) => ({
+    ...child,
+    id: String(child.id || child.sourceNodeId || `inner-${index + 1}`),
+    family: String(child.family || child.type || "custom").toLowerCase(),
+    op: String(child.op || child.label || ""),
+    attributes: child.attributes && typeof child.attributes === "object" ? child.attributes : {},
+  }));
+  const incoming = new Map(innerNodes.map((child) => [child.id, []]));
+  const outgoing = new Map(innerNodes.map((child) => [child.id, []]));
+  for (const edge of (Array.isArray(graph.edges) ? graph.edges : [])) {
+    const source = String(edge.source || "");
+    const target = String(edge.target || "");
+    if (incoming.has(target)) incoming.get(target).push(source);
+    if (outgoing.has(source)) outgoing.get(source).push(target);
+  }
+  const indegree = new Map(innerNodes.map((child) => [child.id, (incoming.get(child.id) || []).length]));
+  const byId = new Map(innerNodes.map((child) => [child.id, child]));
+  const queue = innerNodes.filter((child) => indegree.get(child.id) === 0);
+  const shapeByNode = new Map();
+  const visited = new Set();
+  while (queue.length) {
+    const child = queue.shift();
+    if (visited.has(child.id)) continue;
+    visited.add(child.id);
+    const predecessors = (incoming.get(child.id) || []).map((id) => shapeByNode.get(id)).filter(Boolean);
+    const childInput = predecessors[0] || (predecessors.length === 0 ? inputShape : undefined);
+    if (childInput) {
+      const output = computeOutputShape(child, childInput, predecessors);
+      if (output && output.length) shapeByNode.set(child.id, output);
+    }
+    for (const target of (outgoing.get(child.id) || [])) {
+      indegree.set(target, (indegree.get(target) || 0) - 1);
+      if (indegree.get(target) === 0) queue.push(byId.get(target));
+    }
+  }
+  const sinks = innerNodes.filter((child) => (outgoing.get(child.id) || []).length === 0);
+  const sinkShapes = sinks.map((child) => shapeByNode.get(child.id)).filter(Boolean);
+  return sinkShapes.length ? sinkShapes[0] : null;
 }
 
 function convShape(op, args, inputShape, framework = "unknown") {
@@ -957,20 +1009,28 @@ function convShape(op, args, inputShape, framework = "unknown") {
   return result;
 }
 
-function poolShape(op, args, inputShape) {
-  // 支持 2D [H,W,C] 与 3D [D,H,W,C]；其它秩安全失败。
+function upsampleShape(op, args, inputShape) {
+  // 上采样（nn.Upsample / F.interpolate / PixelShuffle）：2D [H,W,C] 与 3D [D,H,W,C]；其它秩安全失败。
   if (inputShape.length !== 3 && inputShape.length !== 4) return null;
   const channels = channelsOf(inputShape);
   const spatial = inputShape.slice(0, -1); // [H,W] 或 [D,H,W]
   const dims = spatial.length;
-  if (/upsample|interpolate/i.test(op)) {
-    const sizeTuple = tupleArg(args, 0) || kwargTuple(args, "size");
-    if (sizeTuple && sizeTuple.length >= dims) return [...sizeTuple.slice(0, dims), channels];
-    const size = firstFinite(numericArg(args, 0), kwargNumber(args, "size"));
-    const scale = firstFinite(kwargNumber(args, "scale_factor"), 1);
-    if (Number.isFinite(size)) return [...new Array(dims).fill(size), channels];
-    return [...spatial.map((dim) => Math.round(dim * scale)), channels];
-  }
+  const sizeTuple = tupleArg(args, 0) || kwargTuple(args, "size");
+  if (sizeTuple && sizeTuple.length >= dims) return [...sizeTuple.slice(0, dims), channels];
+  const size = firstFinite(numericArg(args, 0), kwargNumber(args, "size"));
+  const scale = firstFinite(kwargNumber(args, "scale_factor"), 1);
+  if (Number.isFinite(size)) return [...new Array(dims).fill(size), channels];
+  return [...spatial.map((dim) => Math.round(dim * scale)), channels];
+}
+
+function poolShape(op, args, inputShape) {
+  // 下采样（MaxPool/AvgPool/AdaptivePool/GlobalPool）：2D [H,W,C] 与 3D [D,H,W,C]；其它秩安全失败。
+  if (inputShape.length !== 3 && inputShape.length !== 4) return null;
+  // 兜底：旧 IR 可能仍把 upsample 归入 pool family，按上采样公式处理。
+  if (/upsample|interpolate/i.test(op)) return upsampleShape(op, args, inputShape);
+  const channels = channelsOf(inputShape);
+  const spatial = inputShape.slice(0, -1); // [H,W] 或 [D,H,W]
+  const dims = spatial.length;
   if (/adaptive|global/.test(op)) {
     const target = numericArg(args, 0);
     if (Number.isFinite(target)) return [...new Array(dims).fill(target), channels];

@@ -383,6 +383,8 @@ function representationFor(node) {
   if (node.visualRole === "volume-input") return "volume";
   if (node.visualRole === "input-tensor" || node.visualRole === "feature-map-stage" || node.family === "volume") return "volume";
   if (node.visualRole === "pool-downsample" || node.family === "pool") return "pool-prism";
+  // 上采样暂复用 pool 的棱台表示；阶段 C 用独立的上采样棱台 + 向上箭头区分方向。
+  if (node.visualRole === "upsample" || node.family === "upsample") return "pool-prism";
   if (node.family === "merge") return "operator-symbol";
   if (node.visualRole === "vectorize" || node.family === "flatten") return "flatten-ribbon";
   if (node.visualRole === "neuron-layer" || node.family === "dense") return "classifier-prism";

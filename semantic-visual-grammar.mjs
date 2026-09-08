@@ -35,6 +35,10 @@ const ROLE_SPECS = Object.freeze({
     styleProfile: "pool",
     labelSlots: { title: "below", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
   },
+  upsample: {
+    styleProfile: "upsample",
+    labelSlots: { title: "above", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
   merge: {
     styleProfile: "merge",
     labelSlots: { title: "below", subtitle: "below", tensorShape: "outside", operatorDetails: "outside" },
@@ -86,6 +90,7 @@ export function visualRoleForNode(node = {}, context = {}) {
   if (family === "input") return inputVisualGrammarForNode(node, context).kind;
   if (["merge", "concat", "add", "sum"].includes(family)) return "merge";
   if (family === "pool") return "pool-downsample";
+  if (family === "upsample") return "upsample";
   if (family === "flatten") return "vectorize";
   if (family === "output") return "output-distribution";
   if (["dense", "neuron", "dense-layer"].includes(family)) {
@@ -352,6 +357,7 @@ function publicationLabel(node, ordinal) {
       ? `CONV ${ordinal}`
       : `FEATURE ${ordinal}`;
     case "pool-downsample": return "MP";
+    case "upsample": return "UP";
     case "vectorize": return "Flatten";
     case "neuron-layer": return `FC ${ordinal}`;
     case "output-distribution": return "OUTPUT";
@@ -430,6 +436,7 @@ function preferredSizeForRole(role, node) {
     return { width, height };
   }
   if (role === "pool-downsample") return { width: 88, height: 0 };
+  if (role === "upsample") return { width: 88, height: 0 };
   if (role === "vectorize") return { width: 84, height: 92 };
   if (role === "neuron-layer") return { width: 50, height: 150 };
   if (role === "output-distribution") return { width: 62, height: 128 };
