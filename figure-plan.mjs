@@ -102,6 +102,7 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
     artboard: cloneValue(layout.artboard || {}),
     nodes,
     edges,
+    groups: cloneValue(layout.groups || ir.groups || []),
     diagnostics: cloneValue(diagnostics),
     ...(recurrentLayout ? { recurrentLayout: cloneValue(recurrentLayout) } : {}),
     ...(layout.recurrentLayouts ? { recurrentLayouts: cloneValue(layout.recurrentLayouts) } : {}),

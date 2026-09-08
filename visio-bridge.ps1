@@ -823,6 +823,59 @@ function Draw-CompoundModule([object]$Page, [object]$Spec, [double]$X, [double]$
   return @($frame)
 }
 
+function Draw-GroupContainer([object]$Page, [object]$Group, [double]$Scale) {
+  if ($null -eq $Group.bounds) { return @() }
+  $x = [double]([double]$Group.bounds.x * [double]$Scale)
+  $y = [double]([double]$Group.bounds.y * [double]$Scale)
+  $w = [double]([double]$Group.bounds.w * [double]$Scale)
+  $h = [double]([double]$Group.bounds.h * [double]$Scale)
+  $kind = (Get-PlanString $Group.kind).ToLowerInvariant()
+  $fill = switch ($kind) {
+    "backbone" { "#E9F1F8"; break }
+    "neck" { "#EAF6EF"; break }
+    "head" { "#FCF0DF"; break }
+    "stage" { "#F1EBF9"; break }
+    default { "#F2F4F6" }
+  }
+  $lineColor = switch ($kind) {
+    "backbone" { "#5B86A6"; break }
+    "neck" { "#5B9E78"; break }
+    "head" { "#C08A3E"; break }
+    "stage" { "#7A5BA6"; break }
+    default { "#8A97A6" }
+  }
+  $cut = [Math]::Min($w * 0.015, 0.22)
+  $points = [double[]]@(
+    ($x + $cut), $y,
+    ($x + $w - $cut), $y,
+    ($x + $w), ($y + $cut),
+    ($x + $w), ($y + $h - $cut),
+    ($x + $w - $cut), ($y + $h),
+    ($x + $cut), ($y + $h),
+    $x, ($y + $h - $cut),
+    $x, ($y + $cut),
+    ($x + $cut), $y
+  )
+  $frame = $Page.DrawPolyline($points, 0)
+  $frame.Text = (Get-PlanString $Group.label)
+  $frame.CellsU("FillForegnd").FormulaU = Get-RgbFormula $fill
+  $frame.CellsU("FillBkgnd").FormulaU = Get-RgbFormula $fill
+  $frame.CellsU("FillForegndTrans").FormulaU = "68%"
+  $frame.CellsU("FillBkgndTrans").FormulaU = "68%"
+  $frame.CellsU("LineColor").FormulaU = Get-RgbFormula $lineColor
+  $frame.CellsU("LineWeight").FormulaU = "0.009 in"
+  $frame.CellsU("LinePattern").FormulaU = "2"
+  $frame.CellsU("Char.Size").FormulaU = "9 pt"
+  $frame.CellsU("Char.Style").FormulaU = "1"
+  $frame.CellsU("Char.Color").FormulaU = Get-RgbFormula $lineColor
+  $frame.CellsU("Para.HorzAlign").FormulaU = "1"
+  $frame.CellsU("VerticalAlign").FormulaU = "0"
+  Set-ShapeData $frame "renderId" ([string]$Group.renderId)
+  Set-ShapeData $frame "groupKind" ([string]$kind)
+  Set-ShapeData $frame "groupLabel" ([string]$Group.label)
+  return @($frame)
+}
+
 function Draw-UnresolvedModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   # A hexagonal uncertainty glyph records that structure is missing instead
   # of pretending that an opaque module is a known rectangular block.
@@ -1152,6 +1205,11 @@ Draw-FigureHeader $page $plan ([double]$pageSize.width) ([double]$pageSize.heigh
 [int]$shapeCount = 0
 [int]$connectorCount = 0
 $shapeMap = @{}
+# Group containers (Backbone/Neck/Head/Stage) are drawn first, underneath the nodes.
+foreach ($group in @($plan.groups)) {
+  $groupFrames = @(Draw-GroupContainer $page $group ([double]$plan.unitScale))
+  $shapeCount = [int]$shapeCount + [int]$groupFrames.Count
+}
 foreach ($spec in @($plan.shapes)) {
   $drawn = @(Draw-PlanShape $page $spec ([double]$plan.unitScale))
   $shapeCount = [int]$shapeCount + [int]$drawn.Count

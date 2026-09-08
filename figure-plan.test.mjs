@@ -213,3 +213,38 @@ test("validateFigurePlan reports duplicate identities and dangling endpoints", (
   assert.equal(report.summary.nodeCount, 2);
   assert.equal(report.summary.edgeCount, 1);
 });
+
+test("figure plan carries group containment bounds from the layout", () => {
+  const ir = {
+    figure: { title: "YOLO" },
+    nodes: [
+      { id: "in", family: "input", op: "Input", stage: 0, order: 0, attributes: { inputShape: [64, 64, 3] } },
+      { id: "c1", family: "conv", op: "Conv2d", stage: 1, order: 0, attributes: { constructorArgs: "3, 32, 3, 1, 1" } },
+      { id: "p1", family: "pool", op: "MaxPool2d", stage: 2, order: 0, attributes: { constructorArgs: "2, 2" } },
+      { id: "out", family: "output", op: "Output", stage: 3, order: 0 },
+    ],
+    edges: [
+      { source: "in", target: "c1" },
+      { source: "c1", target: "p1" },
+      { source: "p1", target: "out" },
+    ],
+    groups: [
+      { id: "backbone", label: "Backbone", kind: "backbone", nodeIds: ["in", "c1"] },
+      { id: "head", label: "Head", kind: "head", nodeIds: ["p1", "out"] },
+    ],
+  };
+  const layout = layoutUniversalFigure(ir);
+  assert.equal(layout.groups.length, 2);
+  const backbone = layout.groups.find((group) => group.id === "backbone");
+  const head = layout.groups.find((group) => group.id === "head");
+  assert.ok(backbone.bounds, "backbone should have computed bounds");
+  assert.ok(head.bounds, "head should have computed bounds");
+  const inNode = layout.nodes.find((node) => node.id === "in");
+  assert.ok(backbone.bounds.x <= inNode.x, "backbone bounds should start left of its members");
+  assert.ok(backbone.bounds.x + backbone.bounds.w >= inNode.x + inNode.w, "backbone bounds should cover its members");
+
+  const plan = createFigurePlan({ ir, layout });
+  assert.equal(plan.groups.length, 2);
+  assert.equal(plan.groups[0].label, "Backbone");
+  assert.deepEqual(plan.groups[0].bounds, backbone.bounds);
+});

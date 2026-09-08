@@ -146,6 +146,35 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     }
   }
   const validation = validateFigureLayout(nodes, edges, fittedArtboard);
+  const groups = (Array.isArray(ir.groups) ? ir.groups : [])
+    .map((group) => {
+      const memberIds = new Set((group.nodeIds || []).map(String));
+      const members = nodes.filter((node) => (
+        memberIds.has(String(node.id))
+        || memberIds.has(String(node.sourceNodeId))
+        || (Array.isArray(node.sourceNodeIds) && node.sourceNodeIds.some((id) => memberIds.has(String(id))))
+      ));
+      if (members.length === 0) return null;
+      const minX = Math.min(...members.map((node) => node.x));
+      const minY = Math.min(...members.map((node) => node.y));
+      const maxX = Math.max(...members.map((node) => node.x + node.w));
+      const maxY = Math.max(...members.map((node) => node.y + node.h));
+      const pad = 22;
+      const titleBand = 22;
+      return {
+        id: String(group.id || group.label || ""),
+        label: String(group.label || group.id || "Group"),
+        kind: String(group.kind || "module"),
+        nodeIds: (group.nodeIds || []).map(String),
+        bounds: {
+          x: Math.round(minX - pad),
+          y: Math.round(minY - pad - titleBand),
+          w: Math.round(maxX - minX + pad * 2),
+          h: Math.round(maxY - minY + pad * 2 + titleBand),
+        },
+      };
+    })
+    .filter(Boolean);
   return {
     version: PLAN_VERSION,
     grammar,
@@ -153,6 +182,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     artboard: fittedArtboard,
     nodes,
     edges,
+    groups,
     validation,
     ...(recurrentLayout ? { recurrentLayout } : {}),
     ...(Object.keys(recurrentLayouts).length ? { recurrentLayouts } : {}),

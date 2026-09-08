@@ -187,6 +187,7 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
     artboard: layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 },
     grammarId,
     figure: layout.figure || {},
+    groups: (Array.isArray(layout.groups) ? layout.groups : []).map((group) => ({ ...group, renderId })),
     shapes,
     connectors,
   };
