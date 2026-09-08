@@ -62,8 +62,8 @@ test("semantic grammar maps spatial operators to a feature-map visual role", () 
   assert.equal(compiled.geometryData.repeatCount, 2);
   assert.notEqual(compiled.styleProfile, "card");
   assert.ok(
-    compiled.geometryData.preferredWidth / compiled.geometryData.preferredHeight < 0.34,
-    "feature-map stage should remain visibly thin rather than a wide card"
+    compiled.geometryData.preferredWidth >= compiled.geometryData.preferredHeight,
+    "publication feature-map blocks are wide, uniform cards, not thin 3D slabs"
   );
 });
 

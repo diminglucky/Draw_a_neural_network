@@ -45,6 +45,7 @@ function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
     "volume-input" { "#D9EEF0"; break }
     "unknown-input" { "#F5F0E7"; break }
     "pool" { "#E65034"; break }
+    "upsample" { "#5FBF7F"; break }
     "vectorize" { "#7A238C"; break }
     "neuron" { "#9563C8"; break }
     "output" { "#7A238C"; break }
@@ -749,6 +750,9 @@ function Draw-TextAnnotation([object]$Page, [string]$Text, [double]$X, [double]$
 
 function Draw-PlanLabel([object]$Page, [object]$Spec, [double]$Scale) {
   if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $Spec.parentNodeId))) { return @() }
+  # Publication blocks carry their title and shape inside the card; no
+  # external label is needed.
+  if ((Get-PlanString $Spec.shapeKind) -eq "publication-block") { return @() }
   $labels = New-Object 'System.Collections.Generic.List[object]'
   $x = [double]$Spec.x * $Scale
   $y = [double]$Spec.y * $Scale
@@ -996,12 +1000,43 @@ function Draw-OperatorGlyph([object]$Page, [object]$Spec, [double]$X, [double]$Y
   return @($glyph)
 }
 
+function Draw-PublicationBlock([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  # Publication (journal) stage block: a uniform rounded card whose title is
+  # the operator and whose subtitle is the feature-map shape. Upsample and
+  # downsample operators carry a directional arrow inside the title so the
+  # resolution flow reads at a glance without a per-operator 3D glyph.
+  $visualRole = Get-PlanString $Spec.visualRole
+  $cut = [Math]::Min($W * 0.16, $H * 0.16)
+  $points = [double[]]@(
+    ($X + $cut), $Y,
+    ($X + $W - $cut), $Y,
+    ($X + $W), ($Y + $cut),
+    ($X + $W), ($Y + $H - $cut),
+    ($X + $W - $cut), ($Y + $H),
+    ($X + $cut), ($Y + $H),
+    $X, ($Y + $H - $cut),
+    $X, ($Y + $cut),
+    ($X + $cut), $Y
+  )
+  $block = $Page.DrawPolyline($points, 0)
+  Set-ShapeStyle $block $Spec $Scale
+  $block.CellsU("Char.Size").FormulaU = "8 pt"
+  $block.CellsU("Char.Style").FormulaU = "1"
+  $label = Get-PlanString $Spec.label
+  if ($visualRole -eq "upsample") { $label = "`u{2191} $label" }
+  elseif ($visualRole -eq "pool-downsample") { $label = "`u{2193} $label" }
+  $subtitle = Get-PlanString $Spec.subtitle
+  $block.Text = if (-not [string]::IsNullOrWhiteSpace($subtitle)) { "$label`n$subtitle" } else { $label }
+  return @($block)
+}
+
 function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   $x = [double]([double]$Spec.x * [double]$Scale)
   $y = [double]([double]$Spec.y * [double]$Scale)
   $w = [double]([double]$Spec.w * [double]$Scale)
   $h = [double]([double]$Spec.h * [double]$Scale)
   $kind = Get-PlanString $Spec.shapeKind
+  if ($kind -eq "publication-block") { return @(Draw-PublicationBlock $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "classifier-prism") { return @(Draw-NeuronColumn $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "softmax-prism") { return @(Draw-OutputDistribution $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "pool-prism") {

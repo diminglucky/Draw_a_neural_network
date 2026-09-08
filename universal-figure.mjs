@@ -190,9 +190,8 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
 }
 
 function compactVisualWidth(node) {
-  if (node.visualRole === "pool-downsample") return Math.min(node.w, 96);
-  if (node.visualRole === "neuron-layer" || node.visualRole === "output-distribution") return Math.min(node.w, 96);
-  if (node.visualRole === "vectorize") return Math.min(node.w, 130);
+  // Publication blocks are uniform cards; the preferred geometry already
+  // encodes the width and per-role 3D compression is no longer applied.
   return node.w;
 }
 
@@ -207,33 +206,6 @@ function resolvePublicationGeometry(nodes) {
       h: Number.isFinite(preferredHeight) && preferredHeight > 0 ? preferredHeight : node.h,
     };
   });
-  const byId = new Map(resolved.map((node) => [node.id, node]));
-  for (const node of ordered) {
-    if (node.visualRole !== "pool-downsample") continue;
-    const current = byId.get(node.id);
-    const source = [...ordered]
-      .filter((candidate) => compareStageThenOrder(candidate, node) < 0 && candidate.visualRole === "feature-map-stage")
-      .at(-1);
-    if (!source) continue;
-    const resolvedSource = byId.get(source.id) || source;
-    const sourceSpatial = Number(resolvedSource.geometryData?.spatialSize);
-    const targetSpatial = Number(node.geometryData?.spatialSize);
-    const targetHeight = Number.isFinite(sourceSpatial) && sourceSpatial > 0
-      && Number.isFinite(targetSpatial) && targetSpatial > 0
-      ? Math.max(48, Math.round(resolvedSource.h * Math.pow(Math.max(1, targetSpatial) / sourceSpatial, 0.4)))
-      : Math.max(48, Math.round(resolvedSource.h * 0.72));
-    // Match the reference Box grammar: pooling is the already-downsampled
-    // tensor, not a large frustum that bridges both tensor sizes.
-    current.w = Math.max(38, Math.min(56, Math.round(resolvedSource.w * 0.62)));
-    current.h = targetHeight;
-    current.geometryData = {
-      ...current.geometryData,
-      sourceHeight: resolvedSource.h,
-      targetHeight,
-      sourceAnchor: "left-center",
-      targetAnchor: "right-center",
-    };
-  }
   return resolved.map((node) => ({
     ...node,
     geometryData: {
@@ -404,22 +376,23 @@ function compareNode(left, right) {
 }
 
 function representationFor(node) {
-  if (node.visualRole === "output-distribution" || node.family === "output") return "softmax-prism";
+  // Publication (journal) style: processing layers are drawn as uniform
+  // rounded "stage blocks" that carry the operator label and feature-map
+  // dimensions inside the block, not as per-operator 3D glyphs. Input planes
+  // and merge symbols keep their glyphs because journals draw them that way.
+  if (node.family === "merge") return "operator-symbol";
   if (node.visualRole === "image-input") return "image-plane";
   if (node.visualRole === "sequence-input") return "sequence-strip";
   if (node.visualRole === "state-input") return "state-vector";
   if (node.visualRole === "vector-input") return "vector-column";
-  if (node.visualRole === "unknown-input") return "unknown-outline";
   if (node.visualRole === "volume-input") return "volume";
-  if (node.visualRole === "input-tensor" || node.visualRole === "feature-map-stage" || node.family === "volume") return "volume";
-  if (node.visualRole === "pool-downsample" || node.family === "pool") return "pool-prism";
-  // 上采样暂复用 pool 的棱台表示；阶段 C 用独立的上采样棱台 + 向上箭头区分方向。
-  if (node.visualRole === "upsample" || node.family === "upsample") return "pool-prism";
-  if (node.family === "merge") return "operator-symbol";
-  if (node.visualRole === "vectorize" || node.family === "flatten") return "flatten-ribbon";
-  if (node.visualRole === "neuron-layer" || node.family === "dense") return "classifier-prism";
+  if (node.visualRole === "unknown-input") return "unknown-outline";
   if (["attention", "recurrent", "graph", "custom"].includes(node.family)) return "compound";
-  return "operator";
+  if (node.compoundKind && Array.isArray(node.attributes?.internalGraph?.nodes) && node.attributes.internalGraph.nodes.length > 0) return "compound";
+  // Everything else (conv, pool, upsample, flatten, dense, output, …) is a
+  // uniform publication block whose title is the operator and whose subtitle
+  // is the tensor shape. Upsample/downsample direction is carried separately.
+  return "publication-block";
 }
 
 function condenseLinearConvRuns(nodes, edges) {

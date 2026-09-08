@@ -288,7 +288,7 @@ test("layoutUniversalFigure marks an opaque custom node unresolved instead of in
   assert.match(custom.note, /unresolved|review/i);
 });
 
-test("universal figure keeps pooling geometry distinct from merge symbols", () => {
+test("universal figure keeps pooling and merge as distinct publication symbols", () => {
   const layout = layoutUniversalFigure({
     nodes: [
       { id: "conv", family: "conv", stage: 0, label: "Conv" },
@@ -301,7 +301,7 @@ test("universal figure keeps pooling geometry distinct from merge symbols", () =
     ],
   });
 
-  assert.equal(layout.nodes.find((node) => node.id === "pool").representation, "pool-prism");
+  assert.equal(layout.nodes.find((node) => node.id === "pool").representation, "publication-block");
   assert.equal(layout.nodes.find((node) => node.id === "merge").representation, "operator-symbol");
 });
 
@@ -406,9 +406,9 @@ test("universal figure groups linear convolution runs into evidence-backed stage
     ["conv1", "conv2"],
     ["conv3", "conv4"],
   ]);
-  assert.equal(layout.nodes.find((node) => node.id === "fc").representation, "classifier-prism");
-  assert.equal(layout.nodes.find((node) => node.id === "flatten").representation, "flatten-ribbon");
-  assert.equal(layout.nodes.find((node) => node.id === "output").representation, "softmax-prism");
+  assert.equal(layout.nodes.find((node) => node.id === "fc").representation, "publication-block");
+  assert.equal(layout.nodes.find((node) => node.id === "flatten").representation, "publication-block");
+  assert.equal(layout.nodes.find((node) => node.id === "output").representation, "publication-block");
   assert.equal(layout.validation.ok, true);
 });
 
@@ -465,13 +465,13 @@ test("universal layout restores publication hierarchy without a model-specific r
   const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
   assert.deepEqual(ordered.map((node) => node.figureLabel), ["Input", "CONV 1", "MP", "Flatten", "FC 1", "OUTPUT"]);
   assert.equal(ordered.at(-1).visualRole, "output-distribution");
-  assert.equal(ordered.at(-1).representation, "softmax-prism");
-  assert.ok(ordered.find((node) => node.visualRole === "feature-map-stage").h >= 220);
-  assert.ok(ordered.find((node) => node.visualRole === "neuron-layer").w <= 96);
+  assert.equal(ordered.at(-1).representation, "publication-block");
+  assert.ok(ordered.find((node) => node.visualRole === "feature-map-stage").h >= 40);
+  assert.ok(ordered.find((node) => node.visualRole === "neuron-layer").w >= 100);
   assert.ok(layout.artboard.height <= 900);
 });
 
-test("universal layout keeps repeated spatial stages narrow relative to their vertical feature-map extent", () => {
+test("universal layout renders spatial stages as uniform publication blocks", () => {
   const nodes = [
     { id: "a", family: "conv", stage: 0, order: 0, label: "Conv 32", shape: { output: [1, 64, 64, 32] } },
     { id: "b", family: "conv", stage: 1, order: 1, label: "Conv 64", shape: { output: [1, 64, 64, 64] } },
@@ -484,14 +484,17 @@ test("universal layout keeps repeated spatial stages narrow relative to their ve
       { id: "bc", source: "b", target: "c" },
     ],
   });
-  const stage = layout.nodes.find((node) => node.visualRole === "feature-map-stage");
+  const stages = layout.nodes.filter((node) => node.visualRole === "feature-map-stage");
 
-  assert.ok(stage, "expected a condensed spatial stage");
-  assert.ok(stage.w <= 150, `expected a narrow stage, got width ${stage.w}`);
-  assert.ok(stage.w / stage.h <= 0.8, `expected a thin stage ratio, got ${stage.w}/${stage.h}`);
+  assert.ok(stages.length >= 1, "expected a condensed spatial stage");
+  for (const stage of stages) {
+    assert.equal(stage.representation, "publication-block");
+    assert.ok(stage.w >= 100, `expected a wide publication block, got width ${stage.w}`);
+    assert.ok(stage.w / stage.h >= 1, `expected a wide card ratio, got ${stage.w}/${stage.h}`);
+  }
 });
 
-test("universal layout scales tensor modules by evidenced spatial resolution instead of equal card sizes", () => {
+test("universal layout renders every processing layer as a uniform publication block", () => {
   const nodes = [
     { id: "input", family: "input", stage: 0, order: 0, label: "Input", shape: { output: [1, 224, 224, 3] } },
     { id: "conv-a", family: "conv", stage: 1, order: 1, label: "Conv 64", shape: { output: [1, 224, 224, 64] } },
@@ -517,14 +520,14 @@ test("universal layout scales tensor modules by evidenced spatial resolution ins
   const output = ordered.find((node) => node.visualRole === "output-distribution");
 
   assert.equal(featureStages.length, 3);
-  assert.ok(featureStages[0].h > featureStages[1].h, "later spatial stages should be visibly shorter");
-  assert.ok(featureStages[1].h > featureStages[2].h, "later spatial stages should continue to contract");
-  assert.equal(pools[0].h, featureStages[1].h, "pool should use its downsampled tensor height");
-  assert.equal(pools[1].h, featureStages[2].h, "later pool should use its downsampled tensor height");
-  assert.ok(pools.every((pool) => pool.w <= 60), "pool should stay a narrow Box between spatial stages");
-  assert.ok(dense.w <= 72, `dense column should remain thin, got ${dense.w}`);
-  assert.ok(output.w <= 72, `output distribution should remain thin, got ${output.w}`);
-  assert.ok(output.h < dense.h, "output distribution should be shorter than a hidden neuron layer");
+  assert.equal(pools.length, 2);
+  // Every processing layer is a uniform publication block; the tensor shape
+  // is carried in the subtitle, not encoded in the block geometry.
+  for (const node of [featureStages[0], pools[0], dense, output]) {
+    assert.equal(node.representation, "publication-block");
+    assert.ok(node.w >= 100, `expected a wide publication block, got ${node.w}`);
+    assert.ok(node.h >= 40, `expected a readable card height, got ${node.h}`);
+  }
 });
 
 test("single-lane tensor layout follows role-specific publication stage gaps", () => {

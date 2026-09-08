@@ -424,22 +424,15 @@ function preferredSizeForRole(role, node) {
   if (role === "unknown-input") return { width: 104, height: 160 };
   if (role === "input-tensor") return { width: 104, height: 238 };
   if (role === "feature-map-stage") {
-    const height = spatial
-      ? Math.max(80, Math.round(240 * Math.pow(Math.max(1, spatial) / 224, 0.4)))
-      : Math.max(180, currentHeight || 220);
-    // A feature map is a thin slab, not a wide card: front width tracks the
-    // number of stacked conv layers (RightBandedBox bands), while spatial
-    // height carries the 224 → 7 progression. Keeping width narrow matches
-    // PlotNeuralNet's width=1..N convention and keeps a deep chain compact.
-    const repeat = Math.max(1, Number(node.repeatCount) || Number(node.layers) || 1);
-    const width = Math.max(44, repeat * 24);
-    return { width, height };
+    // Publication blocks are uniform rounded cards; the tensor shape is the
+    // subtitle, so block size is fixed rather than tracking spatial extent.
+    return { width: 120, height: 56 };
   }
-  if (role === "pool-downsample") return { width: 88, height: 0 };
-  if (role === "upsample") return { width: 88, height: 0 };
-  if (role === "vectorize") return { width: 84, height: 92 };
-  if (role === "neuron-layer") return { width: 50, height: 150 };
-  if (role === "output-distribution") return { width: 62, height: 128 };
+  if (role === "pool-downsample") return { width: 120, height: 52 };
+  if (role === "upsample") return { width: 120, height: 52 };
+  if (role === "vectorize") return { width: 120, height: 48 };
+  if (role === "neuron-layer") return { width: 120, height: 56 };
+  if (role === "output-distribution") return { width: 120, height: 56 };
   return { width: currentWidth, height: currentHeight };
 }
 
