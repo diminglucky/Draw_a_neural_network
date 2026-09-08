@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -17,12 +18,45 @@ import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./generic-sourc
 
 const port = Number(process.env.PORT || 4173);
 const root = process.cwd();
-const llmConfig = {
-  baseUrl: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
-  apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "",
-  model: process.env.LLM_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini",
-};
-const llmAnalyzer = createLLMAnalyzer(llmConfig);
+const llmConfigPath = join(root, "llm-config.json");
+
+function loadLLMConfig() {
+  const fromEnv = {
+    baseUrl: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
+    apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "",
+    model: process.env.LLM_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini",
+  };
+  try {
+    if (existsSync(llmConfigPath)) {
+      const saved = JSON.parse(readFileSync(llmConfigPath, "utf8"));
+      // 通过 UI 保存的最新配置优先于环境变量。
+      return { ...fromEnv, ...saved };
+    }
+  } catch {
+    // 配置文件缺失或损坏时回退环境变量。
+  }
+  return fromEnv;
+}
+
+function maskApiKey(key) {
+  if (!key) return "";
+  if (key.length <= 8) return "••••";
+  return `${key.slice(0, 4)}••••${key.slice(-4)}`;
+}
+
+let llmConfig = loadLLMConfig();
+let llmAnalyzer = createLLMAnalyzer(llmConfig);
+
+function applyLLMConfig(patch = {}) {
+  llmConfig = {
+    baseUrl: String(patch.baseUrl || llmConfig.baseUrl).trim() || llmConfig.baseUrl,
+    apiKey: patch.apiKey !== undefined ? String(patch.apiKey) : llmConfig.apiKey,
+    model: String(patch.model || llmConfig.model).trim() || llmConfig.model,
+  };
+  llmAnalyzer = createLLMAnalyzer(llmConfig);
+  try { writeFileSync(llmConfigPath, JSON.stringify(llmConfig, null, 2)); } catch { /* 持久化失败不影响内存配置 */ }
+  return llmConfig;
+}
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -185,6 +219,8 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
     ? { kind: "image", images: body.images, prompt: body.prompt, metadata: body.metadata }
     : body.ir
     ? { kind: "ir", ir: body.ir, diagnostics: body.diagnostics }
+    : body.prompt
+    ? { kind: "prompt", prompt: body.prompt, metadata: body.metadata }
     : { kind: "source", source: body.source, framework: body.framework };
   let options;
   try {
@@ -333,8 +369,18 @@ async function handleAgentRequest(request, response) {
   sendJson(response, agentResponse.status, await agentResponse.json());
 }
 
-const server = createServer(async (request, response) => {
+function createAppServer() {
+  return createServer(async (request, response) => {
   try {
+    if (request.method === "GET" && request.url === "/api/llm-config") {
+      sendJson(response, 200, {
+        baseUrl: llmConfig.baseUrl,
+        model: llmConfig.model,
+        apiKeyConfigured: Boolean(llmConfig.apiKey),
+        apiKeyMasked: maskApiKey(llmConfig.apiKey),
+      });
+      return;
+    }
     if (request.method === "POST" && (request.url === "/api/agent-run" || /^\/api\/agent-run\/[^/]+\/resume$/.test(request.url || ""))) {
       await handleAgentRequest(request, response);
       return;
@@ -347,6 +393,61 @@ const server = createServer(async (request, response) => {
       await handleAgentRequest(request, response);
       return;
     }
+    if (request.method === "POST" && request.url === "/api/llm-config") {
+      const body = await readJson(request);
+      const config = applyLLMConfig(body);
+      sendJson(response, 200, {
+        baseUrl: config.baseUrl,
+        model: config.model,
+        apiKeyConfigured: Boolean(config.apiKey),
+        apiKeyMasked: maskApiKey(config.apiKey),
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/llm-models") {
+      const body = await readJson(request);
+      const baseUrl = String(body.baseUrl || llmConfig.baseUrl || "").trim().replace(/\/+$/, "");
+      const apiKey = String(body.apiKey || "").trim() || llmConfig.apiKey || "";
+      if (!baseUrl) {
+        sendJson(response, 400, { status: "invalid_input", message: "请先填写 Base URL。" });
+        return;
+      }
+      if (!apiKey) {
+        sendJson(response, 400, { status: "invalid_input", message: "请先填写 API Key。" });
+        return;
+      }
+      try {
+        const upstream = await fetch(`${baseUrl}/models`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        if (!upstream.ok) {
+          const detail = (await upstream.text()).slice(0, 300);
+          sendJson(response, upstream.status, { status: "upstream_error", message: `拉取模型失败：HTTP ${upstream.status} ${detail}` });
+          return;
+        }
+        const payload = await upstream.json();
+        const models = (Array.isArray(payload.data) ? payload.data : [])
+          .map((entry) => (typeof entry === "string" ? entry : entry?.id))
+          .filter(Boolean)
+          .sort();
+        sendJson(response, 200, { models });
+      } catch (error) {
+        sendJson(response, 502, { status: "network_error", message: `无法连接端点：${error.message}` });
+      }
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/chat") {
+      const body = await readJson(request);
+      const messages = Array.isArray(body?.messages) ? body.messages : [];
+      if (!messages.length) {
+        sendJson(response, 400, { status: "invalid_input", code: "invalid-input", message: "No messages provided." });
+        return;
+      }
+      const result = await llmAnalyzer.chat(messages);
+      if (result.status) sendJson(response, 502, result);
+      else sendJson(response, 200, result);
+      return;
+    }
     if (request.method === "POST") {
       sendJson(response, 404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
       return;
@@ -356,11 +457,24 @@ const server = createServer(async (request, response) => {
     console.error(error);
     sendJson(response, 500, { error: "Internal server error" });
   }
-});
+  });
+}
+
+export function startServer({ port: listenPort = port, host = "127.0.0.1" } = {}) {
+  const appServer = createAppServer();
+  return new Promise((resolve, reject) => {
+    appServer.once("error", reject);
+    appServer.listen(listenPort, host, () => {
+      console.log(`Synapse Studio running at http://${host}:${listenPort}`);
+      resolve(appServer);
+    });
+  });
+}
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`Synapse Studio running at http://127.0.0.1:${port}`);
+  startServer({ port, host: "127.0.0.1" }).catch((error) => {
+    console.error(error);
+    process.exit(1);
   });
 }
 
@@ -375,7 +489,17 @@ async function serveStatic(request, response) {
   const pathname = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
   const safePath = normalize(pathname).replace(/^(\.\.[/\\])+/, "");
   const filePath = join(root, safePath);
-  const content = await readFile(filePath);
+  let content;
+  try {
+    content = await readFile(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
+    throw error;
+  }
   response.writeHead(200, { "Content-Type": mimeTypes[extname(filePath)] || "application/octet-stream" });
   response.end(content);
 }

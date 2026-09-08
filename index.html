@@ -3,45 +3,70 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Synapse Studio | Visio Neural Network Agent</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:*" />
+    <title>Synapse Studio</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="control-shell">
+    <div class="app">
       <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <div><p class="eyebrow">VISIO-NATIVE AGENT</p><h1>Synapse Studio</h1></div>
-        </div>
-        <div class="status-pill" id="statusText">等待输入模型证据</div>
+        <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">Synapse Studio</span></div>
+        <div class="status" id="statusText">就绪</div>
       </header>
-      <section class="control-grid">
-        <section class="panel-card">
-          <div class="section-heading"><h2>1 · 输入模型证据</h2><span class="beta-pill">Universal IR</span></div>
-          <p class="panel-note">Agent 从源码或图像中提取有证据的拓扑，未知结构会保留为待确认模块，不根据模型名称猜测内部结构。</p>
-          <label class="field" for="codeFrameworkInput">框架<select id="codeFrameworkInput"><option value="auto">自动识别 PyTorch / Keras</option><option value="pytorch">PyTorch / torch.nn</option><option value="keras">Keras / TensorFlow</option></select></label>
-          <label class="field" for="modelCodeInput">模型源码<textarea id="modelCodeInput" rows="16" spellcheck="false" placeholder="粘贴 PyTorch / Keras 模型源码，例如 LSTM、GRU、Transformer 或 CNN"></textarea></label>
-          <div class="action-row"><button id="codeGenerateButton" class="primary-button" type="button">分析源码并绘制到 Visio</button><label class="ghost-button file-button">导入源码<input id="codeFileInput" type="file" accept=".py,.txt,.js,.json" /></label></div>
-          <p id="codeStatusText" class="status-text">尚未分析源码。</p>
-          <div class="divider"><span>或</span></div>
-          <label class="field" for="aiImageInput">参考图像<input id="aiImageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple /></label>
-          <label class="field" for="aiPromptInput">图像分析要求<textarea id="aiPromptInput" rows="3" placeholder="描述需要保留的分支、状态、内部模块和连接关系"></textarea></label>
-          <button id="aiAnalyzeButton" class="secondary-button" type="button">分析图像并绘制到 Visio</button>
-          <p id="aiStatusText" class="status-text">尚未选择参考图像。</p>
+
+      <main class="stream" id="stream">
+        <section class="welcome" id="welcomeBlock">
+          <h1>描述你想绘制的神经网络</h1>
+          <p class="sub">用自然语言描述、直接粘贴代码，或上传一张架构图。分析后自动绘制到 Visio。</p>
+          <div class="suggestions">
+            <button class="suggestion" data-prompt="画一个 ResNet50 的架构图，包含 4 个残差阶段和跳跃连接">ResNet50（残差连接）</button>
+            <button class="suggestion" data-prompt="画一个 Transformer 编码器，包含多头注意力和前馈网络">Transformer（注意力）</button>
+            <button class="suggestion" data-prompt="画一个 U-Net 医学图像分割网络，含编码器、解码器和跳跃连接">U-Net（分割）</button>
+          </div>
         </section>
-        <section class="panel-card visio-card">
-          <div class="section-heading"><h2>2 · 操控 Visio</h2><span class="beta-pill native">Native COM</span></div>
-          <p class="panel-note">必须指定已经存在的 Visio 文档。Agent 将通过 PowerShell/COM 写入原生 Shape、连接器、Shape Data 和可回读身份。</p>
-          <label class="field" for="visioDocumentPathInput">已有 Visio 文档路径<input id="visioDocumentPathInput" type="text" placeholder="C:\项目\model.vsdx" /></label>
-          <label class="field" for="visioPageInput">页面名称<input id="visioPageInput" type="text" value="Page-1" /></label>
-          <button id="visioRenderButton" class="primary-button" type="button">提交证据并执行 Visio</button>
-          <button id="visioConfirmButton" class="secondary-button" type="button" hidden>确认当前结构并继续</button>
-          <p id="visioStatusText" class="status-text">等待 Figure Plan。</p>
-          <div class="evidence-panel"><h3>当前证据摘要</h3><dl id="evidenceSummary"><div><dt>状态</dt><dd id="evidenceStatus">未分析</dd></div><div><dt>节点</dt><dd id="evidenceNodeCount">0</dd></div><div><dt>连接</dt><dd id="evidenceEdgeCount">0</dd></div><div><dt>待确认</dt><dd id="evidenceUnresolvedCount">0</dd></div></dl></div>
+        <div class="messages" id="messages"></div>
+      </main>
+
+      <footer class="composer">
+        <div class="composer-inner">
+          <button class="attach" id="attachButton" title="上传架构图">＋</button>
+          <div class="composer-fields">
+            <div class="image-preview" id="imagePreview" hidden></div>
+            <textarea id="input" rows="1" placeholder="描述网络结构，或粘贴代码……（Enter 发送，Shift+Enter 换行）"></textarea>
+          </div>
+          <button class="send" id="sendButton">发送</button>
+        </div>
+        <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+      </footer>
+
+      <button class="settings-toggle" id="settingsToggle" title="设置">⚙</button>
+    </div>
+
+    <aside class="settings-drawer" id="settingsDrawer" aria-hidden="true">
+      <div class="settings-head"><h2>设置</h2><button class="close" id="closeSettings">×</button></div>
+      <div class="settings-body">
+        <section class="settings-group">
+          <h3>LLM 分析</h3>
+          <p class="hint">自然语言画图依赖大模型。也可用环境变量 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 作为初始值。</p>
+          <label class="field">Base URL<input id="llmBaseUrlInput" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" /></label>
+          <label class="field">API Key<input id="llmApiKeyInput" type="password" placeholder="sk-..." autocomplete="off" /></label>
+          <button class="primary outline" id="llmFetchModelsButton" type="button">拉取模型列表</button>
+          <label class="field">模型<input id="llmModelInput" type="text" placeholder="先拉取，或手动输入模型名" list="llmModelList" autocomplete="off" /><datalist id="llmModelList"></datalist></label>
+          <button class="primary" id="llmSaveButton">保存 LLM 配置</button>
+          <p class="status-text" id="llmStatusText"></p>
         </section>
-      </section>
-      <section class="panel-card architecture-note"><div><p class="eyebrow">RENDERING CONTRACT</p><h2>Visio 是唯一绘图后端</h2><p class="panel-note">网页仅承担输入、参数和执行反馈。拓扑分析进入 Universal IR，布局进入 Figure Plan，最终图形只由 Visio 原生对象生成。</p></div><ol class="pipeline-steps"><li>源码 / 图像</li><li>Agent 证据提取</li><li>Universal IR</li><li>Figure Plan</li><li>Visio COM</li></ol></section>
-    </main>
+        <section class="settings-group">
+          <h3>Visio 输出</h3>
+          <p class="hint">必须指定一个已存在的 Visio 文档（.vsdx），图形通过原生 COM 写入。</p>
+          <label class="field">Visio 文档路径<input id="visioDocumentPathInput" type="text" placeholder="C:\项目\model.vsdx" /></label>
+          <label class="field">页面名称<input id="visioPageInput" type="text" value="Page-1" /></label>
+          <button class="primary" id="visioSaveButton">保存 Visio 配置</button>
+          <p class="status-text" id="visioStatusText"></p>
+        </section>
+      </div>
+    </aside>
+    <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+
     <script src="./app.js" type="module"></script>
   </body>
 </html>

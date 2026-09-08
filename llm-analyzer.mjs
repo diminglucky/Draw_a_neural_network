@@ -209,5 +209,32 @@ export function createLLMAnalyzer(config = {}) {
     return post(messages);
   }
 
-  return { analyze, refine, available, config: { baseUrl, model, apiKeyConfigured: available } };
+  // Generic chat for the interactive UI: plain text, no forced JSON extraction.
+  async function chat(messages) {
+    if (!available) {
+      return { status: "unavailable", message: "No LLM API key configured. Set one in the settings panel." };
+    }
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model, messages }),
+      });
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        return { status: "error", message: `${response.status}: ${detail}` };
+      }
+      const payload = await response.json();
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) return { status: "error", message: "LLM returned no content." };
+      return { content };
+    } catch (error) {
+      return { status: "error", message: error.message };
+    }
+  }
+
+  return { analyze, refine, chat, available, config: { baseUrl, model, apiKeyConfigured: available } };
 }

@@ -7,6 +7,7 @@ coverage/
 .playwright-mcp/
 .worktrees/
 synapse-*.png
+llm-config.json
 
 # Rendering artifacts and scratch output
 artifacts/

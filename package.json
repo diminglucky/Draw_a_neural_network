@@ -1,0 +1,39 @@
+{
+  "name": "synapse-studio",
+  "version": "0.3.0",
+  "description": "LLM-driven neural network architecture compiler with native Visio rendering",
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win",
+    "dist": "electron-builder",
+    "test": "node --test"
+  },
+  "build": {
+    "appId": "com.synapse.studio",
+    "productName": "Synapse Studio",
+    "files": [
+      "**/*",
+      "!**/*.test.mjs",
+      "!tmp/**",
+      "!artifacts/**",
+      "!docs/**",
+      "!llm-config.json",
+      "!*.md"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3"
+  }
+}
