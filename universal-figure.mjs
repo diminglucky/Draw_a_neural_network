@@ -105,6 +105,23 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     });
   });
 
+  // 标记分叉/合并点：出度 >1 = fork（输出分叉），入度 >1 = merge（输入汇聚）。
+  // 渲染层据此在对应锚点画小圆点（PlotNeuralNet 惯例）。
+  const outDegree = new Map();
+  const inDegree = new Map();
+  sourceEdges.forEach((edge) => {
+    if (edge.source === edge.target) return; // 自环不计入分叉/合并
+    outDegree.set(edge.source, (outDegree.get(edge.source) || 0) + 1);
+    inDegree.set(edge.target, (inDegree.get(edge.target) || 0) + 1);
+  });
+  nodes.forEach((node) => {
+    const out = outDegree.get(node.id) || 0;
+    const inn = inDegree.get(node.id) || 0;
+    if (out > 1 && inn > 1) node.junctionRole = "fork-merge";
+    else if (out > 1) node.junctionRole = "fork";
+    else if (inn > 1) node.junctionRole = "merge";
+  });
+
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
   const edges = sourceEdges.map((edge, index) => routeEdge(edge, nodeMap, index, fittedArtboard));
   const recurrentLayouts = grammar.id === "recurrent-flow"

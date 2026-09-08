@@ -306,3 +306,36 @@ test("diagnoseShapes reports missing-parameter (not unsupported) for an LSTM wit
   assert.ok(issue, "LSTM without hidden_size should surface a shape issue");
   assert.equal(issue.reason, "missing-parameter");
 });
+
+test("inferShapes applies the 3D conv formula over [D,H,W,C]", () => {
+  const nodes = [
+    { id: "in", family: "input", op: "Input", attributes: { inputShape: [32, 64, 64, 3] } },
+    { id: "c", family: "conv", op: "Conv3d", attributes: { constructorArgs: "3, 64, 3, 1, 1" }, stage: 1, order: 0 },
+  ];
+  const edges = [{ source: "in", target: "c" }];
+  const shapes = run(nodes, edges);
+  // padding=1 keeps each spatial dim: floor((size+2-3)/1)+1 = size
+  assert.deepEqual(shapes.c, [32, 64, 64, 64]);
+});
+
+test("inferShapes applies 3D pooling over [D,H,W,C]", () => {
+  const nodes = [
+    { id: "in", family: "input", op: "Input", attributes: { inputShape: [16, 32, 32, 64] } },
+    { id: "p", family: "pool", op: "MaxPool3d", attributes: { constructorArgs: "2" }, stage: 1, order: 0 },
+  ];
+  const edges = [{ source: "in", target: "p" }];
+  const shapes = run(nodes, edges);
+  // stride defaults to kernel=2: floor(size/2) => 8, 16, 16
+  assert.deepEqual(shapes.p, [8, 16, 16, 64]);
+});
+
+test("inferShapes honors a per-dimension 3D kernel tuple", () => {
+  const nodes = [
+    { id: "in", family: "input", op: "Input", attributes: { inputShape: [16, 32, 32, 3] } },
+    { id: "c", family: "conv", op: "Conv3d", attributes: { constructorArgs: "3, 64, (3,3,3)" }, stage: 1, order: 0 },
+  ];
+  const edges = [{ source: "in", target: "c" }];
+  const shapes = run(nodes, edges);
+  // no padding: floor((size-3)/1)+1 => 14, 30, 30
+  assert.deepEqual(shapes.c, [14, 30, 30, 64]);
+});

@@ -975,6 +975,31 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   return @(Draw-OperatorGlyph $Page $Spec $x $y $w $h $Scale)
 }
 
+function Draw-JunctionDot([object]$Page, [object]$Spec, [double]$Scale) {
+  $role = Get-PlanString $Spec.junctionRole
+  if ([string]::IsNullOrWhiteSpace($role)) { return @() }
+  $x = [double]([double]$Spec.x * [double]$Scale)
+  $y = [double]([double]$Spec.y * [double]$Scale)
+  $w = [double]([double]$Spec.w * [double]$Scale)
+  $h = [double]([double]$Spec.h * [double]$Scale)
+  $cy = $y + $h / 2
+  $r = [double](4.0 * $Scale)
+  $dots = @()
+  if ($role -match "merge") {
+    $leftDot = $Page.DrawOval($x - $r, $cy - $r, $x + $r, $cy + $r)
+    $leftDot.CellsU("FillForegnd").FormulaU = "RGB(36,130,112)"
+    $leftDot.CellsU("LinePattern").FormulaU = "0"
+    $dots += $leftDot
+  }
+  if ($role -match "fork") {
+    $rightDot = $Page.DrawOval(($x + $w) - $r, $cy - $r, ($x + $w) + $r, $cy + $r)
+    $rightDot.CellsU("FillForegnd").FormulaU = "RGB(36,130,112)"
+    $rightDot.CellsU("LinePattern").FormulaU = "0"
+    $dots += $rightDot
+  }
+  return $dots
+}
+
 function Glue-Endpoint([object]$Line, [string]$CellName, [object]$Target, [bool]$AtRight) {
   if ($null -eq $Target) { return }
   try {
@@ -1131,6 +1156,8 @@ foreach ($spec in @($plan.shapes)) {
   $drawn = @(Draw-PlanShape $page $spec ([double]$plan.unitScale))
   $shapeCount = [int]$shapeCount + [int]$drawn.Count
   if ($drawn.Count -gt 0) { $shapeMap[$spec.id] = $drawn[0] }
+  $junctionDots = @(Draw-JunctionDot $page $spec ([double]$plan.unitScale))
+  $shapeCount = [int]$shapeCount + [int]$junctionDots.Count
   $labels = @(Draw-PlanLabel $page $spec ([double]$plan.unitScale))
   $shapeCount = [int]$shapeCount + [int]$labels.Count
 }

@@ -595,3 +595,46 @@ test("skip/residual edges route as a smooth upward arc, not a 3-point dogleg", (
   assert.equal(start.x, layout.nodes.find((node) => node.id === "input").x + layout.nodes.find((node) => node.id === "input").w);
   assert.equal(end.y, start.y, "arc returns to the same baseline as the main branch");
 });
+
+test("layoutUniversalFigure marks fork and merge junction roles", () => {
+  const layout = layoutUniversalFigure({
+    figure: { title: "flat residual" },
+    nodes: [
+      { id: "input", op: "Input", family: "input", stage: 0, label: "x" },
+      { id: "c1", op: "Conv2d", family: "conv", stage: 1, label: "3×3" },
+      { id: "add", op: "Add", family: "merge", stage: 2, label: "+" },
+      { id: "output", op: "Output", family: "output", stage: 3, label: "y" },
+    ],
+    edges: [
+      { id: "e1", source: "input", target: "c1", type: "signal" },
+      { id: "e2", source: "c1", target: "add", type: "signal" },
+      { id: "skip", source: "input", target: "add", type: "residual" },
+      { id: "e3", source: "add", target: "output", type: "signal" },
+    ],
+  });
+
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+  assert.equal(byId.get("input").junctionRole, "fork", "two outgoing edges should mark a fork");
+  assert.equal(byId.get("add").junctionRole, "merge", "two incoming edges should mark a merge");
+  assert.equal(byId.get("c1").junctionRole, undefined, "linear interior node should carry no junction role");
+  assert.equal(byId.get("output").junctionRole, undefined);
+});
+
+test("layoutUniversalFigure ignores self-loops when computing junction roles", () => {
+  const layout = layoutUniversalFigure({
+    figure: { title: "recurrent self-loop" },
+    nodes: [
+      { id: "in", op: "Input", family: "input", stage: 0, label: "x" },
+      { id: "rnn", op: "LSTM", family: "recurrent", stage: 1, label: "LSTM" },
+      { id: "out", op: "Output", family: "output", stage: 2, label: "y" },
+    ],
+    edges: [
+      { id: "e1", source: "in", target: "rnn", type: "signal" },
+      { id: "loop", source: "rnn", target: "rnn", type: "loop" },
+      { id: "e2", source: "rnn", target: "out", type: "signal" },
+    ],
+  });
+
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+  assert.equal(byId.get("rnn").junctionRole, undefined, "a self-loop must not mark the node as fork or merge");
+});

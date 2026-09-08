@@ -349,6 +349,7 @@ function shapePlan(node, options) {
     parentNodeId: options.parentNodeId,
     fill: String(node.color || "#A855F7"),
     line: String(node.lineColor || "#263248"),
+    ...(node.junctionRole ? { junctionRole: String(node.junctionRole) } : {}),
     shapeData: {
       renderId: options.renderId,
       sourceNodeId: String(node.sourceNodeId || node.id || ""),

@@ -844,65 +844,67 @@ function computeOutputShape(node, inputShape, inputs = [inputShape]) {
 }
 
 function convShape(op, args, inputShape) {
-  if (inputShape.length >= 4) return null; // 3D 数据（volume/video）：2D 公式会取错维，安全失败交给闭环。
+  // 支持 2D [H,W,C]（3 维）与 3D [D,H,W,C]（4 维）；其它秩安全失败。
+  if (inputShape.length !== 3 && inputShape.length !== 4) return null;
   const isTranspose = /transpose|transposed|deconv/i.test(op);
   const outChannels = numericArg(args, 1);
-  const kernel = firstFinite(numericArg(args, 2), kwargNumber(args, "kernel_size"));
-  const stride = firstFinite(numericArg(args, 3), kwargNumber(args, "stride"), 1);
+  const kernel = layerArg(args, 2, "kernel_size", null);
+  const stride = layerArg(args, 3, "stride", 1);
   const padding = resolvePadding(args.kwargs.padding ?? args.positional[4] ?? 0, kernel);
-  const dilation = firstFinite(kwargNumber(args, "dilation"), 1);
-  const outputPadding = firstFinite(kwargNumber(args, "output_padding"), 0);
-  if (!Number.isFinite(outChannels) || !Number.isFinite(kernel)) return null;
-  const [height, width] = spatialOf(inputShape);
-  const [kh, kw] = pairOf(kernel);
-  const [ph, pw] = pairOf(padding);
-  const [dh, dw] = pairOf(dilation);
-  const [oh, ow] = pairOf(outputPadding);
-  if (isTranspose) {
-    return [
-      transposedDimension(height, kh, ph, dh, oh, stride),
-      transposedDimension(width, kw, pw, dw, ow, stride),
-      Math.round(outChannels),
-    ];
+  const dilation = layerArg(args, -1, "dilation", 1);
+  const outputPadding = layerArg(args, -1, "output_padding", 0);
+  if (!Number.isFinite(outChannels) || kernel == null) return null;
+  const spatial = inputShape.slice(0, -1); // [H,W] 或 [D,H,W]
+  const dims = spatial.length;
+  const kernels = expandKernel(kernel, dims);
+  const strides = expandKernel(stride, dims);
+  const paddings = expandKernel(padding, dims);
+  const dilations = expandKernel(dilation, dims);
+  const outputPaddings = expandKernel(outputPadding, dims);
+  const result = [];
+  for (let index = 0; index < dims; index += 1) {
+    result.push(isTranspose
+      ? transposedDimension(spatial[index], kernels[index], paddings[index], dilations[index], outputPaddings[index], strides[index])
+      : convDimension(spatial[index], kernels[index], paddings[index], strides[index], dilations[index]));
   }
-  return [
-    convDimension(height, kh, ph, stride, dh),
-    convDimension(width, kw, pw, stride, dw),
-    Math.round(outChannels),
-  ];
+  result.push(Math.round(outChannels));
+  return result;
 }
 
 function poolShape(op, args, inputShape) {
-  if (inputShape.length >= 4) return null; // 3D 数据：2D 公式会取错维，安全失败交给闭环。
+  // 支持 2D [H,W,C] 与 3D [D,H,W,C]；其它秩安全失败。
+  if (inputShape.length !== 3 && inputShape.length !== 4) return null;
   const channels = channelsOf(inputShape);
+  const spatial = inputShape.slice(0, -1); // [H,W] 或 [D,H,W]
+  const dims = spatial.length;
   if (/upsample|interpolate/i.test(op)) {
     const sizeTuple = tupleArg(args, 0) || kwargTuple(args, "size");
-    if (sizeTuple && sizeTuple.length >= 2) return [sizeTuple[0], sizeTuple[1], channels];
+    if (sizeTuple && sizeTuple.length >= dims) return [...sizeTuple.slice(0, dims), channels];
     const size = firstFinite(numericArg(args, 0), kwargNumber(args, "size"));
     const scale = firstFinite(kwargNumber(args, "scale_factor"), 1);
-    const [height, width] = spatialOf(inputShape);
-    if (Number.isFinite(size)) return [size, size, channels];
-    return [Math.round(height * scale), Math.round(width * scale), channels];
+    if (Number.isFinite(size)) return [...new Array(dims).fill(size), channels];
+    return [...spatial.map((dim) => Math.round(dim * scale)), channels];
   }
   if (/adaptive|global/.test(op)) {
     const target = numericArg(args, 0);
-    if (Number.isFinite(target)) return [target, target, channels];
+    if (Number.isFinite(target)) return [...new Array(dims).fill(target), channels];
     const tuple = tupleArg(args, 0);
-    if (tuple && tuple.length >= 2) return [tuple[0], tuple[1], channels];
-    return [1, 1, channels];
+    if (tuple && tuple.length >= dims) return [...tuple.slice(0, dims), channels];
+    return [...new Array(dims).fill(1), channels];
   }
-  const kernel = firstFinite(numericArg(args, 0), kwargNumber(args, "kernel_size"));
-  const stride = firstFinite(numericArg(args, 1), kwargNumber(args, "stride"), kernel);
+  const kernel = layerArg(args, 0, "kernel_size", null);
+  const stride = layerArg(args, 1, "stride", kernel ?? 1);
   const padding = resolvePadding(args.kwargs.padding ?? args.positional[2] ?? 0, kernel);
-  if (!Number.isFinite(kernel)) return null;
-  const [height, width] = spatialOf(inputShape);
-  const [kh, kw] = pairOf(kernel);
-  const [ph, pw] = pairOf(padding);
-  return [
-    poolDimension(height, kh, stride, ph),
-    poolDimension(width, kw, stride, pw),
-    channels,
-  ];
+  if (kernel == null) return null;
+  const kernels = expandKernel(kernel, dims);
+  const strides = expandKernel(stride, dims);
+  const paddings = expandKernel(padding, dims);
+  const result = [];
+  for (let index = 0; index < dims; index += 1) {
+    result.push(poolDimension(spatial[index], kernels[index], strides[index], paddings[index]));
+  }
+  result.push(channels);
+  return result;
 }
 
 function mergeShape(op, inputs) {
@@ -976,6 +978,7 @@ function poolDimension(size, kernel, stride, padding = 0) {
 // Keras/TF 常用 padding='same'（输出 = ceil(size/stride)，等价 padding=(kernel-1)/2）
 // 或 'valid'（padding=0）。PyTorch 用显式整数 padding。
 function resolvePadding(paddingValue, kernel) {
+  if (Array.isArray(paddingValue)) return paddingValue; // 元组 padding 直接透传（expandKernel 会补齐维度）。
   if (typeof paddingValue === "string" && /same/i.test(paddingValue)) {
     const k = Array.isArray(kernel) ? kernel[0] : kernel;
     return Number.isFinite(k) ? (k - 1) / 2 : 0;
@@ -1006,6 +1009,34 @@ function productOf(shape) {
 function pairOf(value) {
   if (Array.isArray(value)) return [value[0] ?? 1, value[1] ?? value[0] ?? 1];
   return [value, value];
+}
+
+// 从位置参数或 kwarg 取一个标量或元组（PyTorch 常用 kernel_size/stride 的元组形式）。
+// index 为负表示只取 kwarg（如 dilation 一般不作为位置参数出现）。
+function layerArg(args, index, key, fallback) {
+  if (index >= 0) {
+    const pos = args.positional[index];
+    if (Array.isArray(pos) && pos.length) return pos;
+    if (Number.isFinite(pos)) return pos;
+  }
+  const kw = args.kwargs[key];
+  if (Array.isArray(kw) && kw.length) return kw;
+  if (Number.isFinite(kw)) return kw;
+  return fallback;
+}
+
+// 把标量或元组扩展成 dims 元组（各向同性标量复制；元组不足时用最后一个元素补齐）。
+function expandKernel(value, dims) {
+  if (Array.isArray(value)) {
+    const out = [];
+    for (let index = 0; index < dims; index += 1) {
+      out.push(Number.isFinite(value[index]) ? value[index]
+        : Number.isFinite(value[value.length - 1]) ? value[value.length - 1] : 1);
+    }
+    return out;
+  }
+  const scalar = Number.isFinite(value) ? value : 1;
+  return new Array(dims).fill(scalar);
 }
 
 function firstFinite(...values) {
