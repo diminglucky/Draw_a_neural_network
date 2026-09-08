@@ -26,7 +26,7 @@ export function extractGenericSourceTopology(source = "", framework = "auto", op
     ? (entryClass?.forward?.statements?.length
       ? entryClass.forward.statements
       : extractForwardStatements(text, entryClass?.name))
-    : text.split(/\r?\n/).map((line, index) => ({ text: line, line: index + 1 }));
+    : collapseMultilineStatements(text).map((line, index) => ({ text: line, line: index + 1 }));
   const parameters = inferredFramework === "pytorch"
     ? (entryClass?.forward?.parameters || extractForwardParameters(text, entryClass?.name))
     : [];
@@ -316,12 +316,24 @@ export function extractGenericSourceTopology(source = "", framework = "auto", op
 
   function expandSequential(call, outputs, line, expression) {
     if (call?.op !== "Sequential" || !call.constructorArgs) return false;
-    const sequence = splitTopLevelCalls(call.constructorArgs);
+    const listText = String(call.constructorArgs).trim().replace(/^\[|\]$/g, "").trim();
+    const sequence = splitTopLevelCalls(listText);
     if (!sequence.length) return false;
     let upstream = call.inputText;
     sequence.forEach((nestedExpression, index) => {
-      const nested = parseCallExpression(nestedExpression, definitions);
+      const nested = parseSequentialLayer(nestedExpression, definitions);
       if (!nested) return;
+      // 首层的 input_shape 定义输入张量：显式生成 Input 节点，让 shape 从输入维度传播。
+      if (index === 0 && !upstream) {
+        const inputName = `input_${operationIndex + 1}`;
+        const inputNodeId = addInputNode(inputName, operationIndex + 1, line);
+        const shape = extractInputShape(nested.constructorArgs);
+        if (shape) {
+          const inputNode = nodes.find((node) => node.id === inputNodeId);
+          if (inputNode) inputNode.attributes = { ...(inputNode.attributes || {}), inputShape: shape };
+        }
+        upstream = inputName;
+      }
       const nestedOutputs = index === sequence.length - 1
         ? outputs
         : [`sequence_${operationIndex + 1}_${index + 1}`];
@@ -575,7 +587,10 @@ function parseCallExpression(expression, definitions) {
 
   const call = text.match(/^(?:(torch|tf|F|ops|layers|keras|nn)\.)?([A-Za-z_]\w*)\s*\((.*)\)$/);
   if (!call) return null;
-  if (["super", "Model", "Sequential"].includes(call[2])) return null;
+  if (["super", "Model"].includes(call[2])) return null;
+  if (call[2] === "Sequential") {
+    return { op: "Sequential", constructorArgs: call[3], inputText: "" };
+  }
   // nn./layers./keras. constructors declare a layer (e.g. nn.Conv2d(3, 64, 3)):
   // their parenthesized text is constructor arguments, not an input tensor.
   // F./torch./tf./ops. calls (e.g. F.relu(x), torch.flatten(x, 1)) are forward
@@ -587,6 +602,30 @@ function parseCallExpression(expression, definitions) {
     constructorArgs: isLayerConstructor ? call[3] : "",
     inputText: isLayerConstructor ? "" : call[3],
   };
+}
+
+// Sequential([ ... ]) 列表里的元素都是 layer 构造函数，即使裸写 Conv2D(...)
+// 不带 layers. 前缀，括号内容也是构造参数而非输入张量。
+function parseSequentialLayer(expression, definitions) {
+  const parsed = parseCallExpression(expression, definitions);
+  if (parsed && parsed.constructorArgs) return parsed;
+  const match = String(expression || "").trim().match(/^([A-Za-z_]\w*)\s*\(([\s\S]*)\)$/);
+  if (!match) return parsed;
+  return { op: match[1], constructorArgs: match[2], inputText: "" };
+}
+
+// 从构造参数里提取 input_shape=(H, W, C) / input_shape=[...]，返回形状数组。
+function extractInputShape(args) {
+  const match = String(args || "").match(/(?:input_shape|inputShape|input_size)\s*=\s*(?:\(([^)]*)\)|\[([^\]]*)\])/);
+  const raw = match ? (match[1] ?? match[2]) : "";
+  if (!raw) return null;
+  const shape = raw.split(",").map((part) => {
+    const value = part.trim();
+    if (/^(?:none|null|-1|\?)$/i.test(value)) return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  });
+  return shape.some((value) => Number.isFinite(value)) ? shape : null;
 }
 
 function extractVariableNames(text, knownVariables) {
@@ -610,6 +649,47 @@ function inferFramework(source) {
   if (/\b(?:torch|nn\.|forward\s*\()/i.test(source)) return "pytorch";
   if (/\b(?:keras|tensorflow|layers\.)/i.test(source)) return "keras";
   return "unknown";
+}
+
+// 把跨多行的括号表达式（最常见的是 Keras 的 Sequential([ ... ]) 列表）合并成
+// 单行，使逐行解析器能把它当成一条语句处理。函数式 API 的闭合单行不受影响。
+function collapseMultilineStatements(source) {
+  const lines = String(source || "").split(/\r?\n/);
+  const collapsed = [];
+  let buffer = null;
+  let depth = 0;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (buffer === null) {
+      if (!line) continue;
+      const delta = bracketDelta(line);
+      if (delta > 0) {
+        buffer = line;
+        depth = delta;
+      } else {
+        collapsed.push(line);
+      }
+    } else {
+      buffer += " " + line;
+      depth += bracketDelta(line);
+      if (depth <= 0) {
+        collapsed.push(buffer);
+        buffer = null;
+        depth = 0;
+      }
+    }
+  }
+  if (buffer !== null) collapsed.push(buffer);
+  return collapsed;
+}
+
+function bracketDelta(text) {
+  let delta = 0;
+  for (const character of String(text || "")) {
+    if (character === "(" || character === "[") delta += 1;
+    else if (character === ")" || character === "]") delta -= 1;
+  }
+  return delta;
 }
 
 function indentationWidth(text) {
@@ -803,7 +883,7 @@ function computeOutputShape(node, inputShape, inputs = [inputShape]) {
     return inputShape;
   }
 
-  if (family === "conv") return convShape(op, args, inputShape);
+  if (family === "conv") return convShape(op, args, inputShape, node.attributes?.framework);
 
   if (family === "pool") return poolShape(op, args, inputShape);
 
@@ -843,14 +923,20 @@ function computeOutputShape(node, inputShape, inputs = [inputShape]) {
   return null;
 }
 
-function convShape(op, args, inputShape) {
+function convShape(op, args, inputShape, framework = "unknown") {
   // 支持 2D [H,W,C]（3 维）与 3D [D,H,W,C]（4 维）；其它秩安全失败。
   if (inputShape.length !== 3 && inputShape.length !== 4) return null;
+  const isKeras = framework === "keras" || framework === "tensorflow";
   const isTranspose = /transpose|transposed|deconv/i.test(op);
-  const outChannels = numericArg(args, 1);
-  const kernel = layerArg(args, 2, "kernel_size", null);
-  const stride = layerArg(args, 3, "stride", 1);
-  const padding = resolvePadding(args.kwargs.padding ?? args.positional[4] ?? 0, kernel);
+  // Keras Conv2D(filters, kernel_size, ...)；PyTorch Conv2d(in_channels, out_channels, kernel_size, ...)。
+  const outChannels = isKeras
+    ? firstFinite(numericArg(args, 0), kwargNumber(args, "filters"), kwargNumber(args, "out_channels"))
+    : numericArg(args, 1);
+  const kernel = isKeras
+    ? layerArg(args, 1, "kernel_size", null)
+    : layerArg(args, 2, "kernel_size", null);
+  const stride = layerArg(args, isKeras ? 2 : 3, "stride", 1);
+  const padding = resolvePadding(args.kwargs.padding ?? args.positional[isKeras ? 3 : 4] ?? 0, kernel);
   const dilation = layerArg(args, -1, "dilation", 1);
   const outputPadding = layerArg(args, -1, "output_padding", 0);
   if (!Number.isFinite(outChannels) || kernel == null) return null;

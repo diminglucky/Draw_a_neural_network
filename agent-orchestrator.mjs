@@ -141,7 +141,9 @@ export function diagnoseReadback(expected = {}, actual = {}) {
     if (!actualNodeIds.has(sourceNodeId)) diagnostics.push(mismatch("missing-source-node-id", `Readback is missing source node ${sourceNodeId}.`, { sourceNodeId }));
   }
   const expectedEdges = Array.isArray(expected.edges) ? expected.edges : [];
-  const actualEdges = Array.isArray(actual.connectors) ? actual.connectors : (Array.isArray(actual.edgeIds) ? actual.edgeIds.map((id) => ({ sourceEdgeId: id })) : []);
+  // 内部 Visio 桥的 readback 用 connectorEndpoints（键为无前缀 sourceEdgeId）；
+  // 外部 readback-result 事件用 connectors 数组；旧格式退化为 edgeIds（带 outer-edge:: 前缀）。
+  const actualEdges = collectReadbackConnectors(actual);
   const actualEdgeById = new Map(actualEdges.map((edge) => [String(edge.sourceEdgeId || edge.id || ""), edge]));
   for (const expectedEdge of expectedEdges) {
     const sourceEdgeId = String(expectedEdge.sourceEdgeId || expectedEdge.id || "");
@@ -161,6 +163,15 @@ export function diagnoseReadback(expected = {}, actual = {}) {
   }
   if (expected.renderId && String(expected.renderId) !== String(actual.renderId || "")) diagnostics.push(mismatch("render-id-mismatch", "Readback render identity does not match the requested render.", { expected: expected.renderId, actual: actual.renderId || "" }));
   return diagnostics;
+}
+
+function collectReadbackConnectors(actual = {}) {
+  if (Array.isArray(actual.connectors)) return actual.connectors;
+  if (actual.connectorEndpoints && typeof actual.connectorEndpoints === "object" && !Array.isArray(actual.connectorEndpoints)) {
+    return Object.values(actual.connectorEndpoints);
+  }
+  if (Array.isArray(actual.edgeIds)) return actual.edgeIds.map((id) => ({ sourceEdgeId: id }));
+  return [];
 }
 
 async function continueRepair(current, runtime) {

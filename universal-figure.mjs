@@ -229,7 +229,7 @@ function isLinearChain(nodes, edges) {
 }
 
 function fitSingleLaneArtboard(artboard, nodes) {
-  const minimumGap = 30;
+  const minimumGap = 48;
   const horizontalMargin = 50;
   const requiredWidth = horizontalMargin * 2 + singleLaneFootprintWidth(nodes, minimumGap);
   const maximumNodeHeight = nodes.reduce((maximum, node) => Math.max(maximum, node.h), 0);
@@ -246,7 +246,7 @@ function fitSingleLaneArtboard(artboard, nodes) {
 function packSingleLaneX(nodes, artboard) {
   const ordered = [...nodes].sort((left, right) => compareStage(left, right) || compareNode(left, right));
   const horizontalMargin = 50;
-  const minimumGap = 30;
+  const minimumGap = 48;
   let cursor = artboard.x + horizontalMargin + visualLeftOutset(ordered[0]);
   const positions = new Map();
   for (let index = 0; index < ordered.length; index += 1) {
@@ -276,11 +276,11 @@ function singleLaneFootprintWidth(nodes, minimumGap) {
 
 function publicationGapAfter(previous, next, fallbackGap) {
   const role = String(next.visualRole || next.family || "").toLowerCase();
-  if (role === "pool-downsample") return 8;
-  if (role === "feature-map-stage") return 20;
-  if (role === "vectorize") return 28;
-  if (role === "neuron-layer") return 24;
-  if (role === "output-distribution") return 32;
+  if (role === "pool-downsample") return 40;
+  if (role === "feature-map-stage") return 60;
+  if (role === "vectorize") return 64;
+  if (role === "neuron-layer") return 52;
+  if (role === "output-distribution") return 60;
   return fallbackGap;
 }
 

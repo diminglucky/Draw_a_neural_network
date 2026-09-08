@@ -219,6 +219,23 @@ test("diagnoses missing IDs, render ID changes, and connector glue changes", () 
   assert.ok(diagnostics.every((item) => item.kind === "readback-mismatch"));
 });
 
+test("diagnoses internal Visio-bridge readback (connectorEndpoints) without false missing-connector-id", () => {
+  const diagnostics = diagnoseReadback(
+    {
+      renderId: "r1",
+      nodes: [{ sourceNodeId: "n1" }, { sourceNodeId: "n2" }],
+      edges: [{ sourceEdgeId: "e1", sourceNodeId: "n1", targetNodeId: "n2" }],
+    },
+    {
+      renderId: "r1",
+      sourceNodeIds: ["n1", "n2"],
+      edgeIds: ["outer-edge::e1"],
+      connectorEndpoints: { e1: { sourceEdgeId: "e1", sourceEndpointId: "", targetEndpointId: "" } },
+    },
+  );
+  assert.deepEqual(diagnostics, []);
+});
+
 test("persists externally supplied render and readback events", async () => {
   const { createMemoryRunStore } = await import("./run-store.mjs");
   const runStore = createMemoryRunStore();

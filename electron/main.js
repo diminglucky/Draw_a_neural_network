@@ -12,22 +12,37 @@ app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("no-sandbox");
 app.commandLine.appendSwitch("disable-gpu");
 
-// 尝试在 4173 启动内嵌 HTTP 服务。若端口被占用（例如已有实例在跑），
-// 直接复用那个实例，而不是报错退出。
+// 尝试在 4173 启动内嵌 HTTP 服务。若端口被占用：
+//  1) 占用者是本应用自己的实例 → 复用；
+//  2) 占用者是无关进程（例如别的 dev server）→ 换一个随机空闲端口，
+//     而不是误以为「已有实例」后把窗口加载到错误的页面。
 async function ensureServer() {
   try {
     server = await startServer({ port: DEFAULT_PORT, host: HOST });
+    return DEFAULT_PORT;
   } catch (error) {
     if (error?.code === "EADDRINUSE") {
-      // 复用已经运行的服务实例。
-      return;
+      if (await isSynapseStudioOn(HOST, DEFAULT_PORT)) return DEFAULT_PORT;
+      server = await startServer({ port: 0, host: HOST });
+      return server.address().port;
     }
     throw error;
   }
 }
 
+async function isSynapseStudioOn(host, port) {
+  try {
+    const response = await fetch(`http://${host}:${port}/`, { signal: AbortSignal.timeout(2000) });
+    if (!response.ok) return false;
+    const html = await response.text();
+    return html.includes("Synapse Studio");
+  } catch {
+    return false;
+  }
+}
+
 async function createWindow() {
-  await ensureServer();
+  const port = await ensureServer();
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 960,
@@ -42,7 +57,7 @@ async function createWindow() {
       sandbox: true,
     },
   });
-  await mainWindow.loadURL(`http://${HOST}:${DEFAULT_PORT}/`);
+  await mainWindow.loadURL(`http://${HOST}:${port}/`);
   mainWindow.on("closed", () => {
     mainWindow = null;
   });

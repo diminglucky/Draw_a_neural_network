@@ -179,3 +179,25 @@ class ResidualNet(nn.Module):
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-source-statement"));
   assert.equal(result.readyForPreview, true);
 });
+
+test("generic source extraction expands Keras Sequential list syntax into ordered layers", () => {
+  const result = analyzeArchitectureInput({
+    kind: "source",
+    framework: "keras",
+    source: `model = Sequential([
+    Conv2D(32, (3,3), activation='relu', input_shape=(224,224,3)),
+    MaxPooling2D((2,2)),
+    Flatten(),
+    Dense(10, activation='softmax')
+])`,
+  });
+
+  const ops = result.ir.nodes.map((node) => node.op).filter((op) => op !== "Input" && op !== "Output");
+  assert.deepEqual(ops, ["Conv2D", "MaxPooling2D", "Flatten", "Dense"]);
+  assert.ok(!result.ir.nodes.some((node) => node.op === "UnresolvedSourceStatement"));
+  // Input 从首层 input_shape 生成，shape 从 224 逐层传播到 softmax 的 10 类。
+  const shapes = Object.fromEntries(result.figurePlan.nodes.map((node) => [node.op, node.shape?.output]));
+  assert.deepEqual(shapes.Input, [224, 224, 3]);
+  assert.deepEqual(shapes.Conv2D, [222, 222, 32]);
+  assert.deepEqual(shapes.Dense, [10]);
+});

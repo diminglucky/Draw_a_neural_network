@@ -540,8 +540,8 @@ test("single-lane tensor layout follows role-specific publication stage gaps", (
   const ordered = [...layout.nodes].sort((left, right) => left.order - right.order);
 
   const [conv, pool, nextConv] = ordered;
-  assert.equal(pool.x - (conv.x + conv.w), 8, "pool should sit close to the source tensor front face");
-  assert.equal(nextConv.x - (pool.x + pool.w), 20, "next feature stage should receive the publication stage gap");
+  assert.equal(pool.x - (conv.x + conv.w), 40, "pool should sit close to the source tensor front face");
+  assert.equal(nextConv.x - (pool.x + pool.w), 60, "next feature stage should receive the publication stage gap");
 });
 
 test("single-lane layout projects tensor depth as an overlapping east face without consuming width", () => {

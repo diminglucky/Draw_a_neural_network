@@ -617,7 +617,8 @@ export function startServer({ port: listenPort = port, host = "127.0.0.1" } = {}
   return new Promise((resolve, reject) => {
     appServer.once("error", reject);
     appServer.listen(listenPort, host, () => {
-      console.log(`Synapse Studio running at http://${host}:${listenPort}`);
+      const actualPort = appServer.address()?.port ?? listenPort;
+      console.log(`Synapse Studio running at http://${host}:${actualPort}`);
       resolve(appServer);
     });
   });
