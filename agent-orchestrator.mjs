@@ -68,10 +68,13 @@ export async function runAgentPipeline(run, options = {}) {
       return rememberResult(current, runtime);
     }
     if (stage === "extract" && containsUnresolved(current.extract)) {
+      const unresolvedNodes = collectUnresolvedNodes(current.extract);
       current.status = "needs-confirmation";
       current.diagnostics = uniqueDiagnostics([...current.diagnostics, {
         kind: "needs-confirmation", code: "unresolved-evidence", severity: "warning",
-        message: "Evidence contains unresolved architecture structure.",
+        message: unresolvedNodes.length
+          ? `Evidence contains unresolved architecture structure: ${unresolvedNodes.join(", ")}.`
+          : "Evidence contains unresolved architecture structure.",
       }]);
       await saveRun(current, runtime.runStore);
       return rememberResult(current, runtime);
@@ -291,6 +294,23 @@ function containsUnresolved(value) {
     if (!graph || graph.status === "unresolved" || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return true;
   }
   return Array.isArray(value.diagnostics) && value.diagnostics.some(containsUnresolved) || Array.isArray(value.nodes) && value.nodes.some(containsUnresolved);
+}
+
+function collectUnresolvedNodes(value, acc = []) {
+  if (!value || typeof value !== "object") return acc;
+  if (Array.isArray(value)) { value.forEach((item) => collectUnresolvedNodes(item, acc)); return acc; }
+  if (value.family === "custom" || value.compoundKind === "unresolved") {
+    acc.push(String(value.op || value.label || value.id || "custom"));
+  }
+  if (["recurrent", "rnn", "lstm", "gru"].includes(String(value.family || "").toLowerCase())) {
+    const graph = value.attributes?.internalGraph || value.internalGraph;
+    if (!graph || graph.status === "unresolved" || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+      acc.push(String(value.op || value.label || value.id || value.family));
+    }
+  }
+  if (Array.isArray(value.nodes)) value.nodes.forEach((node) => collectUnresolvedNodes(node, acc));
+  if (Array.isArray(value.diagnostics)) value.diagnostics.forEach((diag) => collectUnresolvedNodes(diag, acc));
+  return acc;
 }
 
 function mismatch(code, message, extra) { return { kind: "readback-mismatch", code, severity: "error", message, ...extra }; }

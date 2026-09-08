@@ -51,14 +51,17 @@
           <label class="field">Base URL<input id="llmBaseUrlInput" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" /></label>
           <label class="field">API Key<input id="llmApiKeyInput" type="password" placeholder="sk-..." autocomplete="off" /></label>
           <button class="primary outline" id="llmFetchModelsButton" type="button">拉取模型列表</button>
-          <label class="field">模型<input id="llmModelInput" type="text" placeholder="先拉取，或手动输入模型名" list="llmModelList" autocomplete="off" /><datalist id="llmModelList"></datalist></label>
+          <label class="field">模型
+            <select id="llmModelSelect"><option value="">（先拉取模型列表）</option></select>
+          </label>
+          <label class="field" id="llmModelCustomField" hidden>自定义模型名<input id="llmModelCustomInput" type="text" placeholder="gpt-4.1-mini" autocomplete="off" /></label>
           <button class="primary" id="llmSaveButton">保存 LLM 配置</button>
           <p class="status-text" id="llmStatusText"></p>
         </section>
         <section class="settings-group">
           <h3>Visio 输出</h3>
-          <p class="hint">必须指定一个已存在的 Visio 文档（.vsdx），图形通过原生 COM 写入。</p>
-          <label class="field">Visio 文档路径<input id="visioDocumentPathInput" type="text" placeholder="C:\项目\model.vsdx" /></label>
+          <p class="hint">填目录会自动命名 model.vsdx（已存在则 model1、model2…）；文件不存在会自动创建。</p>
+          <label class="field">Visio 文档路径<input id="visioDocumentPathInput" type="text" placeholder="例如 C:\tmp\visio 或 C:\tmp\visio\model.vsdx" /></label>
           <label class="field">页面名称<input id="visioPageInput" type="text" value="Page-1" /></label>
           <button class="primary" id="visioSaveButton">保存 Visio 配置</button>
           <p class="status-text" id="visioStatusText"></p>

@@ -36,6 +36,11 @@ body { margin: 0; color: var(--ink); background: var(--bg); font-family: "Avenir
 .message { max-width: 82%; padding: 11px 15px; border-radius: var(--radius); font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .message.user { align-self: flex-end; color: #fff; background: var(--bubble-user); border-bottom-right-radius: 4px; }
 .message.assistant { align-self: flex-start; color: var(--ink); background: var(--bubble-assistant); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.message.pending::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 7px; border-radius: 50%; background: var(--accent); vertical-align: middle; animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 0.15; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.15); } }
+.message-action { display: inline-block; margin-top: 8px; padding: 7px 13px; border: 1px solid var(--accent); border-radius: 8px; color: var(--accent); background: #fff; font-size: 12px; font-weight: 700; cursor: pointer; }
+.message-action:hover { background: rgba(49, 92, 255, 0.06); }
+.message-action:disabled { opacity: .55; cursor: wait; }
 
 /* 底部输入区 */
 .composer { padding: 14px 20px 18px; background: var(--panel); border-top: 1px solid var(--line); }
@@ -66,8 +71,8 @@ textarea#input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(4
 .settings-group h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #334155; }
 .settings-group .hint { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .field { display: grid; gap: 5px; margin-bottom: 12px; color: #334155; font-size: 12px; font-weight: 600; }
-.field input { width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; font: inherit; color: var(--ink); background: #fbfcfe; outline: none; }
-.field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(49, 92, 255, 0.1); }
+.field input, .field select { width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; font: inherit; color: var(--ink); background: #fbfcfe; outline: none; }
+.field input:focus, .field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(49, 92, 255, 0.1); }
 .primary { width: 100%; padding: 10px; border: none; border-radius: 9px; color: #fff; background: var(--accent); font-weight: 700; cursor: pointer; }
 .primary:hover { background: var(--accent-deep); }
 .primary:disabled { opacity: .55; cursor: wait; }

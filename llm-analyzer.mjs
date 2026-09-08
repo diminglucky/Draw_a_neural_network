@@ -41,6 +41,10 @@ const SYSTEM_PROMPT = [
   "9. For modern operators, emit accurate constructorArgs so shape inference is exact:",
   "   include dilation for dilated conv, output_padding for transposed conv, scale_factor or",
   "   size for upsample, and keep residual (add) branches at identical spatial dimensions.",
+  "10. Nodes must be CONCRETE network layers only. Never emit meta or placeholder nodes such",
+  "    as 'hypothesis', 'assumption', 'placeholder', 'architecture', or a restatement of the",
+  "    prompt. If the description is too vague to determine real layers, return a minimal",
+  "    input -> output graph (exactly two nodes, one edge) rather than inventing structure.",
 ].join("\n");
 
 function sourceUserPrompt(source, framework) {
@@ -112,6 +116,21 @@ function extractJSONContent(content) {
   return text.slice(start, end + 1);
 }
 
+// 从上游错误响应里提取可读的关键信息，避免把整段 HTML 错误页塞给用户。
+function extractErrorDetail(text, status) {
+  const raw = String(text || "").trim();
+  if (!raw) return `HTTP ${status}`;
+  const title = raw.match(/<title>([^<]*)<\/title>/i);
+  if (title && title[1].trim()) return title[1].trim();
+  if (raw.startsWith("{")) {
+    try {
+      const obj = JSON.parse(raw);
+      return obj.error?.message || obj.error || obj.message || raw.slice(0, 200);
+    } catch { /* 非合法 JSON */ }
+  }
+  return raw.slice(0, 200);
+}
+
 /**
  * Build a configurable OpenAI-compatible analyzer. Works with any endpoint that
  * implements the Chat Completions protocol (OpenAI, DeepSeek, Ollama, vLLM, ...).
@@ -125,52 +144,64 @@ export function createLLMAnalyzer(config = {}) {
   const available = Boolean(apiKey);
 
   async function post(messages) {
-    try {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          response_format: { type: "json_object" },
-        }),
-      });
-      if (!response.ok) {
-        const detail = (await response.text()).slice(0, 500);
-        return {
-          status: "error",
-          message: `${response.status}: ${detail}`,
-          diagnostics: [{ kind: "llm-http-error", message: `${response.status}: ${detail}` }],
-        };
+    const attempts = 3;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            response_format: { type: "json_object" },
+          }),
+          signal: AbortSignal.timeout(180000),
+        });
+        if (!response.ok) {
+          const detail = extractErrorDetail(await response.text(), response.status);
+          return {
+            status: "error",
+            message: `${response.status}: ${detail}`,
+            diagnostics: [{ kind: "llm-http-error", message: `${response.status}: ${detail}` }],
+          };
+        }
+        const payload = await response.json();
+        const content = payload.choices?.[0]?.message?.content;
+        if (!content) {
+          return {
+            status: "error",
+            message: "LLM returned no content.",
+            diagnostics: [{ kind: "llm-empty-response", message: "LLM returned no content." }],
+          };
+        }
+        const candidate = extractJSONContent(content);
+        if (!candidate) {
+          return {
+            status: "error",
+            message: "LLM output was not valid JSON.",
+            diagnostics: [{ kind: "llm-invalid-json", message: "LLM output was not valid JSON." }],
+          };
+        }
+        const json = JSON.parse(candidate);
+        return { ir: json.ir || json, diagnostics: Array.isArray(json.diagnostics) ? json.diagnostics : [] };
+      } catch (error) {
+        const isTimeout = error?.name === "AbortError" || error?.name === "TimeoutError";
+        const message = isTimeout
+          ? "请求超时（端点响应超过 180 秒，模型推理过慢或服务过载）"
+          : error.message;
+        if (attempt === attempts - 1) {
+          return {
+            status: "error",
+            message,
+            diagnostics: [{ kind: isTimeout ? "llm-timeout" : "llm-request-failed", message }],
+          };
+        }
+        // 网络临时故障：退避重试。
+        await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
       }
-      const payload = await response.json();
-      const content = payload.choices?.[0]?.message?.content;
-      if (!content) {
-        return {
-          status: "error",
-          message: "LLM returned no content.",
-          diagnostics: [{ kind: "llm-empty-response", message: "LLM returned no content." }],
-        };
-      }
-      const candidate = extractJSONContent(content);
-      if (!candidate) {
-        return {
-          status: "error",
-          message: "LLM output was not valid JSON.",
-          diagnostics: [{ kind: "llm-invalid-json", message: "LLM output was not valid JSON." }],
-        };
-      }
-      const json = JSON.parse(candidate);
-      return { ir: json.ir || json, diagnostics: Array.isArray(json.diagnostics) ? json.diagnostics : [] };
-    } catch (error) {
-      return {
-        status: "error",
-        message: error.message,
-        diagnostics: [{ kind: "llm-request-failed", message: error.message }],
-      };
     }
   }
 
@@ -222,9 +253,10 @@ export function createLLMAnalyzer(config = {}) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ model, messages }),
+        signal: AbortSignal.timeout(180000),
       });
       if (!response.ok) {
-        const detail = (await response.text()).slice(0, 500);
+        const detail = extractErrorDetail(await response.text(), response.status);
         return { status: "error", message: `${response.status}: ${detail}` };
       }
       const payload = await response.json();

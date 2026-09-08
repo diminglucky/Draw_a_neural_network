@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// 隔离用户持久化的 LLM 配置（~/.synapse-studio/llm-config.json），
+// 测试只用环境变量控制 LLM 可用性，避免真实 key 导致意外的网络调用。
+process.env.SYNAPSE_NO_SAVED_CONFIG = "1";
+
 function stubFetch(handler) {
   const original = globalThis.fetch;
   globalThis.fetch = handler;

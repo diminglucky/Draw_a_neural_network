@@ -27,10 +27,38 @@ function addMessage(role, content) {
   return bubble;
 }
 
+// 分析过程的阶段提示（与后端真实阶段顺序一致，配合计时让用户感知在推进、非卡死）
+const STAGES = [
+  "正在理解网络结构……",
+  "正在生成 Universal IR……",
+  "正在计算特征图尺寸……",
+  "正在规划版面布局……",
+  "正在写入 Visio……",
+  "正在回读验证……",
+];
+
+function friendlyError(result) {
+  const raw = result.diagnostics?.find((d) => d.severity === "error")?.message
+    || result.error || result.message || "未知错误";
+  // 提取最后一段（通常是 PowerShell/COM 的底层中文错误，如「文件未找到。」）
+  const lastLine = String(raw).split(/\r?\n/).map((s) => s.trim()).filter(Boolean).pop() || "";
+  if (/文件未找到|未找到|不存在|无法打开|无法访问|not found|does not exist|权限|拒绝|access denied/i.test(lastLine)) {
+    return lastLine;
+  }
+  return String(raw).replace(/Visio bridge failed[^:]*:\s*/i, "").trim().slice(0, 300) || "未知错误";
+}
+
 function formatResult(result) {
-  if (result.status === "dry_run") return `Visio 计划已生成：${result.plan?.shapes?.length || 0} 个 Shape。`;
-  if (result.status === "readback_failed") return `Visio 已写入，但回读未通过：缺少 ${result.readbackValidation?.missingSourceNodeIds?.length || 0} 个节点。`;
-  if (result.status === "needs_confirmation") return `分析完成，但部分结构待确认，尚未写入 Visio。`;
+  const status = result.status;
+  if (status === "dry_run") return `Visio 计划已生成：${result.plan?.shapes?.length || 0} 个 Shape。`;
+  if (status === "readback_failed") return `Visio 已写入，但回读未通过：缺少 ${result.readbackValidation?.missingSourceNodeIds?.length || 0} 个节点。`;
+  if (status === "needs_confirmation") return `分析完成，但部分结构待确认，尚未写入 Visio。`;
+  if (status === "render-failed" || status === "visio_unavailable" || status === "invalid_layout") {
+    return `⚠️ 绘制失败：${friendlyError(result)}`;
+  }
+  if (status !== "rendered" && status !== "completed" && status !== "plan_ready") {
+    return `⚠️ 状态异常：${status}`;
+  }
   return `✅ 已绘制到 Visio：${result.createdShapes || 0} 个 Shape，${result.createdConnectorSegments || 0} 段连接。`;
 }
 
@@ -47,6 +75,8 @@ async function handleSend() {
     addMessage("user", text || "[图片]");
     addMessage("assistant", "⚠️ 尚未配置 Visio 文档路径。请点击左下角 ⚙ 设置，填入一个已存在的 .vsdx 文档路径。");
     openSettings();
+    input.value = "";
+    input.style.height = "auto";
     return;
   }
 
@@ -54,9 +84,19 @@ async function handleSend() {
   const userLabel = text || `[已上传 ${state.images.length} 张架构图]`;
   addMessage("user", userLabel);
 
-  const pending = addMessage("assistant", "正在分析并绘制到 Visio……");
+  const pending = addMessage("assistant", "正在理解网络结构……（0s）");
+  pending.classList.add("pending");
   setStatus("分析中");
   $("#sendButton").disabled = true;
+
+  // 阶段动效 + 计时器：让用户感知分析在推进，而非卡死。
+  const startTime = Date.now();
+  let stageIndex = 0;
+  const stageTimer = setInterval(() => {
+    if (stageIndex < STAGES.length - 1) stageIndex += 1;
+    const seconds = Math.floor((Date.now() - startTime) / 1000);
+    pending.textContent = `${STAGES[stageIndex]}（已用时 ${seconds}s）`;
+  }, 1800);
 
   try {
     const options = { documentPath, pageName };
@@ -65,23 +105,70 @@ async function handleSend() {
     else options.prompt = text;
 
     const result = await renderCurrentIRToVisio(options);
+    pending.classList.remove("pending");
     pending.textContent = formatResult(result);
     setStatus(result.status === "dry_run" ? "已生成计划" : "已渲染");
   } catch (error) {
+    pending.classList.remove("pending");
     if (error.payload?.status === "needs_external_vision") {
       pending.textContent = "⚠️ 图像分析需要配置可用的视觉模型。请在设置里配置 LLM API Key。";
       openSettings();
     } else if (error.payload?.status === "needs_confirmation") {
-      pending.textContent = "⚠️ 部分结构待确认，尚未写入 Visio。";
+      const evidence = (error.payload.diagnostics || []).find((d) => d.code === "unresolved-evidence");
+      const names = evidence?.message?.match(/structure:\s*(.+?)\./)?.[1] || "";
+      pending.textContent = names
+        ? `⚠️ 有未识别的结构（${names}），尚未写入 Visio。`
+        : "⚠️ 分析发现未解决的结构，尚未写入 Visio。";
+      const confirmButton = document.createElement("button");
+      confirmButton.className = "message-action";
+      confirmButton.textContent = "仍然渲染（忽略未解决结构）";
+      confirmButton.addEventListener("click", () => confirmAndRender(error.payload.id, pending, confirmButton));
+      pending.appendChild(confirmButton);
     } else {
       pending.textContent = `⚠️ 失败：${error.message}`;
     }
     setStatus("失败");
   } finally {
+    clearInterval(stageTimer);
     $("#sendButton").disabled = false;
     input.value = "";
+    input.style.height = "auto";
     clearImages();
     input.focus();
+  }
+}
+
+async function confirmAndRender(runId, bubble, button) {
+  button.disabled = true;
+  bubble.classList.add("pending");
+  bubble.textContent = "正在继续渲染……（0s）";
+  setStatus("渲染中");
+  const startTime = Date.now();
+  const stageTimer = setInterval(() => {
+    const seconds = Math.floor((Date.now() - startTime) / 1000);
+    bubble.textContent = `正在渲染……（已用时 ${seconds}s）`;
+  }, 1800);
+  try {
+    const response = await fetch(`/api/agent-run/${encodeURIComponent(runId)}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "confirm", value: { accepted: true } }),
+    });
+    const payload = await response.json();
+    clearInterval(stageTimer);
+    bubble.classList.remove("pending");
+    if (!response.ok) {
+      bubble.textContent = `⚠️ 继续渲染失败：${payload.message || payload.error || "未知错误"}`;
+      setStatus("失败");
+    } else {
+      bubble.textContent = formatResult(payload);
+      setStatus(payload.status === "dry_run" ? "已生成计划" : "已渲染");
+    }
+  } catch (err) {
+    clearInterval(stageTimer);
+    bubble.classList.remove("pending");
+    bubble.textContent = `⚠️ 继续渲染失败：${err.message}`;
+    setStatus("失败");
   }
 }
 
@@ -124,13 +211,45 @@ function closeSettings() {
 }
 
 // === LLM 配置（走后端，持久化到 llm-config.json） ===
+function currentModel() {
+  const value = $("#llmModelSelect").value;
+  if (value === "__custom__" || value === "") return $("#llmModelCustomInput").value.trim();
+  return value;
+}
+function setModelOptions(models, current) {
+  const select = $("#llmModelSelect");
+  select.innerHTML = "";
+  if (!models.length) {
+    // 尚未拉取：显示已保存的模型（如有），否则占位
+    const opt = document.createElement("option");
+    opt.value = current || "";
+    opt.textContent = current || "（先拉取模型列表）";
+    select.appendChild(opt);
+    select.dispatchEvent(new Event("change"));
+    return;
+  }
+  // 拉取到模型：列出全部 + 末尾「自定义」
+  for (const model of models) {
+    const opt = document.createElement("option");
+    opt.value = model;
+    opt.textContent = model;
+    select.appendChild(opt);
+  }
+  const custom = document.createElement("option");
+  custom.value = "__custom__";
+  custom.textContent = "✏️ 自定义模型名…";
+  select.appendChild(custom);
+  if (current && models.includes(current)) select.value = current;
+  else select.value = models[0];
+  select.dispatchEvent(new Event("change"));
+}
 async function loadLLMConfig() {
   const status = $("#llmStatusText");
   try {
     const response = await fetch("/api/llm-config");
     const config = await response.json();
     $("#llmBaseUrlInput").value = config.baseUrl || "";
-    $("#llmModelInput").value = config.model || "";
+    setModelOptions([], config.model || "");
     $("#llmApiKeyInput").placeholder = config.apiKeyConfigured ? `已配置（${config.apiKeyMasked}），留空保持不变` : "sk-...";
     status.textContent = config.apiKeyConfigured ? `已配置：${config.apiKeyMasked}` : "尚未配置 API Key（自然语言画图需要它）。";
   } catch (error) {
@@ -148,26 +267,16 @@ async function fetchModels() {
     const response = await fetch("/api/llm-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseUrl, apiKey }) });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || "拉取失败");
-    const datalist = $("#llmModelList");
-    datalist.innerHTML = "";
-    for (const model of payload.models || []) {
-      const option = document.createElement("option");
-      option.value = model;
-      datalist.appendChild(option);
-    }
-    const current = $("#llmModelInput").value.trim();
-    if (payload.models?.length && !payload.models.includes(current)) {
-      $("#llmModelInput").value = payload.models[0];
-    }
-    status.textContent = `已拉取 ${payload.models?.length || 0} 个模型，可从下拉选择。`;
+    const previous = $("#llmModelSelect").value;
+    setModelOptions(payload.models || [], previous === "__custom__" ? "" : previous);
+    status.textContent = `已拉取 ${payload.models?.length || 0} 个模型，请从下拉选择。`;
   } catch (error) {
     status.textContent = `拉取失败：${error.message}`;
   } finally { button.disabled = false; }
 }
-
 async function saveLLMConfig() {
   const status = $("#llmStatusText"); const button = $("#llmSaveButton");
-  const body = { baseUrl: $("#llmBaseUrlInput").value.trim(), model: $("#llmModelInput").value.trim() };
+  const body = { baseUrl: $("#llmBaseUrlInput").value.trim(), model: currentModel() };
   const apiKey = $("#llmApiKeyInput").value.trim();
   if (apiKey) body.apiKey = apiKey;
   button.disabled = true; status.textContent = "正在保存……";
@@ -189,9 +298,31 @@ function loadVisioConfig() {
   $("#visioPageInput").value = localStorage.getItem("visioPage") || "Page-1";
 }
 function saveVisioConfig() {
-  localStorage.setItem("visioDocumentPath", $("#visioDocumentPathInput").value.trim());
-  localStorage.setItem("visioPage", $("#visioPageInput").value.trim() || "Page-1");
-  $("#visioStatusText").textContent = "已保存 Visio 配置。";
+  const status = $("#visioStatusText"); const button = $("#visioSaveButton");
+  const rawPath = $("#visioDocumentPathInput").value.trim();
+  const pageName = $("#visioPageInput").value.trim() || "Page-1";
+  if (!rawPath) {
+    status.textContent = "请先填写 Visio 文档路径（可以是目录，会自动命名 model.vsdx）。";
+    return;
+  }
+  button.disabled = true; status.textContent = "正在准备 Visio 文档……";
+  (async () => {
+    try {
+      const response = await fetch("/api/visio-prepare", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: rawPath }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || "准备失败");
+      localStorage.setItem("visioDocumentPath", data.documentPath);
+      localStorage.setItem("visioPage", pageName);
+      $("#visioDocumentPathInput").value = data.documentPath;
+      status.textContent = data.created
+        ? `已自动创建 ${data.documentPath}，并保存配置。`
+        : `已保存 Visio 配置：${data.documentPath}`;
+    } catch (error) {
+      status.textContent = `保存失败：${error.message}`;
+    } finally { button.disabled = false; }
+  })();
 }
 
 // === 事件绑定 ===
@@ -216,6 +347,11 @@ document.querySelectorAll(".suggestion").forEach((button) => {
 $("#settingsToggle").addEventListener("click", openSettings);
 $("#closeSettings").addEventListener("click", closeSettings);
 $("#drawerBackdrop").addEventListener("click", closeSettings);
+$("#llmModelSelect").addEventListener("change", () => {
+  const isCustom = $("#llmModelSelect").value === "__custom__";
+  $("#llmModelCustomField").hidden = !isCustom;
+  if (isCustom) $("#llmModelCustomInput").focus();
+});
 $("#llmFetchModelsButton").addEventListener("click", fetchModels);
 $("#llmSaveButton").addEventListener("click", saveLLMConfig);
 $("#visioSaveButton").addEventListener("click", saveVisioConfig);

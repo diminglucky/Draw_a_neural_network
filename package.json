@@ -8,7 +8,7 @@
     "start": "electron .",
     "pack": "electron-builder --win",
     "dist": "electron-builder",
-    "test": "node --test"
+    "test": "node --import ./test-setup.mjs --test"
   },
   "build": {
     "appId": "com.synapse.studio",

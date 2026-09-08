@@ -323,6 +323,19 @@ function runPowerShell(command) {
   });
 }
 
+export async function createEmptyVisioDocument(targetPath, options = {}) {
+  const scriptPath = String(options.scriptPath || fileURLToPath(new URL("./visio-create-empty.ps1", import.meta.url))).trim();
+  if (!scriptPath) throw new Error("scriptPath is required.");
+  const encoded = Buffer.from(String(targetPath), "utf8").toString("base64");
+  const command = {
+    file: "powershell.exe",
+    args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-TargetPathBase64", "__STDIN__"],
+    stdin: encoded,
+  };
+  const runner = options.runner || runPowerShell;
+  return runner(command);
+}
+
 function shapePlan(node, options) {
   const semantic = compileSemanticVisualNode(node);
   const visualRole = String(node.visualRole || semantic.visualRole || options.shapeKind || "operator");

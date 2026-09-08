@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { extname, join, normalize } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { extname, join, normalize, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import {
   analyzeArchitectureInput,
   extractArchitectureEvidence,
@@ -12,13 +13,15 @@ import {
 import { createAgentRun, persistAgentRun, resumeAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
 import { createMemoryRunStore } from "./run-store.mjs";
 import { validateFigurePlan } from "./figure-plan.mjs";
-import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
+import { buildVisioRenderPlan, renderUniversalFigureToVisio, createEmptyVisioDocument } from "./visio-bridge.mjs";
 import { createLLMAnalyzer } from "./llm-analyzer.mjs";
 import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./generic-source-topology.mjs";
 
 const port = Number(process.env.PORT || 4173);
-const root = process.cwd();
-const llmConfigPath = join(root, "llm-config.json");
+// 静态文件目录 = server.js 所在目录（不依赖 cwd；Electron 打包后从 app.asar 读取）
+const root = fileURLToPath(new URL(".", import.meta.url));
+// 配置写到用户主目录，保证无论从何处启动（node / Electron / 双击 exe）都能读到
+const llmConfigPath = join(homedir(), ".synapse-studio", "llm-config.json");
 
 function loadLLMConfig() {
   const fromEnv = {
@@ -26,6 +29,8 @@ function loadLLMConfig() {
     apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "",
     model: process.env.LLM_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4.1-mini",
   };
+  // 测试/CI 可用 SYNAPSE_NO_SAVED_CONFIG=1 忽略用户持久化的配置，只用环境变量。
+  if (process.env.SYNAPSE_NO_SAVED_CONFIG === "1") return fromEnv;
   try {
     if (existsSync(llmConfigPath)) {
       const saved = JSON.parse(readFileSync(llmConfigPath, "utf8"));
@@ -44,6 +49,33 @@ function maskApiKey(key) {
   return `${key.slice(0, 4)}••••${key.slice(-4)}`;
 }
 
+// 把用户填的 Visio 路径规范化为一个完整的 .vsdx 文件路径：
+// 目录 -> 目录\model.vsdx；无后缀 -> 补 .vsdx；已存在 -> model1.vsdx / model2.vsdx …。
+function resolveVisioDocumentPath(rawPath) {
+  let p = String(rawPath || "").trim();
+  if (!p) return { error: "请输入 Visio 文档路径。" };
+  let isDir = false;
+  try { isDir = statSync(p).isDirectory(); } catch { /* 不存在或非目录 */ }
+  if (isDir) {
+    p = join(p, "model.vsdx");
+  } else if (!/\.vsdx$/i.test(p)) {
+    p += ".vsdx";
+  }
+  if (existsSync(p)) {
+    const dir = dirname(p);
+    const stem = basename(p).replace(/\.vsdx$/i, "");
+    let i = 1;
+    let candidate;
+    do {
+      candidate = join(dir, `${stem}${i}.vsdx`);
+      i += 1;
+    } while (existsSync(candidate));
+    p = candidate;
+  }
+  // 统一为 Windows 原生反斜杠：Visio 的 SaveAsEx 不接受正斜杠路径。
+  return { path: normalize(p) };
+}
+
 let llmConfig = loadLLMConfig();
 let llmAnalyzer = createLLMAnalyzer(llmConfig);
 
@@ -54,7 +86,10 @@ function applyLLMConfig(patch = {}) {
     model: String(patch.model || llmConfig.model).trim() || llmConfig.model,
   };
   llmAnalyzer = createLLMAnalyzer(llmConfig);
-  try { writeFileSync(llmConfigPath, JSON.stringify(llmConfig, null, 2)); } catch { /* 持久化失败不影响内存配置 */ }
+  try {
+    mkdirSync(dirname(llmConfigPath), { recursive: true });
+    writeFileSync(llmConfigPath, JSON.stringify(llmConfig, null, 2));
+  } catch { /* 持久化失败不影响内存配置 */ }
   return llmConfig;
 }
 
@@ -170,22 +205,35 @@ const MAX_SHAPE_CORRECTION_ROUNDS = 3;
 
 async function extractThroughLLM(input) {
   const result = await llmAnalyzer.analyze(input);
-  if (result.status) return extractArchitectureEvidence(input);
+  if (result.status) {
+    if (input?.kind === "prompt") {
+      // prompt 没有正则回退，LLM 失败必须明确报错，否则会 fallback 成「假设节点」。
+      throw new Error(`LLM 分析失败：${result.message || result.status}。请检查设置里的 Base URL / API Key / 模型，以及网络连接。`);
+    }
+    // source 输入：回退到正则提取（正则能处理简单代码拓扑）。
+    return extractArchitectureEvidence(input);
+  }
   let ir = applyShapeInference(result.ir);
   const diagnostics = Array.isArray(result.diagnostics) ? [...result.diagnostics] : [];
-  // 自纠闭环：规则验算 → 发现问题 → 带回反馈重问 LLM → 修正，直到自洽或达到上限。
+  // 自纠闭环：语义校验 + shape 验算 → 发现结构/尺寸问题 → 带反馈重问 LLM → 修正，直到自洽或达上限。
   for (let round = 0; round < MAX_SHAPE_CORRECTION_ROUNDS; round += 1) {
+    const semanticIssues = validateIRSemantics(ir);
     const diagnosis = diagnoseShapes(ir?.nodes || [], ir?.edges || []);
-    if (diagnosis.ok) break;
-    const feedback = buildShapeFeedback(diagnosis.issues, diagnosis.shapeByNode);
+    if (!semanticIssues.length && diagnosis.ok) break;
+    const feedback = [
+      buildSemanticFeedback(semanticIssues),
+      buildShapeFeedback(diagnosis.issues, diagnosis.shapeByNode),
+    ].filter(Boolean).join("\n\n");
     const correction = await llmAnalyzer.refine(input, ir, feedback);
     if (!correction?.ir) {
-      diagnostics.push({ kind: "shape-correction-failed", message: "Shape self-correction round did not return a revised IR." });
+      diagnostics.push({ kind: "ir-correction-failed", message: "Self-correction round did not return a revised IR." });
       break;
     }
     ir = applyShapeInference(correction.ir);
-    diagnostics.push({ kind: "shape-corrected", round: round + 1, issueCount: diagnosis.issues.length });
+    diagnostics.push({ kind: "ir-corrected", round: round + 1, semanticIssueCount: semanticIssues.length, shapeIssueCount: diagnosis.issues.length });
   }
+  // 兜底：三轮后仍有「元节点」残留，宽容清理并桥接（能画就画）。
+  ir = applyShapeInference(sanitizeIR(ir));
   return extractArchitectureEvidence({
     kind: "ir",
     ir,
@@ -199,6 +247,83 @@ function applyShapeInference(ir) {
   if (!nodes.length) return ir;
   inferShapes(nodes, edges);
   return { ...ir, nodes, edges };
+}
+
+// 清理 LLM 偶尔输出的「元节点」（如 hypothesis/assumption/placeholder）。
+// 它们不是真实网络层，会误触发 needs-confirmation；过滤后把前后节点桥接。
+function sanitizeIR(ir) {
+  if (!ir || !Array.isArray(ir.nodes) || !ir.nodes.length) return ir;
+  const metaPattern = /hypothesis|assumption|placeholder|^architecture$/i;
+  const isMeta = (node) => {
+    const op = String(node.op || "");
+    const label = String(node.label || "");
+    const id = String(node.id || "");
+    return metaPattern.test(op) || metaPattern.test(label) || metaPattern.test(id);
+  };
+  const metaIds = new Set(ir.nodes.filter(isMeta).map((node) => String(node.id)));
+  if (!metaIds.size) return ir;
+  const keptNodes = ir.nodes.filter((node) => !metaIds.has(String(node.id)));
+  const keptIds = new Set(keptNodes.map((node) => String(node.id)));
+  const edges = [];
+  const metaEdges = [];
+  for (const edge of ir.edges || []) {
+    const src = String(edge.source);
+    const dst = String(edge.target);
+    if (metaIds.has(src) || metaIds.has(dst)) metaEdges.push(edge);
+    else if (keptIds.has(src) && keptIds.has(dst)) edges.push(edge);
+  }
+  // 桥接：每个元节点的入边源 → 每个元节点的出边目标
+  for (const metaId of metaIds) {
+    const incoming = metaEdges.filter((edge) => String(edge.target) === metaId).map((edge) => String(edge.source));
+    const outgoing = metaEdges.filter((edge) => String(edge.source) === metaId).map((edge) => String(edge.target));
+    for (const src of incoming) {
+      for (const dst of outgoing) {
+        if (keptIds.has(src) && keptIds.has(dst) && src !== dst) {
+          edges.push({ id: `bridge-${src}-${dst}`, source: src, target: dst, type: "signal", confidence: 1 });
+        }
+      }
+    }
+  }
+  return { ...ir, nodes: keptNodes, edges };
+}
+
+// 语义校验：检查 IR 是否「合法」——元节点、缺失 input/output、悬空边。
+// 这些是结构性问题，优先反馈给 LLM 重问（而非静默清理）。
+function validateIRSemantics(ir) {
+  const issues = [];
+  const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
+  const edges = Array.isArray(ir?.edges) ? ir.edges : [];
+  if (!nodes.length) return [{ kind: "empty-graph", message: "The IR has no nodes at all." }];
+  const nodeIds = new Set(nodes.map((node) => String(node.id)));
+  const metaPattern = /hypothesis|assumption|placeholder|^architecture$/i;
+  for (const node of nodes) {
+    const op = String(node.op || "");
+    const label = String(node.label || "");
+    const id = String(node.id || "");
+    if (metaPattern.test(op) || metaPattern.test(label) || metaPattern.test(id)) {
+      issues.push({ kind: "meta-node", nodeId: id, message: `Node "${op || label || id}" is a meta/placeholder node, not a concrete layer. Replace it with real layers (conv/pool/dense/...) or remove it.` });
+    }
+  }
+  if (!nodes.some((node) => String(node.family || "").toLowerCase() === "input")) {
+    issues.push({ kind: "missing-input", message: "There is no input node (family \"input\")." });
+  }
+  if (!nodes.some((node) => String(node.family || "").toLowerCase() === "output")) {
+    issues.push({ kind: "missing-output", message: "There is no output node (family \"output\")." });
+  }
+  for (const edge of edges) {
+    if (!nodeIds.has(String(edge.source))) issues.push({ kind: "dangling-edge", edgeId: edge.id, message: `Edge references a missing source "${edge.source}".` });
+    if (!nodeIds.has(String(edge.target))) issues.push({ kind: "dangling-edge", edgeId: edge.id, message: `Edge references a missing target "${edge.target}".` });
+  }
+  return issues;
+}
+
+function buildSemanticFeedback(issues) {
+  if (!issues || !issues.length) return "";
+  return [
+    "Your IR has semantic problems that must be fixed:",
+    ...issues.map((issue) => `- ${issue.message}`),
+    "Return the corrected full IR JSON containing ONLY concrete network layers.",
+  ].join("\n");
 }
 
 async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runStore) {
@@ -252,26 +377,27 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
     const result = await runAgentPipeline(run);
     if (result.status === "needs-confirmation" || result.status === "needs_confirmation") {
       return jsonResponse(409, {
-        status: "needs_confirmation",
         error: "Architecture evidence requires confirmation; Visio was not modified.",
         diagnostics: result.diagnostics,
         ...nextResult(result),
+        status: "needs_confirmation",
       });
     }
     if (result.status === "needs_external_vision") {
       return jsonResponse(409, {
-        status: "needs_external_vision",
         error: "Image evidence requires an available vision analyzer; Visio was not modified.",
         diagnostics: result.diagnostics,
         ...nextResult(result),
+        status: "needs_external_vision",
       });
     }
     if (!result.figurePlan) {
+      const firstError = (result.diagnostics || []).find((d) => d.severity === "error");
       return jsonResponse(422, {
-        status: "invalid_layout",
-        error: "Architecture input did not produce a Figure Plan; Visio was not modified.",
+        error: firstError?.message || "Architecture input did not produce a Figure Plan; Visio was not modified.",
         diagnostics: result.diagnostics,
         ...nextResult(result),
+        status: "invalid_layout",
       });
     }
     const renderPlan = result.renderResult?.plan || buildVisioRenderPlan(result.figurePlan, options);
@@ -446,6 +572,32 @@ function createAppServer() {
       const result = await llmAnalyzer.chat(messages);
       if (result.status) sendJson(response, 502, result);
       else sendJson(response, 200, result);
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/visio-prepare") {
+      const body = await readJson(request);
+      const resolved = resolveVisioDocumentPath(body?.path);
+      if (resolved.error) {
+        sendJson(response, 400, { status: "invalid_input", message: resolved.error });
+        return;
+      }
+      let created = false;
+      if (!existsSync(resolved.path)) {
+        try {
+          const result = await createEmptyVisioDocument(resolved.path, {
+            scriptPath: process.env.VISIO_CREATE_SCRIPT,
+          });
+          if (result?.status !== "created") {
+            sendJson(response, 500, { status: "visio_unavailable", message: result?.message || "无法自动创建 Visio 文档，请确认已安装 Visio。" });
+            return;
+          }
+          created = true;
+        } catch (error) {
+          sendJson(response, 500, { status: "visio_unavailable", message: `无法自动创建 Visio 文档：${error.message}` });
+          return;
+        }
+      }
+      sendJson(response, 200, { status: "ok", documentPath: resolved.path, created });
       return;
     }
     if (request.method === "POST") {
