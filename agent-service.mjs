@@ -149,7 +149,7 @@ async function extractThroughLLM(input) {
   });
 }
 
-function applyShapeInference(ir) {
+export function applyShapeInference(ir) {
   const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
   const edges = Array.isArray(ir?.edges) ? ir.edges : [];
   if (!nodes.length) return ir;
@@ -159,7 +159,7 @@ function applyShapeInference(ir) {
 
 // 清理 LLM 偶尔输出的「元节点」（如 hypothesis/assumption/placeholder）。
 // 它们不是真实网络层，会误触发 needs-confirmation；过滤后把前后节点桥接。
-function sanitizeIR(ir) {
+export function sanitizeIR(ir) {
   if (!ir || !Array.isArray(ir.nodes) || !ir.nodes.length) return ir;
   const metaPattern = /hypothesis|assumption|placeholder|^architecture$/i;
   const isMeta = (node) => {
@@ -197,7 +197,7 @@ function sanitizeIR(ir) {
 
 // 语义校验：检查 IR 是否「合法」——元节点、缺失 input/output、悬空边。
 // 这些是结构性问题，优先反馈给 LLM 重问（而非静默清理）。
-function validateIRSemantics(ir) {
+export function validateIRSemantics(ir) {
   const issues = [];
   const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
   const edges = Array.isArray(ir?.edges) ? ir.edges : [];
@@ -225,7 +225,7 @@ function validateIRSemantics(ir) {
   return issues;
 }
 
-function buildSemanticFeedback(issues) {
+export function buildSemanticFeedback(issues) {
   if (!issues || !issues.length) return "";
   return [
     "Your IR has semantic problems that must be fixed:",
