@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// Resumable pipeline orchestrator.
+//
+// Naming note: this module is NOT an autonomous LLM agent. It is a
+// deterministic pipeline state machine — it runs a fixed stage order
+// (inspect -> extract -> normalize -> plan) with resumable snapshots and a
+// confirmation/repair gate. "Agent" survives only in historical names and the
+// public /api/agent-run endpoint for backward compatibility.
+// ---------------------------------------------------------------------------
 import { normalizeArchitectureInput } from "./input-adapters.mjs";
 import { createMemoryRunStore } from "./run-store.mjs";
 

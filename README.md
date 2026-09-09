@@ -1,6 +1,16 @@
 # Draw_a_neural_network
 
-这是一个以 Microsoft Visio 为唯一绘图后端的神经网络架构 Agent。所有最终图形都通过 PowerShell/COM 写入已有 `.vsdx`，生成原生 Shape、连接器和 Shape Data，并执行回读校验。
+这是一个以 Microsoft Visio 为唯一绘图后端的神经网络架构编译器。所有最终图形都通过 PowerShell/COM 写入已有 `.vsdx`，生成原生 Shape、连接器和 Shape Data，并执行回读校验。
+
+## 架构定位
+
+本项目是**「LLM 前端提取 + 确定性编译器 + 可恢复状态机」**，不是自主 LLM Agent：
+
+- **LLM 负责看懂结构**（源码 / 自然语言 / 图像 → 结构化 Universal IR），不做形状计算；
+- **规则负责算准尺寸**（`inferShapes` 静态传播特征图尺寸，算不准就返回 `null` 而非猜测）；
+- **可恢复状态机**（`agent-orchestrator`）按固定阶段 `inspect → extract → normalize → plan` 推进，支持快照恢复与确认/修复门控。
+
+代码中的 `agent` 命名（`agent-orchestrator.mjs`、`/api/agent-run`）是历史遗留，不表示具备工具调用循环或自主规划能力。
 
 ## 主链路
 
