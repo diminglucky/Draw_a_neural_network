@@ -61,9 +61,9 @@ node server.js
 
 ## API
 
-- `POST /api/analyze-code`：源码或 IR 分析。
+- `POST /api/analyze-code`：源码或 IR 的**规则分析**（同步、不接 LLM；prompt 输入会返回未解决假设节点而非真实结构，需要 LLM 理解请改用 `/api/agent-run`）。
+- `POST /api/agent-run`：可恢复的完整 Agent 运行（前端实际入口，源码/prompt 走 LLM、图片走视觉分析，均含 shape 验算自纠）。
 - `POST /api/render-visio`：将 Figure Plan 写入已有 Visio 文档。
-- `POST /api/agent-run`：可恢复的完整 Agent 运行。
 
 核心状态为 `ready_for_preview`、`needs_confirmation`、`needs_external_vision` 和 `invalid_input`。未确认的结构不会被伪造或静默展开。
 
@@ -72,15 +72,20 @@ node server.js
 ```text
 index.html                     输入与 Visio 控制面
 app.js                         输入、状态和 Visio 执行
-server.js                      HTTP 服务与 Agent API
+server.js                      HTTP 服务与 Agent API（纯路由层）
+agent-service.mjs              Agent 服务装配、LLM 提取、shape 验算自纠、Visio 执行
 llm-analyzer.mjs               可配置 OpenAI-compatible 大模型分析（代码/描述/图片 → IR）
+llm-config.mjs                 LLM 配置加载/持久化/模型列表拉取
 agent-pipeline.mjs             统一分析入口
 agent-orchestrator.mjs         可恢复运行状态机
+run-store.mjs                  运行状态持久化
 input-adapters.mjs             输入归一化
+generic-source-topology.mjs    源码拓扑提取 + shape inference（特征图尺寸）
 evidence-graph.mjs             证据图
 universal-ir.mjs               通用 IR 归一化与校验
 semantic-visual-grammar.mjs    语义视觉角色与输入语法
 universal-figure.mjs           拓扑驱动的 Figure Plan 几何
+compound-module.mjs            复合模块布局与命名模块几何
 figure-plan.mjs                Figure Plan 契约与校验
 visio-client.mjs               Visio 请求边界
 visio-bridge.mjs               Visio 计划、COM 执行和回读校验
@@ -90,7 +95,7 @@ visio-bridge.ps1               原生 Visio Shape/Connector bridge
 ## 验证
 
 ```bash
-node --test
+node --import ./test-setup.mjs --test
 ```
 
 测试覆盖 IR、证据、语义图形、循环网络、Visio 计划、Shape Data、连接器端点、运行恢复和 HTTP 边界。真实 Visio 验收仍需要 Windows 上已安装并可自动化的 Microsoft Visio，以及一个明确存在的 `.vsdx` 文档。
