@@ -53,12 +53,16 @@ const SYSTEM_PROMPT = [
   "    as 'hypothesis', 'assumption', 'placeholder', 'architecture', or a restatement of the",
   "    prompt. If the description is too vague to determine real layers, return a minimal",
   "    input -> output graph (exactly two nodes, one edge) rather than inventing structure.",
-  "11. When the architecture has recognizable high-level sections (YOLO's Backbone/Neck/Head,",
-  "    a CNN's stage1..stage5, or an encoder/decoder), emit a top-level \"groups\" array:",
-  "    [ { \"id\": string, \"label\": string, \"kind\": \"backbone\"|\"neck\"|\"head\"|\"stage\"|\"module\",",
-  "        \"nodeIds\": [ node ids belonging to this group ] } ].",
-  "    Each node belongs to at most one group. Groups only drive visual containment/labels;",
-  "    they do NOT change data flow. If no clear grouping exists, omit groups.",
+  "11. When the architecture has recognizable high-level sections — detector Backbone/Neck/Head,",
+  "    U-Net encoder/bottleneck/decoder, a CNN's stage1..stage5, a Transformer encoder/decoder",
+  "    stack, etc. — emit a top-level \"groups\" array that DRIVES THE LAYOUT:",
+  "    [ { \"id\": string, \"label\": string, \"kind\": string, \"nodeIds\": [ node ids ] } ].",
+  "    THE ARRAY ORDER IS THE LEFT-TO-RIGHT COLUMN ORDER: list groups in the visual order they",
+  "    should appear (e.g. [encoder, bottleneck, decoder] for a U-Net, [backbone, neck, head] for",
+  "    a detector). Within a group, nodes are auto-arranged by feature-map resolution, largest on",
+  "    top. \"kind\" is a free label used only for the legend/color, never a layout directive — any",
+  "    grouping you describe (U-Net, ResNet, VGG, ViT, …) renders through the same generic grid.",
+  "    Each node belongs to at most one group. If no clear grouping exists, omit groups.",
 ].join("\n");
 
 function sourceUserPrompt(source, framework) {

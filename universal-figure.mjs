@@ -63,7 +63,8 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   const grammar = selectFigureGrammar(ir);
   const figure = normalizeFigure(ir.figure);
   const artboard = normalizeArtboard(options.artboard);
-  const normalizedNodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index)) : [];
+  const sizes = { ...FAMILY_SIZE, ...(options.sizeOverrides || {}) };
+  const normalizedNodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index, sizes)) : [];
   const normalizedEdges = Array.isArray(ir.edges) ? ir.edges.map((edge, index) => normalizeEdge(edge, index)) : [];
   const condensed = condenseLinearConvRuns(normalizedNodes, normalizedEdges);
   const sourceNodes = resolvePublicationGeometry(
@@ -88,7 +89,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
       w: visualWidth,
       stageIndex: stageIndexByStage.get(String(node.stage)) ?? 0,
       representation: representationFor(node),
-      inner: layoutInnerGraph(node),
+      inner: layoutInnerGraph(node, sizes),
       note: node.note || (node.family === "custom" ? "unresolved structure · review evidence" : ""),
     };
     nodes.push(positioned);
@@ -192,52 +193,44 @@ function resolutionOf(node) {
   return Number.isFinite(h) && h > 0 ? h : null;
 }
 
-function pyramidLayoutFor(nodes, artboard) {
-  // FPN/PAN-style detectors (YOLO, RetinaNet, …) flow through a feature
-  // pyramid: downsampling descends (H shrinks) while upsampling ascends
-  // (H grows). Top-journal figures render this as a vertical hourglass,
-  // not a single horizontal lane. Detect that topology and assign one
-  // vertical lane per distinct resolution, largest on top.
-  const hasUpsample = nodes.some((node) => String(node.family) === "upsample");
-  if (!hasUpsample) return null;
+function resolutionLanesFor(nodes, artboard) {
+  // One vertical lane per distinct feature-map resolution (largest on top).
+  // This is a pure geometry signal — it says nothing about detector vs U-Net
+  // vs any other multi-resolution network. The caller uses it purely because
+  // groups exist, never because a specific operator or family name is present.
   const resolutions = [...new Set(nodes.map(resolutionOf).filter((r) => r != null))].sort((a, b) => b - a);
-  if (resolutions.length < 3) return null;
+  if (resolutions.length < 2) return null;
   const maxNodeHeight = nodes.reduce((max, node) => Math.max(max, node.h), 0);
   const laneGap = Math.max(150, maxNodeHeight + 64);
   const top = artboard.y + 70;
   const yByResolution = new Map(resolutions.map((r, index) => [r, Math.round(top + index * laneGap)]));
   return {
-    yFor: (node) => {
-      const r = resolutionOf(node);
-      return r != null ? yByResolution.get(r) : null;
-    },
+    resolutions,
     laneGap,
     laneCount: resolutions.length,
+    top,
     height: Math.round(top + resolutions.length * laneGap + 80),
+    yFor: (resolution) => yByResolution.get(resolution),
   };
 }
 
-function pyramidColumns(nodes, groups) {
-  // Top-journal detector figures place Backbone / Neck / Head in separate
-  // vertical columns (backbone left, neck middle, head right), not one long
-  // horizontal chain. Map each node to a column from its group membership;
-  // unknown kinds get an extra column appended to the right.
-  const knownKinds = new Map([["backbone", 0], ["neck", 1], ["head", 2]]);
-  const extraKinds = [];
+function columnIndexByGroup(nodes, groups) {
+  // Column = group's position in the array. The LLM (or external author) owns
+  // the semantic meaning of each group (backbone/neck/head, encoder/decoder,
+  // encoder/bottleneck/decoder, …); the layout layer only respects the order
+  // it was given. Nodes not in any group land in one trailing column.
+  const orderedGroups = Array.isArray(groups) ? groups : [];
   const colOf = new Map();
-  for (const group of (Array.isArray(groups) ? groups : [])) {
-    const kind = String(group.kind || "").toLowerCase();
-    let col = knownKinds.get(kind);
-    if (col == null) {
-      let found = extraKinds.indexOf(kind);
-      if (found < 0) { found = extraKinds.length; extraKinds.push(kind); }
-      col = 3 + found;
-    }
+  orderedGroups.forEach((group, index) => {
     for (const id of (Array.isArray(group.nodeIds) ? group.nodeIds : [])) {
-      colOf.set(String(id), col);
+      if (!colOf.has(String(id))) colOf.set(String(id), index);
     }
+  });
+  const fallbackCol = orderedGroups.length;
+  for (const node of (Array.isArray(nodes) ? nodes : [])) {
+    if (!colOf.has(String(node.id))) colOf.set(String(node.id), fallbackCol);
   }
-  return { colOf, colCount: 3 + extraKinds.length };
+  return { colOf, fallbackCol };
 }
 
 // ---------------------------------------------------------------------------
@@ -246,51 +239,86 @@ function pyramidColumns(nodes, groups) {
 // single xFor/yFor interface so topology-specific logic stays isolated here.
 // ---------------------------------------------------------------------------
 function computePlacement(nodes, edges, groups, artboard) {
-  const pyramid = pyramidLayoutFor(nodes, artboard);
-  if (pyramid) return pyramidPlacement(nodes, groups, pyramid, artboard);
+  // Layout is data-driven, not topology-guessed. Groups come only from the LLM
+  // (or an external author); their array order IS the left-to-right column
+  // order. No family names (backbone/neck/head) or operator names (upsample)
+  // are special-cased here, so any network the LLM groups renders correctly.
+  if (Array.isArray(groups) && groups.length > 0) {
+    return groupedPlacement(nodes, groups, artboard);
+  }
   if (isLinearChain(nodes, edges)) return linearPlacement(nodes, artboard);
   return stagePlacement(nodes, artboard);
 }
 
-// FPN/PAN detectors: column = semantic group (backbone/neck/head), row =
-// feature-map resolution lane (largest on top). Same-resolution siblings in a
-// column offset horizontally; columns widen dynamically so lanes never overlap.
-function pyramidPlacement(nodes, groups, pyramid, artboard) {
-  const columns = pyramidColumns(nodes, groups);
+// Grouped column layout (generic): column = group order, row = feature-map
+// resolution lane when resolutions differ, otherwise the node's stage. This is
+// the single layout used whenever the LLM supplies groups, and it is agnostic
+// to what those groups mean — detectors, U-Nets, or any grouped architecture
+// all project through the same column/row grid.
+function groupedPlacement(nodes, groups, artboard) {
+  const columns = columnIndexByGroup(nodes, groups);
+  const lanes = resolutionLanesFor(nodes, artboard);
   const maxWidth = nodes.reduce((max, node) => Math.max(max, node.w), 0);
-  // Same-lane siblings advance by at least the widest block plus a gutter, so
+  // Same-row siblings advance by at least the widest block plus a gutter, so
   // adjacent blocks can never overlap regardless of per-role width.
   const step = Math.max(132, maxWidth + 24);
+
+  // Row key: resolution when lanes exist, otherwise stage. Nodes without a
+  // resolvable resolution fall into one shared bottom row (offset by seq).
+  const rowKeyOf = (node) => {
+    if (lanes) {
+      const r = resolutionOf(node);
+      if (r != null) return `r:${r}`;
+      return "unresolved";
+    }
+    return `s:${String(node.stage)}`;
+  };
+
   const laneSeq = new Map();
   const colMaxSeq = new Map();
   const laneCounts = new Map();
   const ordered = [...nodes].sort(compareStageThenOrder);
   for (const node of ordered) {
-    const laneY = pyramid.yFor(node);
-    if (laneY == null) continue;
-    const col = columns.colOf.get(String(node.id)) ?? 0;
-    const key = `${col}:${laneY}`;
+    const col = columns.colOf.get(String(node.id)) ?? columns.fallbackCol;
+    const key = `${col}:${rowKeyOf(node)}`;
     const seq = laneCounts.get(key) || 0;
     laneCounts.set(key, seq + 1);
     laneSeq.set(String(node.id), seq);
     colMaxSeq.set(col, Math.max(colMaxSeq.get(col) || 0, seq));
   }
+
+  const usedCols = [...new Set(columns.colOf.values())].sort((a, b) => a - b);
+  const colCount = usedCols.length ? usedCols[usedCols.length - 1] + 1 : 1;
   const colX = new Map();
-  const colCount = Math.max(...[...colMaxSeq.keys()].map((col) => col + 1), 3);
   let cursorX = 0;
   for (let col = 0; col < colCount; col += 1) {
     colX.set(col, cursorX);
     cursorX += ((colMaxSeq.get(col) ?? 0) + 1) * step + 150;
   }
+
+  const rowY = new Map();
+  if (lanes) {
+    for (const r of lanes.resolutions) rowY.set(`r:${r}`, lanes.yFor(r));
+    rowY.set("unresolved", Math.round(lanes.top + lanes.laneCount * lanes.laneGap));
+  } else {
+    const stages = stageOrder(nodes);
+    const maxNodeHeight = nodes.reduce((max, node) => Math.max(max, node.h), 0);
+    const laneGap = Math.max(150, maxNodeHeight + 64);
+    const top = artboard.y + 70;
+    stages.forEach((stage, index) => rowY.set(`s:${stage}`, Math.round(top + index * laneGap)));
+  }
+
+  const height = lanes ? lanes.height : Math.max(artboard.height, 640);
+
   return {
-    mode: "pyramid",
-    artboard: { ...artboard, height: Math.max(artboard.height, pyramid.height) },
+    mode: "grouped",
+    artboard: { ...artboard, height: Math.max(artboard.height, height) },
     xFor: (node) => {
-      const col = columns.colOf.get(String(node.id)) ?? 0;
+      const col = columns.colOf.get(String(node.id)) ?? columns.fallbackCol;
       const seq = laneSeq.get(String(node.id)) ?? 0;
       return Math.round(artboard.x + 50 + (colX.get(col) ?? 0) + seq * step);
     },
-    yFor: (node) => pyramid.yFor(node),
+    yFor: (node) => rowY.get(rowKeyOf(node)) ?? artboard.y,
   };
 }
 
@@ -461,9 +489,9 @@ function grammar(id, reason, confidence) {
   return { id, reason, confidence, source: "semantic-topology" };
 }
 
-function normalizeNode(node = {}, index) {
+function normalizeNode(node = {}, index, sizes = FAMILY_SIZE) {
   const family = String(node.family || node.type || "custom").toLowerCase();
-  const [defaultW, defaultH] = FAMILY_SIZE[family] || FAMILY_SIZE.default;
+  const [defaultW, defaultH] = sizes[family] || sizes.default || FAMILY_SIZE.default;
   const normalized = {
     ...node,
     id: String(node.id || `figure-node-${index + 1}`),
@@ -695,7 +723,7 @@ function compareStage(left, right) {
   return String(left.stage).localeCompare(String(right.stage));
 }
 
-function layoutInnerGraph(node) {
+function layoutInnerGraph(node, sizes = FAMILY_SIZE) {
   const raw = node.attributes?.internalGraph || node.internalGraph || (node.children ? {
     nodes: node.children,
     edges: node.internalEdges || [],
@@ -707,7 +735,7 @@ function layoutInnerGraph(node) {
   }
   const innerNodes = raw.nodes.map((child, index) => {
     const family = String(child.family || child.type || "custom").toLowerCase();
-    const [w, h] = FAMILY_SIZE[family] || [92, 54];
+    const [w, h] = sizes[family] || sizes.default || [92, 54];
     return {
       ...child,
       id: String(child.id || `${node.id}-inner-${index + 1}`),

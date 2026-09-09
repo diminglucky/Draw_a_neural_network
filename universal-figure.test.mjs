@@ -692,3 +692,58 @@ test("layoutUniversalFigure arranges an FPN detector into backbone/neck/head col
 
   assert.equal(layout.validation.ok, true, "pyramid layout must not overlap or violate the artboard");
 });
+
+test("layoutUniversalFigure arranges a U-Net into encoder/bottleneck/decoder columns", () => {
+  const mod = (id, family, stage, h) => ({
+    id, family, op: id, label: id, stage, order: stage,
+    shape: { output: [h, h, 64] },
+  });
+  const nodes = [
+    { id: "in", family: "input", op: "Input", label: "Input", stage: 0, order: 0, shape: { output: [64, 64, 3] } },
+    mod("enc1", "conv", 1, 64), mod("enc2", "conv", 2, 32), mod("enc3", "conv", 3, 16),
+    mod("bot", "conv", 4, 8),
+    { id: "dec1", family: "upsample", op: "Upsample", label: "Upsample", stage: 5, order: 5, shape: { output: [16, 16, 64] } },
+    mod("dec2", "conv", 6, 32), mod("dec3", "conv", 7, 64),
+    { id: "out", family: "output", op: "Output", label: "Output", stage: 8, order: 8, shape: { output: [64, 64, 1] } },
+  ];
+  const groups = [
+    { id: "enc", label: "Encoder", kind: "encoder", nodeIds: ["in", "enc1", "enc2", "enc3"] },
+    { id: "bot", label: "Bottleneck", kind: "bottleneck", nodeIds: ["bot"] },
+    { id: "dec", label: "Decoder", kind: "decoder", nodeIds: ["dec1", "dec2", "dec3", "out"] },
+  ];
+  const edges = [
+    ["in", "enc1"], ["enc1", "enc2"], ["enc2", "enc3"], ["enc3", "bot"],
+    ["bot", "dec1"], ["dec1", "dec2"], ["dec2", "dec3"], ["dec3", "out"],
+    ["enc1", "dec3", "skip"], ["enc2", "dec2", "skip"], ["enc3", "dec1", "skip"],
+  ].map(([s, t, type], i) => ({ id: `e${i}`, source: s, target: t, type: type || "signal" }));
+
+  const layout = layoutUniversalFigure({ nodes, groups, edges });
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+
+  const col = (ids) => ({
+    left: Math.min(...ids.map((id) => byId.get(id).x)),
+    right: Math.max(...ids.map((id) => byId.get(id).x + byId.get(id).w)),
+  });
+  const encoder = col(["in", "enc1", "enc2", "enc3"]);
+  const bottleneck = col(["bot"]);
+  const decoder = col(["dec1", "dec2", "dec3", "out"]);
+
+  assert.ok(encoder.right <= bottleneck.left, "encoder column must sit left of the bottleneck");
+  assert.ok(bottleneck.right <= decoder.left, "bottleneck column must sit left of the decoder");
+
+  assert.ok(byId.get("in").y < byId.get("bot").y, "input (64) must sit above the bottleneck (8)");
+  assert.ok(byId.get("dec3").y < byId.get("bot").y, "decoder output (64) must sit above the bottleneck (8)");
+  assert.equal(byId.get("enc1").y, byId.get("dec3").y, "skip-linked nodes at the same resolution share a lane");
+
+  assert.equal(layout.validation.ok, true, "U-Net layout must not overlap or violate the artboard");
+});
+
+test("layoutUniversalFigure honors sizeOverrides for a family's default dimensions", () => {
+  const layout = layoutUniversalFigure(
+    { nodes: [{ id: "c", family: "custom", op: "Block", label: "Block", stage: 0 }] },
+    { sizeOverrides: { custom: [200, 100] } },
+  );
+  const node = layout.nodes.find((n) => n.id === "c");
+  assert.equal(node.w, 200);
+  assert.equal(node.h, 100);
+});
