@@ -127,6 +127,17 @@ test("unresolved evidence stops before rendering and asks for confirmation", asy
   assert.equal(rendered, false);
 });
 
+test("named modules (compoundKind module) do not trigger the confirmation gate", async () => {
+  const run = createAgentRun(input, dependencies({
+    extract: () => ({ nodes: [{ id: "c2f", family: "custom", compoundKind: "module", label: "C2f" }], edges: [] }),
+    render: undefined,
+    readback: undefined,
+  }));
+  const result = await runAgentPipeline(run);
+  assert.notEqual(result.status, "needs-confirmation");
+  assert.equal(result.status, "completed");
+});
+
 test("legacy allowUnresolved options cannot bypass the confirmation gate", async () => {
   let rendered = false;
   const run = createAgentRun(input, dependencies({

@@ -338,8 +338,7 @@ function unresolvedDiagnostics(ir) {
 function isUnresolvedNode(node = {}) {
   if (node.compoundKind === "unresolved" || node.status === "unresolved") return true;
   if (node.family !== "custom") return false;
-  const graph = node.attributes?.internalGraph || node.internalGraph;
-  return !(node.compoundKind === "module" && graph?.status === "resolved" && Array.isArray(graph.nodes) && graph.nodes.length > 0);
+  return node.compoundKind !== "module";
 }
 
 function unresolvedRecurrentNode(node = {}) {
@@ -379,7 +378,7 @@ function summaryFor(ir, inputKind) {
   return {
     inputKind,
     ...report.summary,
-    unresolvedNodeCount: ir.nodes.filter((node) => node.family === "custom" || node.compoundKind === "unresolved").length,
+    unresolvedNodeCount: ir.nodes.filter((node) => node.compoundKind === "unresolved" || (node.family === "custom" && node.compoundKind !== "module")).length,
   };
 }
 

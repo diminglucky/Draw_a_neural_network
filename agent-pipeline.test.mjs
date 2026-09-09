@@ -176,3 +176,23 @@ test("agent pipeline keeps prompt-only architecture requests as low-confidence h
   assert.equal(result.ir.nodes[0].confidence, 0.2);
   assert.ok(result.diagnostics.some((item) => item.kind === "prompt-topology-unresolved"));
 });
+
+test("named modules (compoundKind module) are not counted as unresolved", () => {
+  const result = analyzeArchitectureInput({
+    kind: "ir",
+    ir: {
+      nodes: [
+        { id: "input", family: "input", op: "Input", stage: 0 },
+        { id: "c2f", family: "custom", compoundKind: "module", label: "C2f", stage: 1 },
+        { id: "output", family: "output", op: "Output", stage: 2 },
+      ],
+      edges: [
+        { id: "e1", source: "input", target: "c2f" },
+        { id: "e2", source: "c2f", target: "output" },
+      ],
+    },
+  });
+
+  assert.equal(result.summary.unresolvedNodeCount, 0);
+  assert.notEqual(result.status, "needs_confirmation");
+});

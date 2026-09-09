@@ -308,7 +308,8 @@ function containsUnresolved(value) {
   if (!value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(containsUnresolved);
   if (value.status === "unresolved" || value.kind === "unresolved-operator" || value.code === "unresolved-operator") return true;
-  if (value.family === "custom" || value.compoundKind === "unresolved") return true;
+  if (value.compoundKind === "unresolved") return true;
+  if (value.family === "custom" && value.compoundKind !== "module") return true;
   if (["recurrent", "rnn", "lstm", "gru"].includes(String(value.family || "").toLowerCase())) {
     const graph = value.attributes?.internalGraph || value.internalGraph;
     if (!graph || graph.status === "unresolved" || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return true;
@@ -319,7 +320,7 @@ function containsUnresolved(value) {
 function collectUnresolvedNodes(value, acc = []) {
   if (!value || typeof value !== "object") return acc;
   if (Array.isArray(value)) { value.forEach((item) => collectUnresolvedNodes(item, acc)); return acc; }
-  if (value.family === "custom" || value.compoundKind === "unresolved") {
+  if (value.compoundKind === "unresolved" || (value.family === "custom" && value.compoundKind !== "module")) {
     acc.push(String(value.op || value.label || value.id || "custom"));
   }
   if (["recurrent", "rnn", "lstm", "gru"].includes(String(value.family || "").toLowerCase())) {
