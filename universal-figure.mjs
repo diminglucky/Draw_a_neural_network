@@ -70,39 +70,28 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     compileSemanticVisualNodes(condensed.nodes, condensed.edges),
   );
   const sourceEdges = condensed.edges;
-  const linear = isLinearChain(sourceNodes, sourceEdges);
-  const fittedArtboard = linear ? fitSingleLaneArtboard(artboard, sourceNodes) : artboard;
+  // Single placement model: every supported topology (linear chain, FPN/PAN
+  // pyramid, generic stage DAG) projects nodes onto a column/row grid through
+  // one xFor/yFor interface. The main loop no longer branches per topology.
+  const placement = computePlacement(sourceNodes, sourceEdges, ir.groups, artboard);
+  const fittedArtboard = placement.artboard;
   const stages = stageOrder(sourceNodes);
-  const stageGap = stages.length > 1 ? (fittedArtboard.width - 260) / (stages.length - 1) : 0;
-  const singleLaneX = linear ? packSingleLaneX(sourceNodes, fittedArtboard) : new Map();
+  const stageIndexByStage = new Map(stages.map((stage, index) => [stage, index]));
   const nodes = [];
 
-  stages.forEach((stage, stageIndex) => {
-    const members = sourceNodes
-      .filter((node) => String(node.stage) === stage)
-      .sort(compareNode);
-    const totalHeight = members.reduce((sum, node) => sum + node.h, 0);
-    const gap = members.length > 1 ? Math.max(26, Math.min(54, Math.floor((artboard.height - 120 - totalHeight) / (members.length - 1)))) : 0;
-    let cursor = fittedArtboard.y + Math.max(60, Math.floor((fittedArtboard.height - totalHeight - gap * Math.max(0, members.length - 1)) / 2));
-    members.forEach((node) => {
-      const visualWidth = compactVisualWidth(node);
-      const rawX = singleLaneX.get(node.id)
-        ?? Math.round(fittedArtboard.x + 130 + stageGap * stageIndex - visualWidth / 2);
-      const x = Math.max(fittedArtboard.x, Math.min(fittedArtboard.x + fittedArtboard.width - visualWidth, rawX));
-      const y = Math.round(cursor);
-      const positioned = {
-        ...node,
-        x,
-        y,
-        w: visualWidth,
-        stageIndex,
-        representation: representationFor(node),
-        inner: layoutInnerGraph(node),
-        note: node.note || (node.family === "custom" ? "unresolved structure · review evidence" : ""),
-      };
-      nodes.push(positioned);
-      cursor += node.h + gap;
-    });
+  [...sourceNodes].sort(compareStageThenOrder).forEach((node) => {
+    const visualWidth = compactVisualWidth(node);
+    const positioned = {
+      ...node,
+      x: placement.xFor(node),
+      y: placement.yFor(node),
+      w: visualWidth,
+      stageIndex: stageIndexByStage.get(String(node.stage)) ?? 0,
+      representation: representationFor(node),
+      inner: layoutInnerGraph(node),
+      note: node.note || (node.family === "custom" ? "unresolved structure · review evidence" : ""),
+    };
+    nodes.push(positioned);
   });
 
   // 标记分叉/合并点：出度 >1 = fork（输出分叉），入度 >1 = merge（输入汇聚）。
@@ -193,6 +182,164 @@ function compactVisualWidth(node) {
   // Publication blocks are uniform cards; the preferred geometry already
   // encodes the width and per-role 3D compression is no longer applied.
   return node.w;
+}
+
+function resolutionOf(node) {
+  // Feature-map height H from channels-last [H, W, C] shape inference output.
+  const shape = node.shape?.output;
+  if (!Array.isArray(shape) || shape.length < 2) return null;
+  const h = Number(shape[0]);
+  return Number.isFinite(h) && h > 0 ? h : null;
+}
+
+function pyramidLayoutFor(nodes, artboard) {
+  // FPN/PAN-style detectors (YOLO, RetinaNet, …) flow through a feature
+  // pyramid: downsampling descends (H shrinks) while upsampling ascends
+  // (H grows). Top-journal figures render this as a vertical hourglass,
+  // not a single horizontal lane. Detect that topology and assign one
+  // vertical lane per distinct resolution, largest on top.
+  const hasUpsample = nodes.some((node) => String(node.family) === "upsample");
+  if (!hasUpsample) return null;
+  const resolutions = [...new Set(nodes.map(resolutionOf).filter((r) => r != null))].sort((a, b) => b - a);
+  if (resolutions.length < 3) return null;
+  const maxNodeHeight = nodes.reduce((max, node) => Math.max(max, node.h), 0);
+  const laneGap = Math.max(150, maxNodeHeight + 64);
+  const top = artboard.y + 70;
+  const yByResolution = new Map(resolutions.map((r, index) => [r, Math.round(top + index * laneGap)]));
+  return {
+    yFor: (node) => {
+      const r = resolutionOf(node);
+      return r != null ? yByResolution.get(r) : null;
+    },
+    laneGap,
+    laneCount: resolutions.length,
+    height: Math.round(top + resolutions.length * laneGap + 80),
+  };
+}
+
+function pyramidColumns(nodes, groups) {
+  // Top-journal detector figures place Backbone / Neck / Head in separate
+  // vertical columns (backbone left, neck middle, head right), not one long
+  // horizontal chain. Map each node to a column from its group membership;
+  // unknown kinds get an extra column appended to the right.
+  const knownKinds = new Map([["backbone", 0], ["neck", 1], ["head", 2]]);
+  const extraKinds = [];
+  const colOf = new Map();
+  for (const group of (Array.isArray(groups) ? groups : [])) {
+    const kind = String(group.kind || "").toLowerCase();
+    let col = knownKinds.get(kind);
+    if (col == null) {
+      let found = extraKinds.indexOf(kind);
+      if (found < 0) { found = extraKinds.length; extraKinds.push(kind); }
+      col = 3 + found;
+    }
+    for (const id of (Array.isArray(group.nodeIds) ? group.nodeIds : [])) {
+      colOf.set(String(id), col);
+    }
+  }
+  return { colOf, colCount: 3 + extraKinds.length };
+}
+
+// ---------------------------------------------------------------------------
+// Unified placement: project nodes onto a column/row grid. The three modes
+// differ only in what defines a "column" and a "row"; the main loop consumes a
+// single xFor/yFor interface so topology-specific logic stays isolated here.
+// ---------------------------------------------------------------------------
+function computePlacement(nodes, edges, groups, artboard) {
+  const pyramid = pyramidLayoutFor(nodes, artboard);
+  if (pyramid) return pyramidPlacement(nodes, groups, pyramid, artboard);
+  if (isLinearChain(nodes, edges)) return linearPlacement(nodes, artboard);
+  return stagePlacement(nodes, artboard);
+}
+
+// FPN/PAN detectors: column = semantic group (backbone/neck/head), row =
+// feature-map resolution lane (largest on top). Same-resolution siblings in a
+// column offset horizontally; columns widen dynamically so lanes never overlap.
+function pyramidPlacement(nodes, groups, pyramid, artboard) {
+  const columns = pyramidColumns(nodes, groups);
+  const maxWidth = nodes.reduce((max, node) => Math.max(max, node.w), 0);
+  // Same-lane siblings advance by at least the widest block plus a gutter, so
+  // adjacent blocks can never overlap regardless of per-role width.
+  const step = Math.max(132, maxWidth + 24);
+  const laneSeq = new Map();
+  const colMaxSeq = new Map();
+  const laneCounts = new Map();
+  const ordered = [...nodes].sort(compareStageThenOrder);
+  for (const node of ordered) {
+    const laneY = pyramid.yFor(node);
+    if (laneY == null) continue;
+    const col = columns.colOf.get(String(node.id)) ?? 0;
+    const key = `${col}:${laneY}`;
+    const seq = laneCounts.get(key) || 0;
+    laneCounts.set(key, seq + 1);
+    laneSeq.set(String(node.id), seq);
+    colMaxSeq.set(col, Math.max(colMaxSeq.get(col) || 0, seq));
+  }
+  const colX = new Map();
+  const colCount = Math.max(...[...colMaxSeq.keys()].map((col) => col + 1), 3);
+  let cursorX = 0;
+  for (let col = 0; col < colCount; col += 1) {
+    colX.set(col, cursorX);
+    cursorX += ((colMaxSeq.get(col) ?? 0) + 1) * step + 150;
+  }
+  return {
+    mode: "pyramid",
+    artboard: { ...artboard, height: Math.max(artboard.height, pyramid.height) },
+    xFor: (node) => {
+      const col = columns.colOf.get(String(node.id)) ?? 0;
+      const seq = laneSeq.get(String(node.id)) ?? 0;
+      return Math.round(artboard.x + 50 + (colX.get(col) ?? 0) + seq * step);
+    },
+    yFor: (node) => pyramid.yFor(node),
+  };
+}
+
+// Plain linear chain: a single horizontal lane, each node vertically centered.
+function linearPlacement(nodes, artboard) {
+  const fitted = fitSingleLaneArtboard(artboard, nodes);
+  const positions = packSingleLaneX(nodes, fitted);
+  return {
+    mode: "linear",
+    artboard: fitted,
+    xFor: (node) => {
+      const rawX = positions.get(node.id) ?? Math.round(fitted.x);
+      const width = compactVisualWidth(node);
+      return Math.max(fitted.x, Math.min(fitted.x + fitted.width - width, rawX));
+    },
+    yFor: (node) => Math.round(fitted.y + Math.max(60, Math.floor((fitted.height - node.h) / 2))),
+  };
+}
+
+// Generic stage DAG: column = stage (left-to-right), row = order within stage
+// (top-to-bottom), the default fallback layout.
+function stagePlacement(nodes, artboard) {
+  const stages = stageOrder(nodes);
+  const stageGap = stages.length > 1 ? (artboard.width - 260) / (stages.length - 1) : 0;
+  const stageIndexByStage = new Map(stages.map((stage, index) => [stage, index]));
+  const yByNode = new Map();
+  for (const stage of stages) {
+    const members = nodes.filter((node) => String(node.stage) === stage).sort(compareNode);
+    const totalHeight = members.reduce((sum, node) => sum + node.h, 0);
+    const gap = members.length > 1
+      ? Math.max(26, Math.min(54, Math.floor((artboard.height - 120 - totalHeight) / (members.length - 1))))
+      : 0;
+    let cursor = artboard.y + Math.max(60, Math.floor((artboard.height - totalHeight - gap * Math.max(0, members.length - 1)) / 2));
+    for (const node of members) {
+      yByNode.set(node.id, Math.round(cursor));
+      cursor += node.h + gap;
+    }
+  }
+  return {
+    mode: "stage",
+    artboard,
+    xFor: (node) => {
+      const width = compactVisualWidth(node);
+      const stageIndex = stageIndexByStage.get(String(node.stage)) ?? 0;
+      const rawX = Math.round(artboard.x + 130 + stageGap * stageIndex - width / 2);
+      return Math.max(artboard.x, Math.min(artboard.x + artboard.width - width, rawX));
+    },
+    yFor: (node) => yByNode.get(node.id) ?? artboard.y,
+  };
 }
 
 function resolvePublicationGeometry(nodes) {

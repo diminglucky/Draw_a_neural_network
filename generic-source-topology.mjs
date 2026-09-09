@@ -923,6 +923,17 @@ function computeOutputShape(node, inputShape, inputs = [inputShape]) {
   if (family === "output") return inputShape;
 
   if (family === "custom" || node.compoundKind) {
+    // Named composite modules (C2f / SPPF / Bottleneck, compoundKind "module")
+    // are drawn as a single block. Resolution is preserved unless the LLM
+    // supplied an explicit outputShape OR internalGraph evidence lets us
+    // propagate through the subgraph exactly.
+    if (node.compoundKind === "module") {
+      const explicit = node.attributes?.outputShape;
+      if (Array.isArray(explicit) && explicit.length) return explicit.map(Number);
+      const hasInternal = Array.isArray(node.attributes?.internalGraph?.nodes)
+        && node.attributes.internalGraph.nodes.length > 0;
+      if (!hasInternal) return inputShape;
+    }
     const inner = compoundShape(node, inputShape);
     if (inner && inner.length) return inner;
   }

@@ -641,3 +641,54 @@ test("layoutUniversalFigure ignores self-loops when computing junction roles", (
   const byId = new Map(layout.nodes.map((node) => [node.id, node]));
   assert.equal(byId.get("rnn").junctionRole, undefined, "a self-loop must not mark the node as fork or merge");
 });
+
+test("layoutUniversalFigure arranges an FPN detector into backbone/neck/head columns", () => {
+  const mod = (id, stage, h) => ({
+    id, family: "custom", op: id, label: id, compoundKind: "module", stage, order: stage,
+    shape: { output: [h, h, 64] },
+  });
+  const nodes = [
+    { id: "in", family: "input", op: "Input", label: "Input", stage: 0, order: 0, shape: { output: [640, 640, 3] } },
+    mod("b1", 1, 320), mod("b2", 2, 160), mod("b3", 3, 80), mod("b4", 4, 40), mod("b5", 5, 20),
+    { id: "u1", family: "upsample", op: "Upsample", label: "Upsample", stage: 6, order: 6, shape: { output: [40, 40, 64] } },
+    mod("n1", 7, 40),
+    { id: "u2", family: "upsample", op: "Upsample", label: "Upsample", stage: 8, order: 8, shape: { output: [80, 80, 64] } },
+    mod("n2", 9, 80), mod("n3", 10, 40), mod("n4", 11, 20),
+    { id: "det", family: "output", op: "Detect", label: "Detect", stage: 12, order: 12, shape: { output: [20, 20, 255] } },
+  ];
+  const groups = [
+    { id: "bb", label: "Backbone", kind: "backbone", nodeIds: ["in", "b1", "b2", "b3", "b4", "b5"] },
+    { id: "nk", label: "Neck", kind: "neck", nodeIds: ["u1", "n1", "u2", "n2", "n3", "n4"] },
+    { id: "hd", label: "Head", kind: "head", nodeIds: ["det"] },
+  ];
+  const edges = [
+    ["in", "b1"], ["b1", "b2"], ["b2", "b3"], ["b3", "b4"], ["b4", "b5"],
+    ["b5", "u1"], ["u1", "n1"], ["b3", "n1", "skip"],
+    ["n1", "u2"], ["u2", "n2"], ["b2", "n2", "skip"],
+    ["n2", "n3"], ["n1", "n3", "skip"],
+    ["n3", "n4"], ["b5", "n4", "skip"],
+    ["n4", "det"],
+  ].map(([s, t, type], i) => ({ id: `e${i}`, source: s, target: t, type: type || "signal" }));
+
+  const layout = layoutUniversalFigure({ nodes, groups, edges });
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+
+  const col = (ids) => ({
+    left: Math.min(...ids.map((id) => byId.get(id).x)),
+    right: Math.max(...ids.map((id) => byId.get(id).x + byId.get(id).w)),
+  });
+  const backbone = col(["in", "b1", "b2", "b3", "b4", "b5"]);
+  const neck = col(["u1", "n1", "u2", "n2", "n3", "n4"]);
+  const head = col(["det"]);
+
+  assert.ok(backbone.right <= neck.left, "backbone column must sit left of the neck");
+  assert.ok(neck.right <= head.left, "neck column must sit left of the head");
+
+  // Resolution lanes run top-to-bottom: larger H above smaller H.
+  assert.ok(byId.get("in").y < byId.get("b5").y, "input (640) must sit above the final backbone stage (20)");
+  assert.ok(byId.get("n2").y < byId.get("n1").y, "upsampled neck stage (80) must sit above (40)");
+  // Same resolution shares a lane.
+  assert.equal(byId.get("b3").y, byId.get("n2").y, "nodes at the same resolution must share a lane");
+
+  assert.equal(layout.validation.ok, true, "pyramid layout must not overlap or violate the artboard");
+});
