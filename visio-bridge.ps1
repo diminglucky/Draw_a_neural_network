@@ -1030,6 +1030,53 @@ function Draw-PublicationBlock([object]$Page, [object]$Spec, [double]$X, [double
   return @($block)
 }
 
+function Get-NamedModuleColors([string]$Label) {
+  # Top-journal YOLO-style module palette: each named composite block gets a
+  # distinct soft fill + matching outline so the architecture reads as a
+  # color-coded legend rather than a stack of identical boxes. Modules are
+  # drawn as a single labeled block — their internals are NOT expanded.
+  $name = $Label.ToLowerInvariant()
+  if ($name -match "c2f|c2psa|csp|c3f|elan|repvgg|ghost") { return @("#E7DDF5", "#7A4BB5") }
+  if ($name -match "sppf|spp|aspp|psp|pan") { return @("#FBE8B8", "#C08A1E") }
+  if ($name -match "bottleneck|resblock|basicblock|residual|shortcut|inverted") { return @("#D3EEF0", "#2E7F8C") }
+  if ($name -match "upsample|interpolate|pixel|unpool|deconv|transpose") { return @("#D8F0DE", "#3E8E5A") }
+  if ($name -match "concat|add|sum") { return @("#E9EDF2", "#7A8696") }
+  if ($name -match "detect|head|yolo|output|classif") { return @("#FAD9D2", "#C0432E") }
+  if ($name -match "conv") { return @("#D6E6F7", "#3A6EA8") }
+  return @("#E7EBF0", "#7A8696")
+}
+
+function Draw-NamedModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $label = Get-PlanString $Spec.label
+  $colors = Get-NamedModuleColors $label
+  $cut = [Math]::Min($W * 0.14, $H * 0.16)
+  $points = [double[]]@(
+    ($X + $cut), $Y,
+    ($X + $W - $cut), $Y,
+    ($X + $W), ($Y + $cut),
+    ($X + $W), ($Y + $H - $cut),
+    ($X + $W - $cut), ($Y + $H),
+    ($X + $cut), ($Y + $H),
+    $X, ($Y + $H - $cut),
+    $X, ($Y + $cut),
+    ($X + $cut), $Y
+  )
+  $block = $Page.DrawPolyline($points, 0)
+  $block.CellsU("FillForegnd").FormulaU = Get-RgbFormula $colors[0]
+  $block.CellsU("FillBkgnd").FormulaU = Get-RgbFormula $colors[0]
+  $block.CellsU("LineColor").FormulaU = Get-RgbFormula $colors[1]
+  $block.CellsU("LineWeight").FormulaU = "0.011 in"
+  $block.CellsU("Char.Size").FormulaU = "9 pt"
+  $block.CellsU("Char.Style").FormulaU = "1"
+  $block.CellsU("Char.Color").FormulaU = Get-RgbFormula $colors[1]
+  $block.CellsU("Para.HorzAlign").FormulaU = "1"
+  $block.CellsU("VerticalAlign").FormulaU = "1"
+  $subtitle = Get-PlanString $Spec.subtitle
+  $block.Text = if (-not [string]::IsNullOrWhiteSpace($subtitle)) { "$label`n$subtitle" } else { $label }
+  Set-PlanData $block $Spec.shapeData
+  return @($block)
+}
+
 function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   $x = [double]([double]$Spec.x * [double]$Scale)
   $y = [double]([double]$Spec.y * [double]$Scale)
@@ -1037,6 +1084,7 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   $h = [double]([double]$Spec.h * [double]$Scale)
   $kind = Get-PlanString $Spec.shapeKind
   if ($kind -eq "publication-block") { return @(Draw-PublicationBlock $Page $Spec $x $y $w $h $Scale) }
+  if ($kind -eq "named-module") { return @(Draw-NamedModule $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "classifier-prism") { return @(Draw-NeuronColumn $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "softmax-prism") { return @(Draw-OutputDistribution $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "pool-prism") {

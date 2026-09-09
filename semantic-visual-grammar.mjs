@@ -75,6 +75,10 @@ const ROLE_SPECS = Object.freeze({
     styleProfile: "compound",
     labelSlots: { title: "above", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
   },
+  "named-module": {
+    styleProfile: "named-module",
+    labelSlots: { title: "inside", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
+  },
   "unresolved-module": {
     styleProfile: "unresolved",
     labelSlots: { title: "above", subtitle: "below", tensorShape: "below", operatorDetails: "outside" },
@@ -104,8 +108,10 @@ export function visualRoleForNode(node = {}, context = {}) {
   }
   if (family === "skip" || family === "residual" || family === "shortcut") return "skip-connection";
   if (family === "custom" || node.compoundKind) {
-    if (node.compoundKind === "unresolved" || !hasInternalTopology(node)) return "unresolved-module";
-    return "compound-module";
+    if (node.compoundKind === "unresolved") return "unresolved-module";
+    if (node.compoundKind === "module") return "named-module";
+    if (hasInternalTopology(node)) return "compound-module";
+    return "unresolved-module";
   }
   if (["conv", "volume"].includes(family) || hasSpatialTensor(node)) return "feature-map-stage";
   return "operator";
@@ -392,6 +398,7 @@ function publicationSubtitle(node) {
     return `${operatorDetail}${operatorDetail && spatialDetail ? "\n" : ""}${spatialDetail}`;
   }
   if (node.visualRole === "pool-downsample" && dimensions.length >= 3) return dimensions.slice(-3).join("×");
+  if (node.visualRole === "named-module" && dimensions.length >= 3) return dimensions.slice(-3).join("×");
   if (node.visualRole === "neuron-layer" && dimensions.length > 0) return `${dimensions.at(-1)} units`;
   if (node.visualRole === "output-distribution" && dimensions.length > 0) return `${dimensions.at(-1)} outputs`;
   const scalarEvidence = String(node.subtitle || "").match(/^(\d+)-d$/i)?.[1];
@@ -430,6 +437,7 @@ function preferredSizeForRole(role, node) {
   }
   if (role === "pool-downsample") return { width: 120, height: 52 };
   if (role === "upsample") return { width: 120, height: 52 };
+  if (role === "named-module") return { width: 132, height: 60 };
   if (role === "vectorize") return { width: 120, height: 48 };
   if (role === "neuron-layer") return { width: 120, height: 56 };
   if (role === "output-distribution") return { width: 120, height: 56 };

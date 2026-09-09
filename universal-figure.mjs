@@ -387,6 +387,7 @@ function representationFor(node) {
   if (node.visualRole === "vector-input") return "vector-column";
   if (node.visualRole === "volume-input") return "volume";
   if (node.visualRole === "unknown-input") return "unknown-outline";
+  if (node.visualRole === "named-module") return "named-module";
   if (["attention", "recurrent", "graph", "custom"].includes(node.family)) return "compound";
   if (node.compoundKind && Array.isArray(node.attributes?.internalGraph?.nodes) && node.attributes.internalGraph.nodes.length > 0) return "compound";
   // Everything else (conv, pool, upsample, flatten, dense, output, …) is a

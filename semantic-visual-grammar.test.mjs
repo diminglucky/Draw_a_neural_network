@@ -283,3 +283,16 @@ test("recurrent topology distinguishes sequence input from state inputs", () => 
   assert.equal(compiled.find((node) => node.id === "x").visualRole, "sequence-input");
   assert.equal(compiled.find((node) => node.id === "state").visualRole, "state-input");
 });
+
+test("named composite modules (C2f/SPPF) are labeled blocks, not expanded internals", () => {
+  // Top-journal YOLO style: a named module is ONE colored block, never expanded.
+  const node = { id: "c2f", family: "custom", op: "C2f", label: "C2f", compoundKind: "module" };
+  assert.equal(visualRoleForNode(node), "named-module");
+  assert.equal(compileSemanticVisualNode(node).visualRole, "named-module");
+  assert.equal(styleProfileForRole("named-module"), "named-module");
+});
+
+test("custom modules stay unresolved (fail closed) without an explicit module kind", () => {
+  assert.equal(visualRoleForNode({ id: "opaque", family: "custom", op: "MysteryOp" }), "unresolved-module");
+  assert.equal(visualRoleForNode({ id: "u", family: "custom", compoundKind: "unresolved" }), "unresolved-module");
+});
