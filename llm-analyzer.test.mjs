@@ -134,3 +134,43 @@ test("analyze tolerates a code-fenced JSON response", async () => {
     restore();
   }
 });
+
+test("analyze retries without response_format when json_object is rejected (400)", async () => {
+  const bodies = [];
+  let calls = 0;
+  const restore = stubFetch(async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    calls += 1;
+    if (calls === 1) {
+      return { ok: false, status: 400, text: async () => "Response input messages must contain the word json" };
+    }
+    return chatResponse(JSON.stringify({ ir: sampleIR }));
+  });
+  try {
+    const analyzer = createLLMAnalyzer({ apiKey: "test-key", baseUrl: "https://llm.example.com/v1", model: "m" });
+    const result = await analyzer.analyze({ kind: "prompt", prompt: "x" });
+    assert.ok(result.ir, "should recover after dropping response_format");
+    assert.equal(calls, 2);
+    assert.deepEqual(bodies[0].response_format, { type: "json_object" });
+    assert.equal(bodies[1].response_format, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test("analyze retries on transient gateway errors (502/503/524)", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    if (calls === 1) return { ok: false, status: 502, text: async () => "不支持这个模型" };
+    return chatResponse(JSON.stringify({ ir: sampleIR }));
+  });
+  try {
+    const analyzer = createLLMAnalyzer({ apiKey: "test-key", baseUrl: "https://llm.example.com/v1", model: "m" });
+    const result = await analyzer.analyze({ kind: "prompt", prompt: "x" });
+    assert.ok(result.ir, "should recover after a transient gateway error");
+    assert.equal(calls, 2);
+  } finally {
+    restore();
+  }
+});

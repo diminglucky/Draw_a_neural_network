@@ -162,65 +162,79 @@ export function createLLMAnalyzer(config = {}) {
   const available = Boolean(apiKey);
 
   async function post(messages) {
-    const attempts = 3;
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      try {
-        const response = await fetch(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            messages,
-            response_format: { type: "json_object" },
-          }),
-          signal: AbortSignal.timeout(180000),
-        });
-        if (!response.ok) {
-          const detail = extractErrorDetail(await response.text(), response.status);
-          return {
-            status: "error",
-            message: `${response.status}: ${detail}`,
-            diagnostics: [{ kind: "llm-http-error", message: `${response.status}: ${detail}` }],
-          };
-        }
-        const payload = await response.json();
-        const content = payload.choices?.[0]?.message?.content;
-        if (!content) {
-          return {
-            status: "error",
-            message: "LLM returned no content.",
-            diagnostics: [{ kind: "llm-empty-response", message: "LLM returned no content." }],
-          };
-        }
-        const candidate = extractJSONContent(content);
-        if (!candidate) {
-          return {
-            status: "error",
-            message: "LLM output was not valid JSON.",
-            diagnostics: [{ kind: "llm-invalid-json", message: "LLM output was not valid JSON." }],
-          };
-        }
-        const json = JSON.parse(candidate);
-        return { ir: json.ir || json, diagnostics: Array.isArray(json.diagnostics) ? json.diagnostics : [] };
-      } catch (error) {
-        const isTimeout = error?.name === "AbortError" || error?.name === "TimeoutError";
-        const message = isTimeout
-          ? "请求超时（端点响应超过 180 秒，模型推理过慢或服务过载）"
-          : error.message;
-        if (attempt === attempts - 1) {
-          return {
+    // 部分 OpenAI-compatible 端点对 response_format: json_object 支持不稳定
+    // （返回 400「必须含 json 字样」/ 502「不支持模型」）。SYSTEM_PROMPT 已强制纯 JSON 输出，
+    // extractJSONContent 会兜底提取，故 json_object 失败时降级为无格式约束重试。
+    const formatOptions = [{ response_format: { type: "json_object" } }, {}];
+    let lastError = null;
+    for (const options of formatOptions) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const response = await fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ model, messages, ...options }),
+            signal: AbortSignal.timeout(180000),
+          });
+          if (!response.ok) {
+            const detail = extractErrorDetail(await response.text(), response.status);
+            lastError = {
+              status: "error",
+              message: `${response.status}: ${detail}`,
+              diagnostics: [{ kind: "llm-http-error", message: `${response.status}: ${detail}` }],
+            };
+            // 400 = json_object 格式约束明确不受支持 → 降级无格式（跳出当前 format 的重试循环）。
+            // 502/503/524 = 网关瞬时故障 → 退避重试；重试耗尽后若仍在 json_object 阶段则降级再试。
+            if (options.response_format && response.status === 400) break;
+            if ([502, 503, 524].includes(response.status)) {
+              if (attempt === 1) {
+                if (options.response_format) break;
+                return lastError;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+              continue;
+            }
+            return lastError;
+          }
+          const payload = await response.json();
+          const content = payload.choices?.[0]?.message?.content;
+          if (!content) {
+            return {
+              status: "error",
+              message: "LLM returned no content.",
+              diagnostics: [{ kind: "llm-empty-response", message: "LLM returned no content." }],
+            };
+          }
+          const candidate = extractJSONContent(content);
+          if (!candidate) {
+            return {
+              status: "error",
+              message: "LLM output was not valid JSON.",
+              diagnostics: [{ kind: "llm-invalid-json", message: "LLM output was not valid JSON." }],
+            };
+          }
+          const json = JSON.parse(candidate);
+          return { ir: json.ir || json, diagnostics: Array.isArray(json.diagnostics) ? json.diagnostics : [] };
+        } catch (error) {
+          const isTimeout = error?.name === "AbortError" || error?.name === "TimeoutError";
+          const message = isTimeout
+            ? "请求超时（端点响应超过 180 秒，模型推理过慢或服务过载）"
+            : error.message;
+          lastError = {
             status: "error",
             message,
             diagnostics: [{ kind: isTimeout ? "llm-timeout" : "llm-request-failed", message }],
           };
+          if (attempt === 1) break;
+          // 网络临时故障：退避重试。
+          await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
         }
-        // 网络临时故障：退避重试。
-        await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
       }
     }
+    return lastError || { status: "error", message: "LLM request failed." };
   }
 
   async function analyze(input = {}) {
