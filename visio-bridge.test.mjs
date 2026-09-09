@@ -779,3 +779,34 @@ test("Visio input renderers use COM-supported drawing methods", () => {
   assert.doesNotMatch(script, /DrawRoundedRectangle/);
   assert.match(script, /DrawRectangle\(/);
 });
+
+test("buildVisioRenderPlan keeps named modules as single color blocks without expanding inner topology", () => {
+  // 正则提取路径会给命名模块（C2f/SPPF/Conv）自动递归出 internalGraph；内部图
+  // 只用于 shape 穿透计算，渲染时必须保持单色实心块，绝不把内部子节点画进色块。
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "generic-dag" },
+    nodes: [{
+      id: "c2f",
+      sourceNodeId: "source-c2f",
+      family: "custom",
+      compoundKind: "module",
+      visualRole: "named-module",
+      x: 20,
+      y: 40,
+      w: 132,
+      h: 60,
+      inner: {
+        kind: "topology",
+        nodes: [
+          { id: "cv1", family: "conv", x: 0, y: 0, w: 60, h: 40 },
+          { id: "cv2", family: "conv", x: 80, y: 0, w: 60, h: 40 },
+        ],
+        edges: [{ id: "e1", source: "cv1", target: "cv2" }],
+      },
+    }],
+    edges: [],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+
+  assert.deepEqual(plan.shapes.map((shape) => shape.id), ["outer::c2f"]);
+  assert.ok(plan.connectors.every((connector) => !connector.id.startsWith("inner-edge::")));
+});

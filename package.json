@@ -22,6 +22,10 @@
       "!llm-config.json",
       "!*.md"
     ],
+    "extraResources": [
+      { "from": "visio-bridge.ps1", "to": "visio-bridge.ps1" },
+      { "from": "visio-create-empty.ps1", "to": "visio-create-empty.ps1" }
+    ],
     "win": {
       "target": [
         "nsis"

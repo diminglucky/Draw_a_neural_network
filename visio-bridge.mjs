@@ -8,6 +8,18 @@ import { figurePlanForVisio } from "./figure-plan.mjs";
 
 const BRIDGE_VERSION = "visio-native-bridge/v1";
 
+// 解析 PowerShell 脚本路径：开发模式在模块同目录；electron-builder 打包后
+// （模块在 app.asar 内）脚本通过 extraResources 复制到 resources/ 下，因为
+// PowerShell 无法直接执行 asar 内的文件。
+function resolveScriptPath(relativeName) {
+  const moduleDir = fileURLToPath(new URL(".", import.meta.url));
+  if (moduleDir.includes(".asar")) {
+    const resourcesPath = process.resourcesPath || dirname(moduleDir.split(".asar")[0]);
+    return join(resourcesPath, relativeName);
+  }
+  return fileURLToPath(new URL(`./${relativeName}`, import.meta.url));
+}
+
 export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
   const documentPath = String(options.documentPath || "").trim();
   if (!documentPath) throw new Error("documentPath is required; Visio rendering never creates an implicit document.");
@@ -88,7 +100,11 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
       }
     }
     const compoundLayout = node.recurrentLayout ? getCompoundLayout(node) : null;
-    const innerNodes = node.renderInternalGraph === false || recurrentLayout?.uncertainty?.unresolved
+    // named-module（compoundKind="module"）是单色实心块，绝不展开内部：内部图
+    // 只用于 shape 穿透计算，渲染时保持一个 labeled color block。否则正则提取
+    // 路径（buildInternalGraph 会自动递归）会把 C2f/SPPF/Conv 的内部子节点画进
+    // 色块里，与 LLM 路径（不发射 internalGraph）产生不一致。
+    const innerNodes = node.renderInternalGraph === false || node.visualRole === "named-module" || recurrentLayout?.uncertainty?.unresolved
       ? []
       : Array.isArray(node.inner?.nodes) ? node.inner.nodes
         : compoundLayout?.kind === "recurrent" ? compoundLayout.children : [];
@@ -212,7 +228,7 @@ export function buildVisioPowerShellCommand(plan, options = {}) {
 export async function renderUniversalFigureToVisio(layout, options = {}) {
   const plan = buildVisioRenderPlan(layout, options);
   const command = buildVisioPowerShellCommand(plan, {
-    scriptPath: options.scriptPath || fileURLToPath(new URL("./visio-bridge.ps1", import.meta.url)),
+    scriptPath: options.scriptPath || resolveScriptPath("visio-bridge.ps1"),
   });
   const runner = options.runner || runPowerShell;
   const result = await runner(command);
@@ -354,7 +370,7 @@ export function resolveVisioDocumentPath(rawPath) {
 }
 
 export async function createEmptyVisioDocument(targetPath, options = {}) {
-  const scriptPath = String(options.scriptPath || fileURLToPath(new URL("./visio-create-empty.ps1", import.meta.url))).trim();
+  const scriptPath = String(options.scriptPath || resolveScriptPath("visio-create-empty.ps1")).trim();
   if (!scriptPath) throw new Error("scriptPath is required.");
   const encoded = Buffer.from(String(targetPath), "utf8").toString("base64");
   const command = {
