@@ -747,3 +747,28 @@ test("layoutUniversalFigure honors sizeOverrides for a family's default dimensio
   assert.equal(node.w, 200);
   assert.equal(node.h, 100);
 });
+
+test("named modules render as accepted color blocks, not unresolved structure", () => {
+  const layout = layoutUniversalFigure({
+    figure: { title: "YOLO-style fixture" },
+    nodes: [
+      { id: "input", family: "input", op: "Input", label: "x", stage: 0 },
+      { id: "c2f", family: "custom", compoundKind: "module", op: "C2f", label: "C2f", stage: 1 },
+      { id: "sppf", family: "custom", compoundKind: "module", op: "SPPF", label: "SPPF", stage: 2 },
+      { id: "output", family: "output", op: "Output", label: "y", stage: 3 },
+    ],
+    edges: [
+      { id: "e1", source: "input", target: "c2f", type: "signal" },
+      { id: "e2", source: "c2f", target: "sppf", type: "signal" },
+      { id: "e3", source: "sppf", target: "output", type: "signal" },
+    ],
+  });
+
+  const c2f = layout.nodes.find((node) => node.id === "c2f");
+  const sppf = layout.nodes.find((node) => node.id === "sppf");
+  assert.equal(c2f.visualRole, "named-module");
+  assert.equal(sppf.visualRole, "named-module");
+  assert.equal(c2f.inner.kind, "semantic", "named modules must not be flagged as unresolved inner topology");
+  assert.equal(c2f.note, "", "named modules must not carry an unresolved-structure note");
+  assert.equal(sppf.note, "");
+});

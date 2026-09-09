@@ -248,3 +248,26 @@ test("figure plan carries group containment bounds from the layout", () => {
   assert.equal(plan.groups[0].label, "Backbone");
   assert.deepEqual(plan.groups[0].bounds, backbone.bounds);
 });
+
+test("named modules stay accepted through figure planning", () => {
+  const ir = {
+    figure: { title: "Detector" },
+    nodes: [
+      { id: "input", family: "input", op: "Input", stage: 0 },
+      { id: "c2f", family: "custom", compoundKind: "module", op: "C2f", label: "C2f", stage: 1 },
+      { id: "output", family: "output", op: "Output", stage: 2 },
+    ],
+    edges: [
+      { id: "e1", source: "input", target: "c2f", type: "signal" },
+      { id: "e2", source: "c2f", target: "output", type: "signal" },
+    ],
+  };
+  const layout = layoutUniversalFigure(ir);
+  const plan = createFigurePlan({ ir, layout });
+
+  const c2f = plan.nodes.find((node) => node.sourceNodeId === "c2f" || node.id === "c2f");
+  assert.ok(c2f, "named module must appear in the figure plan");
+  assert.equal(c2f.unresolved, false);
+  assert.equal(c2f.visualRole, "named-module");
+  assert.equal(c2f.unresolvedMarker, undefined);
+});

@@ -90,7 +90,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
       stageIndex: stageIndexByStage.get(String(node.stage)) ?? 0,
       representation: representationFor(node),
       inner: layoutInnerGraph(node, sizes),
-      note: node.note || (node.family === "custom" ? "unresolved structure · review evidence" : ""),
+      note: node.note || (node.family === "custom" && node.compoundKind !== "module" ? "unresolved structure · review evidence" : ""),
     };
     nodes.push(positioned);
   });
@@ -729,7 +729,7 @@ function layoutInnerGraph(node, sizes = FAMILY_SIZE) {
     edges: node.internalEdges || [],
   } : null);
   if (!raw || !Array.isArray(raw.nodes)) {
-    return node.family === "custom" || node.compoundKind === "unresolved"
+    return node.compoundKind === "unresolved" || (node.family === "custom" && node.compoundKind !== "module")
       ? { kind: "unresolved", nodes: [], edges: [], message: "Internal topology requires evidence or runtime tracing." }
       : { kind: "semantic", nodes: [], edges: [] };
   }
