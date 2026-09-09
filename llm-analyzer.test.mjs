@@ -174,3 +174,20 @@ test("analyze retries on transient gateway errors (502/503/524)", async () => {
     restore();
   }
 });
+
+test("analyze returns invalid-json without retrying on a parse failure", async () => {
+  let calls = 0;
+  const restore = stubFetch(async () => {
+    calls += 1;
+    return chatResponse("{ not valid json }");
+  });
+  try {
+    const analyzer = createLLMAnalyzer({ apiKey: "test-key", baseUrl: "https://llm.example.com/v1", model: "m" });
+    const result = await analyzer.analyze({ kind: "prompt", prompt: "x" });
+    assert.equal(result.status, "error");
+    assert.equal(result.diagnostics[0].kind, "llm-invalid-json");
+    assert.equal(calls, 1, "a parse failure must not trigger an LLM retry");
+  } finally {
+    restore();
+  }
+});

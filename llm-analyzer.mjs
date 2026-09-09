@@ -216,7 +216,16 @@ export function createLLMAnalyzer(config = {}) {
               diagnostics: [{ kind: "llm-invalid-json", message: "LLM output was not valid JSON." }],
             };
           }
-          const json = JSON.parse(candidate);
+          let json;
+          try {
+            json = JSON.parse(candidate);
+          } catch {
+            return {
+              status: "error",
+              message: "LLM output was not valid JSON.",
+              diagnostics: [{ kind: "llm-invalid-json", message: "LLM output was not valid JSON." }],
+            };
+          }
           return { ir: json.ir || json, diagnostics: Array.isArray(json.diagnostics) ? json.diagnostics : [] };
         } catch (error) {
           const isTimeout = error?.name === "AbortError" || error?.name === "TimeoutError";
@@ -228,7 +237,8 @@ export function createLLMAnalyzer(config = {}) {
             message,
             diagnostics: [{ kind: isTimeout ? "llm-timeout" : "llm-request-failed", message }],
           };
-          if (attempt === 1) break;
+          // 网络故障/超时与 response_format 无关，无需降级；重试耗尽即返回错误。
+          if (attempt === 1) return lastError;
           // 网络临时故障：退避重试。
           await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
         }
