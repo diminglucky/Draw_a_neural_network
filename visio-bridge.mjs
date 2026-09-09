@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { existsSync, statSync } from "node:fs";
+import { join, normalize, dirname, basename } from "node:path";
 import { compileSemanticVisualNode } from "./semantic-visual-grammar.mjs";
 import { getCompoundLayout } from "./compound-module.mjs";
 import { figurePlanForVisio } from "./figure-plan.mjs";
@@ -322,6 +324,33 @@ function runPowerShell(command) {
       }
     });
   });
+}
+
+// 把用户填的 Visio 路径规范化为一个完整的 .vsdx 文件路径：
+// 目录 -> 目录\model.vsdx；无后缀 -> 补 .vsdx；已存在 -> model1.vsdx / model2.vsdx …。
+export function resolveVisioDocumentPath(rawPath) {
+  let p = String(rawPath || "").trim();
+  if (!p) return { error: "请输入 Visio 文档路径。" };
+  let isDir = false;
+  try { isDir = statSync(p).isDirectory(); } catch { /* 不存在或非目录 */ }
+  if (isDir) {
+    p = join(p, "model.vsdx");
+  } else if (!/\.vsdx$/i.test(p)) {
+    p += ".vsdx";
+  }
+  if (existsSync(p)) {
+    const dir = dirname(p);
+    const stem = basename(p).replace(/\.vsdx$/i, "");
+    let i = 1;
+    let candidate;
+    do {
+      candidate = join(dir, `${stem}${i}.vsdx`);
+      i += 1;
+    } while (existsSync(candidate));
+    p = candidate;
+  }
+  // 统一为 Windows 原生反斜杠：Visio 的 SaveAsEx 不接受正斜杠路径。
+  return { path: normalize(p) };
 }
 
 export async function createEmptyVisioDocument(targetPath, options = {}) {

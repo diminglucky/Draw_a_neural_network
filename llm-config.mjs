@@ -39,3 +39,20 @@ export function persistLLMConfig(config) {
     // 持久化失败不影响内存配置。
   }
 }
+
+// 从 OpenAI-compatible 端点拉取可用模型列表（配置 UI 的模型下拉用）。
+// 失败时抛出带 status 字段的 Error，供 HTTP 层映射为 4xx/5xx。
+export async function fetchModelList(baseUrl, apiKey) {
+  const upstream = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!upstream.ok) {
+    const detail = (await upstream.text()).slice(0, 300);
+    throw Object.assign(new Error(`拉取模型失败：HTTP ${upstream.status} ${detail}`), { status: upstream.status });
+  }
+  const payload = await upstream.json();
+  return (Array.isArray(payload.data) ? payload.data : [])
+    .map((entry) => (typeof entry === "string" ? entry : entry?.id))
+    .filter(Boolean)
+    .sort();
+}

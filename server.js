@@ -1,12 +1,12 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { existsSync, statSync } from "node:fs";
-import { extname, join, normalize, dirname, basename } from "node:path";
+import { existsSync } from "node:fs";
+import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
-import { createEmptyVisioDocument } from "./visio-bridge.mjs";
+import { createEmptyVisioDocument, resolveVisioDocumentPath } from "./visio-bridge.mjs";
 import { createLLMAnalyzer } from "./llm-analyzer.mjs";
-import { loadLLMConfig, maskApiKey, persistLLMConfig } from "./llm-config.mjs";
+import { loadLLMConfig, maskApiKey, persistLLMConfig, fetchModelList } from "./llm-config.mjs";
 import { createAgentService, setLLMAnalyzer } from "./agent-service.mjs";
 
 // Re-export for backward compatibility: server.test.mjs and server-llm.test.mjs
@@ -17,33 +17,6 @@ export { createAgentService };
 const port = Number(process.env.PORT || 4173);
 // 静态文件目录 = server.js 所在目录（不依赖 cwd；Electron 打包后从 app.asar 读取）
 const root = fileURLToPath(new URL(".", import.meta.url));
-
-// 把用户填的 Visio 路径规范化为一个完整的 .vsdx 文件路径：
-// 目录 -> 目录\model.vsdx；无后缀 -> 补 .vsdx；已存在 -> model1.vsdx / model2.vsdx …。
-function resolveVisioDocumentPath(rawPath) {
-  let p = String(rawPath || "").trim();
-  if (!p) return { error: "请输入 Visio 文档路径。" };
-  let isDir = false;
-  try { isDir = statSync(p).isDirectory(); } catch { /* 不存在或非目录 */ }
-  if (isDir) {
-    p = join(p, "model.vsdx");
-  } else if (!/\.vsdx$/i.test(p)) {
-    p += ".vsdx";
-  }
-  if (existsSync(p)) {
-    const dir = dirname(p);
-    const stem = basename(p).replace(/\.vsdx$/i, "");
-    let i = 1;
-    let candidate;
-    do {
-      candidate = join(dir, `${stem}${i}.vsdx`);
-      i += 1;
-    } while (existsSync(candidate));
-    p = candidate;
-  }
-  // 统一为 Windows 原生反斜杠：Visio 的 SaveAsEx 不接受正斜杠路径。
-  return { path: normalize(p) };
-}
 
 let llmConfig = loadLLMConfig();
 let llmAnalyzer = createLLMAnalyzer(llmConfig);
@@ -132,22 +105,14 @@ function createAppServer() {
         return;
       }
       try {
-        const upstream = await fetch(`${baseUrl}/models`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-        });
-        if (!upstream.ok) {
-          const detail = (await upstream.text()).slice(0, 300);
-          sendJson(response, upstream.status, { status: "upstream_error", message: `拉取模型失败：HTTP ${upstream.status} ${detail}` });
-          return;
-        }
-        const payload = await upstream.json();
-        const models = (Array.isArray(payload.data) ? payload.data : [])
-          .map((entry) => (typeof entry === "string" ? entry : entry?.id))
-          .filter(Boolean)
-          .sort();
+        const models = await fetchModelList(baseUrl, apiKey);
         sendJson(response, 200, { models });
       } catch (error) {
-        sendJson(response, 502, { status: "network_error", message: `无法连接端点：${error.message}` });
+        if (error?.status) {
+          sendJson(response, error.status, { status: "upstream_error", message: error.message });
+        } else {
+          sendJson(response, 502, { status: "network_error", message: `无法连接端点：${error.message}` });
+        }
       }
       return;
     }
