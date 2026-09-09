@@ -3,7 +3,7 @@ import { createMemoryRunStore } from "./run-store.mjs";
 import { extractArchitectureEvidence, normalizeArchitectureEvidence, planArchitectureFigure } from "./agent-pipeline.mjs";
 import { validateFigurePlan } from "./figure-plan.mjs";
 import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
-import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./generic-source-topology.mjs";
+import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./shape-inference.mjs";
 
 // The LLM analyzer is injected by server.js and updated on config change. We
 // keep a module-level mutable reference (not a captured argument) so an updated

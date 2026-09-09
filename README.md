@@ -80,7 +80,8 @@ agent-pipeline.mjs             统一分析入口
 agent-orchestrator.mjs         可恢复运行状态机
 run-store.mjs                  运行状态持久化
 input-adapters.mjs             输入归一化
-generic-source-topology.mjs    源码拓扑提取 + shape inference（特征图尺寸）
+generic-source-topology.mjs    源码拓扑提取（正则，Keras/PyTorch）
+shape-inference.mjs            特征图尺寸静态传播（shape inference）
 evidence-graph.mjs             证据图
 universal-ir.mjs               通用 IR 归一化与校验
 semantic-visual-grammar.mjs    语义视觉角色与输入语法

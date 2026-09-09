@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./generic-source-topology.mjs";
+import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./shape-inference.mjs";
 
 function run(nodes, edges) {
   inferShapes(nodes, edges);
