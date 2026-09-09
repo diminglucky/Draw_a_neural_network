@@ -29,11 +29,42 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
   const pageName = String(options.pageName || "Page-1");
   const renderId = String(options.renderId || stableRenderId(documentPath, pageName));
   const grammarId = String(layout.grammar?.id || "generic-dag");
-  const shapes = [];
-  const innerShapeIds = new Map();
-  const outerShapeIds = new Map();
-  const recurrentRailConnectors = [];
+  const registry = {
+    shapes: [],
+    innerShapeIds: new Map(),
+    outerShapeIds: new Map(),
+    recurrentRailConnectors: [],
+  };
 
+  planOuterShapes(layout, registry, renderId, grammarId);
+  const connectors = planConnectors(layout, registry, renderId);
+
+  return {
+    version: BRIDGE_VERSION,
+    documentPath,
+    pageName,
+    createDocument: false,
+    preserveExisting: true,
+    replaceScope: String(options.replaceLegacyPrefix || "").trim() ? "agent-owned+legacy-prefix" : "agent-owned",
+    replaceLegacyPrefix: String(options.replaceLegacyPrefix || "").trim() || undefined,
+    openMode: String(options.openMode || "attach"),
+    previewPath: String(options.previewPath || "").trim() || undefined,
+    renderId,
+    unitScale: Number.isFinite(options.unitScale) ? options.unitScale : 0.0065,
+    artboard: layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 },
+    grammarId,
+    figure: layout.figure || {},
+    groups: (Array.isArray(layout.groups) ? layout.groups : []).map((group) => ({ ...group, renderId })),
+    shapes: registry.shapes,
+    connectors,
+  };
+}
+
+// Build every shape (outer blocks, recurrent instances, inner operators) for
+// the figure. Named modules never expand their inner topology here — that
+// decision lives with the layout layer and is respected via visualRole.
+function planOuterShapes(layout, registry, renderId, grammarId) {
+  const { shapes, innerShapeIds, outerShapeIds, recurrentRailConnectors } = registry;
   for (const node of Array.isArray(layout.nodes) ? layout.nodes : []) {
     const shapeId = `outer::${node.id}`;
     outerShapeIds.set(String(node.id || ""), shapeId);
@@ -128,7 +159,12 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
       }));
     }
   }
+}
 
+// Build every connector (outer edges, recurrent rails, inner edges). Rails are
+// appended first so they sit under the data-flow edges in the render.
+function planConnectors(layout, registry, renderId) {
+  const { shapes, innerShapeIds, outerShapeIds, recurrentRailConnectors } = registry;
   const connectors = [...recurrentRailConnectors];
   const recurrentExpandedShapeIds = new Map();
   for (const node of Array.isArray(layout.nodes) ? layout.nodes : []) {
@@ -190,25 +226,7 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
     }
   }
 
-  return {
-    version: BRIDGE_VERSION,
-    documentPath,
-    pageName,
-    createDocument: false,
-    preserveExisting: true,
-    replaceScope: String(options.replaceLegacyPrefix || "").trim() ? "agent-owned+legacy-prefix" : "agent-owned",
-    replaceLegacyPrefix: String(options.replaceLegacyPrefix || "").trim() || undefined,
-    openMode: String(options.openMode || "attach"),
-    previewPath: String(options.previewPath || "").trim() || undefined,
-    renderId,
-    unitScale: Number.isFinite(options.unitScale) ? options.unitScale : 0.0065,
-    artboard: layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 },
-    grammarId,
-    figure: layout.figure || {},
-    groups: (Array.isArray(layout.groups) ? layout.groups : []).map((group) => ({ ...group, renderId })),
-    shapes,
-    connectors,
-  };
+  return connectors;
 }
 
 export function buildVisioPowerShellCommand(plan, options = {}) {
