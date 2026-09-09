@@ -86,7 +86,7 @@ evidence-graph.mjs             证据图
 universal-ir.mjs               通用 IR 归一化与校验
 semantic-visual-grammar.mjs    语义视觉角色与输入语法
 universal-figure.mjs           拓扑驱动的 Figure Plan 几何
-compound-module.mjs            复合模块布局与命名模块几何
+compound-module.mjs            复合模块内部布局（recurrent 展开 + internalGraph 通用拓扑）
 figure-plan.mjs                Figure Plan 契约与校验
 visio-client.mjs               Visio 请求边界
 visio-bridge.mjs               Visio 计划、COM 执行和回读校验
