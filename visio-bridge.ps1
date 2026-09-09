@@ -1077,6 +1077,50 @@ function Draw-NamedModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, 
   return @($block)
 }
 
+function Draw-Legend([object]$Page, [object]$Plan, [double]$PageWidth, [double]$Scale) {
+  # Top-journal color legend: swatches for each distinct named module type
+  # (C2f, SPPF, Bottleneck, …) so the color-coding is self-documenting.
+  $items = New-Object 'System.Collections.Generic.List[object]'
+  $seen = @{}
+  foreach ($spec in @($Plan.shapes)) {
+    $kind = Get-PlanString $spec.shapeKind
+    if ($kind -ne "named-module") { continue }
+    $label = Get-PlanString $spec.label
+    if ([string]::IsNullOrWhiteSpace($label)) { continue }
+    $key = $label.ToLowerInvariant()
+    if ($seen.ContainsKey($key)) { continue }
+    $seen[$key] = $true
+    $colors = Get-NamedModuleColors $label
+    $items.Add([pscustomobject]@{ label = $label; fill = $colors[0]; line = $colors[1] }) | Out-Null
+  }
+  if ($items.Count -eq 0) { return @() }
+
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $box = 0.15
+  $gap = 0.1
+  $labelWidth = 0.6
+  $totalW = ($box + $labelWidth) * $items.Count + $gap * [Math]::Max(0, $items.Count - 1)
+  $startX = [double]$PageWidth - $totalW - 0.28
+  $startY = 0.26
+  $title = Draw-TextAnnotation $Page "Module" ($startX) ($startY + $box + 0.02) $totalW 0.16 "7 pt" ([string]$Plan.renderId) "" "legend-title"
+  if ($null -ne $title) { $created.Add($title) | Out-Null }
+  $cursorX = $startX
+  foreach ($item in $items) {
+    $swatch = $Page.DrawRectangle($cursorX, $startY, $cursorX + $box, $startY + $box)
+    $swatch.CellsU("FillForegnd").FormulaU = Get-RgbFormula $item.fill
+    $swatch.CellsU("FillBkgnd").FormulaU = Get-RgbFormula $item.fill
+    $swatch.CellsU("LineColor").FormulaU = Get-RgbFormula $item.line
+    $swatch.CellsU("LineWeight").FormulaU = "0.007 in"
+    Set-ShapeData $swatch "renderId" ([string]$Plan.renderId)
+    Set-ShapeData $swatch "legendLabel" ([string]$item.label)
+    $created.Add($swatch) | Out-Null
+    $text = Draw-TextAnnotation $Page ([string]$item.label) ($cursorX + $box + 0.04) ($startY - 0.005) $labelWidth $box "7 pt" ([string]$Plan.renderId) "" "legend-label"
+    if ($null -ne $text) { $created.Add($text) | Out-Null }
+    $cursorX += $box + $labelWidth + $gap
+  }
+  return $created.ToArray()
+}
+
 function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   $x = [double]([double]$Spec.x * [double]$Scale)
   $y = [double]([double]$Spec.y * [double]$Scale)
@@ -1306,6 +1350,8 @@ foreach ($spec in @($plan.connectors)) {
   $lines = Draw-PlanConnector $page $spec ([double]$plan.unitScale) $shapeMap
   if ($null -ne $lines) { $connectorCount = [int]$connectorCount + [int]@($lines).Count }
 }
+$legendShapes = @(Draw-Legend $page $plan ([double]$pageSize.width) ([double]$plan.unitScale))
+$shapeCount = [int]$shapeCount + [int]$legendShapes.Count
 
 $doc.Save() | Out-Null
 $previewExport = [pscustomobject]@{ requested = $false; exported = $false; path = "" }
