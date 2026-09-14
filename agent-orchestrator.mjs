@@ -26,7 +26,7 @@ export function createAgentRun(input, dependencies = {}, options = {}) {
     diagnostics: [],
     attempts: { repair: 0 },
     inspect: undefined, extract: undefined, normalize: undefined, ir: undefined,
-    plan: undefined, planOutput: undefined, figurePlan: undefined,
+    plan: undefined, planOutput: undefined, visioDiagramPlan: undefined,
     renderResult: undefined, readback: undefined,
   };
   runtimeByRun.set(run, {
@@ -60,7 +60,7 @@ export async function runAgentPipeline(run, options = {}) {
       if (stage === "normalize") current.ir = current.normalize?.ir || current.normalize;
       if (stage === "plan") {
         current.planOutput = current.plan;
-        current.figurePlan = current.plan?.figurePlan || current.plan;
+        current.visioDiagramPlan = current.plan?.visioDiagramPlan || current.plan;
         if (current.plan?.ir) current.ir = current.plan.ir;
       }
       await appendSnapshot(current, stage, value, runtime.runStore);
@@ -107,13 +107,13 @@ export function resumeAgentRun(run, event = {}) {
       next.repairReason = event.value?.reason ?? event.reason ?? "unspecified";
     }
   } else if (event.type === "render-result") {
-    next.renderResult = clone(event.value);
+    next.renderResult = upgradeLegacyRenderResult(event.value);
     next.status = "rendered";
     next.stage = "render";
     next.snapshots = upsertSnapshot(next.snapshots, "render", event.value);
   } else if (event.type === "readback-result") {
     next.readback = clone(event.value);
-    const issues = diagnoseReadback(next.renderResult?.figurePlan || next.figurePlan, next.readback);
+    const issues = diagnoseReadback(next.renderResult?.visioDiagramPlan || next.visioDiagramPlan, next.readback);
     next.diagnostics = uniqueDiagnostics([...next.diagnostics, ...issues]);
     next.status = issues.length ? "readback-mismatch" : "completed";
     next.stage = "readback";
@@ -187,13 +187,15 @@ async function continueRepair(current, runtime) {
   current.stage = "repair";
   const reason = current.repairReason || current.repair?.reason || "unspecified";
   try {
-    const repair = runtime.dependencies?.repairFigurePlan;
-    const nextPlan = typeof repair === "function" ? await repair(clone(current.figurePlan), reason, current) : clone(current.figurePlan);
-    if (nextPlan === undefined) throw new Error("repairFigurePlan must return a Figure Plan.");
-    current.figurePlan = clone(nextPlan);
-    current.planOutput = current.planOutput?.figurePlan ? { ...clone(current.planOutput), figurePlan: clone(nextPlan) } : clone(nextPlan);
+    const repair = runtime.dependencies?.repairVisioDiagramPlan;
+    const nextPlan = typeof repair === "function" ? await repair(clone(current.visioDiagramPlan), reason, current) : clone(current.visioDiagramPlan);
+    if (nextPlan === undefined) throw new Error("repairDiagramPlan must return a Visio Diagram Plan.");
+    current.visioDiagramPlan = clone(nextPlan);
+    current.planOutput = current.planOutput?.visioDiagramPlan
+      ? { ...clone(current.planOutput), visioDiagramPlan: clone(nextPlan) }
+      : clone(nextPlan);
     current.plan = current.planOutput;
-    await appendSnapshot(current, "repair", { reason, figurePlan: nextPlan }, runtime.runStore);
+    await appendSnapshot(current, "repair", { reason, visioDiagramPlan: nextPlan }, runtime.runStore);
     return runPostPlan(current, runtime);
   } catch (error) {
     return failAt(current, "repair", error, "repair-failed");
@@ -204,17 +206,17 @@ async function runPostPlan(current, runtime) {
   if (typeof runtime.dependencies?.render === "function") {
     current.stage = "render";
     try {
-      current.renderResult = await runtime.dependencies.render(clone(current.figurePlan), current);
+      current.renderResult = await runtime.dependencies.render(clone(current.visioDiagramPlan), current);
       await appendSnapshot(current, "render", current.renderResult, runtime.runStore);
     } catch (error) { return failAt(current, "render", error, "render-failed"); }
   }
   if (typeof runtime.dependencies?.readback === "function") {
     current.stage = "readback";
     try {
-      current.readback = await runtime.dependencies.readback(clone(current.figurePlan), current.renderResult, current);
+      current.readback = await runtime.dependencies.readback(clone(current.visioDiagramPlan), current.renderResult, current);
       await appendSnapshot(current, "readback", current.readback, runtime.runStore);
     } catch (error) { return failAt(current, "readback", error, "readback-mismatch"); }
-    const issues = diagnoseReadback(current.renderResult?.figurePlan || current.figurePlan, current.readback);
+    const issues = diagnoseReadback(current.renderResult?.visioDiagramPlan || current.visioDiagramPlan, current.readback);
     if (issues.length) {
       current.diagnostics = uniqueDiagnostics([...current.diagnostics, ...issues]);
       current.status = "readback-mismatch";
@@ -279,10 +281,41 @@ function restoreSnapshots(run) {
     if (snapshot.stage === "inspect") run.inspect = value;
     if (snapshot.stage === "extract") run.extract = value;
     if (snapshot.stage === "normalize") { run.normalize = value; run.ir = value?.ir || value; }
-    if (snapshot.stage === "plan") { run.plan = value; run.planOutput = value; run.figurePlan = value?.figurePlan || value; if (value?.ir) run.ir = value.ir; }
-    if (snapshot.stage === "render") run.renderResult = value;
+    if (snapshot.stage === "plan") {
+      const upgraded = upgradeLegacyPlanEnvelope(value);
+      run.plan = upgraded;
+      run.planOutput = upgraded;
+      run.visioDiagramPlan = upgraded?.visioDiagramPlan || upgraded;
+      if (upgraded?.ir) run.ir = upgraded.ir;
+    }
+    if (snapshot.stage === "render") run.renderResult = upgradeLegacyRenderResult(value);
     if (snapshot.stage === "readback") run.readback = value;
   }
+}
+
+function upgradeLegacyPlanEnvelope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (value.visioDiagramPlan) {
+    return { ...clone(value), visioDiagramPlan: upgradeLegacyPlan(value.visioDiagramPlan) };
+  }
+  if (value.figurePlan) {
+    const { figurePlan, ...rest } = clone(value);
+    return { ...rest, visioDiagramPlan: upgradeLegacyPlan(figurePlan) };
+  }
+  return upgradeLegacyPlan(value);
+}
+
+function upgradeLegacyRenderResult(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (!value.figurePlan) return clone(value);
+  const { figurePlan, ...rest } = clone(value);
+  return { ...rest, visioDiagramPlan: upgradeLegacyPlan(figurePlan) };
+}
+
+function upgradeLegacyPlan(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (value.version !== "figure-plan/v1") return clone(value);
+  return { ...clone(value), version: "visio-diagram-plan/v1" };
 }
 
 function rememberResult(current, runtime) {
@@ -299,7 +332,7 @@ function resultOf(run) {
 }
 
 function publicState(run) {
-  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), figurePlan: clone(run.figurePlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
+  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), visioDiagramPlan: clone(run.visioDiagramPlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
 }
 
 async function invoke(dependency, value, run) { return typeof dependency === "function" ? dependency(value, run) : value; }

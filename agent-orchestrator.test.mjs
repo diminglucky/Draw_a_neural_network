@@ -17,8 +17,8 @@ function dependencies(overrides = {}) {
     inspect: async (value) => ({ source: value.source, evidence: [{ status: "confirmed" }] }),
     extract: (value) => ({ ...value, nodes: [{ id: "input", family: "input" }] }),
     normalize: (value) => ({ ...value, nodes: [{ id: "input", family: "input" }] }),
-    plan: (value) => ({ figurePlan: { nodes: [{ id: "n1", sourceNodeId: "input" }], edges: [] }, ir: value }),
-    render: async (value) => ({ renderId: "render-1", figurePlan: value }),
+    plan: (value) => ({ visioDiagramPlan: { version: "visio-diagram-plan/v1", nodes: [{ id: "n1", sourceNodeId: "input" }], edges: [] }, ir: value }),
+    render: async (value) => ({ renderId: "render-1", visioDiagramPlan: value }),
     readback: async (_plan, rendered) => ({ renderId: rendered.renderId, nodes: [{ sourceNodeId: "input" }], connectors: [] }),
     ...overrides,
   };
@@ -43,7 +43,7 @@ test("runs injected stages, retains outputs, and reports a successful readback",
   assert.equal(result.stage, "readback");
   assert.equal(result.renderResult.renderId, "render-1");
   assert.equal(result.ir.nodes[0].id, "input");
-  assert.equal(result.figurePlan.nodes[0].sourceNodeId, "input");
+  assert.equal(result.visioDiagramPlan.nodes[0].sourceNodeId, "input");
   assert.deepEqual(result.diagnostics, []);
   assert.deepEqual(result.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract", "normalize", "plan", "render", "readback"]);
   assert.deepEqual(run.snapshots, []);
@@ -56,7 +56,7 @@ test("resumes after confirmation from the latest valid snapshot without rerunnin
     inspect: async (value) => { calls.push("inspect"); return { source: value.source }; },
     extract: (value) => { calls.push("extract"); return { ...value, nodes: [{ id: "opaque", family: "custom" }] }; },
     normalize: (value) => { calls.push("normalize"); return { ...value, nodes: [{ id: "confirmed", family: "input" }] }; },
-    plan: (value) => { calls.push("plan"); return { figurePlan: { nodes: [{ id: "confirmed", sourceNodeId: "confirmed" }], edges: [] }, ir: value }; },
+    plan: (value) => { calls.push("plan"); return { visioDiagramPlan: { version: "visio-diagram-plan/v1", nodes: [{ id: "confirmed", sourceNodeId: "confirmed" }], edges: [] }, ir: value }; },
     render: undefined,
     readback: undefined,
   }));
@@ -83,7 +83,7 @@ test("rejecting confirmation does not continue the pipeline", async () => {
 
   assert.equal(rejected.status, "confirmation-rejected");
   assert.equal(rejected.stage, "extract");
-  assert.equal(rejected.figurePlan, undefined);
+  assert.equal(rejected.visioDiagramPlan, undefined);
 });
 
 test("external vision waits without normalizing or planning a placeholder", async () => {
@@ -97,7 +97,7 @@ test("external vision waits without normalizing or planning a placeholder", asyn
 
   assert.equal(result.status, "needs_external_vision");
   assert.equal(result.stage, "extract");
-  assert.equal(result.figurePlan, undefined);
+  assert.equal(result.visioDiagramPlan, undefined);
   assert.deepEqual(result.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract"]);
 });
 
@@ -169,15 +169,15 @@ test("resume creates a new run and bounds repair attempts without changing sourc
   assert.deepEqual(exhausted.ir, result.ir);
 });
 
-test("repair continuation injects a reason-specific Figure Plan and stops after two repairs", async () => {
+test("repair continuation injects a reason-specific Visio Diagram Plan and stops after two repairs", async () => {
   const repairedReasons = [];
   let renderCount = 0;
   const run = createAgentRun(input, dependencies({
-    repairFigurePlan: (plan, reason) => {
+    repairVisioDiagramPlan: (plan, reason) => {
       repairedReasons.push(reason);
       return { ...plan, revision: reason, nodes: plan.nodes.map((node) => ({ ...node, label: reason })) };
     },
-    render: (plan) => ({ renderId: `render-${++renderCount}`, figurePlan: plan }),
+    render: (plan) => ({ renderId: `render-${++renderCount}`, visioDiagramPlan: plan }),
     readback: (_plan, rendered) => ({ renderId: rendered.renderId, nodes: [{ sourceNodeId: "input" }], connectors: [] }),
   }));
   const first = await runAgentPipeline(run);
@@ -186,7 +186,7 @@ test("repair continuation injects a reason-specific Figure Plan and stops after 
 
   assert.equal(repaired.status, "completed");
   assert.deepEqual(repairedReasons, ["glue-mismatch"]);
-  assert.equal(repaired.figurePlan.revision, "glue-mismatch");
+  assert.equal(repaired.visioDiagramPlan.revision, "glue-mismatch");
   assert.equal(repaired.attempts.repair, 1);
 
   const second = resumeAgentRun(repaired, { type: "repair", value: { reason: "route-overlap" } });
@@ -205,7 +205,7 @@ test("continues from a run restored from the Run Store", async () => {
   const stageDependencies = dependencies({
     extract: (value) => { calls.push("extract"); return { ...value, nodes: [{ id: "opaque", family: "custom" }] }; },
     normalize: (value) => { calls.push("normalize"); return { ...value, nodes: [{ id: "restored", family: "input" }] }; },
-    plan: (value) => { calls.push("plan"); return { figurePlan: { nodes: [{ id: "restored", sourceNodeId: "restored" }], edges: [] }, ir: value }; },
+    plan: (value) => { calls.push("plan"); return { visioDiagramPlan: { version: "visio-diagram-plan/v1", nodes: [{ id: "restored", sourceNodeId: "restored" }], edges: [] }, ir: value }; },
     render: undefined,
     readback: undefined,
   });
@@ -218,7 +218,37 @@ test("continues from a run restored from the Run Store", async () => {
 
   assert.equal(resumed.status, "completed");
   assert.deepEqual(calls, ["extract", "normalize", "plan"]);
-  assert.equal(resumed.figurePlan.nodes[0].sourceNodeId, "restored");
+  assert.equal(resumed.visioDiagramPlan.nodes[0].sourceNodeId, "restored");
+});
+
+test("upgrades a legacy persisted plan only at the restore boundary", async () => {
+  const restored = {
+    id: "legacy-run",
+    input,
+    dependencies: dependencies({ render: undefined, readback: undefined }),
+    status: "confirmed",
+    stage: "plan",
+    snapshots: [{
+      stage: "plan",
+      value: {
+        ir: { nodes: [{ id: "legacy", family: "input" }], edges: [] },
+        figurePlan: {
+          version: "figure-plan/v1",
+          nodes: [{ id: "legacy-layout", sourceNodeId: "legacy" }],
+          edges: [],
+        },
+      },
+    }],
+    diagnostics: [],
+    attempts: { repair: 0 },
+  };
+
+  const result = await continueAgentRun(restored);
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.visioDiagramPlan.version, "visio-diagram-plan/v1");
+  assert.equal(result.visioDiagramPlan.nodes[0].sourceNodeId, "legacy");
+  assert.equal("figurePlan" in result, false);
 });
 
 test("diagnoses missing IDs, render ID changes, and connector glue changes", () => {

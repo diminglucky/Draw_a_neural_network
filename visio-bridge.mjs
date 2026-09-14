@@ -4,7 +4,6 @@ import { existsSync, statSync } from "node:fs";
 import { join, normalize, dirname, basename } from "node:path";
 import { compileSemanticVisualNode } from "./semantic-visual-grammar.mjs";
 import { getCompoundLayout } from "./compound-module.mjs";
-import { figurePlanForVisio } from "./figure-plan.mjs";
 
 const BRIDGE_VERSION = "visio-native-bridge/v1";
 
@@ -21,11 +20,13 @@ function resolveScriptPath(relativeName) {
 }
 
 export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
+  if (inputLayout.version && inputLayout.version !== "visio-diagram-plan/v1"
+    && inputLayout.version !== "universal-publication-figure/v1") {
+    throw new Error(`Visio bridge accepts only Visio Diagram Plan input; received ${inputLayout.version}.`);
+  }
   const documentPath = String(options.documentPath || "").trim();
   if (!documentPath) throw new Error("documentPath is required; Visio rendering never creates an implicit document.");
-  const layout = String(inputLayout?.version || "").startsWith("figure-plan/")
-    ? figurePlanForVisio(inputLayout, options)
-    : inputLayout;
+  const layout = inputLayout;
   const pageName = String(options.pageName || "Page-1");
   const renderId = String(options.renderId || stableRenderId(documentPath, pageName));
   const grammarId = String(layout.grammar?.id || "generic-dag");
@@ -147,7 +148,9 @@ function planOuterShapes(layout, registry, renderId, grammarId) {
         x: node.x + 20 + child.x,
         y: node.y + 36 + child.y,
         parentNodeId: node.id,
+        family: child.family || child.kind || "operator",
         semanticRole: child.semanticRole || "internal_operator",
+        visualRole: innerVisualRole(child),
         confidence: child.confidence ?? node.confidence,
         evidence: child.evidence || node.evidence,
       }, {
@@ -159,6 +162,15 @@ function planOuterShapes(layout, registry, renderId, grammarId) {
       }));
     }
   }
+}
+
+function innerVisualRole(child = {}) {
+  const family = String(child.family || child.kind || child.semanticRole || "").toLowerCase();
+  if (["add", "sum"].includes(family)) return "merge-add";
+  if (["concat", "concatenate", "merge", "join"].includes(family)) return "merge-concat";
+  if (family === "attention") return "inner-attention";
+  if (["activation", "norm"].includes(family)) return "inner-capsule";
+  return "inner-operator";
 }
 
 // Build every connector (outer edges, recurrent rails, inner edges). Rails are
@@ -183,7 +195,12 @@ function planConnectors(layout, registry, renderId) {
       sourceEdgeId: String(edge.sourceEdgeId || edge.id),
       sourceNodeId: String(edge.sourceNodeId || edge.source),
       targetNodeId: String(edge.targetNodeId || edge.target),
-      sourceEndpointIds: normalizeEndpointIds(edge.sourceEndpointIds),
+      sourceEndpointIds: normalizeEndpointIds(edge.sourceEndpointIds || edge.ports),
+      routeClass: String(edge.routeClass || "main-flow"),
+      sourceContainerId: String(edge.sourceContainerId || ""),
+      targetContainerId: String(edge.targetContainerId || ""),
+      sourceLaneId: String(edge.sourceLaneId || ""),
+      targetLaneId: String(edge.targetLaneId || ""),
       sourceShapeId: recurrentExpandedShapeIds.get(String(edge.source || edge.sourceNodeId))
         || outerShapeIds.get(String(edge.source || edge.sourceNodeId))
         || `outer::${String(edge.source || edge.sourceNodeId)}`,
@@ -408,8 +425,23 @@ function shapePlan(node, options) {
   const geometryData = node.geometryData || node.geometry?.data || semantic.geometryData || {};
   const inputGrammar = node.inputGrammar || semantic.inputGrammar;
   const isInputRole = visualRole.endsWith("-input");
+  const hasInternalTopology = Boolean(geometryData.hasInternalTopology || node.inner?.nodes?.length);
+  const internalDetail = String(node.internalDetail || (hasInternalTopology ? "expanded" : "opaque"));
+  const modulePattern = String(node.modulePattern || geometryData.modulePattern || node.attributes?.modulePattern || node.inner?.kind || "opaque");
   return {
     id: options.id,
+    sourceNodeId: String(node.sourceNodeId || node.id || ""),
+    sourceNodeIds: Array.isArray(node.sourceNodeIds)
+      ? node.sourceNodeIds.map(String)
+      : [String(node.sourceNodeId || node.id || "")],
+    containerId: String(node.containerId || ""),
+    laneId: String(node.laneId || ""),
+    containerPath: Array.isArray(node.containerPath) ? node.containerPath.map(String) : [],
+    scopedLaneId: String(node.scopedLaneId || ""),
+    ports: {
+      inputs: Array.isArray(node.ports?.inputs) ? node.ports.inputs.map(String) : [],
+      outputs: Array.isArray(node.ports?.outputs) ? node.ports.outputs.map(String) : [],
+    },
     x: Number(node.x ?? node.geometry?.x) || 0,
     y: Number(node.y ?? node.geometry?.y) || 0,
     w: Number(node.w ?? node.geometry?.width) || 120,
@@ -431,6 +463,10 @@ function shapePlan(node, options) {
       renderId: options.renderId,
       sourceNodeId: String(node.sourceNodeId || node.id || ""),
       sourceNodeIds: Array.isArray(node.sourceNodeIds) ? node.sourceNodeIds.map(String) : [String(node.sourceNodeId || node.id || "")],
+      containerId: String(node.containerId || ""),
+      laneId: String(node.laneId || ""),
+      containerPath: Array.isArray(node.containerPath) ? node.containerPath.map(String).join("|") : "",
+      scopedLaneId: String(node.scopedLaneId || ""),
       parentNodeId: options.parentNodeId,
       visualRole: isInputRole ? visualRole : String(node.visualRole || options.shapeKind || node.family || "operator"),
       semanticRole: visualRole,
@@ -461,8 +497,10 @@ function shapePlan(node, options) {
       sourceAnchor: geometryData.sourceAnchor ?? "",
       targetAnchor: geometryData.targetAnchor ?? "",
       geometryProfile: visualRole,
-      hasInternalTopology: Boolean(geometryData.hasInternalTopology),
+      hasInternalTopology,
       internalNodeCount: geometryData.internalNodeCount ?? 0,
+      internalDetail,
+      modulePattern,
       confidence: Number.isFinite(node.confidence) ? node.confidence : 1,
       evidenceCount: Array.isArray(node.evidence) ? node.evidence.length : 0,
       recurrentInstanceRole: String(node.recurrentInstanceRole || ""),

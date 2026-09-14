@@ -33,8 +33,11 @@ function Get-RgbFormula([string]$Hex) {
 function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
   $profile = (Get-PlanString $Spec.styleProfile).ToLowerInvariant()
   $role = (Get-PlanString $Spec.visualRole).ToLowerInvariant()
+  $semanticRole = ""
+  try { $semanticRole = (Get-PlanString $Spec.shapeData.semanticRole).ToLowerInvariant() } catch {}
   $fallback = Get-PlanString $Spec.fill
-  $base = switch ($profile) {
+  $styleKey = if (-not [string]::IsNullOrWhiteSpace($profile)) { $profile } elseif (-not [string]::IsNullOrWhiteSpace($role)) { $role } else { $semanticRole }
+  $base = switch ($styleKey) {
     "feature-map" { "#FFC47A"; break }
     "feature-map-band" { "#E65034"; break }
     "input-tensor" { "#FFE6A6"; break }
@@ -54,6 +57,14 @@ function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
     "token" { "#E2EEF8"; break }
     "compound" { "#E7EEF5"; break }
     "unresolved" { "#F5F0E7"; break }
+    "decision" { "#FBE8B8"; break }
+    "merge-add" { "#F4D7A8"; break }
+    "merge-concat" { "#E9EDF2"; break }
+    "split" { "#D3EEF0"; break }
+    "junction" { "#D3EEF0"; break }
+    "residual" { "#D3EEF0"; break }
+    "scale-transfer" { "#D8F0DE"; break }
+    "prediction" { "#FAD9D2"; break }
     default { $fallback }
   }
   if ([string]::IsNullOrWhiteSpace($base)) { $base = "#E7EEF5" }
@@ -90,6 +101,29 @@ function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
   }
 }
 
+function Get-SemanticLineColor([object]$Spec) {
+  $line = Get-PlanString $Spec.line
+  if (-not [string]::IsNullOrWhiteSpace($line) -and $line -ne "#263248") { return $line }
+  $profile = (Get-PlanString $Spec.styleProfile).ToLowerInvariant()
+  $role = (Get-PlanString $Spec.visualRole).ToLowerInvariant()
+  $semanticRole = ""
+  try { $semanticRole = (Get-PlanString $Spec.shapeData.semanticRole).ToLowerInvariant() } catch {}
+  $styleKey = if (-not [string]::IsNullOrWhiteSpace($profile)) { $profile } elseif (-not [string]::IsNullOrWhiteSpace($role)) { $role } else { $semanticRole }
+  $lineColor = switch ($styleKey) {
+    "decision" { "#C08A1E" }
+    "merge" { "#8B6A32" }
+    "merge-add" { "#8B6A32" }
+    "merge-concat" { "#7A8696" }
+    "split" { "#2E7F8C" }
+    "junction" { "#2E7F8C" }
+    "residual" { "#2E7F8C" }
+    "scale-transfer" { "#3E8E5A" }
+    "prediction" { "#C0432E" }
+    default { "#3F5D78" }
+  }
+  return $lineColor
+}
+
 function Set-ShapeData([object]$Shape, [string]$Key, [object]$Value) {
   $cellName = "Prop.$Key"
   if ([int]$Shape.CellExistsU($cellName, 0) -eq 0) {
@@ -113,6 +147,14 @@ function Set-PlanData([object]$Shape, [object]$Data) {
   foreach ($property in $Data.PSObject.Properties) {
     Set-ShapeData $Shape $property.Name $property.Value
   }
+}
+
+function Set-NativeShapeIdentity([object]$Shape, [object]$PlanId) {
+  $planShapeId = Get-PlanString $PlanId
+  if ([string]::IsNullOrWhiteSpace($planShapeId)) { return }
+  Set-ShapeData $Shape "planShapeId" $planShapeId
+  $nativeId = "Agent_" + ($planShapeId -replace '[^A-Za-z0-9_]', '_')
+  try { $Shape.NameU = $nativeId } catch {}
 }
 
 function Get-RepeatCount([object]$Spec) {
@@ -140,8 +182,7 @@ function Set-ShapeStyle([object]$Shape, [object]$Spec, [double]$Scale) {
       $Shape.CellsU("FillBkgndTrans").FormulaU = $transparency
     }
   }
-  $line = Get-PlanString $Spec.line
-  if ([string]::IsNullOrWhiteSpace($line) -or $line -eq "#263248") { $line = "#3F5D78" }
+  $line = Get-SemanticLineColor $Spec
   $Shape.CellsU("LineColor").FormulaU = Get-RgbFormula $line
   $Shape.CellsU("LineWeight").FormulaU = if ($faceRole -eq "front") { "0.011 in" } else { "0.008 in" }
   $Shape.CellsU("Char.Size").FormulaU = if ($labelOutside) { "8 pt" } else { "7 pt" }
@@ -385,37 +426,39 @@ function Draw-PublicationTensorTensorBox([object]$Page, [double]$X, [double]$Y, 
 }
 
 function Draw-InputTensor([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
-  # An input is a small stack of channel planes, not a generic volume card.
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  $shape.CellsU("LineWeight").FormulaU = "0.012 in"
+  Set-NativeShapeIdentity $shape $Spec.id
+  return @($shape)
+}
+
+function Draw-RepeatBadge([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $count = Get-RepeatCount $Spec
+  if ($count -le 1) { return @() }
+  $badgeW = [Math]::Max(0.28, [Math]::Min(0.48, $W * 0.28))
+  $badgeH = [Math]::Max(0.16, [Math]::Min(0.24, $H * 0.32))
+  $badge = $Page.DrawRectangle($X + $W - $badgeW * 0.65, $Y + $H - $badgeH * 0.35, $X + $W + $badgeW * 0.35, $Y + $H + $badgeH * 0.65)
+  $badge.Text = "x$count"
+  $badge.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#FFFFFF"
+  $badge.CellsU("LineColor").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+  $badge.CellsU("LineWeight").FormulaU = "0.008 in"
+  $badge.CellsU("Char.Size").FormulaU = "7 pt"
+  $badge.CellsU("Char.Style").FormulaU = "1"
+  $badge.CellsU("Para.HorzAlign").FormulaU = "1"
+  $badge.CellsU("VerticalAlign").FormulaU = "1"
+  Set-PlanData $badge $Spec.shapeData
+  return @($badge)
+}
+
+function Draw-FeaturePlane([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   $created = New-Object 'System.Collections.Generic.List[object]'
-  $planes = @(
-    [pscustomobject]@{ fill = "#DCEAF4"; line = "#6E91AA" },
-    [pscustomobject]@{ fill = "#E8E7D2"; line = "#9A9567" },
-    [pscustomobject]@{ fill = "#EADDDD"; line = "#A77878" }
-  )
-  $depth = [Math]::Max(0.05, [Math]::Min(0.13, $W * 0.18))
-  for ($index = $planes.Count - 1; $index -ge 0; $index -= 1) {
-    $plane = $planes[$index]
-    $offset = [double]$index * [Math]::Min(0.075, $depth * 0.62)
-    $planeSpec = [pscustomobject]@{
-      label = if ($index -eq 0) { $Spec.label } else { "" }
-      subtitle = if ($index -eq 0) { $Spec.subtitle } else { "" }
-      fill = $plane.fill
-      line = $plane.line
-      shapeKind = "input-channel-plane"
-      visualRole = "input-tensor"
-      styleProfile = "operator"
-      labelOutside = if ($index -eq 0) { $Spec.labelOutside } else { $false }
-      shapeData = $Spec.shapeData
-    }
-    foreach ($face in @(Draw-PrismFaces $Page ($X - $offset) ($Y + $offset * 0.35) $W $H $depth $planeSpec $Scale "input")) {
-      $created.Add($face) | Out-Null
-    }
-  }
-  # The grid is reserved for the input image cue; intermediate feature maps
-  # remain clean so that topology and scale carry the visual hierarchy.
-  foreach ($grid in @(Draw-FeatureMapGrid $Page $Spec $X $Y $W $H $Scale)) {
-    $created.Add($grid) | Out-Null
-  }
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  $shape.CellsU("LineWeight").FormulaU = "0.012 in"
+  Set-NativeShapeIdentity $shape $Spec.id
+  $created.Add($shape) | Out-Null
+  foreach ($badge in @(Draw-RepeatBadge $Page $Spec $X $Y $W $H $Scale)) { $created.Add($badge) | Out-Null }
   return $created.ToArray()
 }
 
@@ -750,6 +793,8 @@ function Draw-TextAnnotation([object]$Page, [string]$Text, [double]$X, [double]$
 
 function Draw-PlanLabel([object]$Page, [object]$Spec, [double]$Scale) {
   if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $Spec.parentNodeId))) { return @() }
+  $visualRole = Get-PlanString $Spec.visualRole
+  if ($visualRole -eq "repeat-marker" -or $visualRole -eq "annotation") { return @() }
   # Publication blocks carry their title and shape inside the card; no
   # external label is needed.
   if ((Get-PlanString $Spec.shapeKind) -eq "publication-block") { return @() }
@@ -775,7 +820,6 @@ function Draw-PlanLabel([object]$Page, [object]$Spec, [double]$Scale) {
   # channel counts are split by the narrow feature-map body itself.
   $labelWidth = [Math]::Max(0.88, $w + 0.36)
   $labelX = $x - 0.18
-  $visualRole = Get-PlanString $Spec.visualRole
   if ($visualRole -eq "pool-downsample") {
     $labelWidth = [Math]::Max(0.92, $w + 0.62)
     $labelX = $x + (($w - $labelWidth) / 2)
@@ -1000,6 +1044,107 @@ function Draw-OperatorGlyph([object]$Page, [object]$Spec, [double]$X, [double]$Y
   return @($glyph)
 }
 
+function Draw-InnerOperatorShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $role = Get-PlanString $Spec.visualRole
+  if ($role -eq "inner-capsule") {
+    $shape = $Page.DrawOval($X, $Y, $X + $W, $Y + $H)
+  } elseif ($role -eq "inner-attention") {
+    $cut = [Math]::Min($W * 0.18, $H * 0.28)
+    $points = [double[]]@(
+      ($X + $cut), $Y, ($X + $W - $cut), $Y,
+      ($X + $W), ($Y + $H / 2),
+      ($X + $W - $cut), ($Y + $H), ($X + $cut), ($Y + $H),
+      $X, ($Y + $H / 2), ($X + $cut), $Y
+    )
+    $shape = $Page.DrawPolyline($points, 0)
+  } else {
+    $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  }
+  Set-ShapeStyle $shape $Spec $Scale
+  $shape.CellsU("LineWeight").FormulaU = "0.009 in"
+  $shape.CellsU("Char.Size").FormulaU = "7 pt"
+  Set-NativeShapeIdentity $shape $Spec.id
+  return @($shape)
+}
+
+function Draw-DecisionShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $points = [double[]]@(
+    ($X + ($W / 2)), $Y,
+    ($X + $W), ($Y + ($H / 2)),
+    ($X + ($W / 2)), ($Y + $H),
+    $X, ($Y + ($H / 2)),
+    ($X + ($W / 2)), $Y
+  )
+  $shape = $Page.DrawPolyline($points, 0)
+  Set-ShapeStyle $shape $Spec $Scale
+  Set-NativeShapeIdentity $shape $Spec.id
+  return @($shape)
+}
+
+function Draw-MergeAddShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $shape = $Page.DrawOval($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  Set-NativeShapeIdentity $shape $Spec.id
+  if ([string]::IsNullOrWhiteSpace((Get-PlanString $Spec.label))) { $shape.Text = "+" }
+  $shape.CellsU("Char.Size").FormulaU = "10 pt"
+  $shape.CellsU("Char.Style").FormulaU = "1"
+  return @($shape)
+}
+
+function Draw-MergeConcatShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  Set-NativeShapeIdentity $shape $Spec.id
+  if ([string]::IsNullOrWhiteSpace((Get-PlanString $Spec.label))) { $shape.Text = "||" }
+  $shape.CellsU("Char.Style").FormulaU = "1"
+  return @($shape)
+}
+
+function Draw-SplitShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $points = [double[]]@(
+    $X, $Y,
+    ($X + $W), ($Y + ($H / 2)),
+    $X, ($Y + $H),
+    $X, $Y
+  )
+  $shape = $Page.DrawPolyline($points, 0)
+  Set-ShapeStyle $shape $Spec $Scale
+  Set-NativeShapeIdentity $shape $Spec.id
+  return @($shape)
+}
+
+function Draw-JunctionShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $shape = $Page.DrawOval($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  Set-NativeShapeIdentity $shape $Spec.id
+  $shape.Text = ""
+  $shape.CellsU("LinePattern").FormulaU = "0"
+  return @($shape)
+}
+
+function Draw-RepeatMarkerShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  Set-NativeShapeIdentity $shape $Spec.id
+  $count = Get-RepeatCount $Spec
+  $label = Get-PlanString $Spec.label
+  if ([string]::IsNullOrWhiteSpace($label)) { $label = "$count`u{00D7}" }
+  $shape.Text = $label
+  $shape.CellsU("FillPattern").FormulaU = "0"
+  $shape.CellsU("LinePattern").FormulaU = "0"
+  $shape.CellsU("Char.Style").FormulaU = "1"
+  return @($shape)
+}
+
+function Draw-AnnotationShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $shape $Spec $Scale
+  Set-NativeShapeIdentity $shape $Spec.id
+  $shape.CellsU("FillPattern").FormulaU = "0"
+  $shape.CellsU("LinePattern").FormulaU = "0"
+  return @($shape)
+}
+
 function Draw-PublicationBlock([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   # Publication (journal) stage block: a uniform rounded card whose title is
   # the operator and whose subtitle is the feature-map shape. Upsample and
@@ -1030,25 +1175,8 @@ function Draw-PublicationBlock([object]$Page, [object]$Spec, [double]$X, [double
   return @($block)
 }
 
-function Get-NamedModuleColors([string]$Label) {
-  # Top-journal YOLO-style module palette: each named composite block gets a
-  # distinct soft fill + matching outline so the architecture reads as a
-  # color-coded legend rather than a stack of identical boxes. Modules are
-  # drawn as a single labeled block — their internals are NOT expanded.
-  $name = $Label.ToLowerInvariant()
-  if ($name -match "c2f|c2psa|csp|c3f|elan|repvgg|ghost") { return @("#E7DDF5", "#7A4BB5") }
-  if ($name -match "sppf|spp|aspp|psp|pan") { return @("#FBE8B8", "#C08A1E") }
-  if ($name -match "bottleneck|resblock|basicblock|residual|shortcut|inverted") { return @("#D3EEF0", "#2E7F8C") }
-  if ($name -match "upsample|interpolate|pixel|unpool|deconv|transpose") { return @("#D8F0DE", "#3E8E5A") }
-  if ($name -match "concat|add|sum") { return @("#E9EDF2", "#7A8696") }
-  if ($name -match "detect|head|yolo|output|classif") { return @("#FAD9D2", "#C0432E") }
-  if ($name -match "conv") { return @("#D6E6F7", "#3A6EA8") }
-  return @("#E7EBF0", "#7A8696")
-}
-
 function Draw-NamedModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   $label = Get-PlanString $Spec.label
-  $colors = Get-NamedModuleColors $label
   $cut = [Math]::Min($W * 0.14, $H * 0.16)
   $points = [double[]]@(
     ($X + $cut), $Y,
@@ -1062,24 +1190,30 @@ function Draw-NamedModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, 
     ($X + $cut), $Y
   )
   $block = $Page.DrawPolyline($points, 0)
-  $block.CellsU("FillForegnd").FormulaU = Get-RgbFormula $colors[0]
-  $block.CellsU("FillBkgnd").FormulaU = Get-RgbFormula $colors[0]
-  $block.CellsU("LineColor").FormulaU = Get-RgbFormula $colors[1]
+  Set-ShapeStyle $block $Spec $Scale
   $block.CellsU("LineWeight").FormulaU = "0.011 in"
   $block.CellsU("Char.Size").FormulaU = "9 pt"
   $block.CellsU("Char.Style").FormulaU = "1"
-  $block.CellsU("Char.Color").FormulaU = Get-RgbFormula $colors[1]
+  $block.CellsU("Char.Color").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
   $block.CellsU("Para.HorzAlign").FormulaU = "1"
   $block.CellsU("VerticalAlign").FormulaU = "1"
   $subtitle = Get-PlanString $Spec.subtitle
   $block.Text = if (-not [string]::IsNullOrWhiteSpace($subtitle)) { "$label`n$subtitle" } else { $label }
-  Set-PlanData $block $Spec.shapeData
-  return @($block)
+  Set-NativeShapeIdentity $block $Spec.id
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $created.Add($block) | Out-Null
+  $railW = [Math]::Max(0.035, [Math]::Min(0.07, $W * 0.07))
+  $rail = $Page.DrawRectangle($X, $Y, $X + $railW, $Y + $H)
+  $rail.CellsU("FillForegnd").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+  $rail.CellsU("LinePattern").FormulaU = "0"
+  Set-PlanData $rail $Spec.shapeData
+  $created.Add($rail) | Out-Null
+  foreach ($badge in @(Draw-RepeatBadge $Page $Spec $X $Y $W $H $Scale)) { $created.Add($badge) | Out-Null }
+  return $created.ToArray()
 }
 
 function Draw-Legend([object]$Page, [object]$Plan, [double]$PageWidth, [double]$Scale) {
-  # Top-journal color legend: swatches for each distinct named module type
-  # (C2f, SPPF, Bottleneck, …) so the color-coding is self-documenting.
+  # The legend mirrors explicit plan semantics; labels are display text only.
   $items = New-Object 'System.Collections.Generic.List[object]'
   $seen = @{}
   foreach ($spec in @($Plan.shapes)) {
@@ -1090,8 +1224,7 @@ function Draw-Legend([object]$Page, [object]$Plan, [double]$PageWidth, [double]$
     $key = $label.ToLowerInvariant()
     if ($seen.ContainsKey($key)) { continue }
     $seen[$key] = $true
-    $colors = Get-NamedModuleColors $label
-    $items.Add([pscustomobject]@{ label = $label; fill = $colors[0]; line = $colors[1] }) | Out-Null
+    $items.Add([pscustomobject]@{ label = $label; fill = (Get-SemanticColor $spec); line = (Get-SemanticLineColor $spec) }) | Out-Null
   }
   if ($items.Count -eq 0) { return @() }
 
@@ -1135,6 +1268,14 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
     return @(Draw-DownsampleFrustum $Page $Spec $x $y $w $h $Scale)
   }
   $visualRole = Get-PlanString $Spec.visualRole
+  if ($visualRole -eq "decision") { return @(Draw-DecisionShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "merge-add") { return @(Draw-MergeAddShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "merge-concat") { return @(Draw-MergeConcatShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "split") { return @(Draw-SplitShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "junction") { return @(Draw-JunctionShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "repeat-marker") { return @(Draw-RepeatMarkerShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "annotation") { return @(Draw-AnnotationShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "inner-operator" -or $visualRole -eq "inner-capsule" -or $visualRole -eq "inner-attention") { return @(Draw-InnerOperatorShape $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "image-input") { return @(Draw-ImageInput $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "sequence-input") { return @(Draw-SequenceInput $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "state-input") { return @(Draw-StateInput $Page $Spec $x $y $w $h $Scale) }
@@ -1143,7 +1284,8 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   if ($visualRole -eq "unknown-input") { return @(Draw-UnknownInput $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "vectorize" -or $kind -eq "flatten-ribbon") { return @(Draw-FlattenRibbon $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "input-tensor") { return @(Draw-InputTensor $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "feature-map-stage" -or $kind -match "volume|tensor") { return @(Draw-FeatureMapStack $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "legacy-publication-tensor") { return @(Draw-FeatureMapStack $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "feature-map-stage" -or $kind -match "volume|tensor") { return @(Draw-FeaturePlane $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "recurrent-instance" -or $kind -eq "recurrent-instance") { return @(Draw-RecurrentInstance $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "compound-module" -or $kind -eq "compound") { return @(Draw-CompoundModule $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "unresolved-module") { return @(Draw-UnresolvedModule $Page $Spec $x $y $w $h $Scale) }
@@ -1203,8 +1345,10 @@ function Draw-PlanConnector([object]$Page, [object]$Spec, [double]$Scale, [hasht
       ([double]$to.x * $Scale),
       ([double]$to.y * $Scale)
     )
-    $line.CellsU("LineColor").FormulaU = if ($Spec.recurrentRailKind -eq "feedback") { "RGB(231,126,34)" } elseif ($Spec.recurrentRailKind -eq "update") { "RGB(0,160,120)" } elseif ($Spec.recurrentRailKind -eq "carry") { "RGB(44,150,190)" } elseif ($Spec.type -match "skip|residual") { "RGB(36,130,112)" } else { "RGB(63,84,112)" }
+    $routeClass = (Get-PlanString $Spec.routeClass).ToLowerInvariant()
+    $line.CellsU("LineColor").FormulaU = if ($Spec.recurrentRailKind -eq "feedback" -or $routeClass -eq "feedback") { "RGB(231,126,34)" } elseif ($Spec.recurrentRailKind -eq "update") { "RGB(0,160,120)" } elseif ($Spec.recurrentRailKind -eq "carry") { "RGB(44,150,190)" } elseif ($routeClass -match "skip|residual|branch" -or $Spec.type -match "skip|residual") { "RGB(36,130,112)" } elseif ($routeClass -match "scale-transfer|merge") { "RGB(79,112,155)" } else { "RGB(63,84,112)" }
     $line.CellsU("LineWeight").FormulaU = "0.009 in"
+    if ($routeClass -match "skip|residual|branch|feedback") { $line.CellsU("LinePattern").FormulaU = "2" }
     if ($index -eq $points.Count - 2) { $line.CellsU("EndArrow").FormulaU = "13" }
     $segmentRole = if ($points.Count -eq 2) { "direct" } elseif ($index -eq 0) { "begin" } elseif ($index -eq $points.Count - 2) { "end" } else { "middle" }
     if ($index -eq 0) { Glue-Endpoint $line "BeginX" $ShapeMap[[string]$Spec.sourceShapeId] $true }
@@ -1217,6 +1361,11 @@ function Draw-PlanConnector([object]$Page, [object]$Spec, [double]$Scale, [hasht
       targetNodeId = $Spec.targetNodeId
       visualRole = "connector"
       edgeType = $Spec.type
+      routeClass = $routeClass
+      sourceContainerId = $Spec.sourceContainerId
+      targetContainerId = $Spec.targetContainerId
+      sourceLaneId = $Spec.sourceLaneId
+      targetLaneId = $Spec.targetLaneId
       recurrentRailKind = $Spec.recurrentRailKind
       sourceShapeId = $Spec.sourceShapeId
       targetShapeId = $Spec.targetShapeId
@@ -1350,7 +1499,7 @@ foreach ($spec in @($plan.connectors)) {
   $lines = Draw-PlanConnector $page $spec ([double]$plan.unitScale) $shapeMap
   if ($null -ne $lines) { $connectorCount = [int]$connectorCount + [int]@($lines).Count }
 }
-$legendShapes = @(Draw-Legend $page $plan ([double]$pageSize.width) ([double]$plan.unitScale))
+$legendShapes = @()
 $shapeCount = [int]$shapeCount + [int]$legendShapes.Count
 
 $doc.Save() | Out-Null

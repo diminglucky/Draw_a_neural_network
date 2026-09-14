@@ -6,7 +6,7 @@ import {
   buildVisioRenderPlan,
   validateVisioReadback,
 } from "./visio-bridge.mjs";
-import { createFigurePlan } from "./figure-plan.mjs";
+import { createVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
 
 const layout = {
@@ -44,10 +44,36 @@ test("buildVisioRenderPlan targets an existing document and carries semantic Sha
   assert.equal(plan.shapes[0].shapeData.grammarId, "residual-graph");
   assert.equal(plan.shapes[0].shapeData.confidence, 0.42);
   assert.equal(plan.shapes[0].shapeData.evidenceCount, 1);
+  assert.equal(plan.shapes[0].shapeData.internalDetail, "opaque");
+  assert.equal(plan.shapes[0].shapeData.modulePattern, "opaque");
+});
+
+test("evidenced inner topology uses semantic primitives without fabricating children", () => {
+  const plan = buildVisioRenderPlan({ nodes: [
+    { id: "evidenced", visualRole: "compound-module", x: 0, y: 0, w: 300, h: 180,
+      inner: { kind: "topology", nodes: [
+        { id: "attention", kind: "attention", x: 10, y: 10, w: 80, h: 40 },
+        { id: "merge", kind: "add", x: 110, y: 10, w: 40, h: 40 },
+      ], edges: [{ id: "internal", source: "attention", target: "merge" }] } },
+    { id: "opaque", visualRole: "named-module", x: 400, y: 0, w: 120, h: 60,
+      inner: { kind: "unresolved", nodes: [], edges: [] } },
+  ], edges: [] }, { documentPath: "C:\\project\\existing.vsdx" });
+  assert.equal(plan.shapes.find((shape) => shape.id === "inner::evidenced::attention").visualRole, "inner-attention");
+  assert.equal(plan.shapes.find((shape) => shape.id === "inner::evidenced::merge").visualRole, "merge-add");
+  assert.equal(plan.shapes.find((shape) => shape.id === "outer::evidenced").shapeData.internalDetail, "expanded");
+  assert.equal(plan.shapes.find((shape) => shape.id === "outer::opaque").shapeData.internalDetail, "opaque");
+  assert.equal(plan.shapes.filter((shape) => shape.parentNodeId === "opaque").length, 0);
+});
+
+test("Visio bridge rejects retired Figure Plan versions", () => {
+  assert.throws(
+    () => buildVisioRenderPlan({ version: "figure-plan/v1", nodes: [], edges: [] }, { documentPath: "C:/test/model.vsdx" }),
+    /accepts only Visio Diagram Plan input/,
+  );
 });
 
 test("Visio consumes Figure Plan source identities for shapes and connectors", () => {
-  const figurePlan = createFigurePlan({
+  const figurePlan = createVisioDiagramPlan({
     ir: {
       nodes: [
         { id: "source-a", family: "recurrent", label: "State A", stage: 0 },
@@ -110,6 +136,43 @@ test("Visio connectors preserve endpoint identities into native Shape Data", () 
   assert.match(script, /sourceEdgeId\s*=\s*\$shape\.CellsU\("Prop\.sourceEdgeId"\)/);
   assert.match(script, /connectorEndpoints\s*=\s*\$readbackConnectorEndpoints/);
   assert.match(script, /ConvertTo-Json\s+-Compress\s+-Depth\s+10/);
+});
+
+test("Visio render plan carries generic layout semantics to shapes and connectors", () => {
+  const ir = {
+    nodes: [
+      { id: "source", family: "custom", compoundKind: "module", label: "Source", stage: 0, containerId: "trunk", laneId: "wide", ports: { outputs: ["features"] }, shape: { output: [128, 128, 64] } },
+      { id: "merge", family: "merge", label: "Merge", stage: 1, containerId: "fusion", laneId: "narrow", ports: { inputs: ["main", "skip"] }, shape: { output: [64, 64, 128] } },
+    ],
+    containers: [
+      { id: "trunk", label: "Trunk", children: ["source"] },
+      { id: "fusion", label: "Fusion", children: ["merge"] },
+    ],
+    lanes: [
+      { id: "wide", key: "wide", label: "Wide scale", order: 0 },
+      { id: "narrow", key: "narrow", label: "Narrow scale", order: 1 },
+    ],
+    edges: [{ id: "transfer", source: "source", target: "merge", type: "signal", ports: { source: "features", target: "skip" } }],
+  };
+  const plan = buildVisioRenderPlan(createVisioDiagramPlan({ ir, layout: layoutUniversalFigure(ir) }), {
+    documentPath: "C:\\project\\existing.vsdx",
+  });
+  const source = plan.shapes.find((shape) => shape.shapeData.sourceNodeId === "source");
+  const connector = plan.connectors.find((edge) => edge.sourceEdgeId === "transfer");
+
+  assert.equal(source.shapeData.containerId, "trunk");
+  assert.equal(source.shapeData.laneId, "wide");
+  assert.equal(connector.routeClass, "scale-transfer");
+  assert.equal(connector.sourceContainerId, "trunk");
+  assert.equal(connector.targetContainerId, "fusion");
+  assert.equal(connector.sourceLaneId, "wide");
+  assert.equal(connector.targetLaneId, "narrow");
+  assert.deepEqual(connector.sourceEndpointIds, { source: "features", target: "skip" });
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /routeClass\s*=\s*\$routeClass/);
+  assert.match(script, /sourceContainerId\s*=\s*\$Spec\.sourceContainerId/);
+  assert.match(script, /sourceLaneId\s*=\s*\$Spec\.sourceLaneId/);
+  assert.match(script, /LinePattern[\s\S]*?skip\|residual\|branch\|feedback/);
 });
 
 test("Visio render plan projects recurrent instances and state rails with source identities", () => {
@@ -307,7 +370,7 @@ test("Visio bridge renders recurrent instances and state rails from a Figure Pla
       { id: "state-loop", source: "cell", target: "cell", type: "loop" },
     ],
   };
-  const plan = createFigurePlan({ ir: source, layout: layoutUniversalFigure(source) });
+  const plan = createVisioDiagramPlan({ ir: source, layout: layoutUniversalFigure(source) });
   const visioPlan = buildVisioRenderPlan(plan, { documentPath: "C:/model.vsdx" });
 
   assert.equal(visioPlan.shapes.filter((shape) => shape.shapeData.recurrentInstanceRole).length, 3);

@@ -20,14 +20,14 @@ test("web page is a Visio control surface, not a diagram renderer", () => {
   assert.doesNotMatch(styles, /\.selection-layer/);
 });
 
-test("analysis contract ends at Universal IR and Figure Plan before Visio", () => {
+test("analysis contract ends at Universal IR and a Visio Diagram Plan", () => {
   const pipeline = read("agent-pipeline.mjs");
-  const figurePlan = read("figure-plan.mjs");
+  const visioDiagramPlan = read("visio-diagram-plan.mjs");
   const universalIR = read("universal-ir.mjs");
   const visioClient = read("visio-client.mjs");
 
   assert.doesNotMatch(pipeline, /FigurePlanForWeb|mergeWebStateIntoFigurePlan/i);
-  assert.doesNotMatch(figurePlan, /FigurePlanForWeb|mergeWebStateIntoFigurePlan/i);
+  assert.doesNotMatch(visioDiagramPlan, /FigurePlanForWeb|mergeWebStateIntoFigurePlan/i);
   assert.doesNotMatch(universalIR, /projectUniversalIRToWeb|typeForWebRole/i);
   assert.doesNotMatch(visioClient, /mergeWebStateIntoUniversalIR|familyForWebType/i);
 });

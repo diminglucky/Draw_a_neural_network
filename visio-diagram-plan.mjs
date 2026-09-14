@@ -1,9 +1,10 @@
-const FIGURE_PLAN_VERSION = "figure-plan/v1";
+const VISIO_DIAGRAM_PLAN_VERSION = "visio-diagram-plan/v1";
 
-export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}) {
-  const layoutNodes = Array.isArray(layout.nodes) ? layout.nodes : [];
-  const layoutEdges = Array.isArray(layout.edges) ? layout.edges : [];
-  const recurrentLayout = layout.recurrentLayout;
+export function createVisioDiagramPlan({ ir = {}, geometry, layout, diagnostics = [] } = {}) {
+  const sourceLayout = hasLayoutContent(geometry) ? geometry : (layout || {});
+  const layoutNodes = Array.isArray(sourceLayout.nodes) ? sourceLayout.nodes : [];
+  const layoutEdges = Array.isArray(sourceLayout.edges) ? sourceLayout.edges : [];
+  const recurrentLayout = sourceLayout.recurrentLayout;
   const recurrentUnresolvedSourceIds = new Set(
     recurrentLayout?.uncertainty?.unresolved
       ? (recurrentLayout.instances || []).map((instance) => String(instance.sourceNodeId || "")).filter(Boolean)
@@ -56,6 +57,10 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
       shape: cloneValue(node.shape || source?.shape),
       color: String(node.color || source?.color || ""),
       repeatCount: finiteOr(node.repeatCount, finiteOr(source?.repeatCount, 1)),
+      containerId: String(node.containerId || source?.containerId || ""),
+      laneId: String(node.laneId || source?.laneId || ""),
+      containerPath: Array.isArray(node.containerPath) ? node.containerPath.map(String) : [],
+      scopedLaneId: String(node.scopedLaneId || ""),
       geometry: geometryFor(node),
       x: finiteOr(node.x, 0),
       y: finiteOr(node.y, 0),
@@ -79,6 +84,10 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
   const edges = layoutEdges.map((edge, index) => {
     const sourceLayoutNode = nodeByLayoutId.get(String(edge.source || ""));
     const targetLayoutNode = nodeByLayoutId.get(String(edge.target || ""));
+    const sourceContainerId = String(edge.sourceContainerId || sourceLayoutNode?.containerId || "");
+    const targetContainerId = String(edge.targetContainerId || targetLayoutNode?.containerId || "");
+    const sourceLaneId = String(edge.sourceLaneId || sourceLayoutNode?.laneId || "");
+    const targetLaneId = String(edge.targetLaneId || targetLayoutNode?.laneId || "");
     return {
       id: String(edge.id || `figure-edge-${index + 1}`),
       sourceEdgeId: sourceIdentity(edge.sourceEdgeId || edge.id || `figure-edge-${index + 1}`),
@@ -86,8 +95,13 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
       target: sourceIdentity(targetLayoutNode?.sourceNodeId || edge.target || ""),
       sourceNodeId: sourceIdentity(sourceLayoutNode?.sourceNodeId || edge.source || ""),
       targetNodeId: sourceIdentity(targetLayoutNode?.sourceNodeId || edge.target || ""),
-      sourceEndpointIds: cloneValue(edge.sourceEndpointIds || {}),
+      sourceEndpointIds: cloneValue(edge.sourceEndpointIds || edge.ports || {}),
       ports: cloneValue(edge.ports || {}),
+      routeClass: String(edge.routeClass || "main-flow"),
+      sourceContainerId,
+      targetContainerId,
+      sourceLaneId,
+      targetLaneId,
       type: String(edge.type || "signal"),
       label: String(edge.label || ""),
       route: cloneValue(edge.route || { kind: "unrouted", points: [] }),
@@ -96,24 +110,50 @@ export function createFigurePlan({ ir = {}, layout = {}, diagnostics = [] } = {}
   });
 
   return {
-    version: FIGURE_PLAN_VERSION,
-    grammar: cloneValue(layout.grammar || ir.grammar || { id: "generic-dag" }),
-    figure: cloneValue(layout.figure || ir.figure || {}),
-    artboard: cloneValue(layout.artboard || {}),
+    version: VISIO_DIAGRAM_PLAN_VERSION,
+    grammar: cloneValue(sourceLayout.grammar || ir.grammar || { id: "generic-dag" }),
+    figure: cloneValue(sourceLayout.figure || ir.figure || {}),
+    artboard: cloneValue(sourceLayout.artboard || {}),
     nodes,
     edges,
-    groups: cloneValue(layout.groups || ir.groups || []),
+    groups: cloneValue(sourceLayout.groups || ir.groups || []),
+    architectureLayout: cloneValue(sourceLayout.architectureLayout || ir.architectureLayout || {}),
     diagnostics: cloneValue(diagnostics),
     ...(recurrentLayout ? { recurrentLayout: cloneValue(recurrentLayout) } : {}),
-    ...(layout.recurrentLayouts ? { recurrentLayouts: cloneValue(layout.recurrentLayouts) } : {}),
+    ...(sourceLayout.recurrentLayouts ? { recurrentLayouts: cloneValue(sourceLayout.recurrentLayouts) } : {}),
   };
 }
 
-export function validateFigurePlan(plan = {}) {
+export function validateVisioDiagramPlan(plan = {}) {
+  const base = validateVisioDiagramPlanBase(plan);
+  const issues = [...base.issues];
+  if (plan.version !== VISIO_DIAGRAM_PLAN_VERSION) {
+    issues.unshift({ code: "invalid-visio-diagram-plan-version", value: plan.version });
+  }
+  if (Object.prototype.hasOwnProperty.call(plan, "projection")) {
+    issues.push({ code: "renderer-projection-not-allowed" });
+  }
+  return {
+    ok: issues.length === 0,
+    issues,
+    summary: { ...base.summary, issueCount: issues.length },
+  };
+}
+
+export function assertVisioDiagramPlan(plan = {}) {
+  const validation = validateVisioDiagramPlan(plan);
+  if (!validation.ok) {
+    const codes = validation.issues.map((issue) => issue.code).join(", ");
+    throw new Error(`Invalid Visio Diagram Plan: ${codes}`);
+  }
+  return plan;
+}
+
+function validateVisioDiagramPlanBase(plan = {}) {
   const issues = [];
   const nodes = Array.isArray(plan.nodes) ? plan.nodes : [];
   const edges = Array.isArray(plan.edges) ? plan.edges : [];
-  if (nodes.length === 0) issues.push({ code: "empty-figure-plan", message: "Figure Plan must contain at least one node." });
+  if (nodes.length === 0) issues.push({ code: "empty-visio-diagram-plan", message: "Visio Diagram Plan must contain at least one node." });
   const checkUnique = (items, property, duplicateCode, missingCode) => {
     const seen = new Set();
     for (const [index, item] of items.entries()) {
@@ -160,32 +200,8 @@ export function validateFigurePlan(plan = {}) {
   };
 }
 
-export function figurePlanForVisio(plan = {}, options = {}) {
-  return projectFigurePlan(plan, {
-    renderer: "visio",
-    documentPath: String(options.documentPath || ""),
-    pageName: String(options.pageName || "Page-1"),
-    renderId: String(options.renderId || ""),
-  });
-}
-
-function projectFigurePlan(plan, projection) {
-  const recurrentLayouts = plan.recurrentLayouts || (plan.recurrentLayout
-    ? { [String(plan.recurrentLayout.instances?.[0]?.sourceNodeId || "")]: plan.recurrentLayout }
-    : {});
-  return {
-    ...cloneValue(plan),
-    projection,
-    nodes: (plan.nodes || []).map((node) => {
-      const projected = cloneValue(node);
-      const recurrentLayout = recurrentLayouts[String(projected.sourceNodeId || "")];
-      if (recurrentLayout) {
-        projected.recurrentLayout = cloneValue(recurrentLayout);
-      }
-      return projected;
-    }),
-    edges: (plan.edges || []).map((edge) => cloneValue(edge)),
-  };
+function hasLayoutContent(value) {
+  return value !== null && typeof value === "object" && Object.keys(value).length > 0;
 }
 
 function geometryFor(node) {

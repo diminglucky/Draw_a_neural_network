@@ -772,3 +772,218 @@ test("named modules render as accepted color blocks, not unresolved structure", 
   assert.equal(c2f.note, "", "named modules must not carry an unresolved-structure note");
   assert.equal(sppf.note, "");
 });
+
+test("architecture placement aligns generic multi-scale containers and routes transfers", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      { id: "a80", family: "conv", stage: 0, containerId: "trunk", shape: { dimensions: [80, 80] } },
+      { id: "a40", family: "conv", stage: 1, containerId: "trunk", shape: { dimensions: [40, 40] } },
+      { id: "f40", family: "merge", stage: 2, containerId: "fusion", shape: { dimensions: [40, 40] } },
+      { id: "o20", family: "output", stage: 3, containerId: "head", shape: { dimensions: [20, 20] } },
+    ],
+    containers: [
+      { id: "trunk", label: "Trunk", children: ["a80", "a40"] },
+      { id: "fusion", label: "Fusion", children: ["f40"] },
+      { id: "head", label: "Head", children: ["o20"] },
+    ],
+    edges: [
+      { id: "e1", source: "a80", target: "a40", type: "signal" },
+      { id: "e2", source: "a40", target: "f40", type: "signal" },
+      { id: "e3", source: "a80", target: "f40", type: "skip" },
+      { id: "e4", source: "f40", target: "o20", type: "signal" },
+    ],
+  });
+
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+  assert.equal(layout.architectureLayout.features.multiScale, true);
+  assert.equal(layout.architectureLayout.features.nestedModules, false);
+  assert.equal(layout.placementMode, "hierarchical");
+  assert.ok(byId.get("a80").x < byId.get("f40").x);
+  assert.ok(byId.get("f40").x < byId.get("o20").x);
+  assert.notEqual(byId.get("a80").y, byId.get("a40").y);
+  assert.equal(layout.edges.find((edge) => edge.id === "e2").route.kind, "cross-container");
+  assert.equal(layout.edges.find((edge) => edge.id === "e3").route.kind, "local");
+  assert.equal(layout.validation.ok, true);
+});
+
+test("architecture placement preserves explicit semantic lanes and nested ownership", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      { id: "in", family: "input", stage: 0, containerId: "outer", laneId: "upper" },
+      { id: "inner", family: "custom", stage: 1, containerId: "inner", laneId: "upper" },
+      { id: "out", family: "output", stage: 2, containerId: "outer", laneId: "lower" },
+    ],
+    containers: [
+      { id: "outer", children: ["in", "inner", "out"] },
+      { id: "inner", parentId: "outer", children: ["inner"] },
+    ],
+    lanes: [
+      { id: "upper", key: "upper", label: "Upper scale", order: 0 },
+      { id: "lower", key: "lower", label: "Lower scale", order: 1 },
+    ],
+    edges: [
+      { id: "e1", source: "in", target: "inner" },
+      { id: "e2", source: "inner", target: "out" },
+    ],
+  });
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+  assert.equal(layout.architectureLayout.features.nestedModules, true);
+  assert.equal(byId.get("in").y, byId.get("inner").y);
+  assert.ok(byId.get("in").x < byId.get("inner").x);
+  assert.notEqual(byId.get("inner").y, byId.get("out").y);
+  assert.equal(layout.validation.ok, true);
+});
+
+test("generic multi-scale placement compresses inferred scales into compact presentation lanes", () => {
+  const scales = [640, 320, 160, 80, 40, 20];
+  const nodes = scales.map((height, index) => ({
+    id: `stage-${index + 1}`,
+    family: "custom",
+    op: `Stage${index + 1}`,
+    label: `Stage ${index + 1}`,
+    compoundKind: "module",
+    stage: index,
+    order: index,
+    containerId: index < 4 ? "trunk" : "fusion",
+    shape: { output: [height, height, 64] },
+  }));
+  nodes.push({
+    id: "prediction",
+    family: "output",
+    op: "Prediction",
+    label: "Prediction",
+    stage: nodes.length,
+    order: nodes.length,
+    containerId: "prediction",
+    shape: { output: [20, 20, 80] },
+  });
+  const edges = nodes.slice(0, -1).map((node, index) => ({
+    id: `main-${index}`,
+    source: node.id,
+    target: nodes[index + 1].id,
+    type: "signal",
+  }));
+  const layout = layoutUniversalFigure({
+    nodes,
+    edges,
+    containers: [
+      { id: "trunk", label: "Trunk", children: nodes.slice(0, 4).map((node) => node.id) },
+      { id: "fusion", label: "Fusion", children: ["stage-5", "stage-6"] },
+      { id: "prediction", label: "Prediction", children: ["prediction"] },
+    ],
+  });
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+
+  assert.ok(layout.artboard.height < 1400, "inferred scales must not create one large row per source resolution");
+  assert.ok(Math.max(...layout.nodes.map((node) => node.y)) - Math.min(...layout.nodes.map((node) => node.y)) < 520);
+  assert.ok(byId.get("stage-1").x < byId.get("stage-4").x, "the trunk main flow must advance left-to-right");
+  assert.ok(byId.get("stage-4").x < byId.get("stage-5").x, "container order must preserve the reading direction");
+  assert.ok(byId.get("stage-6").x < byId.get("prediction").x);
+  assert.equal(byId.get("stage-1").y, byId.get("stage-2").y, "nearby inferred scales may share a compact presentation band");
+});
+
+test("generic branch routes use a short corridor and avoid unrelated node bounds", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      { id: "source", family: "custom", compoundKind: "module", label: "Source", stage: 0, containerId: "trunk", shape: { output: [128, 128, 64] } },
+      { id: "mid", family: "custom", compoundKind: "module", label: "Transform", stage: 1, containerId: "trunk", shape: { output: [128, 128, 64] } },
+      { id: "merge", family: "merge", label: "Merge", stage: 2, containerId: "fusion", shape: { output: [128, 128, 64] } },
+      { id: "out", family: "output", label: "Output", stage: 3, containerId: "prediction", shape: { output: [128, 128, 8] } },
+    ],
+    containers: [
+      { id: "trunk", label: "Trunk", children: ["source", "mid"] },
+      { id: "fusion", label: "Fusion", children: ["merge"] },
+      { id: "prediction", label: "Prediction", children: ["out"] },
+    ],
+    edges: [
+      { id: "main-1", source: "source", target: "mid", type: "signal" },
+      { id: "main-2", source: "mid", target: "merge", type: "signal" },
+      { id: "branch", source: "source", target: "merge", type: "skip" },
+      { id: "main-3", source: "merge", target: "out", type: "signal" },
+    ],
+  });
+  const branch = layout.edges.find((edge) => edge.id === "branch");
+  assert.equal(branch.route.kind, "local");
+  assert.ok(branch.route.points.length <= 6, "architecture bypasses should use a short orthogonal corridor");
+  assert.equal(layout.validation.routeIntersections.length, 0);
+});
+
+test("explicit vertical containers use hierarchical placement without pre-layout condensation", () => {
+  const layout = layoutUniversalFigure({
+    containers: [{ id: "stack", direction: "vertical", children: ["a", "b", "c"] }],
+    nodes: [
+      { id: "a", family: "conv", op: "Conv", containerId: "stack", stage: 0 },
+      { id: "b", family: "conv", op: "Conv", containerId: "stack", stage: 1 },
+      { id: "c", family: "conv", op: "Conv", containerId: "stack", stage: 2 },
+    ],
+    edges: [
+      { id: "ab", source: "a", target: "b" },
+      { id: "bc", source: "b", target: "c" },
+    ],
+  });
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+
+  assert.deepEqual([...byId.keys()], ["a", "b", "c"]);
+  assert.equal(byId.get("a").x, byId.get("b").x);
+  assert.ok(byId.get("a").y < byId.get("b").y && byId.get("b").y < byId.get("c").y);
+  assert.equal(layout.placementMode, "hierarchical");
+});
+
+test("full Visio detail preserves every source operator before placement", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      { id: "a", family: "conv", op: "Conv", stage: 0 },
+      { id: "b", family: "conv", op: "Conv", stage: 1 },
+      { id: "c", family: "conv", op: "Conv", stage: 2 },
+    ],
+    edges: [{ id: "ab", source: "a", target: "b" }, { id: "bc", source: "b", target: "c" }],
+  }, { detail: "full" });
+
+  assert.deepEqual(layout.nodes.map((node) => node.sourceNodeId), ["a", "b", "c"]);
+});
+
+test("explicit vertical ports determine connector anchors", () => {
+  const layout = layoutUniversalFigure({
+    containers: [{ id: "stack", direction: "vertical", children: ["a", "b"] }],
+    nodes: [
+      { id: "a", family: "custom", compoundKind: "module", containerId: "stack", ports: { outputs: ["south"] } },
+      { id: "b", family: "custom", compoundKind: "module", containerId: "stack", ports: { inputs: ["north"] } },
+    ],
+    edges: [{ id: "ab", source: "a", target: "b", sourcePort: "south", targetPort: "north" }],
+  });
+  const edge = layout.edges[0];
+  const source = layout.nodes.find((node) => node.id === "a");
+  const target = layout.nodes.find((node) => node.id === "b");
+
+  assert.deepEqual(edge.route.points[0], { x: source.x + source.w / 2, y: source.y + source.h });
+  assert.deepEqual(edge.route.points.at(-1), { x: target.x + target.w / 2, y: target.y });
+});
+
+test("generic sibling containers align inferred spatial lanes through hierarchical placement", () => {
+  const layout = layoutUniversalFigure({
+    containers: [
+      { id: "root", direction: "horizontal", children: ["left", "right"] },
+      { id: "left", parentId: "root", direction: "vertical", children: ["a", "b"] },
+      { id: "right", parentId: "root", direction: "vertical", children: ["c", "d"] },
+    ],
+    nodes: [
+      { id: "a", family: "conv", containerId: "left", shape: { output: [80, 80, 64] } },
+      { id: "b", family: "conv", containerId: "left", shape: { output: [40, 40, 128] } },
+      { id: "c", family: "conv", containerId: "right", shape: { output: [80, 80, 64] } },
+      { id: "d", family: "conv", containerId: "right", shape: { output: [40, 40, 128] } },
+    ],
+    edges: [
+      { id: "ab", source: "a", target: "b" },
+      { id: "cd", source: "c", target: "d" },
+      { id: "cross", source: "a", target: "d", type: "merge" },
+    ],
+  }, { detail: "full" });
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]));
+
+  assert.equal(layout.placementMode, "hierarchical");
+  assert.equal(byId.get("a").y, byId.get("c").y);
+  assert.equal(byId.get("b").y, byId.get("d").y);
+  assert.deepEqual(byId.get("a").containerPath, ["root", "left"]);
+  assert.deepEqual(byId.get("d").containerPath, ["root", "right"]);
+  assert.equal(layout.edges.find((edge) => edge.id === "cross").route.kind, "cross-container");
+});

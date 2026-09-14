@@ -19,7 +19,7 @@
     -> 证据提取
     -> Universal IR
     -> 语义图形语法
-    -> Figure Plan
+    -> Visio Diagram Plan
     -> Visio PowerShell/COM
     -> 原生 Shape / Connector / Shape Data
     -> 回读验证
@@ -63,9 +63,9 @@ node server.js
 
 - `POST /api/analyze-code`：源码或 IR 的**规则分析**（同步、不接 LLM；prompt 输入会返回未解决假设节点而非真实结构，需要 LLM 理解请改用 `/api/agent-run`）。
 - `POST /api/agent-run`：可恢复的完整 Agent 运行（前端实际入口，源码/prompt 走 LLM、图片走视觉分析，均含 shape 验算自纠）。
-- `POST /api/render-visio`：将 Figure Plan 写入已有 Visio 文档。
+- `POST /api/render-visio`：将 Visio Diagram Plan 写入已有 Visio 文档。
 
-核心状态为 `ready_for_preview`、`needs_confirmation`、`needs_external_vision` 和 `invalid_input`。未确认的结构不会被伪造或静默展开。
+核心状态为 `ready_for_visio`、`needs_confirmation`、`needs_external_vision` 和 `invalid_input`。未确认的结构不会被伪造或静默展开。
 
 ## 关键文件
 
@@ -85,9 +85,9 @@ shape-inference.mjs            特征图尺寸静态传播（shape inference）
 evidence-graph.mjs             证据图
 universal-ir.mjs               通用 IR 归一化与校验
 semantic-visual-grammar.mjs    语义视觉角色与输入语法
-universal-figure.mjs           拓扑驱动的 Figure Plan 几何
+universal-figure.mjs           待替换的旧拓扑几何实现
 compound-module.mjs            复合模块内部布局（recurrent 展开 + internalGraph 通用拓扑）
-figure-plan.mjs                Figure Plan 契约与校验
+visio-diagram-plan.mjs         Visio 唯一绘图计划契约与校验
 visio-client.mjs               Visio 请求边界
 visio-bridge.mjs               Visio 计划、COM 执行和回读校验
 visio-bridge.ps1               原生 Visio Shape/Connector bridge

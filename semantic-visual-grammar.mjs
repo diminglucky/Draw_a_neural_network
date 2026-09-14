@@ -43,6 +43,34 @@ const ROLE_SPECS = Object.freeze({
     styleProfile: "merge",
     labelSlots: { title: "below", subtitle: "below", tensorShape: "outside", operatorDetails: "outside" },
   },
+  "merge-add": {
+    styleProfile: "merge-add",
+    labelSlots: { title: "below", subtitle: "outside", tensorShape: "outside", operatorDetails: "outside" },
+  },
+  "merge-concat": {
+    styleProfile: "merge-concat",
+    labelSlots: { title: "below", subtitle: "outside", tensorShape: "outside", operatorDetails: "outside" },
+  },
+  decision: {
+    styleProfile: "decision",
+    labelSlots: { title: "inside", subtitle: "below", tensorShape: "outside", operatorDetails: "outside" },
+  },
+  split: {
+    styleProfile: "split",
+    labelSlots: { title: "outside", subtitle: "outside", tensorShape: "outside", operatorDetails: "outside" },
+  },
+  junction: {
+    styleProfile: "junction",
+    labelSlots: { title: "outside", subtitle: "outside", tensorShape: "outside", operatorDetails: "outside" },
+  },
+  "repeat-marker": {
+    styleProfile: "repeat-marker",
+    labelSlots: { title: "inside", subtitle: "outside", tensorShape: "outside", operatorDetails: "outside" },
+  },
+  annotation: {
+    styleProfile: "annotation",
+    labelSlots: { title: "inside", subtitle: "inside", tensorShape: "outside", operatorDetails: "outside" },
+  },
   "skip-connection": {
     styleProfile: "skip",
     labelSlots: { title: "outside", subtitle: "outside", tensorShape: "outside", operatorDetails: "outside" },
@@ -91,8 +119,12 @@ const ROLE_SPECS = Object.freeze({
 
 export function visualRoleForNode(node = {}, context = {}) {
   const family = String(node.family || node.type || "custom").toLowerCase();
+  const evidencedRole = evidencedVisualRole(node);
+  if (evidencedRole) return evidencedRole;
   if (family === "input") return inputVisualGrammarForNode(node, context).kind;
-  if (["merge", "concat", "add", "sum"].includes(family)) return "merge";
+  if (["concat", "concatenate"].includes(family)) return "merge-concat";
+  if (["add", "sum"].includes(family)) return "merge-add";
+  if (family === "merge") return "merge";
   if (family === "pool") return "pool-downsample";
   if (family === "upsample") return "upsample";
   if (family === "flatten") return "vectorize";
@@ -115,6 +147,39 @@ export function visualRoleForNode(node = {}, context = {}) {
   }
   if (["conv", "volume"].includes(family) || hasSpatialTensor(node)) return "feature-map-stage";
   return "operator";
+}
+
+function evidencedVisualRole(node = {}) {
+  const attributes = isRecord(node.attributes) ? node.attributes : {};
+  const semanticRole = normalizedToken(node.semanticRole ?? attributes.semanticRole);
+  const controlKind = normalizedToken(attributes.controlKind ?? node.controlKind);
+  const junctionRole = normalizedToken(attributes.junctionRole ?? node.junctionRole);
+  const mergeValue = attributes.merge;
+  const mergeKind = normalizedToken(
+    (isRecord(mergeValue) ? mergeValue.op ?? mergeValue.type ?? mergeValue.kind : mergeValue)
+      ?? attributes.mergeOp
+      ?? attributes.mergeType
+      ?? node.mergeOp
+      ?? node.mergeType
+      ?? (["merge", "concat", "concatenate", "add", "sum"].includes(normalizedToken(node.family || node.type)) ? node.op : undefined)
+  );
+
+  if (["decision", "condition", "conditional", "if", "switch", "gate", "binary"].includes(controlKind)
+    || semanticRole === "decision"
+    || (semanticRole === "control" && controlKind)) return "decision";
+  if (["concat", "concatenate", "concatenation", "cat"].includes(mergeKind)) return "merge-concat";
+  if (["add", "sum", "plus", "addition"].includes(mergeKind)) return "merge-add";
+  if (["split", "fork", "fanout", "fan-out"].includes(junctionRole) || semanticRole === "split") return "split";
+  if (["junction", "join", "connection", "intersection"].includes(junctionRole) || semanticRole === "junction") return "junction";
+  if (["annotation", "note", "callout"].includes(semanticRole)
+    || normalizedToken(node.family || node.type) === "annotation") return "annotation";
+  if (["repeat", "repetition", "repeat-marker"].includes(semanticRole)
+    && positiveCount(node.repeatCount ?? node.repeat?.count ?? node.layers) > 1) return "repeat-marker";
+  return "";
+}
+
+function normalizedToken(value) {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 export function inputVisualGrammarForNode(node = {}, context = {}) {
@@ -174,6 +239,7 @@ export function compileSemanticVisualNode(node = {}, context = {}) {
     : undefined;
   const visualRole = visualRoleForNode(node, { ...context, recurrentEvidence });
   const internalGraph = node.attributes?.internalGraph || node.internalGraph;
+  const modulePattern = inferModulePattern(node, internalGraph, recurrentEvidence);
   const preferredSize = preferredSizeForRole(visualRole, node);
   const inputGrammar = String(node.family || node.type || "").toLowerCase() === "input"
     ? inputVisualGrammarForNode(node, context)
@@ -210,6 +276,7 @@ export function compileSemanticVisualNode(node = {}, context = {}) {
           .filter(Boolean)
           .slice(0, 8)
         : [],
+      modulePattern,
       tensorRank: inputGrammar?.tensorRank ?? tensorRank(node.shape, node.subtitle),
       spatialSize: inputGrammar?.spatialSize ?? spatialDimension(node.shape, node.subtitle),
       channelCount: inputGrammar?.channelCount ?? channelDimension(node.shape, node.subtitle),
@@ -217,6 +284,27 @@ export function compileSemanticVisualNode(node = {}, context = {}) {
       preferredHeight: preferredSize.height,
     },
   };
+}
+
+export function inferModulePattern(node = {}, internalGraph, recurrentEvidence) {
+  const explicit = String(node.modulePattern || node.attributes?.modulePattern || "").trim();
+  if (explicit) return explicit;
+  if (recurrentEvidence || String(node.family || "").toLowerCase() === "recurrent") return "recurrent";
+  const graph = internalGraph && typeof internalGraph === "object" ? internalGraph : node.inner;
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  if (nodes.some((child) => String(child.family || child.semanticRole || "").toLowerCase() === "attention")) return "attention";
+  if (edges.some((edge) => ["skip", "shortcut", "residual"].includes(String(edge.type || edge.kind || "").toLowerCase()))) return "residual";
+  const outgoing = new Map(nodes.map((child) => [String(child.id || ""), 0]));
+  const incoming = new Map(nodes.map((child) => [String(child.id || ""), 0]));
+  for (const edge of edges) {
+    const source = String(edge.source || "");
+    const target = String(edge.target || "");
+    if (outgoing.has(source)) outgoing.set(source, outgoing.get(source) + 1);
+    if (incoming.has(target)) incoming.set(target, incoming.get(target) + 1);
+  }
+  if ([...outgoing.values()].some((count) => count > 1) && [...incoming.values()].some((count) => count > 1)) return "parallel";
+  return nodes.length ? "sequential" : "opaque";
 }
 
 export function recurrentEvidenceForNode(node = {}, edges = []) {

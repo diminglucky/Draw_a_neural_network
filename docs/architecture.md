@@ -16,7 +16,7 @@ source / image / IR
   -> evidence extraction
   -> Universal IR
   -> semantic visual grammar
-  -> renderer-neutral Figure Plan
+  -> Visio Diagram Plan
   -> PowerShell / COM bridge
   -> native Visio objects
   -> identity and endpoint readback
@@ -34,8 +34,8 @@ and unresolved until evidence or confirmation is available.
 - `universal-ir.mjs`: canonical nodes, edges, ports, shapes, and validation.
 - `semantic-visual-grammar.mjs`: role-aware visual semantics for spatial,
   vector, attention, recurrent, volume, and compound structures.
-- `universal-figure.mjs`: topology-driven geometry and Figure Plan input.
-- `figure-plan.mjs`: stable source identity and route contract.
+- `universal-figure.mjs`: legacy topology geometry pending hierarchical replacement.
+- `visio-diagram-plan.mjs`: the sole Visio source-identity, geometry, and route contract.
 - `visio-bridge.mjs`: Visio render plan, execution, and readback validation.
 - `visio-bridge.ps1`: native Visio Shape, connector, Shape Data, and page
   operations.

@@ -1,12 +1,12 @@
 import { extractGenericSourceTopology } from "./generic-source-topology.mjs";
 import { normalizeArchitectureInput } from "./input-adapters.mjs";
 import { createEvidenceGraph, evidenceGraphToUniversalIR } from "./evidence-graph.mjs";
-import { createFigurePlan, validateFigurePlan } from "./figure-plan.mjs";
+import { createVisioDiagramPlan, validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
 import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
 
 const STATUS = Object.freeze({
-  READY: "ready_for_preview",
+  READY: "ready_for_visio",
   CONFIRM: "needs_confirmation",
   VISION: "needs_external_vision",
   INVALID: "invalid_input",
@@ -107,13 +107,13 @@ export function planArchitectureFigure(normalized = {}) {
   if (normalized.status === STATUS.VISION) return normalized;
   const ir = normalized.ir || normalized;
   const diagnostics = computeDiagnostics(ir, normalized.evidenceGraph, normalized.validation);
-  const { figureLayout, figurePlan, figurePlanValidation } = buildFigurePlan(ir, diagnostics);
+  const { figureLayout, visioDiagramPlan, visioDiagramPlanValidation } = buildVisioPlan(ir, diagnostics);
   return {
     ir: publicIR(ir),
     source: normalized.source,
     figureLayout,
-    figurePlan,
-    figurePlanValidation,
+    visioDiagramPlan,
+    visioDiagramPlanValidation,
     validation: normalized.validation,
     diagnostics,
   };
@@ -170,7 +170,7 @@ function analyzeImageInput(input, options) {
 
   return {
     status: STATUS.VISION,
-    readyForPreview: false,
+    readyForVisio: false,
     ir: null,
     validation: null,
     diagnostics: [diagnostic(
@@ -259,6 +259,12 @@ function buildEvidenceGraphIR(rawIR, context = {}) {
       ...(Array.isArray(context.baseDiagnostics) ? context.baseDiagnostics : []),
     ],
     figure: rawIR?.figure,
+    groups: rawIR?.groups,
+    containers: rawIR?.containers,
+    lanes: rawIR?.lanes,
+    constraints: rawIR?.constraints,
+    layout: rawIR?.layout,
+    projection: rawIR?.projection,
   });
   const ir = normalizeNetworkIR(evidenceGraphToUniversalIR(evidenceGraph));
   const validation = validateNetworkIR(ir);
@@ -276,14 +282,14 @@ function computeDiagnostics(ir, evidenceGraph, validation) {
 }
 
 // 把已归一化的 IR 布局成 Figure Plan。plan 阶段与同步 finalize 共用。
-function buildFigurePlan(ir, diagnostics) {
+function buildVisioPlan(ir, diagnostics) {
   const figureLayout = layoutUniversalFigure(ir);
-  const figurePlan = createFigurePlan({ ir, layout: figureLayout, diagnostics });
-  const figurePlanValidation = validateFigurePlan(figurePlan);
+  const visioDiagramPlan = createVisioDiagramPlan({ ir, geometry: figureLayout, diagnostics });
+  const visioDiagramPlanValidation = validateVisioDiagramPlan(visioDiagramPlan);
   return {
     figureLayout,
-    figurePlan: { ...figurePlan, validation: figurePlanValidation },
-    figurePlanValidation,
+    visioDiagramPlan: { ...visioDiagramPlan, validation: visioDiagramPlanValidation },
+    visioDiagramPlanValidation,
   };
 }
 
@@ -301,7 +307,7 @@ function finalizeResult(rawIR, context = {}) {
   if (!validation.ok && !reviewableUncertainty) {
     return {
       status: STATUS.INVALID,
-      readyForPreview: false,
+      readyForVisio: false,
       ir: publicIR(ir),
       validation,
       diagnostics: uniqueDiagnostics,
@@ -309,14 +315,14 @@ function finalizeResult(rawIR, context = {}) {
     };
   }
 
-  const { figureLayout, figurePlan, figurePlanValidation } = buildFigurePlan(ir, uniqueDiagnostics);
+  const { figureLayout, visioDiagramPlan, visioDiagramPlanValidation } = buildVisioPlan(ir, uniqueDiagnostics);
   return {
     status: hasUncertainty ? STATUS.CONFIRM : STATUS.READY,
-    readyForPreview: true,
+    readyForVisio: true,
     ir: publicIR(ir),
     figureLayout,
-    figurePlan,
-    figurePlanValidation,
+    visioDiagramPlan,
+    visioDiagramPlanValidation,
     validation,
     diagnostics: uniqueDiagnostics,
     summary: summaryFor(ir, context.sourceKind),
@@ -350,7 +356,7 @@ function unresolvedRecurrentNode(node = {}) {
 function invalidResult(diagnostics) {
   return {
     status: STATUS.INVALID,
-    readyForPreview: false,
+    readyForVisio: false,
     ir: null,
     validation: { ok: false, issues: diagnostics, summary: {} },
     diagnostics,

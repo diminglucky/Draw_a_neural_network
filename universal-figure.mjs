@@ -3,6 +3,10 @@ import {
   compileSemanticVisualNodes,
   recurrentEvidenceForNode,
 } from "./semantic-visual-grammar.mjs";
+import { compileArchitectureLayout } from "./architecture-layout-ir.mjs";
+import { layoutVisioHierarchy } from "./visio-hierarchical-layout.mjs";
+import { projectVisioDetail } from "./visio-detail-projection.mjs";
+import { resolveVisioPorts, routeVisioConnectors } from "./visio-port-routing.mjs";
 
 const DEFAULT_ARTBOARD = Object.freeze({ x: 170, y: 160, width: 2260, height: 1060 });
 const PLAN_VERSION = "universal-publication-figure/v1";
@@ -61,12 +65,18 @@ export function selectFigureGrammar(ir = {}) {
 
 export function layoutUniversalFigure(ir = {}, options = {}) {
   const grammar = selectFigureGrammar(ir);
+  const architectureLayout = compileArchitectureLayout(ir);
   const figure = normalizeFigure(ir.figure);
   const artboard = normalizeArtboard(options.artboard);
   const sizes = { ...FAMILY_SIZE, ...(options.sizeOverrides || {}) };
   const normalizedNodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index, sizes)) : [];
   const normalizedEdges = Array.isArray(ir.edges) ? ir.edges.map((edge, index) => normalizeEdge(edge, index)) : [];
-  const condensed = condenseLinearConvRuns(normalizedNodes, normalizedEdges);
+  const usesArchitectureSemantics = Array.isArray(ir.containers)
+    || Array.isArray(ir.lanes)
+    || (Array.isArray(ir.nodes) && ir.nodes.some((node) => node.containerId || node.groupId || node.moduleId || node.laneId));
+  const condensed = usesArchitectureSemantics || options.detail === "full"
+    ? { nodes: normalizedNodes, edges: normalizedEdges }
+    : condenseLinearConvRuns(normalizedNodes, normalizedEdges);
   const sourceNodes = resolvePublicationGeometry(
     compileSemanticVisualNodes(condensed.nodes, condensed.edges),
   );
@@ -74,7 +84,13 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   // Single placement model: every supported topology (linear chain, FPN/PAN
   // pyramid, generic stage DAG) projects nodes onto a column/row grid through
   // one xFor/yFor interface. The main loop no longer branches per topology.
-  const placement = computePlacement(sourceNodes, sourceEdges, ir.groups, artboard);
+  const placement = computePlacement(
+    sourceNodes,
+    sourceEdges,
+    ir.groups,
+    artboard,
+    usesArchitectureSemantics ? architectureLayout : undefined,
+  );
   const fittedArtboard = placement.artboard;
   const stages = stageOrder(sourceNodes);
   const stageIndexByStage = new Map(stages.map((stage, index) => [stage, index]));
@@ -90,6 +106,16 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
       stageIndex: stageIndexByStage.get(String(node.stage)) ?? 0,
       representation: representationFor(node),
       inner: layoutInnerGraph(node, sizes),
+      containerId: usesArchitectureSemantics || (Array.isArray(ir.groups) && ir.groups.length > 0)
+        ? architectureNodeField(architectureLayout, node.id, "containerId", node.containerId)
+        : String(node.containerId || ""),
+      laneId: usesArchitectureSemantics || (Array.isArray(ir.groups) && ir.groups.length > 0)
+        ? architectureNodeField(architectureLayout, node.id, "laneId", node.laneId)
+        : String(node.laneId || ""),
+      containerPath: Array.isArray(architectureLayout?.containerTree?.nodeById?.[String(node.id)]?.containerPath)
+        ? [...architectureLayout.containerTree.nodeById[String(node.id)].containerPath]
+        : [],
+      scopedLaneId: String(architectureLayout?.containerTree?.nodeById?.[String(node.id)]?.scopedLaneId || ""),
       note: node.note || (node.family === "custom" && node.compoundKind !== "module" ? "unresolved structure · review evidence" : ""),
     };
     nodes.push(positioned);
@@ -113,7 +139,45 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   });
 
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const edges = sourceEdges.map((edge, index) => routeEdge(edge, nodeMap, index, fittedArtboard));
+  const architectureEdgeById = new Map((architectureLayout.edges || []).map((edge) => [String(edge.id), edge]));
+  const semanticEdges = sourceEdges.map((edge) => ({
+    ...edge,
+    routeClass: architectureEdgeById.get(String(edge.id))?.routeClass || edge.routeClass,
+    sourcePort: architectureEdgeById.get(String(edge.id))?.sourcePort || edge.sourcePort,
+    targetPort: architectureEdgeById.get(String(edge.id))?.targetPort || edge.targetPort,
+    sourceEndpointIds: normalizeEndpointIds(architectureEdgeById.get(String(edge.id))?.ports)
+      || normalizeEndpointIds(edge.sourceEndpointIds)
+      || normalizeEndpointIds(edge.ports),
+    sourceContainerId: architectureEdgeById.get(String(edge.id))?.sourceContainerId || edge.sourceContainerId,
+    targetContainerId: architectureEdgeById.get(String(edge.id))?.targetContainerId || edge.targetContainerId,
+    sourceLaneId: architectureEdgeById.get(String(edge.id))?.sourceLaneId || edge.sourceLaneId,
+    targetLaneId: architectureEdgeById.get(String(edge.id))?.targetLaneId || edge.targetLaneId,
+  }));
+  let routingDiagnostics = [];
+  const edges = placement.mode === "hierarchical"
+    ? (() => {
+      const routingGraph = {
+        nodes,
+        edges: semanticEdges,
+        containerById: placement.containerById || {},
+        containers: Object.values(placement.containerById || {}),
+      };
+      const routed = routeVisioConnectors(routingGraph, resolveVisioPorts(routingGraph));
+      routingDiagnostics = routed.diagnostics;
+      const routedById = new Map(routed.connectors.map((connector) => [String(connector.id), connector]));
+      return semanticEdges.map((edge, index) => {
+        const connector = routedById.get(String(edge.id));
+        if (!connector || connector.status !== "routed") {
+          const fallback = routeEdge(edge, nodeMap, index, fittedArtboard);
+          if (["residual", "skip", "branch"].includes(String(edge.routeClass || "").toLowerCase())) {
+            return { ...edge, route: { kind: "local", points: fallback.route?.points || [] } };
+          }
+          return fallback;
+        }
+        return { ...edge, route: { kind: connector.corridor, points: connector.points } };
+      });
+    })()
+    : semanticEdges.map((edge, index) => routeEdge(edge, nodeMap, index, fittedArtboard));
   const recurrentLayouts = grammar.id === "recurrent-flow"
     ? buildRecurrentFigureLayouts(sourceNodes, nodes, sourceEdges, fittedArtboard)
     : {};
@@ -136,7 +200,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     }
   }
   const validation = validateFigureLayout(nodes, edges, fittedArtboard);
-  const groups = (Array.isArray(ir.groups) ? ir.groups : [])
+  const groups = layoutGroupsFor(ir, architectureLayout, nodes)
     .map((group) => {
       const memberIds = new Set((group.nodeIds || []).map(String));
       const members = nodes.filter((node) => (
@@ -145,6 +209,23 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
         || (Array.isArray(node.sourceNodeIds) && node.sourceNodeIds.some((id) => memberIds.has(String(id))))
       ));
       if (members.length === 0) return null;
+      const hierarchicalBounds = placement.containerById?.[String(group.id || group.label || "")];
+      if (hierarchicalBounds) {
+        return {
+          id: String(group.id || group.label || ""),
+          label: String(group.label || group.id || "Group"),
+          kind: String(group.kind || "module"),
+          nodeIds: (group.nodeIds || []).map(String),
+          direction: String(hierarchicalBounds.direction || "flow"),
+          bounds: {
+            x: Math.round(hierarchicalBounds.x),
+            y: Math.round(hierarchicalBounds.y),
+            w: Math.round(hierarchicalBounds.w),
+            h: Math.round(hierarchicalBounds.h),
+          },
+          contentBounds: { ...hierarchicalBounds.contentBounds },
+        };
+      }
       const minX = Math.min(...members.map((node) => node.x));
       const minY = Math.min(...members.map((node) => node.y));
       const maxX = Math.max(...members.map((node) => node.x + node.w));
@@ -165,7 +246,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
       };
     })
     .filter(Boolean);
-  return {
+  const result = {
     version: PLAN_VERSION,
     grammar,
     figure: { ...figure, stages: stages.map((stage) => stageLabel(stage, sourceNodes)) },
@@ -173,9 +254,20 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     nodes,
     edges,
     groups,
+    architectureLayout,
+    placementMode: placement.mode,
     validation,
+    routingDiagnostics,
     ...(recurrentLayout ? { recurrentLayout } : {}),
     ...(Object.keys(recurrentLayouts).length ? { recurrentLayouts } : {}),
+  };
+  if (!options.detail) return result;
+  const projected = projectVisioDetail(result, { detail: options.detail });
+  return {
+    ...result,
+    detail: projected.detail,
+    nodes: projected.nodes,
+    edges: projected.edges,
   };
 }
 
@@ -194,24 +286,44 @@ function resolutionOf(node) {
 }
 
 function resolutionLanesFor(nodes, artboard) {
-  // One vertical lane per distinct feature-map resolution (largest on top).
-  // This is a pure geometry signal — it says nothing about detector vs U-Net
-  // vs any other multi-resolution network. The caller uses it purely because
-  // groups exist, never because a specific operator or family name is present.
+  // Raw tensor resolutions are evidence, not a command to create a row for each
+  // value. Publication figures keep a small number of readable presentation
+  // bands, while nearby scales remain on the same band and transfer edges carry
+  // the scale change.
   const resolutions = [...new Set(nodes.map(resolutionOf).filter((r) => r != null))].sort((a, b) => b - a);
   if (resolutions.length < 2) return null;
   const maxNodeHeight = nodes.reduce((max, node) => Math.max(max, node.h), 0);
-  const laneGap = Math.max(150, maxNodeHeight + 64);
+  const presentationCount = Math.min(3, resolutions.length);
+  const bands = compactPresentationBands(resolutions, presentationCount);
+  const laneGap = Math.max(118, maxNodeHeight + 32);
   const top = artboard.y + 70;
-  const yByResolution = new Map(resolutions.map((r, index) => [r, Math.round(top + index * laneGap)]));
+  const yByResolution = new Map(resolutions.map((r) => [r, Math.round(top + bands.get(r) * laneGap)]));
   return {
     resolutions,
+    bands,
     laneGap,
-    laneCount: resolutions.length,
+    laneCount: presentationCount,
     top,
-    height: Math.round(top + resolutions.length * laneGap + 80),
+    height: Math.round(top + presentationCount * laneGap + 80),
     yFor: (resolution) => yByResolution.get(resolution),
   };
+}
+
+function compactPresentationBands(resolutions, count) {
+  const bands = new Map();
+  const size = resolutions.length;
+  resolutions.forEach((resolution, index) => {
+    // Preserve the largest and smallest scales; distribute the middle values
+    // evenly so a six-level pyramid becomes three compact visual bands.
+    const band = count === 1 ? 0 : Math.min(count - 1, Math.floor(index * count / size));
+    bands.set(resolution, band);
+  });
+  return bands;
+}
+
+function architectureNodeField(layout, nodeId, field, fallback = "") {
+  const assignment = (layout?.nodeAssignments || []).find((item) => String(item.nodeId) === String(nodeId));
+  return String(assignment?.[field] || fallback || "");
 }
 
 function columnIndexByGroup(nodes, groups) {
@@ -238,7 +350,10 @@ function columnIndexByGroup(nodes, groups) {
 // differ only in what defines a "column" and a "row"; the main loop consumes a
 // single xFor/yFor interface so topology-specific logic stays isolated here.
 // ---------------------------------------------------------------------------
-function computePlacement(nodes, edges, groups, artboard) {
+function computePlacement(nodes, edges, groups, artboard, architectureLayout) {
+  if (hasUsableArchitectureLayout(architectureLayout, nodes)) {
+    return architecturePlacement(nodes, architectureLayout, artboard);
+  }
   // Layout is data-driven, not topology-guessed. Groups come only from the LLM
   // (or an external author); their array order IS the left-to-right column
   // order. No family names (backbone/neck/head) or operator names (upsample)
@@ -248,6 +363,202 @@ function computePlacement(nodes, edges, groups, artboard) {
   }
   if (isLinearChain(nodes, edges)) return linearPlacement(nodes, artboard);
   return stagePlacement(nodes, artboard);
+}
+
+function hasUsableArchitectureLayout(layout, nodes) {
+  if (!layout || !Array.isArray(nodes) || nodes.length === 0) return false;
+  return layout.features?.explicitContainers
+    || layout.features?.multiScale
+    || layout.features?.nestedModules
+    || (Array.isArray(layout.containers) && layout.containers.length > 1)
+    || (Array.isArray(layout.lanes) && layout.lanes.length > 1);
+}
+
+// Container/lane placement is intentionally model-agnostic. Containers provide
+// the horizontal reading order; lanes provide stable feature-map/semantic rows.
+function architecturePlacement(nodes, layout, artboard) {
+  if (layout.containerTree?.valid && layout.features?.explicitContainers) {
+    const geometry = layoutVisioHierarchy(layout.containerTree, {
+      nodes,
+      origin: { x: artboard.x + 56, y: artboard.y + 70 },
+    });
+    const byId = geometry.nodeById;
+    return {
+      mode: "hierarchical",
+      containerById: geometry.containerById,
+      artboard: {
+        ...artboard,
+        width: Math.max(artboard.width, geometry.bounds.w + 112),
+        height: Math.max(artboard.height, geometry.bounds.h + 140),
+      },
+      xFor: (node) => Math.round(byId[String(node.id)]?.x ?? artboard.x + 56),
+      yFor: (node) => Math.round(byId[String(node.id)]?.y ?? artboard.y + 70),
+    };
+  }
+  const assignments = new Map((layout.nodeAssignments || []).map((item) => [String(item.nodeId), item]));
+  const containers = Array.isArray(layout.containers) ? layout.containers : [];
+  const lanes = [...(layout.lanes || [])].sort((left, right) => (
+    Number(left.order || 0) - Number(right.order || 0) || String(left.id).localeCompare(String(right.id))
+  ));
+  const containerOf = new Map();
+  containers.forEach((container, index) => {
+    (container.children || []).forEach((id) => containerOf.set(String(id), String(container.id)));
+    if (!containerOf.has(String(container.id))) containerOf.set(String(container.id), String(container.id));
+  });
+  const fallbackContainer = containers.length ? String(containers[containers.length - 1].id) : "root";
+  const containerIndex = new Map(containers.map((container, index) => [String(container.id), index]));
+  const laneIndex = new Map(lanes.map((lane, index) => [String(lane.id), index]));
+  const unresolvedLane = lanes.length;
+  const membersByCell = new Map();
+  const cellOf = (node) => {
+    const assignment = assignments.get(String(node.id));
+    const containerId = assignment?.containerId || node.containerId || containerOf.get(String(node.id)) || fallbackContainer;
+    const laneId = assignment?.laneId || node.laneId || "";
+    const col = containerIndex.get(String(containerId)) ?? Math.max(0, containers.length - 1);
+    const row = laneIndex.get(String(laneId)) ?? unresolvedLane;
+    const key = `${col}:${row}`;
+    if (!membersByCell.has(key)) membersByCell.set(key, []);
+    membersByCell.get(key).push(node);
+    return { col, row, key };
+  };
+  const cellByNode = new Map(nodes.map((node) => [String(node.id), cellOf(node)]));
+  const topologyRank = topologyRanks(nodes, layout.edges);
+  const maxWidth = nodes.reduce((max, node) => Math.max(max, compactVisualWidth(node)), 0);
+  const laneRows = presentationLaneRows(lanes, nodes, cellOf);
+  const colWidths = containers.map((container, col) => {
+    const members = nodes.filter((node) => cellByNode.get(String(node.id))?.col === col);
+    const widest = members.reduce((max, node) => Math.max(max, compactVisualWidth(node)), 0);
+    const maxCount = Math.max(1, members.length);
+    const step = Math.max(132, widest + 28);
+    return Math.max(170, maxCount * step, Number(container.padding || 28) * 2 + widest);
+  });
+  const xByCol = new Map();
+  let cursorX = artboard.x + 56;
+  for (let col = 0; col < Math.max(1, containers.length); col += 1) {
+    xByCol.set(col, cursorX);
+    cursorX += (colWidths[col] || maxWidth + 72) + 94;
+  }
+  const laneGap = Math.max(118, nodes.reduce((max, node) => Math.max(max, node.h), 0) + 32);
+  const top = artboard.y + 70;
+  const yByRow = new Map();
+  for (let row = 0; row <= laneRows.unresolvedRow; row += 1) yByRow.set(row, top + row * laneGap);
+  const sequenceByNode = new Map();
+  for (let col = 0; col < Math.max(1, containers.length); col += 1) {
+    const members = nodes.filter((node) => cellByNode.get(String(node.id))?.col === col);
+    members.sort((left, right) => (
+      (topologyRank.get(String(left.id)) ?? Number.MAX_SAFE_INTEGER)
+        - (topologyRank.get(String(right.id)) ?? Number.MAX_SAFE_INTEGER)
+      || compareStageThenOrder(left, right)
+    )).forEach((node, index) => sequenceByNode.set(String(node.id), index));
+  }
+  const contentWidth = cursorX + maxWidth + 56 - artboard.x;
+  const height = Math.max(artboard.height, 140 + (laneRows.unresolvedRow + 1) * laneGap);
+  return {
+    mode: "architecture",
+    artboard: { ...artboard, width: Math.max(artboard.width, contentWidth), height },
+    xFor: (node) => {
+      const cell = cellByNode.get(String(node.id)) || { col: 0 };
+      const sequence = sequenceByNode.get(String(node.id)) || 0;
+      const members = nodes.filter((item) => cellByNode.get(String(item.id))?.col === cell.col);
+      const widest = members.reduce((max, item) => Math.max(max, compactVisualWidth(item)), 0);
+      const step = Math.max(132, widest + 28);
+      return Math.round((xByCol.get(cell.col) ?? artboard.x + 56) + sequence * step);
+    },
+    yFor: (node) => {
+      const cell = cellByNode.get(String(node.id)) || {};
+      const laneId = lanes[cell.row]?.id;
+      const row = laneRows.rowByLaneId.get(String(laneId)) ?? laneRows.unresolvedRow;
+      return Math.round(yByRow.get(row) || top);
+    },
+  };
+}
+
+function topologyRanks(nodes, edges = []) {
+  const nodeIds = new Set(nodes.map((node) => String(node.id)));
+  const indegree = new Map(nodes.map((node) => [String(node.id), 0]));
+  const outgoing = new Map(nodes.map((node) => [String(node.id), []]));
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    const source = String(edge.source || "");
+    const target = String(edge.target || "");
+    if (!nodeIds.has(source) || !nodeIds.has(target) || source === target) continue;
+    outgoing.get(source).push(target);
+    indegree.set(target, (indegree.get(target) || 0) + 1);
+  }
+  const queue = nodes.filter((node) => indegree.get(String(node.id)) === 0)
+    .sort(compareStageThenOrder)
+    .map((node) => String(node.id));
+  const ranks = new Map();
+  while (queue.length) {
+    const id = queue.shift();
+    ranks.set(id, ranks.size);
+    for (const target of outgoing.get(id) || []) {
+      const next = indegree.get(target) - 1;
+      indegree.set(target, next);
+      if (next === 0) queue.push(target);
+    }
+    queue.sort((left, right) => compareStageThenOrder(
+      nodes.find((node) => String(node.id) === left),
+      nodes.find((node) => String(node.id) === right),
+    ));
+  }
+  nodes.filter((node) => !ranks.has(String(node.id)))
+    .sort(compareStageThenOrder)
+    .forEach((node) => ranks.set(String(node.id), ranks.size));
+  return ranks;
+}
+
+function presentationLaneRows(lanes, nodes, cellOf) {
+  const spatial = lanes.filter((lane) => String(lane.kind || "") === "spatial-scale");
+  const explicit = lanes.filter((lane) => String(lane.kind || "") !== "spatial-scale");
+  const rowByLaneId = new Map();
+  let row = 0;
+  if (spatial.length > 0) {
+    const bandByIndex = compactPresentationBands(spatial.map((lane) => lane.order), Math.min(3, spatial.length));
+    spatial.forEach((lane, index) => rowByLaneId.set(String(lane.id), bandByIndex.get(lane.order) ?? Math.min(2, index)));
+    row = Math.min(3, spatial.length);
+  }
+  explicit.forEach((lane) => {
+    if (!rowByLaneId.has(String(lane.id))) rowByLaneId.set(String(lane.id), row++);
+  });
+  return { rowByLaneId, unresolvedRow: row };
+}
+
+function layoutGroupsFor(ir, architectureLayout, nodes) {
+  const groups = Array.isArray(ir.groups) ? ir.groups.map((group) => ({ ...group })) : [];
+  const usesArchitectureSemantics = Array.isArray(ir.containers)
+    || Array.isArray(ir.lanes)
+    || (Array.isArray(ir.nodes) && ir.nodes.some((node) => node.containerId || node.groupId || node.moduleId || node.laneId));
+  if (!usesArchitectureSemantics) return groups;
+  const existing = new Set(groups.map((group) => String(group.id || group.label || "")));
+  const containers = Array.isArray(architectureLayout?.containers) ? architectureLayout.containers : [];
+  const childrenByContainer = new Map(containers.map((container) => [String(container.id), new Set()]));
+  containers.forEach((container) => {
+    (container.children || []).forEach((childId) => {
+      const child = containers.find((candidate) => String(candidate.id) === String(childId));
+      if (child && String(child.id) !== String(container.id)) {
+        for (const descendant of descendantNodeIds(child, containers)) childrenByContainer.get(String(container.id))?.add(descendant);
+      } else {
+        childrenByContainer.get(String(container.id))?.add(String(childId));
+      }
+    });
+  });
+  containers.forEach((container) => {
+    const id = String(container.id);
+    if (id === "root" || existing.has(id)) return;
+    const nodeIds = [...(childrenByContainer.get(id) || [])].filter((nodeId) => nodes.some((node) => String(node.id) === nodeId || String(node.sourceNodeId) === nodeId));
+    if (nodeIds.length > 0) groups.push({ id, label: container.label, kind: container.kind, nodeIds });
+  });
+  return groups;
+}
+
+function descendantNodeIds(container, containers) {
+  const result = [];
+  for (const childId of container.children || []) {
+    const child = containers.find((candidate) => String(candidate.id) === String(childId));
+    if (child && String(child.id) !== String(container.id)) result.push(...descendantNodeIds(child, containers));
+    else result.push(String(childId));
+  }
+  return result;
 }
 
 // Grouped column layout (generic): column = group order, row = feature-map
@@ -268,7 +579,7 @@ function groupedPlacement(nodes, groups, artboard) {
   const rowKeyOf = (node) => {
     if (lanes) {
       const r = resolutionOf(node);
-      if (r != null) return `r:${r}`;
+      if (r != null) return `band:${lanes.bands.get(r) ?? 0}`;
       return "unresolved";
     }
     return `s:${String(node.stage)}`;
@@ -298,7 +609,7 @@ function groupedPlacement(nodes, groups, artboard) {
 
   const rowY = new Map();
   if (lanes) {
-    for (const r of lanes.resolutions) rowY.set(`r:${r}`, lanes.yFor(r));
+    for (const r of lanes.resolutions) rowY.set(`band:${lanes.bands.get(r) ?? 0}`, lanes.yFor(r));
     rowY.set("unresolved", Math.round(lanes.top + lanes.laneCount * lanes.laneGap));
   } else {
     const stages = stageOrder(nodes);
@@ -923,6 +1234,15 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizeEndpointIds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const normalized = {};
+  for (const key of ["source", "target"]) {
+    if (value[key] !== undefined && value[key] !== null && String(value[key])) normalized[key] = String(value[key]);
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
 function cloneValue(value) {
   if (value === undefined) return undefined;
   return structuredClone(value);
@@ -931,11 +1251,20 @@ function cloneValue(value) {
 function routeEdge(edge, nodeMap, index, artboard) {
   const source = nodeMap.get(edge.source);
   const target = nodeMap.get(edge.target);
-  const result = { ...edge, order: index };
+  const result = {
+    ...edge,
+    sourceContainerId: String(edge.sourceContainerId || source?.containerId || ""),
+    targetContainerId: String(edge.targetContainerId || target?.containerId || ""),
+    sourceLaneId: String(edge.sourceLaneId || source?.laneId || ""),
+    targetLaneId: String(edge.targetLaneId || target?.laneId || ""),
+    order: index,
+  };
   if (!source || !target) return result;
   const from = { x: source.x + source.w, y: source.y + source.h / 2 };
   const to = { x: target.x, y: target.y + target.h / 2 };
-  if (source.id === target.id || edge.type === "loop") {
+  const routeClass = String(edge.routeClass || "").toLowerCase();
+  const architectureContext = Boolean(result.sourceContainerId || result.targetContainerId || result.sourceLaneId || result.targetLaneId);
+  if (source.id === target.id || edge.type === "loop" || routeClass === "feedback") {
     const laneX = source.x + source.w + 34 + index * 8;
     result.route = {
       kind: "loop",
@@ -948,7 +1277,11 @@ function routeEdge(edge, nodeMap, index, artboard) {
         to,
       ],
     };
-  } else if (["skip", "residual", "control", "alternative", "branch"].includes(String(edge.type).toLowerCase())) {
+  } else if (architectureContext && (["skip", "residual", "control", "alternative", "branch"].includes(String(edge.type).toLowerCase())
+    || ["skip", "residual", "branch"].includes(routeClass))) {
+    result.route = shortBypassRoute(from, to, nodeMap, source.id, target.id, artboard, index);
+  } else if (["skip", "residual", "control", "alternative", "branch"].includes(String(edge.type).toLowerCase())
+    || ["skip", "residual", "branch"].includes(routeClass)) {
     const laneY = artboard.y + 36 + index * 24;
     // 平滑上绕弧线：从 source 右侧垂直上扬、越过顶部水平段、再垂直降到 target 左侧。
     // 用三次贝塞尔采样（kind 保持 "skip-lane" 以兼容既有消费者），折线点密集即视觉平滑。
@@ -962,7 +1295,8 @@ function routeEdge(edge, nodeMap, index, artboard) {
         20,
       ),
     };
-  } else if (Math.abs(to.y - from.y) > Math.max(source.h, target.h) * 0.8) {
+  } else if (["scale-transfer", "cross-container", "merge"].includes(routeClass)
+    || Math.abs(to.y - from.y) > Math.max(source.h, target.h) * 0.8) {
     // Vertically separated endpoints (multi-row or cross-stage layouts): route
     // orthogonally instead of as a long diagonal across the gutter.
     const turnY = Math.round((from.y + to.y) / 2);
@@ -974,6 +1308,31 @@ function routeEdge(edge, nodeMap, index, artboard) {
     result.route = { kind: "direct", points: [from, to] };
   }
   return result;
+}
+
+function shortBypassRoute(from, to, nodeMap, sourceId, targetId, artboard, index) {
+  const candidates = [];
+  const top = Math.min(from.y, to.y) - 34 - (index % 4) * 18;
+  const bottom = Math.max(from.y, to.y) + 34 + (index % 4) * 18;
+  candidates.push(top, bottom, artboard.y + 18, artboard.y + artboard.height - 18);
+  const ordered = [...new Set(candidates.map((value) => Math.round(Math.max(artboard.y + 12, Math.min(artboard.y + artboard.height - 12, value)))))]
+    .sort((left, right) => Math.abs(left - from.y) - Math.abs(right - from.y));
+  const inset = 14;
+  for (const corridorY of ordered) {
+    const points = [
+      from,
+      { x: from.x + inset, y: from.y },
+      { x: from.x + inset, y: corridorY },
+      { x: to.x - inset, y: corridorY },
+      { x: to.x - inset, y: to.y },
+      to,
+    ];
+    if (!routeIntersectsNodes(points, nodeMap, new Set([sourceId, targetId]))) return { kind: "skip-lane", points };
+  }
+  return {
+    kind: "skip-lane",
+    points: [from, { x: from.x, y: top }, { x: to.x, y: top }, to],
+  };
 }
 
 function bezierCurve(p0, p1, p2, p3, segments = 20) {
@@ -1007,7 +1366,17 @@ function validateFigureLayout(nodes, edges, artboard) {
       || node.x + node.w > artboard.x + artboard.width
       || node.y + node.h > artboard.y + artboard.height
   )).map((node) => node.id);
+  const routeIntersections = edges.flatMap((edge) => {
+    const points = Array.isArray(edge.route?.points) ? edge.route.points : [];
+    if (points.length < 2) return [];
+    const sourceTarget = new Set([String(edge.source), String(edge.target)]);
+    const hits = routeIntersectsNodes(points, new Map(nodes.map((node) => [String(node.id), node])), sourceTarget);
+    return hits.map((nodeId) => ({ edgeId: String(edge.id || ""), nodeId }));
+  });
   return {
+    // Route diagnostics are reported for consumers and visual QA, but legacy
+    // layouts may intentionally terminate on a junction boundary; node and
+    // artboard geometry remain the hard validation contract.
     ok: overlaps.length === 0 && invalidEdges.length === 0 && boundaryViolations.length === 0,
     summary: {
       nodeCount: nodes.length,
@@ -1015,11 +1384,49 @@ function validateFigureLayout(nodes, edges, artboard) {
       overlapCount: overlaps.length,
       invalidEdgeCount: invalidEdges.length,
       boundaryViolationCount: boundaryViolations.length,
+      routeIntersectionCount: routeIntersections.length,
     },
     overlaps,
     invalidEdges,
     boundaryViolations,
+    routeIntersections,
   };
+}
+
+function routeIntersectsNodes(points, nodeMap, ignoredIds = new Set()) {
+  const hits = [];
+  for (const [nodeId, node] of nodeMap.entries()) {
+    if (ignoredIds.has(String(nodeId))) continue;
+    for (let index = 0; index < points.length - 1; index += 1) {
+      if (segmentIntersectsInterior(points[index], points[index + 1], node)) {
+        hits.push(String(nodeId));
+        break;
+      }
+    }
+  }
+  return hits;
+}
+
+function segmentIntersectsInterior(start, end, node) {
+  const minX = node.x + 1;
+  const maxX = node.x + node.w - 1;
+  const minY = node.y + 1;
+  const maxY = node.y + node.h - 1;
+  if (maxX <= minX || maxY <= minY) return false;
+  if (start.x === end.x) {
+    return start.x > minX && start.x < maxX
+      && Math.max(Math.min(start.y, end.y), minY) < Math.min(Math.max(start.y, end.y), maxY);
+  }
+  if (start.y === end.y) {
+    return start.y > minY && start.y < maxY
+      && Math.max(Math.min(start.x, end.x), minX) < Math.min(Math.max(start.x, end.x), maxX);
+  }
+  const horizontalAt = (y) => start.y + ((end.y - start.y) * (y - minY)) / (end.y - start.y);
+  const verticalAt = (x) => start.x + ((end.x - start.x) * (x - minX)) / (end.x - start.x);
+  return (horizontalAt(minY) > minX && horizontalAt(minY) < maxX)
+    || (horizontalAt(maxY) > minX && horizontalAt(maxY) < maxX)
+    || (verticalAt(minX) > minY && verticalAt(minX) < maxY)
+    || (verticalAt(maxX) > minY && verticalAt(maxX) < maxY);
 }
 
 function intersects(left, right) {

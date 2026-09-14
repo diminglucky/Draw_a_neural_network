@@ -4,11 +4,30 @@ import {
   compileSemanticVisualNode,
   compileSemanticVisualNodes,
   inputVisualGrammarForNode,
+  inferModulePattern,
   recurrentEvidenceForNode,
   labelSlotsForRole,
   styleProfileForRole,
   visualRoleForNode,
 } from "./semantic-visual-grammar.mjs";
+
+test("module patterns are inferred from evidenced topology rather than display names", () => {
+  assert.equal(inferModulePattern({ family: "custom", label: "Anything" }, {
+    nodes: [{ id: "a" }, { id: "b" }],
+    edges: [{ source: "a", target: "b", type: "residual" }],
+  }), "residual");
+  assert.equal(inferModulePattern({ family: "custom" }, {
+    nodes: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }],
+    edges: [{ source: "a", target: "b" }, { source: "a", target: "c" }, { source: "b", target: "d" }, { source: "c", target: "d" }],
+  }), "parallel");
+  assert.equal(inferModulePattern({ family: "custom" }, {
+    nodes: [{ id: "q", family: "attention" }], edges: [],
+  }), "attention");
+  assert.equal(inferModulePattern({ family: "custom" }, {
+    nodes: [{ id: "a" }, { id: "b" }], edges: [{ source: "a", target: "b" }],
+  }), "sequential");
+  assert.equal(inferModulePattern({ family: "custom", label: "Residual Attention" }, { nodes: [], edges: [] }), "opaque");
+});
 
 test("semantic grammar exposes normalized recurrent evidence and preserves uncertainty", () => {
   const compiled = compileSemanticVisualNode({
@@ -295,4 +314,43 @@ test("named composite modules (C2f/SPPF) are labeled blocks, not expanded intern
 test("custom modules stay unresolved (fail closed) without an explicit module kind", () => {
   assert.equal(visualRoleForNode({ id: "opaque", family: "custom", op: "MysteryOp" }), "unresolved-module");
   assert.equal(visualRoleForNode({ id: "u", family: "custom", compoundKind: "unresolved" }), "unresolved-module");
+});
+
+test("semantic grammar maps explicit control evidence to a decision glyph", () => {
+  assert.equal(visualRoleForNode({ family: "custom", semanticRole: "control", attributes: { controlKind: "decision" } }), "decision");
+  assert.equal(visualRoleForNode({ family: "custom", attributes: { controlKind: "if" } }), "decision");
+});
+
+test("semantic grammar does not treat arbitrary control metadata as a decision", () => {
+  const node = compileSemanticVisualNode({
+    id: "control",
+    family: "custom",
+    attributes: { controlKind: "synchronization" },
+  });
+
+  assert.equal(node.visualRole, "unresolved-module");
+});
+
+test("semantic grammar distinguishes additive and concatenating merges", () => {
+  assert.equal(visualRoleForNode({ family: "merge", op: "add" }), "merge-add");
+  assert.equal(visualRoleForNode({ family: "custom", attributes: { merge: { type: "concat" } } }), "merge-concat");
+  assert.equal(visualRoleForNode({ family: "custom", semanticRole: "merge", attributes: { mergeType: "sum" } }), "merge-add");
+});
+
+test("semantic grammar maps explicit split and junction evidence", () => {
+  assert.equal(visualRoleForNode({ family: "custom", semanticRole: "split" }), "split");
+  assert.equal(visualRoleForNode({ family: "custom", attributes: { junctionRole: "fork" } }), "split");
+  assert.equal(visualRoleForNode({ family: "custom", attributes: { junctionRole: "join" } }), "junction");
+});
+
+test("semantic grammar exposes evidenced repeat markers without inventing internals", () => {
+  const compiled = compileSemanticVisualNode({ family: "custom", repeatCount: 6, semanticRole: "repeat" });
+  assert.equal(compiled.visualRole, "repeat-marker");
+  assert.equal(compiled.geometryData.repeatCount, 6);
+  assert.equal(compiled.geometryData.hasInternalTopology, false);
+});
+
+test("semantic grammar maps explicit annotations and leaves unknown nodes compatible", () => {
+  assert.equal(visualRoleForNode({ family: "custom", semanticRole: "annotation", annotation: "skip" }), "annotation");
+  assert.equal(visualRoleForNode({ family: "custom", label: "unclassified" }), "unresolved-module");
 });

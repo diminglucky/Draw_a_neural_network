@@ -4,7 +4,7 @@ import test from "node:test";
 
 const productionModules = [
   "agent-pipeline.mjs",
-  "figure-plan.mjs",
+  "visio-diagram-plan.mjs",
   "universal-figure.mjs",
   "universal-ir.mjs",
   "visio-bridge.mjs",

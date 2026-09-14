@@ -12,7 +12,7 @@ export function createEvidenceRecord(input = {}) {
   };
 }
 
-export function createEvidenceGraph({ input, records = [], nodes = [], edges = [], diagnostics = [], figure } = {}) {
+export function createEvidenceGraph({ input, records = [], nodes = [], edges = [], diagnostics = [], figure, groups = [], containers = [], lanes = [], constraints = [], layout, projection } = {}) {
   return {
     version: VERSION,
     input,
@@ -20,6 +20,12 @@ export function createEvidenceGraph({ input, records = [], nodes = [], edges = [
     nodes: nodes.map((node) => ({ ...node })),
     edges: edges.map((edge) => ({ ...edge })),
     figure: figure ? { ...figure } : undefined,
+    groups: Array.isArray(groups) ? groups.map((group) => ({ ...group, nodeIds: Array.isArray(group.nodeIds) ? [...group.nodeIds] : [] })) : [],
+    containers: Array.isArray(containers) ? containers.map((container) => ({ ...container, children: Array.isArray(container.children) ? [...container.children] : [] })) : [],
+    lanes: Array.isArray(lanes) ? lanes.map((lane) => ({ ...lane })) : [],
+    constraints: Array.isArray(constraints) ? constraints.map((constraint) => ({ ...constraint })) : [],
+    ...(layout && typeof layout === "object" ? { layout: { ...layout } } : {}),
+    ...(projection ? { projection: String(projection) } : {}),
     diagnostics: [...diagnostics],
   };
 }
@@ -37,7 +43,7 @@ export function evidenceGraphToUniversalIR(graph = {}) {
     evidence: evidence(edge.evidence),
     evidenceExplicit: Object.prototype.hasOwnProperty.call(edge, "evidence"),
   }));
-  const ir = createUniversalIR({ nodes, edges, figure: graph.figure, diagnostics: graph.diagnostics || [] }, {
+  const ir = createUniversalIR({ nodes, edges, groups: graph.groups, containers: graph.containers, lanes: graph.lanes, constraints: graph.constraints, layout: graph.layout, projection: graph.projection, figure: graph.figure, diagnostics: graph.diagnostics || [] }, {
     sourceKind: graph.input?.framework || graph.input?.kind || "unknown",
     source: { input: graph.input },
   });

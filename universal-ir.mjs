@@ -39,6 +39,11 @@ export function createUniversalIR(document = {}, options = {}) {
     nodes: Array.isArray(document.nodes) ? document.nodes : [],
     edges: Array.isArray(document.edges) ? document.edges : [],
     groups: Array.isArray(document.groups) ? document.groups : [],
+    containers: Array.isArray(document.containers) ? document.containers : [],
+    lanes: Array.isArray(document.lanes) ? document.lanes : [],
+    constraints: Array.isArray(document.constraints) ? document.constraints : [],
+    layout: document.layout && typeof document.layout === "object" ? document.layout : undefined,
+    projection: document.projection,
     diagnostics: Array.isArray(document.diagnostics) ? document.diagnostics : [],
   });
 }
@@ -56,6 +61,11 @@ export function normalizeUniversalIR(ir = {}) {
     nodes,
     edges,
     groups: Array.isArray(ir.groups) ? ir.groups.map((group, index) => normalizeGroup(group, index)) : [],
+    containers: Array.isArray(ir.containers) ? ir.containers.map((container) => ({ ...container, children: Array.isArray(container.children) ? [...container.children] : [] })) : [],
+    lanes: Array.isArray(ir.lanes) ? ir.lanes.map((lane) => ({ ...lane })) : [],
+    constraints: Array.isArray(ir.constraints) ? ir.constraints.map((constraint) => ({ ...constraint })) : [],
+    ...(ir.layout && typeof ir.layout === "object" ? { layout: { ...ir.layout } } : {}),
+    ...(ir.projection ? { projection: String(ir.projection) } : {}),
     diagnostics: Array.isArray(ir.diagnostics) ? ir.diagnostics : [],
     nodeIds,
   };
@@ -176,6 +186,9 @@ function normalizeNode(node = {}, index) {
     : [normalized.sourceNodeId];
   if (node.shape !== undefined) normalized.shape = normalizeShape(node.shape);
   if (node.compoundKind !== undefined) normalized.compoundKind = String(node.compoundKind);
+  if (node.containerId !== undefined) normalized.containerId = String(node.containerId);
+  if (node.laneId !== undefined) normalized.laneId = String(node.laneId);
+  if (node.repeatCount !== undefined) normalized.repeatCount = Math.max(1, Number(node.repeatCount) || 1);
   ["x", "y", "w", "h"].forEach((key) => {
     if (Number.isFinite(node[key])) normalized[key] = node[key];
   });

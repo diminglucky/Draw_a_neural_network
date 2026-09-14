@@ -1,7 +1,7 @@
 import { createAgentRun, persistAgentRun, resumeAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
 import { createMemoryRunStore } from "./run-store.mjs";
 import { extractArchitectureEvidence, normalizeArchitectureEvidence, planArchitectureFigure } from "./agent-pipeline.mjs";
-import { validateFigurePlan } from "./figure-plan.mjs";
+import { validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
 import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./shape-inference.mjs";
 
@@ -273,9 +273,9 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
     try {
       run = createAgentRun(input, {
       ...stageDependencies,
-      render: (figurePlan, current) => render(figurePlan, { ...current, visioOptions: options }),
+      render: (visioDiagramPlan, current) => render(visioDiagramPlan, { ...current, visioOptions: options }),
       ...(readback ? {
-        readback: (figurePlan, renderResult, current) => readback(figurePlan, renderResult, { ...current, visioOptions: options }),
+        readback: (visioDiagramPlan, renderResult, current) => readback(visioDiagramPlan, renderResult, { ...current, visioOptions: options }),
       } : {}),
       }, { runStore });
     } catch (error) {
@@ -299,17 +299,17 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
         status: "needs_external_vision",
       });
     }
-    if (!result.figurePlan) {
+    if (!result.visioDiagramPlan) {
       const firstError = (result.diagnostics || []).find((d) => d.severity === "error");
       return jsonResponse(422, {
-        error: firstError?.message || "Architecture input did not produce a Figure Plan; Visio was not modified.",
+        error: firstError?.message || "Architecture input did not produce a Visio Diagram Plan; Visio was not modified.",
         diagnostics: result.diagnostics,
         ...nextResult(result),
         status: "invalid_layout",
       });
     }
-    const renderPlan = result.renderResult?.plan || buildVisioRenderPlan(result.figurePlan, options);
-    const validation = result.figurePlan.validation || validateFigurePlan(result.figurePlan);
+    const renderPlan = result.renderResult?.plan || buildVisioRenderPlan(result.visioDiagramPlan, options);
+    const validation = result.visioDiagramPlan.validation || validateVisioDiagramPlan(result.visioDiagramPlan);
     if (!validation.ok) {
       return jsonResponse(422, {
         status: "invalid_layout",
@@ -346,9 +346,9 @@ function withVisioExecution(stageDependencies, options) {
     : (stageDependencies.readback || defaultVisioReadback);
   return {
     ...stageDependencies,
-    render: (figurePlan, current) => render(figurePlan, { ...current, visioOptions: options }),
+    render: (visioDiagramPlan, current) => render(visioDiagramPlan, { ...current, visioOptions: options }),
     ...(readback ? {
-      readback: (figurePlan, renderResult, current) => readback(figurePlan, renderResult, { ...current, visioOptions: options }),
+      readback: (visioDiagramPlan, renderResult, current) => readback(visioDiagramPlan, renderResult, { ...current, visioOptions: options }),
     } : {}),
   };
 }
@@ -361,14 +361,14 @@ function agentRunStatus(result = {}) {
   return "completed";
 }
 
-async function defaultVisioRender(figurePlan, current = {}) {
+async function defaultVisioRender(visioDiagramPlan, current = {}) {
   const options = current.visioOptions || {};
-  const plan = buildVisioRenderPlan(figurePlan, options);
+  const plan = buildVisioRenderPlan(visioDiagramPlan, options);
   if (process.env.VISIO_DRY_RUN === "1") return { status: "dry_run", plan };
-  return renderUniversalFigureToVisio(figurePlan, options);
+  return renderUniversalFigureToVisio(visioDiagramPlan, options);
 }
 
-async function defaultVisioReadback(_figurePlan, renderResult = {}) {
+async function defaultVisioReadback(_visioDiagramPlan, renderResult = {}) {
   return renderResult.readback || renderResult;
 }
 
@@ -382,7 +382,7 @@ function nextResult(run) {
     attempts: { ...run.attempts },
     input: run.input,
     ir: run.ir,
-    figurePlan: run.figurePlan,
+    visioDiagramPlan: run.visioDiagramPlan,
     planOutput: run.planOutput,
     renderResult: run.renderResult,
     readback: run.readback,

@@ -35,9 +35,9 @@ class Net(nn.Module):
   assert.ok(result.ir.edges.some((edge) => edge.ports?.source === "text" && edge.target === fuse.id));
   assert.ok(result.ir.edges.some((edge) => edge.source === fuse.id && edge.target === decoder.id));
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-operator"));
-  assert.equal(result.figurePlan.nodes.find((node) => node.op === "WaveletEncoder").compoundKind, "unresolved");
-  assert.ok(result.figurePlan.edges.some((edge) => edge.sourceEndpointIds?.source === "text" && edge.targetNodeId === fuse.sourceNodeId));
-  assert.equal(result.figurePlan.validation.ok, true);
+  assert.equal(result.visioDiagramPlan.nodes.find((node) => node.op === "WaveletEncoder").compoundKind, "unresolved");
+  assert.ok(result.visioDiagramPlan.edges.some((edge) => edge.sourceEndpointIds?.source === "text" && edge.targetNodeId === fuse.sourceNodeId));
+  assert.equal(result.visioDiagramPlan.validation.ok, true);
 });
 
 test("generic source extraction preserves arbitrary Keras layer names and list-valued merges", () => {
@@ -118,11 +118,11 @@ class LSTMNet(nn.Module):
   assert.deepEqual(recurrent.ports.inputs, ["x", "state"]);
   assert.deepEqual(recurrent.ports.outputs, ["h", "c"]);
   assert.ok(recurrent.evidence.some((item) => item.kind === "source-call" && item.operation === "LSTMCell"));
-  assert.equal(result.figurePlan.nodes.find((node) => node.sourceNodeId === recurrent.id).visualRole, "recurrent-state");
-  const stateEdge = result.figurePlan.edges.find((edge) => edge.sourceNodeId.includes("state") && edge.targetNodeId === recurrent.id);
+  assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === recurrent.id).visualRole, "recurrent-state");
+  const stateEdge = result.visioDiagramPlan.edges.find((edge) => edge.sourceNodeId.includes("state") && edge.targetNodeId === recurrent.id);
   assert.deepEqual(stateEdge.sourceEndpointIds, { source: "state", target: "state" });
-  assert.ok(result.figurePlan.edges.some((edge) => edge.sourceEndpointIds?.source === "h"));
-  assert.ok(result.figurePlan.edges.some((edge) => edge.sourceEndpointIds?.source === "c"));
+  assert.ok(result.visioDiagramPlan.edges.some((edge) => edge.sourceEndpointIds?.source === "h"));
+  assert.ok(result.visioDiagramPlan.edges.some((edge) => edge.sourceEndpointIds?.source === "c"));
 });
 
 test("generic source extraction expands evidenced nested modules without a model-specific template", () => {
@@ -155,7 +155,7 @@ class Net(nn.Module):
     .filter((node) => node.family !== "input" && node.family !== "output")
     .every((node) => node.evidence?.some((item) => item.kind === "source-call")));
   assert.equal(block.compoundKind, "module");
-  assert.equal(result.status, "ready_for_preview");
+  assert.equal(result.status, "ready_for_visio");
 });
 
 test("generic source extraction blocks partially parsed expressions instead of dropping topology", () => {
@@ -177,7 +177,7 @@ class ResidualNet(nn.Module):
   assert.equal(result.status, "needs_confirmation");
   assert.ok(result.ir.nodes.some((node) => node.compoundKind === "unresolved"));
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-source-statement"));
-  assert.equal(result.readyForPreview, true);
+  assert.equal(result.readyForVisio, true);
 });
 
 test("generic source extraction expands Keras Sequential list syntax into ordered layers", () => {
@@ -196,7 +196,7 @@ test("generic source extraction expands Keras Sequential list syntax into ordere
   assert.deepEqual(ops, ["Conv2D", "MaxPooling2D", "Flatten", "Dense"]);
   assert.ok(!result.ir.nodes.some((node) => node.op === "UnresolvedSourceStatement"));
   // Input 从首层 input_shape 生成，shape 从 224 逐层传播到 softmax 的 10 类。
-  const shapes = Object.fromEntries(result.figurePlan.nodes.map((node) => [node.op, node.shape?.output]));
+  const shapes = Object.fromEntries(result.visioDiagramPlan.nodes.map((node) => [node.op, node.shape?.output]));
   assert.deepEqual(shapes.Input, [224, 224, 3]);
   assert.deepEqual(shapes.Conv2D, [222, 222, 32]);
   assert.deepEqual(shapes.Dense, [10]);
