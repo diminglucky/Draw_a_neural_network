@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
+import { analyzeArchitectureInput, extractArchitectureEvidence, normalizeArchitectureEvidence } from "./agent-pipeline.mjs";
+import onnxProto from "onnx-proto";
 
 test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
   const result = analyzeArchitectureInput({
@@ -19,6 +20,10 @@ test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
   });
 
   assert.equal(result.visioDiagramPlan.version, "visio-diagram-plan/v1");
+  assert.equal(result.visioDiagramPlan.scene.version, "laid-out-neural-scene/v1");
+  assert.equal(result.visioDiagramPlan.scene.units, "layout-unit");
+  assert.ok(result.visioDiagramPlan.scene.primitives.every((primitive) => primitive.bounds));
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
   assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "cell").compoundKind, "operator");
   assert.equal(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").route.kind, "loop");
 });
@@ -240,4 +245,55 @@ test("named modules (compoundKind module) are not counted as unresolved", () => 
 
   assert.equal(result.summary.unresolvedNodeCount, 0);
   assert.notEqual(result.status, "needs_confirmation");
+});
+
+test("prompt-only architecture aliases stop at resolver candidates without fabricated topology", async () => {
+  const evidence = await extractArchitectureEvidence({ kind: "prompt", prompt: "draw detector" }, { resolver: { registry: [
+    { id: "v1", names: ["Detector One", "detector"], repository: "https://example.test/model", revision: "a".repeat(40) },
+    { id: "v2", names: ["Detector Two", "detector"], repository: "https://example.test/model", revision: "b".repeat(40) },
+  ] } });
+  assert.equal(evidence.version, "architecture-evidence-package/v1");
+  assert.equal(evidence.status, "needs_resolution");
+  assert.equal(evidence.graph.nodes.length, 0);
+  assert.equal(evidence.unresolvedQuestions.length, 1);
+});
+
+test("pinned config input becomes an Evidence Package and reaches Universal IR", async () => {
+  const evidence = await extractArchitectureEvidence({ kind: "config", config: { pipeline: [
+    [-1, 1, "ArbitraryStem", { width: 32 }],
+    [-1, 2, "ArbitraryBlock", { width: 64 }],
+  ] }, revision: "abc1234", sourceId: "cfg-1", metadata: { uri: "file:///model.yaml", authority: 4 } });
+  const normalized = normalizeArchitectureEvidence(evidence);
+  assert.equal(evidence.version, "architecture-evidence-package/v1");
+  assert.deepEqual(normalized.ir.nodes.map((node) => node.op), ["ArbitraryStem", "ArbitraryBlock"]);
+  assert.equal(normalized.evidencePackage.version, "architecture-evidence-package/v1");
+});
+
+test("pinned ONNX artifact reaches Universal IR without executing model code", async () => {
+  const { onnx } = onnxProto;
+  const data = onnx.ModelProto.encode(onnx.ModelProto.create({ graph: { node: [
+    { name: "custom", opType: "UserDefinedOperator", input: ["x"], output: ["y"] },
+  ], input: [{ name: "x" }], output: [{ name: "y" }] } })).finish();
+  const evidence = await extractArchitectureEvidence({ kind: "artifact", artifact: { format: "onnx", data }, revision: "abc1234", sourceId: "onnx-1", metadata: { uri: "file:///model.onnx", authority: 5 } });
+  const normalized = normalizeArchitectureEvidence(evidence);
+  assert.equal(evidence.status, "grounded");
+  assert.equal(normalized.ir.nodes[0].op, "UserDefinedOperator");
+  assert.equal(normalized.evidencePackage.sources[0].id, "onnx-1");
+});
+
+test("pinned repository configuration is acquired and normalized through the injected fetcher", async () => {
+  const evidence = await extractArchitectureEvidence({
+    kind: "repository",
+    repository: "https://github.com/example/network",
+    revision: "a".repeat(40),
+    entryPoint: "models/network.yaml",
+    sourceId: "repo-config",
+  }, { resolver: {
+    fetchRepository: async () => ({ content: "pipeline:\n  - [-1, 1, RepoDefinedBlock, {width: 48}]", license: "MIT" }),
+  } });
+  const normalized = normalizeArchitectureEvidence(evidence);
+  assert.equal(evidence.status, "grounded");
+  assert.equal(evidence.identity.revision, "a".repeat(40));
+  assert.equal(normalized.ir.nodes[0].op, "RepoDefinedBlock");
+  assert.equal(normalized.evidencePackage.sources[0].license, "MIT");
 });

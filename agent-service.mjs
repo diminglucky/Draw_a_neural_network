@@ -19,7 +19,7 @@ export function createAgentService({ dependencies = {}, runStore: configuredRunS
   const runs = new Map();
   const runStore = configuredRunStore || createMemoryRunStore();
   const stageDependencies = {
-    ...createDefaultAgentDependencies(),
+    ...createDefaultAgentDependencies(dependencies),
     ...dependencies,
   };
   return async function route(request) {
@@ -77,11 +77,14 @@ export function createAgentService({ dependencies = {}, runStore: configuredRunS
   };
 }
 
-function createDefaultAgentDependencies() {
+function createDefaultAgentDependencies(configuration = {}) {
   return {
     inspect: async (input) => input,
     extract: async (input) => {
       if (input?.kind === "image") return extractImageEvidenceThroughProvider(input);
+      if (input?.kind === "repository" || (input?.kind === "prompt" && configuration.resolver)) {
+        return extractArchitectureEvidence(input, { resolver: configuration.resolver });
+      }
       if (analyzer?.available && (input?.kind === "source" || input?.kind === "prompt")) {
         return extractThroughLLM(input);
       }

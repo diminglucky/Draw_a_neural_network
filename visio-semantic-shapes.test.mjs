@@ -115,3 +115,10 @@ test("default neural primitives are flat, evidence-driven, and free of per-modul
   assert.match(dispatch[0], /legacy-publication-tensor[\s\S]*Draw-FeatureMapStack/);
   assert.doesNotMatch(script, /\$legendShapes\s*=\s*@\(Draw-Legend/);
 });
+
+test("compound modules dispatch through topology patterns, not architecture names", () => {
+  assert.match(script, /function Draw-StructuredModule/);
+  assert.match(script, /shapeData\.modulePattern/);
+  assert.match(script, /Draw-StructuredModule[\s\S]*\$pattern/);
+  assert.doesNotMatch(script, /Draw-StructuredModule[\s\S]*YOLO|Draw-StructuredModule[\s\S]*ResNet/);
+});

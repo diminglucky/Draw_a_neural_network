@@ -54,6 +54,30 @@ export function evidenceGraphToUniversalIR(graph = {}) {
   return ir;
 }
 
+export function architectureEvidencePackageToEvidenceGraph(pkg = {}) {
+  if (pkg.version !== "architecture-evidence-package/v1") throw new TypeError("Expected architecture-evidence-package/v1.");
+  const claims = Array.isArray(pkg.claims) ? pkg.claims : [];
+  const evidenceFor = (subjectId) => claims.filter((claim) => claim.subjectId === subjectId).map((claim) => claim.id);
+  return createEvidenceGraph({
+    input: pkg.request,
+    records: claims.map((claim) => ({
+      evidenceId: claim.id,
+      source: [...(claim.sourceIds || [])],
+      claim: { subjectId: claim.subjectId, predicate: claim.predicate, value: claim.value },
+      confidence: claim.confidence,
+      status: claim.status,
+    })),
+    nodes: (pkg.graph?.nodes || []).map((node) => ({
+      ...node,
+      op: node.op || node.operator,
+      evidence: evidenceFor(node.id),
+    })),
+    edges: (pkg.graph?.edges || []).map((edge) => ({ ...edge, evidence: evidenceFor(edge.id) })),
+    containers: pkg.graph?.containers || [],
+    diagnostics: pkg.diagnostics || [],
+  });
+}
+
 function stableEvidenceId(input) {
   const value = JSON.stringify({ source: input.source, claim: input.claim, family: input.family });
   let hash = 2166136261;

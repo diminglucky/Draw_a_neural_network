@@ -29,6 +29,19 @@ test("module patterns are inferred from evidenced topology rather than display n
   assert.equal(inferModulePattern({ family: "custom", label: "Residual Attention" }, { nodes: [], edges: [] }), "opaque");
 });
 
+test("evidenced compound size grows from topology while opaque modules stay compact", () => {
+  const expanded = compileSemanticVisualNode({
+    family: "custom", compoundKind: "unresolved", w: 120, h: 80,
+    attributes: { internalGraph: {
+      nodes: Array.from({ length: 6 }, (_, index) => ({ id: `n${index}`, stage: index })),
+      edges: [],
+    } },
+  });
+  const opaque = compileSemanticVisualNode({ family: "custom", compoundKind: "unresolved", w: 120, h: 80 });
+  assert.ok(expanded.geometryData.preferredWidth > opaque.geometryData.preferredWidth);
+  assert.ok(expanded.geometryData.preferredHeight > opaque.geometryData.preferredHeight);
+});
+
 test("semantic grammar exposes normalized recurrent evidence and preserves uncertainty", () => {
   const compiled = compileSemanticVisualNode({
     id: "recurrent",

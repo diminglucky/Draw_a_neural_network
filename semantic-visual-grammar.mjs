@@ -511,6 +511,22 @@ function preferredSizeForRole(role, node) {
   const currentHeight = Number(node.h) || 0;
   const spatial = spatialDimension(node.shape, node.subtitle);
   const channels = channelDimension(node.shape, node.subtitle);
+  const internalGraph = node.attributes?.internalGraph || node.internalGraph || node.inner;
+  const internalNodes = Array.isArray(internalGraph?.nodes) ? internalGraph.nodes : [];
+  if (["compound-module", "unresolved-module"].includes(role) && internalNodes.length > 0) {
+    const internalEdges = Array.isArray(internalGraph?.edges) ? internalGraph.edges : [];
+    const widths = internalNodes.map((child) => Number(child.w) || 84);
+    const maxBranchWidth = Math.max(...widths, 84);
+    const branchCount = Math.max(1, internalNodes.filter((child) => {
+      const id = String(child.id || "");
+      return internalEdges.filter((edge) => String(edge.source || "") === id).length > 1;
+    }).length);
+    const layerCount = Math.max(1, new Set(internalNodes.map((child) => child.stage ?? child.order ?? 0)).size);
+    return {
+      width: Math.max(currentWidth, Math.min(720, layerCount * 96 + 72), Math.min(720, branchCount * maxBranchWidth + 96)),
+      height: Math.max(currentHeight, Math.min(480, Math.max(1, branchCount) * 56 + 112)),
+    };
+  }
   if (role === "image-input") return { width: 122, height: 214 };
   if (role === "sequence-input") return { width: 150, height: 72 };
   if (role === "state-input") return { width: 86, height: 132 };

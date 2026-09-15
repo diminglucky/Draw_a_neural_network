@@ -37,8 +37,13 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
     recurrentRailConnectors: [],
   };
 
-  planOuterShapes(layout, registry, renderId, grammarId);
-  const connectors = planConnectors(layout, registry, renderId);
+  const hasScene = layout.scene?.version === "laid-out-neural-scene/v1";
+  if (hasScene) projectScene(layout.scene, registry, renderId);
+  else if (options.allowLegacyProjection !== false) planOuterShapes(layout, registry, renderId, grammarId);
+  else throw new Error("Visio Diagram Plan must contain a laid-out neural scene.");
+  const connectors = hasScene
+    ? projectSceneConnectors(layout.scene, registry, renderId)
+    : planConnectors(layout, registry, renderId);
 
   return {
     version: BRIDGE_VERSION,
@@ -49,16 +54,110 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
     replaceScope: String(options.replaceLegacyPrefix || "").trim() ? "agent-owned+legacy-prefix" : "agent-owned",
     replaceLegacyPrefix: String(options.replaceLegacyPrefix || "").trim() || undefined,
     openMode: String(options.openMode || "attach"),
+    readbackMode: options.readbackMode === "reopen" ? "reopen" : "in-place",
     previewPath: String(options.previewPath || "").trim() || undefined,
     renderId,
     unitScale: Number.isFinite(options.unitScale) ? options.unitScale : 0.0065,
-    artboard: layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 },
+    artboard: hasScene ? sceneArtboard(layout.scene.page) : (layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 }),
     grammarId,
     figure: layout.figure || {},
-    groups: (Array.isArray(layout.groups) ? layout.groups : []).map((group) => ({ ...group, renderId })),
+    groups: (hasScene ? layout.scene.groups || [] : (Array.isArray(layout.groups) ? layout.groups : [])).map((group) => ({ ...group, renderId })),
     shapes: registry.shapes,
     connectors,
   };
+}
+
+function projectScene(scene, registry, renderId) {
+  const primitives = [...(scene.primitives || [])].sort((a, b) => Number(a.zIndex || 0) - Number(b.zIndex || 0) || String(a.id).localeCompare(String(b.id)));
+  for (const primitive of primitives) {
+    const sourceNodeIds = (primitive.sourceNodeIds || []).map(String);
+    registry.shapes.push({
+      id: String(primitive.id),
+      sourceNodeId: sourceNodeIds[0] || "",
+      sourceNodeIds,
+      x: Number(primitive.bounds?.x) || 0,
+      y: Number(primitive.bounds?.y) || 0,
+      w: Number(primitive.bounds?.w) || 1,
+      h: Number(primitive.bounds?.h) || 1,
+      label: (primitive.labels || []).map(String).join("\n"),
+      subtitle: "",
+      shapeKind: `scene-${String(primitive.form || "band")}`,
+      sceneForm: String(primitive.form || "band"),
+      sceneRole: String(primitive.role || "body"),
+      semanticTags: (primitive.semanticTags || []).map(String),
+      category: String(primitive.category || "operator"),
+      anchors: structuredClone(primitive.anchors || { inputs: [], outputs: [] }),
+      zIndex: Number(primitive.zIndex || 0),
+      ports: structuredClone(primitive.ports || { inputs: [], outputs: [] }),
+      geometryData: structuredClone(primitive.data || {}),
+      visualRole: "scene-primitive",
+      styleProfile: sceneStyleProfile(primitive),
+      labelOutside: false,
+      parentNodeId: "",
+      fill: sceneFill(primitive),
+      line: "#3F5D78",
+      shapeData: {
+        renderId,
+        sourceNodeId: sourceNodeIds[0] || "",
+        sourceNodeIds,
+        sourceEdgeIds: (primitive.sourceEdgeIds || []).map(String).join("|"),
+        projectionId: String(primitive.projectionId || ""),
+        primitiveId: String(primitive.id),
+        sceneForm: String(primitive.form || "band"),
+        sceneRole: String(primitive.role || "body"),
+        semanticTags: (primitive.semanticTags || []).map(String).join("|"),
+        derivedFrom: (primitive.derivedFrom || []).map(String).join("|"),
+        planVersion: BRIDGE_VERSION,
+      },
+    });
+  }
+}
+
+function projectSceneConnectors(scene, registry, renderId) {
+  const primitiveById = new Map(registry.shapes.map((shape) => [shape.id, shape]));
+  return (scene.connectors || []).map((connector) => {
+    const sourceShape = primitiveById.get(String(connector.sourcePrimitiveId));
+    const targetShape = primitiveById.get(String(connector.targetPrimitiveId));
+    return {
+      id: String(connector.id),
+      source: sourceShape?.sourceNodeId || "",
+      target: targetShape?.sourceNodeId || "",
+      type: (connector.relationTags || []).includes("state") ? "state" : "signal",
+      label: "",
+      points: structuredClone(connector.points || []),
+      renderId,
+      sourceEdgeId: String(connector.sourceEdgeIds?.[0] || connector.id || ""),
+      sourceEdgeIds: (connector.sourceEdgeIds || []).map(String),
+      sourceNodeId: sourceShape?.sourceNodeId || "",
+      targetNodeId: targetShape?.sourceNodeId || "",
+      sourceEndpointIds: normalizeEndpointIds({ source: connector.sourcePortId, target: connector.targetPortId }),
+      routeClass: String(connector.routeClass || "main-flow"),
+      sourceShapeId: String(connector.sourcePrimitiveId || ""),
+      targetShapeId: String(connector.targetPrimitiveId || ""),
+      relationTags: (connector.relationTags || []).map(String),
+      evidenceCount: Array.isArray(connector.derivedFrom) ? connector.derivedFrom.length : 0,
+    };
+  });
+}
+
+function sceneArtboard(page = {}) {
+  return { x: Number(page.x) || 0, y: Number(page.y) || 0, width: Number(page.width) || 1, height: Number(page.height) || 1 };
+}
+
+function sceneStyleProfile(primitive) {
+  if (primitive.category === "data") return primitive.form === "strip" ? "token" : "feature-map";
+  if (primitive.category === "boundary") return "unresolved";
+  if (primitive.category === "annotation") return "annotation";
+  if ((primitive.semanticTags || []).includes("merge")) return "merge";
+  return "operator";
+}
+
+function sceneFill(primitive) {
+  if (primitive.category === "data") return "#DCEAF4";
+  if (primitive.category === "structure") return "#E2F3E7";
+  if (primitive.category === "boundary") return "#F5F0E7";
+  if (primitive.category === "annotation") return "#FFFFFF";
+  return "#E7EEF5";
 }
 
 // Build every shape (outer blocks, recurrent instances, inner operators) for
@@ -136,7 +235,7 @@ function planOuterShapes(layout, registry, renderId, grammarId) {
     // 只用于 shape 穿透计算，渲染时保持一个 labeled color block。否则正则提取
     // 路径（buildInternalGraph 会自动递归）会把 C2f/SPPF/Conv 的内部子节点画进
     // 色块里，与 LLM 路径（不发射 internalGraph）产生不一致。
-    const innerNodes = node.renderInternalGraph === false || node.visualRole === "named-module" || recurrentLayout?.uncertainty?.unresolved
+    const innerNodes = node.renderInternalGraph === false || recurrentLayout?.uncertainty?.unresolved
       ? []
       : Array.isArray(node.inner?.nodes) ? node.inner.nodes
         : compoundLayout?.kind === "recurrent" ? compoundLayout.children : [];
@@ -165,7 +264,12 @@ function planOuterShapes(layout, registry, renderId, grammarId) {
 }
 
 function innerVisualRole(child = {}) {
-  const family = String(child.family || child.kind || child.semanticRole || "").toLowerCase();
+  const semanticRole = String(child.semanticRole || "").toLowerCase();
+  if (["split", "branch", "fanout"].includes(semanticRole)) return "split";
+  if (["junction", "fan-in", "fanin"].includes(semanticRole)) return "junction";
+  if (["add", "sum", "merge-add"].includes(semanticRole)) return "merge-add";
+  if (["concat", "concatenate", "merge", "join", "merge-concat"].includes(semanticRole)) return "merge-concat";
+  const family = String(child.family || child.kind || semanticRole || "").toLowerCase();
   if (["add", "sum"].includes(family)) return "merge-add";
   if (["concat", "concatenate", "merge", "join"].includes(family)) return "merge-concat";
   if (family === "attention") return "inner-attention";
@@ -219,16 +323,24 @@ function planConnectors(layout, registry, renderId) {
       if (!source || !target) continue;
       const sourceShape = shapes.find((shape) => shape.id === source);
       const targetShape = shapes.find((shape) => shape.id === target);
+      const moduleOffset = { x: Number(node.x || 0) + 20, y: Number(node.y || 0) + 36 };
+      const localRoute = Array.isArray(edge.route?.points) ? edge.route.points : [];
+      const routedPoints = localRoute.length >= 2
+        ? localRoute.map((point) => ({
+          x: Number(point.x) + moduleOffset.x,
+          y: Number(point.y) + moduleOffset.y,
+        }))
+        : [
+          { x: sourceShape.x + sourceShape.w, y: sourceShape.y + sourceShape.h / 2 },
+          { x: targetShape.x, y: targetShape.y + targetShape.h / 2 },
+        ];
       connectors.push({
         id: `inner-edge::${node.id}::${edge.id}`,
         source,
         target,
         type: edge.type || "signal",
         label: edge.label || "",
-        points: [
-          { x: sourceShape.x + sourceShape.w, y: sourceShape.y + sourceShape.h / 2 },
-          { x: targetShape.x, y: targetShape.y + targetShape.h / 2 },
-        ],
+        points: routedPoints,
         renderId,
         sourceNodeId: node.id,
         targetNodeId: node.id,
@@ -239,6 +351,11 @@ function planConnectors(layout, registry, renderId) {
         evidence: Array.isArray(edge.evidence) ? edge.evidence : [],
         confidence: Number.isFinite(edge.confidence) ? edge.confidence : 1,
         evidenceCount: Array.isArray(edge.evidence) ? edge.evidence.length : 0,
+        routeClass: String(edge.routeClass || (edge.route?.kind === "bypass" ? "skip" : "main-flow")),
+        sourceContainerId: String(edge.sourceContainerId || node.id),
+        targetContainerId: String(edge.targetContainerId || node.id),
+        sourceLaneId: String(edge.sourceLaneId || ""),
+        targetLaneId: String(edge.targetLaneId || ""),
       });
     }
   }

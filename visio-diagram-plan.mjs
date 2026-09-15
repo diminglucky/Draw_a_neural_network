@@ -1,6 +1,6 @@
 const VISIO_DIAGRAM_PLAN_VERSION = "visio-diagram-plan/v1";
 
-export function createVisioDiagramPlan({ ir = {}, geometry, layout, diagnostics = [] } = {}) {
+export function createVisioDiagramPlan({ ir = {}, scene, geometry, layout, diagnostics = [] } = {}) {
   const sourceLayout = hasLayoutContent(geometry) ? geometry : (layout || {});
   const layoutNodes = Array.isArray(sourceLayout.nodes) ? sourceLayout.nodes : [];
   const layoutEdges = Array.isArray(sourceLayout.edges) ? sourceLayout.edges : [];
@@ -111,6 +111,7 @@ export function createVisioDiagramPlan({ ir = {}, geometry, layout, diagnostics 
 
   return {
     version: VISIO_DIAGRAM_PLAN_VERSION,
+    ...(scene ? { scene: cloneValue(scene) } : {}),
     grammar: cloneValue(sourceLayout.grammar || ir.grammar || { id: "generic-dag" }),
     figure: cloneValue(sourceLayout.figure || ir.figure || {}),
     artboard: cloneValue(sourceLayout.artboard || {}),
@@ -133,11 +134,57 @@ export function validateVisioDiagramPlan(plan = {}) {
   if (Object.prototype.hasOwnProperty.call(plan, "projection")) {
     issues.push({ code: "renderer-projection-not-allowed" });
   }
+  if (plan.scene) validateEmbeddedScene(plan, issues);
   return {
     ok: issues.length === 0,
     issues,
     summary: { ...base.summary, issueCount: issues.length },
   };
+}
+
+function validateEmbeddedScene(plan, issues) {
+  const scene = plan.scene;
+  if (scene.version !== "laid-out-neural-scene/v1") {
+    issues.push({ code: "invalid-laid-out-scene-version", value: scene.version });
+  }
+  if (scene.units !== "layout-unit") issues.push({ code: "invalid-scene-units", value: scene.units });
+
+  const primitives = Array.isArray(scene.primitives) ? scene.primitives : [];
+  const connectors = Array.isArray(scene.connectors) ? scene.connectors : [];
+  const primitiveIds = new Set();
+  const coveredNodeIds = new Set();
+  const coveredEdgeIds = new Set();
+  for (const primitive of primitives) {
+    const primitiveId = String(primitive?.id || "");
+    if (primitiveId) primitiveIds.add(primitiveId);
+    for (const nodeId of primitive?.sourceNodeIds || []) coveredNodeIds.add(String(nodeId));
+    for (const edgeId of primitive?.sourceEdgeIds || []) coveredEdgeIds.add(String(edgeId));
+    if (primitive?.role !== "body") continue;
+    if (!validSceneBounds(primitive.bounds)) issues.push({ code: "missing-scene-body-bounds", primitiveId });
+    if (!validSceneAnchors(primitive.anchors)) issues.push({ code: "missing-scene-body-anchors", primitiveId });
+  }
+
+  for (const connector of connectors) {
+    for (const edgeId of connector?.sourceEdgeIds || []) coveredEdgeIds.add(String(edgeId));
+    const sourceId = String(connector?.sourcePrimitiveId || "");
+    const targetId = String(connector?.targetPrimitiveId || "");
+    if (!primitiveIds.has(sourceId) || !primitiveIds.has(targetId)
+      || !Array.isArray(connector?.points) || connector.points.length < 2) {
+      issues.push({ code: "unresolved-scene-topology", connectorId: String(connector?.id || "") });
+    }
+  }
+
+  const requiredNodeIds = new Set();
+  for (const node of plan.nodes || []) {
+    for (const nodeId of node.sourceNodeIds || [node.sourceNodeId]) if (nodeId) requiredNodeIds.add(String(nodeId));
+  }
+  for (const nodeId of requiredNodeIds) {
+    if (!coveredNodeIds.has(nodeId)) issues.push({ code: "missing-scene-source-node", nodeId });
+  }
+  for (const edge of plan.edges || []) {
+    const edgeId = String(edge.sourceEdgeId || "");
+    if (edgeId && !coveredEdgeIds.has(edgeId)) issues.push({ code: "missing-scene-source-edge", edgeId });
+  }
 }
 
 export function assertVisioDiagramPlan(plan = {}) {
@@ -202,6 +249,14 @@ function validateVisioDiagramPlanBase(plan = {}) {
 
 function hasLayoutContent(value) {
   return value !== null && typeof value === "object" && Object.keys(value).length > 0;
+}
+
+function validSceneBounds(bounds) {
+  return bounds && [bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite) && bounds.w > 0 && bounds.h > 0;
+}
+
+function validSceneAnchors(anchors) {
+  return anchors && Array.isArray(anchors.inputs) && Array.isArray(anchors.outputs);
 }
 
 function geometryFor(node) {

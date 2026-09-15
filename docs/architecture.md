@@ -34,7 +34,14 @@ and unresolved until evidence or confirmation is available.
 - `universal-ir.mjs`: canonical nodes, edges, ports, shapes, and validation.
 - `semantic-visual-grammar.mjs`: role-aware visual semantics for spatial,
   vector, attention, recurrent, volume, and compound structures.
-- `universal-figure.mjs`: legacy topology geometry pending hierarchical replacement.
+- `universal-figure.mjs`: compatibility orchestration facade that assembles
+  semantic nodes, hierarchical geometry, ports, and routed edges; it is not a
+  renderer and has no model-specific topology templates.
+- `architecture-layout-ir.mjs`: compiles containers, lanes, assignments, and
+  route classes from the normalized graph.
+- `visio-layout-tree.mjs`, `visio-hierarchical-layout.mjs`, and
+  `visio-port-routing.mjs`: validate hierarchy, place nested containers, align
+  scoped lanes, and route connectors around obstacles.
 - `visio-diagram-plan.mjs`: the sole Visio source-identity, geometry, and route contract.
 - `visio-bridge.mjs`: Visio render plan, execution, and readback validation.
 - `visio-bridge.ps1`: native Visio Shape, connector, Shape Data, and page

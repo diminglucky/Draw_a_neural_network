@@ -29,6 +29,71 @@ const layout = {
   edges: [],
 };
 
+test("scene projection maps every primitive form mechanically with identity, anchors, z-order, and glue", () => {
+  const forms = ["plane", "volume", "stack", "band", "wedge", "glyph", "cell", "strip", "callout", "text"];
+  const primitives = forms.map((form, index) => ({
+    id: `primitive-${form}`,
+    form,
+    role: form === "text" ? "decoration" : "body",
+    category: form === "text" ? "annotation" : "operator",
+    projectionId: `projection-${form}`,
+    sourceNodeIds: [`source-${form}`],
+    sourceEdgeIds: [],
+    semanticTags: form === "glyph" ? ["merge"] : [form],
+    labels: [`${form} label`],
+    ports: { inputs: [], outputs: [] },
+    derivedFrom: [`evidence-${form}`],
+    data: {},
+    bounds: { x: 20 + index * 110, y: 40, w: 80, h: 60 },
+    anchors: { inputs: [{ id: "in", x: 20 + index * 110, y: 70 }], outputs: [{ id: "out", x: 100 + index * 110, y: 70 }] },
+    zIndex: 100 + index,
+  }));
+  const input = {
+    version: "visio-diagram-plan/v1",
+    grammar: { id: "must-not-drive-scene" },
+    nodes: [{ id: "legacy", label: "YOLO ResNet LSTM", visualRole: "decision", x: 0, y: 0, w: 1, h: 1 }],
+    edges: [],
+    scene: {
+      version: "laid-out-neural-scene/v1",
+      units: "layout-unit",
+      primitives,
+      connectors: [{
+        id: "scene-flow",
+        sourcePrimitiveId: "primitive-plane",
+        targetPrimitiveId: "primitive-volume",
+        sourcePortId: "out",
+        targetPortId: "in",
+        sourceEdgeIds: ["source-flow"],
+        relationTags: ["data"],
+        routeClass: "main-flow",
+        points: [{ x: 100, y: 70 }, { x: 130, y: 70 }],
+      }],
+      groups: [],
+      page: { x: 0, y: 0, width: 1200, height: 180 },
+    },
+  };
+
+  const plan = buildVisioRenderPlan(input, { documentPath: "C:\\project\\existing.vsdx" });
+  assert.deepEqual(plan.shapes.map((shape) => shape.sceneForm), forms);
+  assert.deepEqual(plan.shapes.map((shape) => shape.id), primitives.map((primitive) => primitive.id));
+  assert.ok(plan.shapes.every((shape, index) => shape.zIndex === 100 + index));
+  assert.deepEqual(plan.shapes[0].anchors, primitives[0].anchors);
+  assert.deepEqual(plan.shapes[0].shapeData.sourceNodeIds, ["source-plane"]);
+  assert.equal(plan.shapes[0].shapeData.derivedFrom, "evidence-plane");
+  assert.equal(plan.shapes.some((shape) => shape.id === "outer::legacy"), false);
+  assert.equal(plan.connectors[0].sourceShapeId, "primitive-plane");
+  assert.equal(plan.connectors[0].targetShapeId, "primitive-volume");
+  assert.deepEqual(plan.connectors[0].sourceEndpointIds, { source: "out", target: "in" });
+  assert.equal(plan.connectors[0].sourceEdgeId, "source-flow");
+});
+
+test("PowerShell dispatches Scene forms without inspecting model or operator labels", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /function Draw-ScenePrimitive/);
+  assert.match(script, /\$Spec\.sceneForm/);
+  assert.doesNotMatch(script, /sceneForm[\s\S]{0,300}(YOLO|ResNet|U-Net)/i);
+});
+
 test("buildVisioRenderPlan targets an existing document and carries semantic Shape Data", () => {
   const plan = buildVisioRenderPlan(layout, {
     documentPath: "C:\\project\\existing.vsdx",
@@ -690,7 +755,11 @@ test("Visio bridge can export a preview from the current page after an in-place 
   assert.match(script, /previewPath/i);
 });
 
-test("Visio bridge saves, closes, reopens, and reads back the persisted document", () => {
+test("Visio bridge reads back in place by default and only reopens when explicitly requested", () => {
+  const normal = buildVisioRenderPlan(layout, { documentPath: "C:\\project\\existing.vsdx" });
+  const acceptance = buildVisioRenderPlan(layout, { documentPath: "C:\\project\\existing.vsdx", readbackMode: "reopen" });
+  assert.equal(normal.readbackMode, "in-place");
+  assert.equal(acceptance.readbackMode, "reopen");
   const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
   const saveIndex = script.indexOf("$doc.Save() | Out-Null");
   const reopenIndex = script.indexOf("$reopenedVisio = New-Object -ComObject Visio.Application");
@@ -700,6 +769,7 @@ test("Visio bridge saves, closes, reopens, and reads back the persisted document
   assert.ok(reopenIndex > saveIndex);
   assert.ok(reopenOpenIndex > reopenIndex);
   assert.ok(readbackIndex > reopenOpenIndex);
+  assert.match(script, /if \(\[string\]\$plan\.readbackMode -eq "reopen"\)/);
   assert.match(script, /reopened\s*=\s*\$true/);
   assert.match(script, /readbackSession\s*=\s*"reopened-document"/);
 });
@@ -843,7 +913,7 @@ test("Visio input renderers use COM-supported drawing methods", () => {
   assert.match(script, /DrawRectangle\(/);
 });
 
-test("buildVisioRenderPlan keeps named modules as single color blocks without expanding inner topology", () => {
+test("buildVisioRenderPlan expands a named module only when internal topology is explicitly enabled", () => {
   // 正则提取路径会给命名模块（C2f/SPPF/Conv）自动递归出 internalGraph；内部图
   // 只用于 shape 穿透计算，渲染时必须保持单色实心块，绝不把内部子节点画进色块。
   const plan = buildVisioRenderPlan({
@@ -854,6 +924,7 @@ test("buildVisioRenderPlan keeps named modules as single color blocks without ex
       family: "custom",
       compoundKind: "module",
       visualRole: "named-module",
+      renderInternalGraph: true,
       x: 20,
       y: 40,
       w: 132,
@@ -870,6 +941,29 @@ test("buildVisioRenderPlan keeps named modules as single color blocks without ex
     edges: [],
   }, { documentPath: "C:\\project\\existing.vsdx" });
 
-  assert.deepEqual(plan.shapes.map((shape) => shape.id), ["outer::c2f"]);
-  assert.ok(plan.connectors.every((connector) => !connector.id.startsWith("inner-edge::")));
+  assert.ok(plan.shapes.some((shape) => shape.id === "inner::c2f::cv1"));
+  assert.ok(plan.shapes.some((shape) => shape.id === "inner::c2f::cv2"));
+  assert.ok(plan.connectors.some((connector) => connector.id.startsWith("inner-edge::")));
+});
+
+test("buildVisioRenderPlan preserves local compound routes and semantic junction roles", () => {
+  const plan = buildVisioRenderPlan({
+    grammar: { id: "generic-dag" },
+    nodes: [{
+      id: "block", compoundKind: "module", renderInternalGraph: true,
+      x: 100, y: 200, w: 220, h: 180,
+      inner: { kind: "topology", nodes: [
+        { id: "norm", family: "norm", x: 0, y: 0, w: 60, h: 30 },
+        { id: "add", family: "custom", semanticRole: "add", x: 120, y: 40, w: 34, h: 34 },
+      ], edges: [{ id: "skip", source: "norm", target: "add", type: "skip", routeClass: "residual",
+        route: { kind: "bypass", points: [{ x: 60, y: 15 }, { x: 70, y: 15 }, { x: 70, y: 100 }, { x: 120, y: 57 }] } }] },
+    }], edges: [],
+  }, { documentPath: "C:\\project\\existing.vsdx" });
+  const add = plan.shapes.find((shape) => shape.id === "inner::block::add");
+  const route = plan.connectors.find((connector) => connector.id === "inner-edge::block::skip");
+  assert.equal(add.visualRole, "merge-add");
+  assert.equal(route.routeClass, "residual");
+  assert.equal(route.points.length, 4);
+  assert.deepEqual(route.points[0], { x: 180, y: 251 });
+  assert.deepEqual(route.points.at(-1), { x: 240, y: 293 });
 });

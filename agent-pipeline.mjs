@@ -1,9 +1,17 @@
 import { extractGenericSourceTopology } from "./generic-source-topology.mjs";
 import { normalizeArchitectureInput } from "./input-adapters.mjs";
-import { createEvidenceGraph, evidenceGraphToUniversalIR } from "./evidence-graph.mjs";
+import { architectureEvidencePackageToEvidenceGraph, createEvidenceGraph, evidenceGraphToUniversalIR } from "./evidence-graph.mjs";
+import { createArchitectureEvidencePackage, validateArchitectureEvidencePackage } from "./architecture-evidence-package.mjs";
+import { resolveArchitectureRequest } from "./architecture-resolver.mjs";
+import { importArchitectureConfig } from "./architecture-config-importer.mjs";
+import { importOnnxGraph } from "./onnx-graph-importer.mjs";
 import { createVisioDiagramPlan, validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
 import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
+import { deriveNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
+import { createProjectionMap } from "./neural-projection-map.mjs";
+import { compileSemanticScene } from "./semantic-neural-scene.mjs";
+import { layoutNeuralScene } from "./neural-scene-layout.mjs";
 
 const STATUS = Object.freeze({
   READY: "ready_for_visio",
@@ -48,10 +56,22 @@ export function analyzeArchitectureInput(input = {}, options = {}) {
  */
 export function extractArchitectureEvidence(input = {}, options = {}) {
   const kind = inferInputKind(input);
-  if (!["source", "ir", "image", "prompt"].includes(kind)) {
-    throw new TypeError("Expected source, ir, image, or prompt architecture input.");
+  if (!["source", "ir", "image", "prompt", "repository", "config", "artifact"].includes(kind)) {
+    throw new TypeError("Expected source, ir, image, prompt, repository, config, or artifact architecture input.");
   }
   normalizeArchitectureInput({ ...input, kind });
+
+  if (kind === "config") return packageImportedEvidence(input, importArchitectureConfig(input.config, sourceContext(input)));
+  if (kind === "artifact") {
+    if (String(input.artifact.format).toLowerCase() !== "onnx") return packageImportedEvidence(input, {
+      status: "rejected", graph: { nodes: [], edges: [], ports: [], tensors: [], containers: [] }, claims: [], sources: [],
+      diagnostics: [diagnostic("unsupported-artifact-format", "error", `Unsupported artifact format ${input.artifact.format}.`)],
+    });
+    return packageImportedEvidence(input, importOnnxGraph(decodeArtifactData(input.artifact.data), sourceContext(input)));
+  }
+  if (kind === "repository" || (kind === "prompt" && options.resolver)) {
+    return resolveArchitectureRequest(input, options.resolver || {}).then((resolved) => packageResolvedEvidence(input, resolved));
+  }
 
   if (kind === "source") {
     const genericTopology = extractGenericSourceTopology(input.source, input.framework || "auto");
@@ -96,11 +116,73 @@ export function extractArchitectureEvidence(input = {}, options = {}) {
 
 export function normalizeArchitectureEvidence(evidence = {}) {
   if (evidence.status === STATUS.VISION) return evidence;
+  if (evidence.version === "architecture-evidence-package/v1") {
+    if (!["grounded", "resolved"].includes(evidence.status)) return evidence;
+    const packageValidation = validateArchitectureEvidencePackage(evidence);
+    if (!packageValidation.ok) throw new TypeError(`Invalid Architecture Evidence Package: ${packageValidation.issues.map((issue) => issue.code).join(", ")}`);
+    const evidenceGraph = architectureEvidencePackageToEvidenceGraph(evidence);
+    const ir = normalizeNetworkIR(evidenceGraphToUniversalIR(evidenceGraph));
+    const validation = validateNetworkIR(ir);
+    return { ir, validation, evidenceGraph, evidencePackage: evidence, source: evidence.identity, kind: evidence.request?.kind };
+  }
   const { evidenceGraph, ir, validation } = buildEvidenceGraphIR(evidence.rawIR, {
     input: evidence.input || { kind: evidence.kind || "unknown" },
     baseDiagnostics: evidence.baseDiagnostics,
   });
   return { ir, validation, evidenceGraph, source: evidence.source, kind: evidence.kind };
+}
+
+function packageImportedEvidence(input, imported) {
+  return createArchitectureEvidencePackage({
+    status: imported.status,
+    request: { kind: input.kind, sourceId: input.sourceId },
+    identity: { revision: input.revision, uri: input.metadata?.uri },
+    sources: imported.sources,
+    claims: imported.claims,
+    graph: imported.graph,
+    diagnostics: imported.diagnostics,
+    unresolvedQuestions: imported.status === "unresolved" ? [{ code: "confirm-imported-topology" }] : [],
+  });
+}
+
+function packageResolvedEvidence(input, resolved) {
+  if (resolved.status === "resolved" && resolved.sources?.length === 1) {
+    const source = resolved.sources[0];
+    const context = { sourceId: source.id, revision: source.revision, uri: source.uri, authority: source.authority, format: source.path?.toLowerCase().endsWith(".onnx") ? "onnx" : "config" };
+    const imported = context.format === "onnx"
+      ? importOnnxGraph(source.content, context)
+      : importArchitectureConfig(source.content, context);
+    return createArchitectureEvidencePackage({
+      status: imported.status,
+      request: { kind: input.kind, requestedIdentity: input.prompt || input.repository },
+      identity: resolved.identity,
+      sources: resolved.sources,
+      claims: imported.claims,
+      graph: imported.graph,
+      diagnostics: [...(resolved.diagnostics || []), ...(imported.diagnostics || [])],
+      unresolvedQuestions: imported.status === "unresolved" ? [{ code: "confirm-imported-topology" }] : [],
+    });
+  }
+  return createArchitectureEvidencePackage({
+    status: resolved.status,
+    request: { kind: input.kind, requestedIdentity: input.prompt || input.repository },
+    identity: resolved.identity,
+    sources: resolved.sources || [],
+    claims: [],
+    graph: { nodes: [], edges: [], ports: [], tensors: [], containers: [] },
+    diagnostics: resolved.diagnostics || [],
+    unresolvedQuestions: resolved.status === "needs_resolution" ? [{ code: "select-architecture-candidate", candidates: resolved.candidates }] : [],
+  });
+}
+
+function sourceContext(input) {
+  return { sourceId: input.sourceId, revision: input.revision, uri: input.metadata?.uri, authority: input.metadata?.authority, format: input.artifact?.format };
+}
+
+function decodeArtifactData(data) {
+  if (typeof data === "string") return Buffer.from(data, "base64");
+  if (data?.type === "Buffer" && Array.isArray(data.data)) return Buffer.from(data.data);
+  return data;
 }
 
 export function planArchitectureFigure(normalized = {}) {
@@ -284,7 +366,11 @@ function computeDiagnostics(ir, evidenceGraph, validation) {
 // 把已归一化的 IR 布局成 Figure Plan。plan 阶段与同步 finalize 共用。
 function buildVisioPlan(ir, diagnostics) {
   const figureLayout = layoutUniversalFigure(ir);
-  const visioDiagramPlan = createVisioDiagramPlan({ ir, geometry: figureLayout, diagnostics });
+  const semanticFacts = deriveNeuralSemanticFacts(ir);
+  const projectionMap = createProjectionMap(ir, semanticFacts, { detail: "balanced" });
+  const semanticScene = compileSemanticScene(ir, semanticFacts, projectionMap);
+  const scene = layoutNeuralScene(semanticScene);
+  const visioDiagramPlan = createVisioDiagramPlan({ ir, scene, geometry: figureLayout, diagnostics });
   const visioDiagramPlanValidation = validateVisioDiagramPlan(visioDiagramPlan);
   return {
     figureLayout,

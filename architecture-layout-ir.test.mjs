@@ -30,6 +30,28 @@ test("compiles generic branching multi-scale topology into layout semantics", ()
   assert.deepEqual(result.nodes.find((item) => item.id === "b").ports.inputs, ["x", "skip"]);
 });
 
+test("infers stage containers for complex container-free graphs", () => {
+  const result = compileArchitectureLayout({
+    nodes: [
+      { id: "input", family: "input", stage: 0, shape: { output: [80, 80, 3] } },
+      { id: "left", family: "conv", stage: 1, shape: { output: [80, 80, 32] } },
+      { id: "right", family: "conv", stage: 1, shape: { output: [40, 40, 64] } },
+      { id: "merge", family: "merge", stage: 2, shape: { output: [40, 40, 96] } },
+      { id: "small", family: "output", stage: 3, shape: { output: [80, 80, 32] } },
+      { id: "large", family: "output", stage: 3, shape: { output: [40, 40, 32] } },
+    ],
+    edges: [
+      { source: "input", target: "left" }, { source: "input", target: "right" },
+      { source: "left", target: "merge", type: "skip" }, { source: "right", target: "merge" },
+      { source: "merge", target: "small" }, { source: "merge", target: "large" },
+    ],
+  });
+  assert.equal(result.features.autoContainers, true);
+  assert.ok(result.containers.some((container) => container.id === "auto-root"));
+  assert.ok(result.containers.filter((container) => container.id.startsWith("auto-stage-")).length >= 2);
+  assert.ok(result.nodeAssignments.every((assignment) => assignment.containerId));
+});
+
 test("preserves explicit lanes and nested container ownership", () => {
   const result = compileArchitectureLayout({
     nodes: [

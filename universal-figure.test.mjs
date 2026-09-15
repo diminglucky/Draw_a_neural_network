@@ -228,6 +228,8 @@ test("layoutUniversalFigure preserves arbitrary internal topology inside a compo
   assert.equal(block.inner.edges.length, 3);
   assert.ok(block.inner.edges.some((edge) => edge.type === "residual"));
   assert.equal(layout.validation.ok, true);
+  assert.ok(block.w >= block.inner.bounds.w && block.h >= block.inner.bounds.h,
+    "compound frame must grow to contain its internal topology");
 });
 
 test("layoutUniversalFigure lays a long linear chain left-to-right on a single row", () => {
@@ -690,7 +692,8 @@ test("layoutUniversalFigure arranges an FPN detector into backbone/neck/head col
   // Same resolution shares a lane.
   assert.equal(byId.get("b3").y, byId.get("n2").y, "nodes at the same resolution must share a lane");
 
-  assert.equal(layout.validation.ok, true, "pyramid layout must not overlap or violate the artboard");
+  assert.equal(layout.validation.ok, true,
+    `pyramid layout must not overlap or violate the artboard: ${JSON.stringify({ validation: layout.validation, routingDiagnostics: layout.routingDiagnostics, routes: layout.edges.filter((edge) => layout.validation.routeIntersections.some((hit) => hit.edgeId === edge.id)).map((edge) => ({ id: edge.id, route: edge.route })) })}`);
 });
 
 test("layoutUniversalFigure arranges a U-Net into encoder/bottleneck/decoder columns", () => {
@@ -735,7 +738,8 @@ test("layoutUniversalFigure arranges a U-Net into encoder/bottleneck/decoder col
   assert.ok(byId.get("dec3").y < byId.get("bot").y, "decoder output (64) must sit above the bottleneck (8)");
   assert.equal(byId.get("enc1").y, byId.get("dec3").y, "skip-linked nodes at the same resolution share a lane");
 
-  assert.equal(layout.validation.ok, true, "U-Net layout must not overlap or violate the artboard");
+  assert.equal(layout.validation.ok, true,
+    `U-Net layout must not overlap or violate the artboard: ${JSON.stringify({ validation: layout.validation, routingDiagnostics: layout.routingDiagnostics, routes: layout.edges.filter((edge) => layout.validation.routeIntersections.some((hit) => hit.edgeId === edge.id)).map((edge) => ({ id: edge.id, route: edge.route })) })}`);
 });
 
 test("layoutUniversalFigure honors sizeOverrides for a family's default dimensions", () => {
@@ -986,4 +990,17 @@ test("generic sibling containers align inferred spatial lanes through hierarchic
   assert.deepEqual(byId.get("a").containerPath, ["root", "left"]);
   assert.deepEqual(byId.get("d").containerPath, ["root", "right"]);
   assert.equal(layout.edges.find((edge) => edge.id === "cross").route.kind, "cross-container");
+});
+
+test("automatic layout rejects connectors that cross unrelated nodes", () => {
+  const layout = layoutUniversalFigure({
+    nodes: [
+      { id: "a", family: "conv", stage: 0 },
+      { id: "blocker", family: "conv", stage: 1 },
+      { id: "b", family: "output", stage: 2 },
+    ],
+    edges: [{ id: "main", source: "a", target: "b", type: "signal" }],
+  });
+  assert.equal(layout.validation.ok, false);
+  assert.ok(layout.validation.routeIntersections.length > 0);
 });

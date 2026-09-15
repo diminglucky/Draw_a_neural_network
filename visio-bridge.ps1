@@ -196,12 +196,28 @@ function Set-ShapeStyle([object]$Shape, [object]$Spec, [double]$Scale) {
 
 function Set-PageLayout([object]$Page, [object]$Plan, [double]$Scale) {
   $artboard = $Plan.artboard
-  $widthUnits = 2260
-  $heightUnits = 1060
-  try { $widthUnits = [double]$artboard.x + [double]$artboard.width } catch {}
-  try { $heightUnits = [double]$artboard.y + [double]$artboard.height } catch {}
-  $pageWidth = [Math]::Max(11.0, ($widthUnits * $Scale) + 1.2)
-  $pageHeight = [Math]::Max(4.8, ($heightUnits * $Scale) + 0.45)
+  $maxX = 0.0
+  $maxY = 0.0
+  foreach ($shape in @($Plan.shapes)) {
+    try { $maxX = [Math]::Max($maxX, [double]$shape.x + [double]$shape.w) } catch {}
+    try { $maxY = [Math]::Max($maxY, [double]$shape.y + [double]$shape.h) } catch {}
+  }
+  foreach ($group in @($Plan.groups)) {
+    try { $maxX = [Math]::Max($maxX, [double]$group.bounds.x + [double]$group.bounds.w) } catch {}
+    try { $maxY = [Math]::Max($maxY, [double]$group.bounds.y + [double]$group.bounds.h) } catch {}
+  }
+  foreach ($connector in @($Plan.connectors)) {
+    foreach ($point in @($connector.points)) {
+      try { $maxX = [Math]::Max($maxX, [double]$point.x) } catch {}
+      try { $maxY = [Math]::Max($maxY, [double]$point.y) } catch {}
+    }
+  }
+  if ($maxX -le 0 -or $maxY -le 0) {
+    try { $maxX = [double]$artboard.x + [double]$artboard.width } catch { $maxX = 2260 }
+    try { $maxY = [double]$artboard.y + [double]$artboard.height } catch { $maxY = 1060 }
+  }
+  $pageWidth = [Math]::Max(6.0, ($maxX * $Scale) + 0.8)
+  $pageHeight = [Math]::Max(4.8, ($maxY * $Scale) + 1.25)
   $culture = [Globalization.CultureInfo]::InvariantCulture
   $Page.PageSheet.CellsU("PageWidth").FormulaU = ($pageWidth.ToString("0.###", $culture) + " in")
   $Page.PageSheet.CellsU("PageHeight").FormulaU = ($pageHeight.ToString("0.###", $culture) + " in")
@@ -223,7 +239,7 @@ function Draw-FigureHeader([object]$Page, [object]$Plan, [double]$PageWidth, [do
     Set-ShapeData $titleShape "visualRole" "figure-title"
   }
   if (-not [string]::IsNullOrWhiteSpace($subtitle)) {
-    $subtitleShape = $Page.DrawRectangle(0.8, $PageHeight - 0.85, $PageWidth - 0.8, $PageHeight - 0.58)
+    $subtitleShape = $Page.DrawRectangle(0.8, $PageHeight - 0.95, $PageWidth - 0.8, $PageHeight - 0.65)
     $subtitleShape.Text = $subtitle
     $subtitleShape.CellsU("FillPattern").FormulaU = "0"
     $subtitleShape.CellsU("LinePattern").FormulaU = "0"
@@ -463,19 +479,38 @@ function Draw-FeaturePlane([object]$Page, [object]$Spec, [double]$X, [double]$Y,
 }
 
 function Draw-ImageInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
   $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
   Set-ShapeStyle $shape $Spec $Scale
   $shape.CellsU("LineWeight").FormulaU = "0.016 in"
-  $count = 4
-  try { if ([int]$Spec.shapeData.channelCount -gt 0) { $count = [Math]::Min(4, [int]$Spec.shapeData.channelCount) } } catch {}
-  for ($index = 1; $index -lt $count; $index += 1) {
-    $xLine = $X + ($W * $index / $count)
-    $line = $Page.DrawLine($xLine, $Y, $xLine, $Y + $H)
-    $line.CellsU("LineColor").FormulaU = Get-RgbFormula "#6E91AA"
-    $line.CellsU("LineWeight").FormulaU = "0.006 in"
-    Set-PlanData $line $Spec.shapeData
+  Set-NativeShapeIdentity $shape $Spec.id
+  $created.Add($shape) | Out-Null
+  $inset = [Math]::Max(0.035, [Math]::Min($W, $H) * 0.08)
+  $viewport = $Page.DrawRectangle($X + $inset, $Y + $inset, $X + $W - $inset, $Y + $H - $inset)
+  $viewport.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#F7FAFC"
+  $viewport.CellsU("FillBkgnd").FormulaU = Get-RgbFormula "#F7FAFC"
+  $viewport.CellsU("LineColor").FormulaU = Get-RgbFormula "#9BB0BF"
+  $viewport.CellsU("LineWeight").FormulaU = "0.006 in"
+  $viewport.Text = ""
+  Set-PlanData $viewport $Spec.shapeData
+  $created.Add($viewport) | Out-Null
+  $channelCount = 0
+  try { $channelCount = [int]$Spec.shapeData.channelCount } catch {}
+  if ($channelCount -gt 0) {
+    $badgeW = [Math]::Max(0.18, [Math]::Min(0.34, $W * 0.28))
+    $badgeH = [Math]::Max(0.11, [Math]::Min(0.18, $H * 0.18))
+    $badge = $Page.DrawOval($X + $W - $badgeW - ($inset * 0.35), $Y + $H - $badgeH - ($inset * 0.35), $X + $W - ($inset * 0.35), $Y + $H - ($inset * 0.35))
+    $badge.Text = "$channelCount ch"
+    $badge.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#E8F0F5"
+    $badge.CellsU("LineColor").FormulaU = Get-RgbFormula "#6E91AA"
+    $badge.CellsU("LineWeight").FormulaU = "0.006 in"
+    $badge.CellsU("Char.Size").FormulaU = "6 pt"
+    $badge.CellsU("Para.HorzAlign").FormulaU = "1"
+    $badge.CellsU("VerticalAlign").FormulaU = "1"
+    Set-PlanData $badge $Spec.shapeData
+    $created.Add($badge) | Out-Null
   }
-  return @($shape)
+  return $created.ToArray()
 }
 
 function Draw-SequenceInput([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
@@ -871,6 +906,12 @@ function Draw-CompoundModule([object]$Page, [object]$Spec, [double]$X, [double]$
   return @($frame)
 }
 
+function Draw-StructuredModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale, [string]$Pattern) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($shape in @(Draw-CompoundModule $Page $Spec $X $Y $W $H $Scale)) { $created.Add($shape) | Out-Null }
+  return $created.ToArray()
+}
+
 function Draw-GroupContainer([object]$Page, [object]$Group, [double]$Scale) {
   if ($null -eq $Group.bounds) { return @() }
   $x = [double]([double]$Group.bounds.x * [double]$Scale)
@@ -1093,11 +1134,20 @@ function Draw-MergeAddShape([object]$Page, [object]$Spec, [double]$X, [double]$Y
 
 function Draw-MergeConcatShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
-  Set-ShapeStyle $shape $Spec $Scale
+  $glyphSpec = [pscustomobject]@{ label = "||"; subtitle = ""; fill = $Spec.fill; line = $Spec.line; shapeKind = $Spec.shapeKind; visualRole = $Spec.visualRole; styleProfile = $Spec.styleProfile; shapeData = $Spec.shapeData; labelOutside = $false }
+  Set-ShapeStyle $shape $glyphSpec $Scale
   Set-NativeShapeIdentity $shape $Spec.id
-  if ([string]::IsNullOrWhiteSpace((Get-PlanString $Spec.label))) { $shape.Text = "||" }
+  $shape.Text = "||"
+  $shape.CellsU("Char.Size").FormulaU = "9 pt"
   $shape.CellsU("Char.Style").FormulaU = "1"
-  return @($shape)
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $created.Add($shape) | Out-Null
+  $label = Get-PlanString $Spec.label
+  if (-not [string]::IsNullOrWhiteSpace($label) -and $label -notmatch '^\|\|$') {
+    $caption = Draw-TextAnnotation $Page $label ($X - ($W * 0.35)) ($Y + $H + 0.03) ($W * 1.7) 0.16 "6 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "merge-caption"
+    if ($null -ne $caption) { $created.Add($caption) | Out-Null }
+  }
+  return $created.ToArray()
 }
 
 function Draw-SplitShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
@@ -1108,7 +1158,8 @@ function Draw-SplitShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [
     $X, $Y
   )
   $shape = $Page.DrawPolyline($points, 0)
-  Set-ShapeStyle $shape $Spec $Scale
+  $glyphSpec = [pscustomobject]@{ label = ""; subtitle = ""; fill = $Spec.fill; line = $Spec.line; shapeKind = $Spec.shapeKind; visualRole = $Spec.visualRole; styleProfile = $Spec.styleProfile; shapeData = $Spec.shapeData; labelOutside = $false }
+  Set-ShapeStyle $shape $glyphSpec $Scale
   Set-NativeShapeIdentity $shape $Spec.id
   return @($shape)
 }
@@ -1254,11 +1305,31 @@ function Draw-Legend([object]$Page, [object]$Plan, [double]$PageWidth, [double]$
   return $created.ToArray()
 }
 
+function Draw-ScenePrimitive([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $form = (Get-PlanString $Spec.sceneForm).ToLowerInvariant()
+  if ($form -eq "plane" -or $form -eq "volume") { return @(Draw-FeaturePlane $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "stack") { return @(Draw-FeatureMapStack $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "band") { return @(Draw-PublicationBlock $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "wedge") { return @(Draw-DownsampleFrustum $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "glyph") {
+    $tags = (Get-PlanString $Spec.shapeData.semanticTags).ToLowerInvariant()
+    if ($tags -match "merge") { return @(Draw-MergeAddShape $Page $Spec $X $Y $W $H $Scale) }
+    return @(Draw-OperatorGlyph $Page $Spec $X $Y $W $H $Scale)
+  }
+  if ($form -eq "cell") { return @(Draw-RecurrentInstance $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "strip") { return @(Draw-SequenceInput $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "callout") { return @(Draw-UnresolvedModule $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "text") { return @(Draw-AnnotationShape $Page $Spec $X $Y $W $H $Scale) }
+  throw "Unsupported Scene primitive form: $form"
+}
+
 function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   $x = [double]([double]$Spec.x * [double]$Scale)
   $y = [double]([double]$Spec.y * [double]$Scale)
   $w = [double]([double]$Spec.w * [double]$Scale)
   $h = [double]([double]$Spec.h * [double]$Scale)
+  $sceneForm = Get-PlanString $Spec.sceneForm
+  if (-not [string]::IsNullOrWhiteSpace($sceneForm)) { return @(Draw-ScenePrimitive $Page $Spec $x $y $w $h $Scale) }
   $kind = Get-PlanString $Spec.shapeKind
   if ($kind -eq "publication-block") { return @(Draw-PublicationBlock $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "named-module") { return @(Draw-NamedModule $Page $Spec $x $y $w $h $Scale) }
@@ -1287,7 +1358,11 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   if ($visualRole -eq "legacy-publication-tensor") { return @(Draw-FeatureMapStack $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "feature-map-stage" -or $kind -match "volume|tensor") { return @(Draw-FeaturePlane $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "recurrent-instance" -or $kind -eq "recurrent-instance") { return @(Draw-RecurrentInstance $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "compound-module" -or $kind -eq "compound") { return @(Draw-CompoundModule $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "compound-module" -or $kind -eq "compound") {
+    $pattern = Get-PlanString $Spec.shapeData.modulePattern
+    if ([string]::IsNullOrWhiteSpace($pattern)) { $pattern = "opaque" }
+    return @(Draw-StructuredModule $Page $Spec $x $y $w $h $Scale $pattern)
+  }
   if ($visualRole -eq "unresolved-module") { return @(Draw-UnresolvedModule $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "operator-symbol") {
     $shape = $Page.DrawOval($x, $y, $x + $w, $y + $h)
@@ -1514,19 +1589,23 @@ if (-not [string]::IsNullOrWhiteSpace([string]$plan.previewPath)) {
   }
 }
 
-# Persisted-document acceptance: release the writing session and reopen the
-# saved .vsdx before performing the independent Shape Data/readback pass.
-$reopenedVisio = New-Object -ComObject Visio.Application
-try {
-  $doc.Close()
-  $doc = $reopenedVisio.Documents.Open([string]$plan.documentPath)
-  $page = $doc.Pages.ItemU([string]$plan.pageName)
-} catch {
-  try { $reopenedVisio.Quit() } catch {}
-  throw "The Visio document was saved but could not be reopened for independent readback: $($_.Exception.Message)"
+$readbackSession = "current-document"
+$reopened = $false
+if ([string]$plan.readbackMode -eq "reopen") {
+  # Opt-in persisted-document acceptance: release the writing session and
+  # reopen the saved VSDX in a separate COM application before readback.
+  $reopenedVisio = New-Object -ComObject Visio.Application
+  try {
+    $doc.Close()
+    $doc = $reopenedVisio.Documents.Open([string]$plan.documentPath)
+    $page = $doc.Pages.ItemU([string]$plan.pageName)
+  } catch {
+    try { $reopenedVisio.Quit() } catch {}
+    throw "The Visio document was saved but could not be reopened for independent readback: $($_.Exception.Message)"
+  }
+  $readbackSession = "reopened-document"
+  $reopened = $true
 }
-$readbackSession = "reopened-document"
-$reopened = $true
 $doc.Application.Visible = $true
 $windowActivated = $false
 foreach ($window in $doc.Application.Windows) {

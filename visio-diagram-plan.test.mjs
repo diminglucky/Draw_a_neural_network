@@ -4,6 +4,16 @@ import test from "node:test";
 import { assertVisioDiagramPlan, createVisioDiagramPlan, validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
+import { deriveNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
+import { createProjectionMap } from "./neural-projection-map.mjs";
+import { compileSemanticScene } from "./semantic-neural-scene.mjs";
+import { layoutNeuralScene } from "./neural-scene-layout.mjs";
+
+function laidOutSceneFor(ir) {
+  const facts = deriveNeuralSemanticFacts(ir);
+  const projectionMap = createProjectionMap(ir, facts, { detail: "balanced" });
+  return layoutNeuralScene(compileSemanticScene(ir, facts, projectionMap));
+}
 
 function recurrentLoopIR() {
   return {
@@ -46,6 +56,45 @@ test("creates the sole Visio-native diagram contract without a renderer projecti
   assert.equal("projection" in plan, false);
   assert.equal(validateVisioDiagramPlan(plan).ok, true);
   assert.equal(assertVisioDiagramPlan(plan), plan);
+});
+
+test("embeds a laid-out neural scene as the Visio visual source of truth", () => {
+  const ir = {
+    version: "universal-neural-ir/v1",
+    nodes: [
+      { id: "input", family: "input", op: "Input" },
+      { id: "head", family: "output", op: "Detect", ports: { inputs: ["features"], outputs: ["detections"] } },
+    ],
+    edges: [{ id: "features", source: "input", target: "head", ports: { source: "out", target: "features" } }],
+  };
+  const scene = laidOutSceneFor(ir);
+  const plan = createVisioDiagramPlan({ ir, scene, geometry: layoutUniversalFigure(ir) });
+
+  assert.deepEqual(plan.scene, scene);
+  assert.notEqual(plan.scene, scene);
+  assert.equal(plan.scene.units, "layout-unit");
+  assert.ok(plan.nodes.length > 0, "compatibility node index remains available");
+  assert.ok(plan.edges.length > 0, "compatibility edge index remains available");
+  assert.equal(validateVisioDiagramPlan(plan).ok, true);
+});
+
+test("rejects malformed laid-out scenes at the Visio Diagram Plan boundary", () => {
+  const ir = {
+    nodes: [{ id: "input", family: "input", op: "Input" }, { id: "output", family: "output", op: "Output" }],
+    edges: [{ id: "flow", source: "input", target: "output" }],
+  };
+  const validPlan = createVisioDiagramPlan({ ir, scene: laidOutSceneFor(ir), geometry: layoutUniversalFigure(ir) });
+  const invalidUnits = structuredClone(validPlan);
+  invalidUnits.scene.units = "pixels";
+  assert.ok(validateVisioDiagramPlan(invalidUnits).issues.some((issue) => issue.code === "invalid-scene-units"));
+
+  const missingAnchors = structuredClone(validPlan);
+  delete missingAnchors.scene.primitives.find((primitive) => primitive.role === "body").anchors;
+  assert.ok(validateVisioDiagramPlan(missingAnchors).issues.some((issue) => issue.code === "missing-scene-body-anchors"));
+
+  const danglingConnector = structuredClone(validPlan);
+  danglingConnector.scene.connectors[0].targetPrimitiveId = "missing-body";
+  assert.ok(validateVisioDiagramPlan(danglingConnector).issues.some((issue) => issue.code === "unresolved-scene-topology"));
 });
 
 test("Visio Diagram Plan rejects the retired figure-plan version", () => {

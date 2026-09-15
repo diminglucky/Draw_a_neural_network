@@ -7,6 +7,7 @@ import { compileArchitectureLayout } from "./architecture-layout-ir.mjs";
 import { layoutVisioHierarchy } from "./visio-hierarchical-layout.mjs";
 import { projectVisioDetail } from "./visio-detail-projection.mjs";
 import { resolveVisioPorts, routeVisioConnectors } from "./visio-port-routing.mjs";
+import { compileModuleComposition, layoutModuleComposition } from "./module-composition-ir.mjs";
 
 const DEFAULT_ARTBOARD = Object.freeze({ x: 170, y: 160, width: 2260, height: 1060 });
 const PLAN_VERSION = "universal-publication-figure/v1";
@@ -72,6 +73,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
   const normalizedNodes = Array.isArray(ir.nodes) ? ir.nodes.map((node, index) => normalizeNode(node, index, sizes)) : [];
   const normalizedEdges = Array.isArray(ir.edges) ? ir.edges.map((edge, index) => normalizeEdge(edge, index)) : [];
   const usesArchitectureSemantics = Array.isArray(ir.containers)
+    || (Array.isArray(ir.groups) && ir.groups.length > 0)
     || Array.isArray(ir.lanes)
     || (Array.isArray(ir.nodes) && ir.nodes.some((node) => node.containerId || node.groupId || node.moduleId || node.laneId));
   const condensed = usesArchitectureSemantics || options.detail === "full"
@@ -79,7 +81,18 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
     : condenseLinearConvRuns(normalizedNodes, normalizedEdges);
   const sourceNodes = resolvePublicationGeometry(
     compileSemanticVisualNodes(condensed.nodes, condensed.edges),
-  );
+  ).map((node) => {
+    const inner = layoutInnerGraph(node, sizes);
+    if (inner.kind !== "topology") return node;
+    return {
+      ...node,
+      inner,
+      visualRole: node.visualRole === "named-module" ? "compound-module" : node.visualRole,
+      representation: node.visualRole === "named-module" ? "compound" : node.representation,
+      w: Math.max(node.w, inner.bounds.w + 40),
+      h: Math.max(node.h, inner.bounds.h + 36),
+    };
+  });
   const sourceEdges = condensed.edges;
   // Single placement model: every supported topology (linear chain, FPN/PAN
   // pyramid, generic stage DAG) projects nodes onto a column/row grid through
@@ -105,7 +118,7 @@ export function layoutUniversalFigure(ir = {}, options = {}) {
       w: visualWidth,
       stageIndex: stageIndexByStage.get(String(node.stage)) ?? 0,
       representation: representationFor(node),
-      inner: layoutInnerGraph(node, sizes),
+      inner: node.inner || layoutInnerGraph(node, sizes),
       containerId: usesArchitectureSemantics || (Array.isArray(ir.groups) && ir.groups.length > 0)
         ? architectureNodeField(architectureLayout, node.id, "containerId", node.containerId)
         : String(node.containerId || ""),
@@ -377,7 +390,11 @@ function hasUsableArchitectureLayout(layout, nodes) {
 // Container/lane placement is intentionally model-agnostic. Containers provide
 // the horizontal reading order; lanes provide stable feature-map/semantic rows.
 function architecturePlacement(nodes, layout, artboard) {
-  if (layout.containerTree?.valid && layout.features?.explicitContainers) {
+  if (layout.containerTree?.valid && (
+    layout.features?.explicitContainers
+    || layout.features?.explicitGroups
+    || layout.features?.autoContainers
+  )) {
     const geometry = layoutVisioHierarchy(layout.containerTree, {
       nodes,
       origin: { x: artboard.x + 56, y: artboard.y + 70 },
@@ -1044,28 +1061,17 @@ function layoutInnerGraph(node, sizes = FAMILY_SIZE) {
       ? { kind: "unresolved", nodes: [], edges: [], message: "Internal topology requires evidence or runtime tracing." }
       : { kind: "semantic", nodes: [], edges: [] };
   }
-  const innerNodes = raw.nodes.map((child, index) => {
-    const family = String(child.family || child.type || "custom").toLowerCase();
-    const [w, h] = sizes[family] || sizes.default || [92, 54];
-    return {
-      ...child,
-      id: String(child.id || `${node.id}-inner-${index + 1}`),
-      family,
-      label: String(child.label || child.op || `Op ${index + 1}`),
-      subtitle: String(child.subtitle || ""),
-      x: Number.isFinite(child.x) ? child.x : 20 + index * (w + 18),
-      y: Number.isFinite(child.y) ? child.y : 82,
-      w: Number.isFinite(child.w) ? child.w : w,
-      h: Number.isFinite(child.h) ? child.h : h,
-    };
+  const composition = compileModuleComposition({
+    ...node,
+    attributes: { ...(node.attributes || {}), internalGraph: raw },
   });
-  const ids = new Set(innerNodes.map((child) => child.id));
-  const innerEdges = Array.isArray(raw.edges)
-    ? raw.edges
-      .map((edge, index) => normalizeEdge(edge, index))
-      .filter((edge) => ids.has(edge.source) && ids.has(edge.target))
-    : [];
-  return { kind: "topology", nodes: innerNodes, edges: innerEdges };
+  const innerNodes = composition.nodes.map((child) => {
+    const family = String(child.family || "custom").toLowerCase();
+    const [defaultW, defaultH] = sizes[family] || sizes.default || [92, 54];
+    return { ...child, w: Number.isFinite(child.w) ? child.w : defaultW, h: Number.isFinite(child.h) ? child.h : defaultH };
+  });
+  const laidOut = layoutModuleComposition({ ...composition, nodes: innerNodes });
+  return { kind: "topology", pattern: laidOut.pattern, nodes: laidOut.nodes, edges: laidOut.edges, bounds: laidOut.bounds, ports: laidOut.ports };
 }
 
 function buildRecurrentFigureLayout(sourceNodes, positionedNodes, sourceEdges, artboard) {
@@ -1374,10 +1380,9 @@ function validateFigureLayout(nodes, edges, artboard) {
     return hits.map((nodeId) => ({ edgeId: String(edge.id || ""), nodeId }));
   });
   return {
-    // Route diagnostics are reported for consumers and visual QA, but legacy
-    // layouts may intentionally terminate on a junction boundary; node and
-    // artboard geometry remain the hard validation contract.
-    ok: overlaps.length === 0 && invalidEdges.length === 0 && boundaryViolations.length === 0,
+    // A routed connector crossing an unrelated node is a geometry failure.
+    ok: overlaps.length === 0 && invalidEdges.length === 0
+      && boundaryViolations.length === 0 && routeIntersections.length === 0,
     summary: {
       nodeCount: nodes.length,
       edgeCount: edges.length,
@@ -1413,20 +1418,26 @@ function segmentIntersectsInterior(start, end, node) {
   const minY = node.y + 1;
   const maxY = node.y + node.h - 1;
   if (maxX <= minX || maxY <= minY) return false;
-  if (start.x === end.x) {
-    return start.x > minX && start.x < maxX
-      && Math.max(Math.min(start.y, end.y), minY) < Math.min(Math.max(start.y, end.y), maxY);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let entry = 0;
+  let exit = 1;
+  for (const [p, q] of [
+    [-dx, start.x - minX],
+    [dx, maxX - start.x],
+    [-dy, start.y - minY],
+    [dy, maxY - start.y],
+  ]) {
+    if (p === 0) {
+      if (q <= 0) return false;
+      continue;
+    }
+    const ratio = q / p;
+    if (p < 0) entry = Math.max(entry, ratio);
+    else exit = Math.min(exit, ratio);
+    if (entry >= exit) return false;
   }
-  if (start.y === end.y) {
-    return start.y > minY && start.y < maxY
-      && Math.max(Math.min(start.x, end.x), minX) < Math.min(Math.max(start.x, end.x), maxX);
-  }
-  const horizontalAt = (y) => start.y + ((end.y - start.y) * (y - minY)) / (end.y - start.y);
-  const verticalAt = (x) => start.x + ((end.x - start.x) * (x - minX)) / (end.x - start.x);
-  return (horizontalAt(minY) > minX && horizontalAt(minY) < maxX)
-    || (horizontalAt(maxY) > minX && horizontalAt(maxY) < maxX)
-    || (verticalAt(minX) > minY && verticalAt(minX) < maxY)
-    || (verticalAt(maxX) > minY && verticalAt(maxX) < maxY);
+  return exit > 0 && entry < 1;
 }
 
 function intersects(left, right) {

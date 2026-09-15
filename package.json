@@ -23,8 +23,14 @@
       "!*.md"
     ],
     "extraResources": [
-      { "from": "visio-bridge.ps1", "to": "visio-bridge.ps1" },
-      { "from": "visio-create-empty.ps1", "to": "visio-create-empty.ps1" }
+      {
+        "from": "visio-bridge.ps1",
+        "to": "visio-bridge.ps1"
+      },
+      {
+        "from": "visio-create-empty.ps1",
+        "to": "visio-create-empty.ps1"
+      }
     ],
     "win": {
       "target": [
@@ -39,5 +45,12 @@
   "devDependencies": {
     "electron": "^44.2.0",
     "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "onnx-proto": "^8.0.1",
+    "yaml": "^2.9.1"
+  },
+  "overrides": {
+    "protobufjs": "8.8.0"
   }
 }

@@ -1,184 +1,278 @@
-# Visio Neural Scene Compiler Rebuild
+# Universal Neural Architecture to Visio Compiler
 
-## Status
+## Status and Contract
 
-Approved direction. This design supersedes the box-oriented rendering portions
-of the 2026-09-14 Visio architecture and semantic-shape designs.
+Draft for review. This replaces the box-oriented rendering direction in the
+2026-09-14 documents. It does not authorize deletion until migration gates pass.
 
-## Goal
+The product creates native, editable Microsoft Visio figures. Its support
+contract is:
 
-Rebuild the drawing pipeline as a model-agnostic compiler from grounded neural
-network evidence to native, editable Microsoft Visio publication figures. The
-renderer must express tensor geometry, scale, repetition, branching, fusion,
-state and hierarchy instead of drawing every operator as a labeled flowchart
-card.
+> Any architecture representable in Universal IR can be projected to Visio
+> without selecting a template from its model name. Known topology with unknown
+> operators uses generic primitives; unknown internals remain opaque; uncertain
+> topology blocks rendering and requests confirmation.
 
-No production rule may select geometry from an architecture or module name.
+## Principles
 
-## Retained Boundaries
+1. Acquire evidence before drawing.
+2. Universal IR is the sole source of network facts.
+3. Semantic facts are immutable derived indexes, not a second graph of record.
+4. Local visual rules compose facts; architecture renderers are forbidden.
+5. Layout solves constraints and never recognizes model names.
+6. The Visio bridge mechanically projects laid-out primitives.
+7. Every collapse and visible relation remains traceable to source evidence.
+8. Real VSDX readback and PNG review are mandatory acceptance evidence.
 
-- Universal IR normalization, evidence, confidence and fail-closed validation.
-- Source, prompt and image analysis through Agent Run.
-- Shape inference where supported by explicit operator evidence.
-- Existing-document Visio COM execution, save-close-reopen and readback.
-- Stable source node, edge, port, container and lane identities.
-- The browser remains a Visio control surface and never becomes a renderer.
-
-## Removed Production Paths
-
-- `universal-publication-figure/v1` as a renderer-facing contract.
-- `publication-block` as the default processing-node representation.
-- Uniform hexagonal or rectangular cards containing operator and tensor text.
-- Large dashed compound frames as the default module representation.
-- Automatic expansion of every internal operator into equal-weight cards.
-- Legacy PublicationTensor and canvas/SVG compatibility dispatches that are no
-  longer called by the Visio-only product.
-- Renderer decisions based on YOLO, C2f, SPPF, ResNet, Transformer or any other
-  display name.
-- Tests that protect retired visual output instead of semantic behavior.
-
-Legacy persisted Agent Run snapshots may be upgraded at the persistence
-boundary, but retired render contracts are not accepted by production drawing.
-
-## New Compiler Pipeline
+## Pipeline
 
 ```text
-Universal IR
-  -> Neural Semantic Graph
-  -> Visual Grammar Selection
-  -> Visio Scene IR
-  -> Constraint Layout
-  -> Native Visio Projection
-  -> VSDX Readback + PNG Visual Acceptance
+Request / source / repository / config / artifact / image
+  -> Architecture Resolver -> Trusted Acquisition
+  -> Static Analysis or optional Isolated Trace
+  -> Evidence Package -> Universal IR -> Derived Semantic Facts
+  -> Projection Mapping -> Composable Visual Rules
+  -> Semantic Scene IR -> Figure Intent and Profiles
+  -> Constraint Layout -> Laid-out Scene IR
+  -> Visio Diagram Plan v1 -> Visio COM -> Readback and PNG QA
 ```
 
-### Neural Semantic Graph
+## Architecture Resolution
 
-This layer derives renderer-independent facts only:
+Accepted inputs are `ir`, `source`, `repository`, `config`, `artifact`, `image`
+and `prompt`. Structural authority is ranked:
 
-- tensor rank, spatial dimensions and channels;
-- resolution transitions and scale hierarchy;
-- main paths, branches, skips, feedback and cross-scale transfers;
-- repeats and homogeneous operator sequences;
-- merge semantics: add, concat, gate and selection;
-- compound boundaries and evidenced internal topology;
-- input/output modality and recurrent state ports.
+1. explicit Universal IR;
+2. declarative graph artifact such as ONNX;
+3. user source and configuration;
+4. official repository pinned to an immutable revision;
+5. official documentation or paper;
+6. model name or architecture image.
 
-Unknown facts stay unknown and never create decorative structure.
+Lower-ranked evidence may explain but never silently override stronger
+topology. A request such as `YOLO` produces candidates. A precise request such
+as `Ultralytics YOLOv8n` must resolve repository, revision, configuration and
+entry point before extraction. An alias catalog stores source locators only,
+never node lists, layouts or visual templates.
 
-### Visual Grammar Selection
+Repository content is untrusted and read-only. Acquisition records URL,
+revision, path, SHA-256, license and retrieval time. Remote Python is not
+executed in the Agent process. Pickle-backed `.pt/.pth` files are not loaded by
+default. ONNX and declarative graphs are parsed directly.
 
-Selection uses graph evidence, not model names. Supported grammars are:
+Optional runtime tracing requires a disposable process, no network, fixed
+dependencies, resource/time limits, synthetic input, no inherited secrets and
+structured graph output only. Prefer `torch.export`, FX or TorchScript over
+arbitrary module execution.
 
-- `tensor-flow`: convolutional, residual and encoder-decoder structures;
-- `multi-scale-flow`: pyramids, bidirectional fusion and multi-head output;
-- `token-flow`: embedding, attention and feed-forward token transformations;
-- `state-flow`: recurrent, iterative and memory-state structures;
-- `dual-stream`: generator/discriminator, Siamese and multimodal streams;
-- `graph-flow`: irregular message-passing and generic complex DAGs.
+## Evidence Package
 
-A figure may compose grammars by region. For example, a detector can use
-`tensor-flow` in its backbone and `multi-scale-flow` in its neck.
+```js
+{
+  version: "architecture-evidence-package/v1",
+  request: { kind, requestedIdentity },
+  identity: { resolvedName, provider, repository, revision, configPath, entryPoint },
+  sources: [{ id, kind, uri, revision, path, sha256, license, authority }],
+  claims: [{ id, subjectId, predicate, value, sourceIds, confidence, status }],
+  graph: { nodes, edges, ports, tensors, containers },
+  diagnostics: [],
+  unresolvedQuestions: []
+}
+```
 
-### Visio Scene IR
+`status` is `grounded`, `inferred`, `unresolved` or `contradicted`. Before
+rendering, the package must identify the exact architecture revision, defining
+files, grounded modules and edges, tensor-shape provenance and unresolved
+conflicts. Conflicts affecting topology, ports or shapes block rendering.
 
-Scene IR is the sole renderer contract. Its primitives are visual marks rather
-than network nodes:
+## Universal IR and Fallback
 
-- `tensor-plane`, `tensor-volume`, `tensor-stack`;
-- `operator-band`, `transition-wedge`, `sampling-marker`;
-- `merge-add`, `merge-concat`, `split`, `gate`;
-- `repeat-span`, `stage-caption`, `dimension-label`;
-- `module-callout`, `state-cell`, `token-strip`, `output-head`;
-- semantic connectors with explicit anchors and routed points.
+Universal IR retains stable node/edge/port identities, attributes, tensor
+shapes, hierarchy, repetition, internal graphs, evidence and confidence. It
+contains no Visio coordinates, colors, profile or model-name drawing hint.
 
-Every primitive carries source identities for native Visio readback.
+- Known topology, unknown operator semantics: generic operator.
+- Known topology, unknown tensor shape: unscaled data primitive.
+- Known outer topology, unknown internals: opaque module.
+- Uncertain node or edge existence: block and request confirmation.
 
-## Detail Policy
+## Derived Semantic Facts
 
-The compiler uses evidence-driven semantic zoom:
+```js
+{
+  version: "neural-semantic-facts/v1",
+  irVersion,
+  nodeFacts: { [nodeId]: NodeFacts },
+  edgeFacts: { [edgeId]: EdgeFacts },
+  regionFacts: { [regionId]: RegionFacts },
+  diagnostics: []
+}
+```
 
-1. The main figure shows tensor flow, scale changes, branches and outputs.
-2. Consecutive Conv/Norm/Activation operations become a tensor plus thin
-   operator bands or a repeat span.
-3. A compound is expanded only when its internal topology is evidenced and
-   structurally important. Expansion is a callout or an inline composition,
-   never a large box full of equal cards.
-4. Opaque compounds remain a compact labeled module with explicit unresolved
-   Shape Data.
+Independent dimensions are: data domain (`spatial`, `sequence`, `vector`,
+`set`, `graph`, `state`, `scalar`, `unknown`), operation effect (`preserve`,
+`project`, `reduce`, `expand`, `reshape`, `aggregate`, `route`, `unknown`),
+topology facts (degree, branch, merge, bypass, cycle, conditional, cross-scale),
+structural role and certainty. Each property carries evidence and confidence.
+Display labels are never classifier features.
 
-## Geometry Rules
+## Projection Mapping
 
-- Spatial dimensions control plane height with bounded logarithmic scaling.
-- Channel count controls depth or stack thickness with bounded logarithmic
-  scaling.
-- Downsampling visibly reduces plane size; upsampling increases it.
-- Same-scale tensors align to one baseline across sibling regions.
-- Repeated homogeneous operations share one visual body and an `xN` span.
-- Residual routes use a dedicated exterior corridor and terminate at an add
-  glyph.
-- Cross-scale routes use short orthogonal corridors and never cross unrelated
-  tensor bodies.
-- Containers use alignment, whitespace and captions by default; borders appear
-  only when containment would otherwise be ambiguous.
-- Labels remain outside dense geometry and cannot resize structural primitives.
+```js
+{
+  version: "neural-projection-map/v1",
+  projections: [{
+    id, kind, orderedNodeIds, internalEdgeIds, visibleEdgeIds, hiddenEdgeIds,
+    entryPorts, exitPorts, reason, evidenceIds
+  }],
+  nodeToProjection: {}, edgeToProjection: {}, diagnostics: []
+}
+```
 
-## Visio Projection
+`kind` is direct, sequence-collapse, repeat-collapse, opaque-module,
+inline-expansion or callout-expansion. Every Universal IR node and edge must be
+direct, visible, internal or explicitly hidden. External edges are remapped to
+entry/exit ports. Expansion requires grounded internal branch, merge, bypass,
+state, scale transition or another relation a single primitive cannot preserve.
 
-Each Scene IR primitive maps to a native Visio group made from editable
-rectangles, polylines, ovals and text shapes. ShapeSheet data records:
+## Visual Rule Model
 
-- scene primitive ID and kind;
-- source node and edge IDs;
-- tensor dimensions and scale lane;
-- module and container ownership;
-- route class and endpoint port IDs;
-- grammar and detail policy.
+There are no YOLO, ResNet, U-Net, Transformer, GAN or RNN renderers. The first
+implementation is a static JavaScript rule registry, not a DSL:
 
-The bridge does not infer semantics and does not inspect labels.
+```js
+{ id, phase, priority, match: context => boolean, emit: context => primitives }
+```
 
-## Migration Sequence
+Phases are `body`, `structure`, `relation`, `decoration`, then `normalize`.
+Exactly one primary body is allowed per projection. Additive decorations may
+compose. Equal-priority exclusive matches are errors. Rules cannot call Visio
+or emit coordinates.
 
-1. Add Neural Semantic Graph tests and compiler.
-2. Add `visio-scene-ir/v1` schema and validation.
-3. Compile tensor-flow and multi-scale-flow to Scene IR.
-4. Implement native Visio primitives and remove publication-block dispatch.
-5. Add token-flow, state-flow, dual-stream and graph-flow.
-6. Move Agent Run and Visio Diagram Plan to Scene IR.
-7. Delete retired renderer code and compatibility tests after all callers move.
-8. Update architecture documentation and examples.
+## Scene Contracts
 
-Deletion occurs only after import/reference scans prove a path unreachable.
+Semantic Scene IR is layout-free:
 
-## Acceptance Matrix
+```js
+{
+  version: "semantic-neural-scene/v1",
+  primitives: [{
+    id, category, form, semanticTags, sourceNodeIds, sourceEdgeIds,
+    projectionId, ports, labels, data, derivedFrom
+  }],
+  relations: [{ id, sourcePrimitiveId, targetPrimitiveId,
+    sourcePortId, targetPortId, relationTags, sourceEdgeIds }],
+  constraints: [], diagnostics: []
+}
+```
 
-Structural fixtures must cover:
+Categories are data, operator, structure, annotation and boundary. Forms are a
+small native algebra: plane, volume, stack, band, wedge, glyph, cell, strip,
+text and callout. Tags are extensible. Decorations without source IDs require
+`derivedFrom`; fabricated identities are forbidden.
 
-- residual CNN and repeated residual stages;
-- U-Net encoder-decoder with symmetric skips;
-- FPN/PAN detector with three or more scales and output heads;
-- Transformer with attention and residual normalization paths;
-- recurrent cell with sequence and state ports;
-- GAN or Siamese dual stream;
-- irregular graph/message-passing network;
-- an opaque unknown compound that remains fail-closed.
+Laid-out Scene IR adds geometry only:
 
-For every fixture the gate requires:
+```js
+{
+  version: "laid-out-neural-scene/v1", units: "layout-unit",
+  primitives: [{ ...semanticPrimitive, bounds, anchors, zIndex }],
+  connectors: [{ ...semanticRelation, points, routeClass }],
+  groups: [{ id, parentId, primitiveIds, bounds, role }],
+  page: { x, y, width, height }, diagnostics: []
+}
+```
 
-- deterministic Scene IR snapshot and geometric validation;
-- no model-name branch in compiler or bridge;
-- no unrelated node/label/connector overlap;
-- native connector glue and source identity readback;
-- save-close-reopen success for the VSDX;
-- PNG export at publication size;
-- automated pixel occupancy and whitespace checks;
-- explicit human visual review against the reference grammar before acceptance.
+The bridge is the only component converting layout units to inches.
 
-Unit-test success without real Visio and PNG review is insufficient.
+## Figure Intent and Profiles
+
+Figure intent is bounded: detail (`overview`, `balanced`, `full`), emphasized
+node/edge IDs, page profile, color mode, label density and preferred direction.
+It contains no coordinates or commands.
+
+Composable profiles (`spatial`, `sequence`, `stateful`, `multiscale`,
+`dual-stream`, `sparse-graph`) supply scaling, spacing, route and label
+preferences. They never emit topology and are not architecture templates.
+
+## Constraint Layout
+
+Hard constraints: valid containment and anchors, page bounds, no unrelated
+primitive overlap, no connector through unrelated bodies, and preserved DAG
+direction. Soft objectives, in order: minimize crossings, bends and length;
+align equal scales/streams; keep related marks close; preserve evidenced
+symmetry; minimize page area with consistent whitespace.
+
+Complexity budgets are 120/180/100 primary primitives/connectors/labels for
+overview, 300/500/260 for balanced and 800/1400/700 for full. Budget overflow
+triggers grounded collapse or callouts; it never silently drops branches,
+states, outputs or source coverage.
+
+## Visio Boundary
+
+`visio-diagram-plan/v1` remains the public Agent/service contract and embeds
+the laid-out scene as `scene`. Existing node/edge indexes remain for API,
+persistence and readback. Scene is the only visual source of truth when present;
+the bridge must not reconstruct shapes from plan nodes.
+
+Native projection is mechanical: a data volume becomes editable faces grouped
+as one unit; bands/wedges/glyphs/cells/outputs are native shapes; label intents
+become text shapes; relations become glued connectors using supplied points.
+Groups are allowed only for an editable tensor unit or intentional callout, not
+as generic module frames. Shape Data stores primitive, projection and source
+identities, tensor facts, ports, lanes and intent.
+
+## Migration and Deletion
+
+1. Freeze current plan/readback fixtures.
+2. Add resolver and Evidence Package for current inputs.
+3. Add repository/config/artifact adapters and provenance validation.
+4. Add semantic facts and projection mapping.
+5. Add both Scene IR validators.
+6. Add phased rules and constraint layout.
+7. Embed scene behind an internal feature flag.
+8. Validate generic spatial, branch, merge, repeat and cross-scale composition.
+9. Add sequence, state, dual-stream, conditional and graph properties using the
+   same primitives.
+10. Cut production projection over to scene.
+11. Delete only code proven unreachable.
+
+Deletion requires zero production references, no persisted/API dependency,
+equivalent or stronger identity/readback coverage, full tests, PowerShell parse,
+real VSDX save-close-reopen/readback and PNG review. `universal-figure.mjs` is
+not deleted by name; responsibilities are migrated first. No commit may change
+the public plan version while deleting its fallback.
+
+## Acceptance
+
+Fixtures test capabilities, not model templates: spatial sampling and repeats;
+branch/bypass/add; encoder-decoder scale symmetry; three-scale bidirectional
+fusion; sequence attention; recurrent state; peer streams; conditional sparse
+branches; irregular graph message passing; unknown operators; and uncertain
+topology blocking.
+
+Known architectures may be pinned external acceptance inputs, but assertions
+target provenance and structural facts. Every production fixture requires a
+deterministic Evidence Package, Universal IR, projection coverage, both scenes,
+zero hard-layout violations, no name-based conditions, connector glue, VSDX
+readback, PNG export and recorded human review.
+
+Overlap, identity loss, missing glue and connector/body intersection are hard
+failures. Occupancy, margins and label density are profile-specific warnings
+until calibrated from accepted fixtures.
+
+## Delivery Phases
+
+- Phase A Grounding: resolver, repository/config/artifact inputs and evidence.
+- Phase B Visual Core: facts, projection, rules, scenes and generic layout.
+- Phase C Composition: sequence, state, dual-stream, conditional and graph facts.
+- Phase D Cutover: production Visio scene projection and proven cleanup.
 
 ## Non-Goals
 
-- Exact reproduction of one paper or one architecture template.
-- Browser, SVG, canvas, TikZ or draw.io rendering.
-- Executing arbitrary user model code to discover hidden topology.
-- Inventing internal blocks from a familiar architecture name.
+- Named architecture topology or layout templates.
+- README images as authoritative graph definitions.
+- Arbitrary downloaded code execution in the Agent process.
+- Pixel-perfect paper reproduction without source and figure intent.
+- Browser or non-Visio rendering.
+- A user-programmable rule language in the first release.

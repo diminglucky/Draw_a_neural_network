@@ -4,6 +4,7 @@ export function layoutVisioHierarchy(tree = {}, options = {}) {
   const origin = options.origin || { x: 0, y: 0 };
   const suppliedNodes = Array.isArray(options.nodes) ? options.nodes : tree.nodes || [];
   const nodeById = Object.fromEntries(suppliedNodes.map((node) => [String(node.id), {
+    ...(tree.nodeById?.[String(node.id)] || {}),
     ...node,
     w: positive(node.w, 120),
     h: positive(node.h, 80),
@@ -72,6 +73,12 @@ export function layoutVisioHierarchy(tree = {}, options = {}) {
   }
 
   alignScopedLanes(tree, nodeById, containerById);
+  reflowHorizontalRoots(tree, nodeById, containerById, Number(origin.x || 0), positive(options.rootGap, 48));
+  const placedBoxes = [...Object.values(nodeById), ...Object.values(containerById)];
+  const minX = Math.min(Number(origin.x || 0), ...placedBoxes.map((box) => box.x));
+  const minY = Math.min(Number(origin.y || 0), ...placedBoxes.map((box) => box.y));
+  const maxX = Math.max(minX, ...placedBoxes.map((box) => box.x + box.w));
+  const maxY = Math.max(minY, ...placedBoxes.map((box) => box.y + box.h));
 
   return {
     version: "visio-hierarchical-geometry/v1",
@@ -80,12 +87,59 @@ export function layoutVisioHierarchy(tree = {}, options = {}) {
     containers: Object.values(containerById),
     containerById,
     bounds: {
-      x: Number(origin.x || 0),
-      y: Number(origin.y || 0),
-      w: rootLayout.w,
-      h: rootLayout.h,
+      x: minX,
+      y: minY,
+      w: maxX - minX,
+      h: maxY - minY,
     },
   };
+}
+
+function reflowHorizontalRoots(tree, nodeById, containerById, originX, gap) {
+  let cursor = originX;
+  for (const rootId of tree.rootIds || []) {
+    reflowHorizontalContainer(rootId, tree, nodeById, containerById);
+    const root = containerById[rootId];
+    if (!root) continue;
+    const delta = cursor - root.x;
+    if (delta) translateContainerTree(rootId, delta, nodeById, containerById, tree.containerById || {});
+    cursor += root.w + gap;
+  }
+}
+
+function reflowHorizontalContainer(containerId, tree, nodeById, containerById) {
+  const source = tree.containerById?.[containerId];
+  const container = containerById[containerId];
+  if (!source || !container) return;
+  for (const child of source.children || []) {
+    if (child.kind === "container") reflowHorizontalContainer(child.id, tree, nodeById, containerById);
+  }
+  if (source.direction !== "horizontal") return;
+  let cursor = container.contentBounds.x;
+  for (const child of source.children || []) {
+    const box = child.kind === "container" ? containerById[child.id] : nodeById[child.id];
+    if (!box) continue;
+    const delta = cursor - box.x;
+    if (delta) {
+      if (child.kind === "container") translateContainerTree(child.id, delta, nodeById, containerById, tree.containerById || {});
+      else box.x += delta;
+    }
+    cursor += box.w + positive(source.gap, 22);
+  }
+  const requiredWidth = Math.max(0, cursor - positive(source.gap, 22) - container.contentBounds.x);
+  container.w = Math.max(container.w, requiredWidth + container.padding * 2);
+  container.contentBounds.w = Math.max(0, container.w - container.padding * 2);
+}
+
+function translateContainerTree(containerId, deltaX, nodeById, containerById, sourceContainers) {
+  const container = containerById[containerId];
+  if (!container) return;
+  container.x += deltaX;
+  container.contentBounds.x += deltaX;
+  for (const child of sourceContainers[containerId]?.children || []) {
+    if (child.kind === "container") translateContainerTree(child.id, deltaX, nodeById, containerById, sourceContainers);
+    else if (nodeById[child.id]) nodeById[child.id].x += deltaX;
+  }
 }
 
 function alignScopedLanes(tree, nodeById, containerById) {
@@ -101,7 +155,49 @@ function alignScopedLanes(tree, nodeById, containerById) {
     groups.get(node.scopedLaneId).push({ node, branchId, scopeId });
   }
 
+  // Spatial scales are global presentation lanes. Operators at the same scale
+  // share a y baseline; repeated operators within one branch advance on x.
+  const spatial = new Map();
+  for (const node of Object.values(nodeById)) {
+    const laneId = String(node.scopedLaneId || "");
+    const lane = laneByScopedId[laneId];
+    if (!lane || String(lane.kind || "").toLowerCase() !== "spatial-scale") continue;
+    if (!spatial.has(laneId)) spatial.set(laneId, []);
+    spatial.get(laneId).push(node);
+  }
+  const spatialLanes = [...spatial.keys()].sort((left, right) => (
+    Number(laneByScopedId[left].order || 0) - Number(laneByScopedId[right].order || 0)
+      || left.localeCompare(right)
+  ));
+  const top = Math.min(...Object.values(nodeById).map((node) => node.y));
+  const maxHeight = Math.max(...Object.values(nodeById).map((node) => node.h));
+  const laneGap = Math.max(82, maxHeight + 22);
+  spatialLanes.forEach((laneId, laneIndex) => {
+    const baseline = top + laneIndex * laneGap;
+    const byBranch = new Map();
+    for (const node of spatial.get(laneId)) {
+      const branchId = node.containerPath.at(-1) || "root";
+      if (!byBranch.has(branchId)) byBranch.set(branchId, []);
+      byBranch.get(branchId).push(node);
+    }
+    for (const members of byBranch.values()) {
+      members.sort((left, right) => Number(left.stage || 0) - Number(right.stage || 0)
+        || Number(left.order || 0) - Number(right.order || 0) || left.id.localeCompare(right.id));
+      let cursor = Math.min(...members.map((node) => node.x));
+      for (const node of members) {
+        node.x = cursor;
+        node.y = baseline;
+        cursor += node.w + 18;
+        for (const containerId of [...node.containerPath].reverse()) {
+          growContainingContainers(node, "x", containerById);
+          growContainingContainers(node, "y", containerById);
+        }
+      }
+    }
+  });
+
   for (const [scopedLaneId, members] of groups) {
+    if (String(laneByScopedId[scopedLaneId]?.kind || "").toLowerCase() === "spatial-scale") continue;
     if (new Set(members.map((member) => member.branchId)).size < 2) continue;
     const lane = laneByScopedId[scopedLaneId] || {};
     const scope = tree.containerById?.[members[0].scopeId] || {};
@@ -130,6 +226,7 @@ function alignScopedLanes(tree, nodeById, containerById) {
 }
 
 function laneAxis(lane, scope) {
+  if (String(lane.kind || "").toLowerCase() === "spatial-scale") return "y";
   const declared = String(lane.axis || lane.orientation || "").toLowerCase();
   if (declared === "x" || declared === "vertical") return "x";
   if (declared === "y" || declared === "horizontal") return "y";

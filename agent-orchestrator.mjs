@@ -340,7 +340,7 @@ async function invoke(dependency, value, run) { return typeof dependency === "fu
 function containsUnresolved(value) {
   if (!value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(containsUnresolved);
-  if (value.status === "unresolved" || value.kind === "unresolved-operator" || value.code === "unresolved-operator") return true;
+  if (["unresolved", "needs_resolution"].includes(value.status) || value.kind === "unresolved-operator" || value.code === "unresolved-operator") return true;
   if (value.compoundKind === "unresolved") return true;
   if (value.family === "custom" && value.compoundKind !== "module") return true;
   if (["recurrent", "rnn", "lstm", "gru"].includes(String(value.family || "").toLowerCase())) {

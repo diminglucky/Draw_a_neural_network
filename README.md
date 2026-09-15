@@ -85,7 +85,11 @@ shape-inference.mjs            特征图尺寸静态传播（shape inference）
 evidence-graph.mjs             证据图
 universal-ir.mjs               通用 IR 归一化与校验
 semantic-visual-grammar.mjs    语义视觉角色与输入语法
-universal-figure.mjs           待替换的旧拓扑几何实现
+universal-figure.mjs           兼容编排门面：语义节点、层级布局、端口和路由
+architecture-layout-ir.mjs     容器、lane、归属和路由类别编译
+visio-layout-tree.mjs          层级容器树与归属校验
+visio-hierarchical-layout.mjs   容器测量、放置和 lane 对齐
+visio-port-routing.mjs          端口解析与避障连接器路由
 compound-module.mjs            复合模块内部布局（recurrent 展开 + internalGraph 通用拓扑）
 visio-diagram-plan.mjs         Visio 唯一绘图计划契约与校验
 visio-client.mjs               Visio 请求边界

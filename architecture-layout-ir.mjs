@@ -15,7 +15,7 @@ export function compileArchitectureLayout(ir = {}) {
     const lane = lanes.find((item) => item.key === key || item.id === key);
     if (lane) laneByNodeId.set(node.id, lane.id);
   }
-  const containers = compileContainers(ir, nodes);
+  const containers = compileContainers({ ...ir, containers: inferredContainers(ir, nodes, sourceEdges) }, nodes);
   const nodeAssignments = nodes.map((node) => ({
     nodeId: node.id,
     containerId: node.containerId || containerForNode(containers, node.id),
@@ -43,6 +43,8 @@ export function compileArchitectureLayout(ir = {}) {
     features: {
       ...compileFeatures(nodes, edges, containers, lanes),
       explicitContainers: Array.isArray(ir.containers) && ir.containers.length > 0,
+      explicitGroups: Array.isArray(ir.groups) && ir.groups.length > 0,
+      autoContainers: !Array.isArray(ir.containers) && !Array.isArray(ir.groups) && containers.length > 1,
     },
     containers,
     lanes,
@@ -52,6 +54,40 @@ export function compileArchitectureLayout(ir = {}) {
     constraints: compileConstraints(containers, lanes, nodeAssignments),
     containerTree,
   };
+}
+
+function inferredContainers(ir = {}, nodes = [], edges = []) {
+  if (Array.isArray(ir.containers) && ir.containers.length > 0) return ir.containers;
+  if (Array.isArray(ir.groups) && ir.groups.length > 0) return [];
+  const laneKeys = new Set(nodes.map(spatialLaneKey).filter(Boolean));
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, 0]));
+  for (const edge of edges) {
+    if (incoming.has(String(edge.target))) incoming.set(String(edge.target), incoming.get(String(edge.target)) + 1);
+    if (outgoing.has(String(edge.source))) outgoing.set(String(edge.source), outgoing.get(String(edge.source)) + 1);
+  }
+  const complex = laneKeys.size > 1
+    || [...incoming.values()].some((count) => count > 1)
+    || [...outgoing.values()].some((count) => count > 1)
+    || nodes.filter((node) => (outgoing.get(node.id) || 0) === 0).length > 1;
+  if (!complex || nodes.length < 4) return [];
+  const stages = [...new Set(nodes.map((node) => Number(node.stage)).filter(Number.isFinite))].sort((a, b) => a - b);
+  const bucketCount = Math.min(4, Math.max(2, Math.ceil(stages.length / 4)));
+  const buckets = Array.from({ length: bucketCount }, () => []);
+  nodes.forEach((node) => {
+    const stageIndex = Math.max(0, stages.indexOf(Number(node.stage)));
+    const bucket = Math.min(bucketCount - 1, Math.floor(stageIndex * bucketCount / Math.max(1, stages.length)));
+    buckets[bucket].push(node.id);
+  });
+  const stagesOut = buckets.filter((members) => members.length > 0).map((members, index) => ({
+    id: `auto-stage-${index + 1}`,
+    label: `Stage ${index + 1}`,
+    kind: "stage",
+    direction: "vertical",
+    children: members,
+    evidence: [{ kind: "topology-derived", source: "stage-depth" }],
+  }));
+  return [{ id: "auto-root", label: "Architecture", kind: "root", direction: "horizontal", children: stagesOut.map((stage) => stage.id), gap: 48, padding: 28 }, ...stagesOut.map((stage) => ({ ...stage, parentId: "auto-root" }))];
 }
 
 function containersForLayoutTree(containers, nodes, laneByNodeId) {

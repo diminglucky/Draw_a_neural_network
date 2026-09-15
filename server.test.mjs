@@ -90,6 +90,33 @@ test("default Agent Run reports plan_ready until Visio execution is configured",
   assert.deepEqual(payload.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract", "normalize", "plan"]);
 });
 
+test("Agent Run stops ambiguous architecture names at grounded resolver candidates", async () => {
+  const service = createAgentService({ dependencies: { resolver: { registry: [
+    { id: "one", names: ["Detector One", "detector"], repository: "https://example.test/model", revision: "a".repeat(40) },
+    { id: "two", names: ["Detector Two", "detector"], repository: "https://example.test/model", revision: "b".repeat(40) },
+  ] } } });
+  const { response, payload } = await requestAgent(service, "/api/agent-run", { kind: "prompt", prompt: "draw detector" });
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, "needs-confirmation");
+  assert.equal(payload.extract.version, "architecture-evidence-package/v1");
+  assert.equal(payload.extract.graph.nodes.length, 0);
+  assert.equal(payload.visioDiagramPlan, undefined);
+});
+
+test("Agent Run imports pinned generic configuration before planning", async () => {
+  const service = createAgentService();
+  const { response, payload } = await requestAgent(service, "/api/agent-run", {
+    kind: "config",
+    config: { pipeline: [[-1, 1, "InputAdapter", {}], [-1, 1, "NovelOperator", {}]] },
+    revision: "abc1234",
+    sourceId: "config-fixture",
+    metadata: { uri: "file:///model.yaml", authority: 4 },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.ir.nodes.map((node) => node.op), ["InputAdapter", "NovelOperator"]);
+  assert.equal(payload.extract.version, "architecture-evidence-package/v1");
+});
+
 test("Agent Run injects an existing Visio document into render and readback", async () => {
   const calls = [];
   const service = createAgentService({ dependencies: agentDependencies({
