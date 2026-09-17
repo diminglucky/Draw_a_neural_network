@@ -68,14 +68,68 @@ test("embeds a laid-out neural scene as the Visio visual source of truth", () =>
     edges: [{ id: "features", source: "input", target: "head", ports: { source: "out", target: "features" } }],
   };
   const scene = laidOutSceneFor(ir);
-  const plan = createVisioDiagramPlan({ ir, scene, geometry: layoutUniversalFigure(ir) });
+  const plan = createVisioDiagramPlan({ ir, scene });
 
   assert.deepEqual(plan.scene, scene);
   assert.notEqual(plan.scene, scene);
   assert.equal(plan.scene.units, "layout-unit");
   assert.ok(plan.nodes.length > 0, "compatibility node index remains available");
   assert.ok(plan.edges.length > 0, "compatibility edge index remains available");
+  assert.deepEqual(plan.nodes.map((node) => node.sourceNodeId), ["input", "head"]);
+  assert.deepEqual(plan.edges.map((edge) => edge.sourceEdgeId), ["features"]);
+  assert.deepEqual(
+    plan.nodes.map((node) => ({ x: node.x, y: node.y, w: node.w, h: node.h })),
+    scene.primitives
+      .filter((primitive) => primitive.role === "body")
+      .map((primitive) => ({
+        x: primitive.bounds.x,
+        y: primitive.bounds.y,
+        w: primitive.bounds.w,
+        h: primitive.bounds.h,
+      })),
+  );
   assert.equal(validateVisioDiagramPlan(plan).ok, true);
+});
+
+test("laid-out scene visual geometry takes precedence over migration geometry", () => {
+  const ir = {
+    nodes: [
+      { id: "input", family: "input", op: "Input" },
+      { id: "output", family: "output", op: "Output" },
+    ],
+    edges: [{ id: "flow", source: "input", target: "output" }],
+  };
+  const scene = laidOutSceneFor(ir);
+  scene.groups = [{ id: "scene-group", bounds: { x: 10, y: 20, w: 300, h: 180 } }];
+  const geometry = {
+    artboard: { x: 900, y: 900, width: 1, height: 1 },
+    nodes: [{ id: "geometry-only", sourceNodeId: "geometry-only", x: 900, y: 900, w: 1, h: 1 }],
+    edges: [{ id: "geometry-edge", sourceEdgeId: "geometry-edge", source: "geometry-only", target: "geometry-only" }],
+    groups: [{ id: "geometry-group", bounds: { x: 900, y: 900, w: 1, h: 1 } }],
+  };
+
+  const plan = createVisioDiagramPlan({ ir, scene, geometry });
+  const sceneBodies = scene.primitives.filter((primitive) => primitive.role === "body");
+
+  assert.deepEqual(plan.artboard, scene.page);
+  assert.deepEqual(plan.groups, scene.groups);
+  assert.deepEqual(
+    plan.nodes.map((node) => ({ sourceNodeId: node.sourceNodeId, x: node.x, y: node.y, w: node.w, h: node.h })),
+    sceneBodies.map((body) => ({
+      sourceNodeId: body.sourceNodeIds[0],
+      x: body.bounds.x,
+      y: body.bounds.y,
+      w: body.bounds.w,
+      h: body.bounds.h,
+    })),
+  );
+  assert.deepEqual(
+    plan.edges.map((edge) => ({ sourceEdgeId: edge.sourceEdgeId, route: edge.route })),
+    scene.connectors.map((connector) => ({
+      sourceEdgeId: connector.sourceEdgeIds[0],
+      route: { kind: "polyline", points: connector.points },
+    })),
+  );
 });
 
 test("rejects malformed laid-out scenes at the Visio Diagram Plan boundary", () => {

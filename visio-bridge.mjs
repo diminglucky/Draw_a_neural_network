@@ -39,7 +39,7 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
 
   const hasScene = layout.scene?.version === "laid-out-neural-scene/v1";
   if (hasScene) projectScene(layout.scene, registry, renderId);
-  else if (options.allowLegacyProjection !== false) planOuterShapes(layout, registry, renderId, grammarId);
+  else if (options.allowLegacyProjection === true) planOuterShapes(layout, registry, renderId, grammarId);
   else throw new Error("Visio Diagram Plan must contain a laid-out neural scene.");
   const connectors = hasScene
     ? projectSceneConnectors(layout.scene, registry, renderId)
@@ -394,7 +394,13 @@ export async function renderUniversalFigureToVisio(layout, options = {}) {
 }
 
 export function validateVisioReadback(plan = {}, readback = {}) {
-  const expected = [...new Set((plan.shapes || []).map((shape) => String(shape.shapeData?.sourceNodeId || "")).filter(Boolean))].sort();
+  const expected = [...new Set((plan.shapes || []).flatMap((shape) => {
+    const sourceNodeIds = shape.shapeData?.sourceNodeIds;
+    if (Array.isArray(sourceNodeIds) && sourceNodeIds.length > 0) {
+      return sourceNodeIds.map(String).filter(Boolean);
+    }
+    return [String(shape.shapeData?.sourceNodeId || "")].filter(Boolean);
+  }))].sort();
   const actual = [...new Set((readback.sourceNodeIds || []).map(String))].sort();
   const actualSet = new Set(actual);
   const missingSourceNodeIds = expected.filter((id) => !actualSet.has(id));

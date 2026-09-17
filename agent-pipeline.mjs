@@ -6,12 +6,11 @@ import { resolveArchitectureRequest } from "./architecture-resolver.mjs";
 import { importArchitectureConfig } from "./architecture-config-importer.mjs";
 import { importOnnxGraph } from "./onnx-graph-importer.mjs";
 import { createVisioDiagramPlan, validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
-import { layoutUniversalFigure } from "./universal-figure.mjs";
 import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
 import { deriveNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
 import { createProjectionMap } from "./neural-projection-map.mjs";
 import { compileSemanticScene } from "./semantic-neural-scene.mjs";
-import { layoutNeuralScene } from "./neural-scene-layout.mjs";
+import { layoutNeuralScene, validateLaidOutScene } from "./neural-scene-layout.mjs";
 
 const STATUS = Object.freeze({
   READY: "ready_for_visio",
@@ -189,15 +188,26 @@ export function planArchitectureFigure(normalized = {}) {
   if (normalized.status === STATUS.VISION) return normalized;
   const ir = normalized.ir || normalized;
   const diagnostics = computeDiagnostics(ir, normalized.evidenceGraph, normalized.validation);
-  const { figureLayout, visioDiagramPlan, visioDiagramPlanValidation } = buildVisioPlan(ir, diagnostics);
+  const planned = buildVisioPlan(ir, diagnostics);
+  const allDiagnostics = dedupeDiagnostics([...diagnostics, ...planned.layoutDiagnostics]);
+  if (!planned.sceneValidation.ok) {
+    return {
+      status: STATUS.INVALID,
+      readyForVisio: false,
+      ir: publicIR(ir),
+      source: normalized.source,
+      sceneValidation: planned.sceneValidation,
+      validation: normalized.validation,
+      diagnostics: allDiagnostics,
+    };
+  }
   return {
     ir: publicIR(ir),
     source: normalized.source,
-    figureLayout,
-    visioDiagramPlan,
-    visioDiagramPlanValidation,
+    visioDiagramPlan: planned.visioDiagramPlan,
+    visioDiagramPlanValidation: planned.visioDiagramPlanValidation,
     validation: normalized.validation,
-    diagnostics,
+    diagnostics: allDiagnostics,
   };
 }
 
@@ -365,17 +375,25 @@ function computeDiagnostics(ir, evidenceGraph, validation) {
 
 // 把已归一化的 IR 布局成 Figure Plan。plan 阶段与同步 finalize 共用。
 function buildVisioPlan(ir, diagnostics) {
-  const figureLayout = layoutUniversalFigure(ir);
   const semanticFacts = deriveNeuralSemanticFacts(ir);
   const projectionMap = createProjectionMap(ir, semanticFacts, { detail: "balanced" });
   const semanticScene = compileSemanticScene(ir, semanticFacts, projectionMap);
   const scene = layoutNeuralScene(semanticScene);
-  const visioDiagramPlan = createVisioDiagramPlan({ ir, scene, geometry: figureLayout, diagnostics });
+  const sceneValidation = validateLaidOutScene(scene);
+  const layoutDiagnostics = sceneValidation.issues.map((issue) => diagnostic(
+    "layout-issue",
+    "error",
+    `Scene layout validation failed: ${issue.code}.`,
+    { issueCode: issue.code, issue },
+  ));
+  if (!sceneValidation.ok) return { sceneValidation, layoutDiagnostics };
+  const visioDiagramPlan = createVisioDiagramPlan({ ir, scene, diagnostics });
   const visioDiagramPlanValidation = validateVisioDiagramPlan(visioDiagramPlan);
   return {
-    figureLayout,
     visioDiagramPlan: { ...visioDiagramPlan, validation: visioDiagramPlanValidation },
     visioDiagramPlanValidation,
+    sceneValidation,
+    layoutDiagnostics,
   };
 }
 
@@ -401,16 +419,28 @@ function finalizeResult(rawIR, context = {}) {
     };
   }
 
-  const { figureLayout, visioDiagramPlan, visioDiagramPlanValidation } = buildVisioPlan(ir, uniqueDiagnostics);
+  const planned = buildVisioPlan(ir, uniqueDiagnostics);
+  const diagnostics = dedupeDiagnostics([...uniqueDiagnostics, ...planned.layoutDiagnostics]);
+  if (!planned.sceneValidation.ok) {
+    return {
+      status: STATUS.INVALID,
+      readyForVisio: false,
+      ir: publicIR(ir),
+      sceneValidation: planned.sceneValidation,
+      validation,
+      diagnostics,
+      summary: summaryFor(ir, context.sourceKind),
+      source: context.source,
+    };
+  }
   return {
     status: hasUncertainty ? STATUS.CONFIRM : STATUS.READY,
     readyForVisio: true,
     ir: publicIR(ir),
-    figureLayout,
-    visioDiagramPlan,
-    visioDiagramPlanValidation,
+    visioDiagramPlan: planned.visioDiagramPlan,
+    visioDiagramPlanValidation: planned.visioDiagramPlanValidation,
     validation,
-    diagnostics: uniqueDiagnostics,
+    diagnostics,
     summary: summaryFor(ir, context.sourceKind),
     source: context.source,
   };

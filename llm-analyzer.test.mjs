@@ -60,6 +60,28 @@ test("analyze sends a Chat Completions request and returns the IR for source", a
   }
 });
 
+test("system prompt treats model names only as lookup hints and preserves generic graph guidance", async () => {
+  let captured;
+  const restore = stubFetch(async (_url, init) => {
+    captured = JSON.parse(init.body);
+    return chatResponse(JSON.stringify({ ir: sampleIR }));
+  });
+  try {
+    const analyzer = createLLMAnalyzer({ apiKey: "k" });
+    await analyzer.analyze({ kind: "prompt", prompt: "an architecture named by the user" });
+
+    const systemPrompt = captured.messages[0].content;
+    assert.match(systemPrompt, /model names? .*only.*(?:retrieval|lookup).*disambiguation.*not topology evidence/i);
+    assert.doesNotMatch(systemPrompt, /YOLO's C2f|U-Net encoder\/bottleneck\/decoder|grouping you describe \(U-Net, ResNet, VGG, ViT/);
+    assert.match(systemPrompt, /compound/i);
+    assert.match(systemPrompt, /branch/i);
+    assert.match(systemPrompt, /state/i);
+    assert.match(systemPrompt, /port/i);
+  } finally {
+    restore();
+  }
+});
+
 test("analyze returns the IR for prompt input", async () => {
   const restore = stubFetch(async () => chatResponse(JSON.stringify({ ir: sampleIR })));
   try {

@@ -145,7 +145,12 @@ function Set-ShapeData([object]$Shape, [string]$Key, [object]$Value) {
 function Set-PlanData([object]$Shape, [object]$Data) {
   if ($null -eq $Data) { return }
   foreach ($property in $Data.PSObject.Properties) {
-    Set-ShapeData $Shape $property.Name $property.Value
+    if ($property.Name -eq "sourceNodeIds") {
+      $sourceNodeIdsJson = ConvertTo-Json -Compress -InputObject @($property.Value)
+      Set-ShapeData $Shape $property.Name $sourceNodeIdsJson
+    } else {
+      Set-ShapeData $Shape $property.Name $property.Value
+    }
   }
 }
 
@@ -1653,6 +1658,16 @@ for ($index = 1; $index -le $page.Shapes.Count; $index++) {
           try { $connectCount = [int]$shape.Connects.Count } catch {}
           if ($connectCount -gt 0 -and ($segmentRole -eq "begin" -or $segmentRole -eq "direct")) { $gluedBeginEdgeIds.Add($edgeId) | Out-Null }
           if ($connectCount -gt 0 -and ($segmentRole -eq "end" -or $segmentRole -eq "direct")) { $gluedEndEdgeIds.Add($edgeId) | Out-Null }
+        }
+      }
+    }
+    if ([int]$shape.CellExistsU("Prop.sourceNodeIds", 0) -ne 0) {
+      $sourceNodeIdsJson = $shape.CellsU("Prop.sourceNodeIds").ResultStr("")
+      if ($sourceNodeIdsJson) {
+        foreach ($sourceNodeId in @($sourceNodeIdsJson | ConvertFrom-Json)) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$sourceNodeId)) {
+            $readbackSourceNodeIds.Add([string]$sourceNodeId) | Out-Null
+          }
         }
       }
     }

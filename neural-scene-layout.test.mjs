@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { layoutNeuralScene, validateLaidOutScene } from "./neural-scene-layout.mjs";
+import { layoutNeuralScene, scoreLayout, validateLaidOutScene } from "./neural-scene-layout.mjs";
 
 function scene() {
   return {
@@ -89,6 +89,132 @@ test("validation reports containment, anchor, page, and route hard violations", 
   assert.ok(validation.issues.some((issue) => issue.code === "primitive-out-of-page"));
   assert.ok(validation.issues.some((issue) => issue.code === "invalid-connector-route"));
 });
+
+test("scores segment crossings between connectors without shared endpoints", () => {
+  const connectors = [
+    { id: "down", sourcePrimitiveId: "a", targetPrimitiveId: "d", points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] },
+    { id: "up", sourcePrimitiveId: "b", targetPrimitiveId: "c", points: [{ x: 0, y: 10 }, { x: 10, y: 0 }] },
+    { id: "shared", sourcePrimitiveId: "a", targetPrimitiveId: "e", points: [{ x: 0, y: 10 }, { x: 10, y: 0 }] },
+  ];
+
+  assert.equal(scoreLayout([], connectors).crossings, 1);
+});
+
+test("validation rejects a connector that passes through an unrelated body", () => {
+  const layout = {
+    version: "laid-out-neural-scene/v1",
+    units: "layout-unit",
+    page: { x: 0, y: 0, width: 300, height: 120 },
+    primitives: [
+      body("source", 10, 40, 40, 40),
+      body("obstacle", 120, 30, 60, 60),
+      body("target", 240, 40, 40, 40),
+    ],
+    connectors: [
+      { id: "through", sourcePrimitiveId: "source", targetPrimitiveId: "target", relationTags: ["data"], points: [{ x: 50, y: 60 }, { x: 240, y: 60 }] },
+    ],
+    groups: [],
+  };
+
+  const validation = validateLaidOutScene(layout);
+  assert.equal(validation.ok, false);
+  assert.deepEqual(validation.issues.find((issue) => issue.code === "connector-body-intersection"), {
+    code: "connector-body-intersection",
+    relationId: "through",
+    primitiveId: "obstacle",
+  });
+});
+
+test("routes through one corridor around consecutive obstacles", () => {
+  const result = layoutNeuralScene(corridorScene({ blockTop: false }));
+  const connector = result.connectors.find((item) => item.id === "long-route");
+  const unrelatedBodies = result.primitives.filter((item) => item.role === "body"
+    && item.id !== connector.sourcePrimitiveId && item.id !== connector.targetPrimitiveId);
+
+  assert.ok(connector.points.length >= 4);
+  assert.ok(unrelatedBodies.every((item) => !pathIntersects(connector.points, item.bounds)));
+});
+
+test("uses the bottom corridor when the top corridor is blocked", () => {
+  const result = layoutNeuralScene(corridorScene({ blockTop: true }));
+  const connector = result.connectors.find((item) => item.id === "long-route");
+  const source = result.primitives.find((item) => item.id === "z-source");
+  const unrelatedBodies = result.primitives.filter((item) => item.role === "body"
+    && item.id !== connector.sourcePrimitiveId && item.id !== connector.targetPrimitiveId);
+
+  assert.ok(Math.max(...connector.points.map((point) => point.y)) > source.bounds.y + source.bounds.h);
+  assert.ok(unrelatedBodies.every((item) => !pathIntersects(connector.points, item.bounds)));
+  assert.equal(validateLaidOutScene(result).issues.some((issue) => issue.relationId === "long-route"), false);
+});
+
+test("multi-corridor obstacle routing is deterministic", () => {
+  const input = corridorScene({ blockTop: true });
+  const routes = Array.from({ length: 5 }, () => layoutNeuralScene(input).connectors.find((item) => item.id === "long-route").points);
+
+  for (const route of routes.slice(1)) assert.deepEqual(route, routes[0]);
+});
+
+test("nested groups participate in placement without sibling overlap or non-finite bounds", () => {
+  const grouped = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      sceneBody("left-a", "band", "flow"),
+      sceneBody("left-b", "band", "flow"),
+      sceneBody("right-a", "band", "flow"),
+    ],
+    relations: [
+      relation("left-flow", "left-a", "left-b"),
+      relation("cross", "left-b", "right-a"),
+    ],
+    groups: [
+      { id: "root", parentId: "", primitiveIds: ["left-a", "left-b", "right-a"] },
+      { id: "left", parentId: "root", primitiveIds: ["left-a", "left-b"] },
+      { id: "right", parentId: "root", primitiveIds: ["right-a"] },
+      { id: "empty", parentId: "root", primitiveIds: [] },
+    ],
+  };
+
+  const result = layoutNeuralScene(grouped);
+  const byGroup = new Map(result.groups.map((group) => [group.id, group]));
+  assert.equal(contains(byGroup.get("root").bounds, byGroup.get("left").bounds), true);
+  assert.equal(contains(byGroup.get("root").bounds, byGroup.get("right").bounds), true);
+  assert.equal(overlaps(byGroup.get("left").bounds, byGroup.get("right").bounds), false);
+  assert.ok(Object.values(byGroup.get("empty").bounds).every(Number.isFinite));
+  assert.equal(validateLaidOutScene(result).ok, true);
+});
+
+function corridorScene({ blockTop }) {
+  const primitives = [
+    sceneBody("a-top-seed", "plane", "top"),
+    sceneBody("z-source", "band", "flow"),
+    sceneBody("mid-1", "band", "flow"),
+    sceneBody("mid-2", "band", "flow"),
+    sceneBody("target", "band", "flow"),
+  ];
+  const relations = [
+    relation("flow-1", "z-source", "mid-1"),
+    relation("flow-2", "mid-1", "mid-2"),
+    relation("flow-3", "mid-2", "target"),
+    relation("long-route", "z-source", "target"),
+  ];
+  if (blockTop) {
+    primitives.push(sceneBody("top-1", "plane", "top"), sceneBody("top-2", "plane", "top"));
+    relations.push(relation("top-link-1", "a-top-seed", "top-1"), relation("top-link-2", "top-1", "top-2"));
+  }
+  return { version: "semantic-neural-scene/v1", primitives, relations, constraints: [] };
+}
+
+function sceneBody(id, form, scale) {
+  return { id, role: "body", category: "operator", form, sourceNodeIds: [id], projectionId: `p-${id}`, semanticTags: [], data: { scale } };
+}
+
+function relation(id, sourcePrimitiveId, targetPrimitiveId) {
+  return { id, sourcePrimitiveId, targetPrimitiveId, relationTags: ["data"], sourceEdgeIds: [id] };
+}
+
+function body(id, x, y, w, h) {
+  return { id, role: "body", bounds: { x, y, w, h }, anchors: { inputs: [], outputs: [] } };
+}
 
 function overlaps(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
 function contains(outer, inner) { return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h; }

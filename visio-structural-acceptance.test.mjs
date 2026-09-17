@@ -6,7 +6,7 @@ import { buildVisioRenderPlan } from "./visio-bridge.mjs";
 
 const render = (ir) => {
   const layout = layoutUniversalFigure(ir, { detail: "full" });
-  return { layout, plan: buildVisioRenderPlan(layout, { documentPath: "C:\\test\\network.vsdx" }) };
+  return { layout, plan: buildVisioRenderPlan(layout, { documentPath: "C:\\test\\network.vsdx", allowLegacyProjection: true }) };
 };
 
 test("vertical repeated stack preserves residual topology into Visio", () => {

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { analyzeArchitectureInput, extractArchitectureEvidence, normalizeArchitectureEvidence } from "./agent-pipeline.mjs";
+import { analyzeArchitectureInput, extractArchitectureEvidence, normalizeArchitectureEvidence, planArchitectureFigure } from "./agent-pipeline.mjs";
 import onnxProto from "onnx-proto";
 
 test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
@@ -24,11 +25,12 @@ test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
   assert.equal(result.visioDiagramPlan.scene.units, "layout-unit");
   assert.ok(result.visioDiagramPlan.scene.primitives.every((primitive) => primitive.bounds));
   assert.equal(result.visioDiagramPlanValidation.ok, true);
-  assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "cell").compoundKind, "operator");
-  assert.equal(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").route.kind, "loop");
+  assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "cell").shapeKind, "cell");
+  assert.equal(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").type, "loop");
+  assert.ok(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").route.points.length > 1);
 });
 
-test("agent pipeline preserves explicit architecture groups into Visio layout", () => {
+test("agent pipeline preserves explicit architecture groups in IR while producing a valid Scene plan", () => {
   const result = analyzeArchitectureInput({
     kind: "ir",
     ir: {
@@ -45,8 +47,8 @@ test("agent pipeline preserves explicit architecture groups into Visio layout", 
   });
 
   assert.equal(result.ir.groups.length, 2);
-  assert.deepEqual(result.figureLayout.groups.map((group) => group.id), ["backbone", "head"]);
-  assert.equal(result.visioDiagramPlan.groups.length, 2);
+  assert.equal(result.visioDiagramPlan.scene.version, "laid-out-neural-scene/v1");
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
 });
 
 test("agent pipeline preserves nested containers and scale lanes into Visio layout", () => {
@@ -72,7 +74,7 @@ test("agent pipeline preserves nested containers and scale lanes into Visio layo
   assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "f3").laneId, "p3");
 });
 
-test("agent pipeline routes source code through Universal IR and returns a Visio-ready Figure Plan", () => {
+test("agent pipeline routes source code through Universal IR and returns a Visio-ready Diagram Plan", () => {
   const result = analyzeArchitectureInput({
     kind: "source",
     framework: "pytorch",
@@ -90,14 +92,103 @@ class Net(nn.Module):
   assert.equal(result.readyForVisio, true);
   assert.ok(result.ir.nodes.some((node) => node.compoundKind === "unresolved"));
   assert.ok(result.visioDiagramPlan.nodes.some((node) => node.compoundKind === "unresolved"));
-  assert.equal(result.figureLayout.grammar.id, "generic-dag");
-  assert.ok(result.figureLayout.nodes.some((node) => node.representation === "compound"));
   assert.ok(result.diagnostics.some((item) => item.kind === "unresolved-operator"));
   assert.ok(result.visioDiagramPlan);
-  assert.deepEqual(
-    result.visioDiagramPlan.nodes.map((node) => node.sourceNodeId),
-    result.figureLayout.nodes.map((node) => node.sourceNodeId),
-  );
+  assert.equal(result.figureLayout, undefined);
+  assert.equal(result.visioDiagramPlan.scene.version, "laid-out-neural-scene/v1");
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
+});
+
+test("production build exposes only the Scene-backed Visio Diagram Plan", () => {
+  const result = planArchitectureFigure(normalizeArchitectureEvidence({
+    kind: "ir",
+    rawIR: {
+      nodes: [
+        { id: "input", family: "input", op: "Input", stage: 0 },
+        { id: "output", family: "output", op: "Output", stage: 1 },
+      ],
+      edges: [{ id: "flow", source: "input", target: "output" }],
+    },
+    input: { kind: "ir" },
+  }));
+
+  assert.equal(result.figureLayout, undefined);
+  assert.equal(result.visioDiagramPlan.scene.version, "laid-out-neural-scene/v1");
+  assert.equal(result.visioDiagramPlan.validation.ok, true);
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
+});
+
+test("production pipeline blocks a hard Scene layout issue while a normal Scene remains renderable", () => {
+  const normal = analyzeArchitectureInput({
+    kind: "ir",
+    ir: {
+      nodes: [
+        { id: "input", family: "input", op: "Input", stage: 0 },
+        { id: "output", family: "output", op: "Output", stage: 1 },
+      ],
+      edges: [{ id: "flow", source: "input", target: "output" }],
+    },
+  });
+  const invalidLayout = analyzeArchitectureInput({
+    kind: "ir",
+    ir: {
+      nodes: [
+        { id: "n0", family: "input", op: "Input", stage: 0 },
+        { id: "n1", family: "conv", op: "Conv", stage: 1 },
+        { id: "n2", family: "conv", op: "Conv", stage: 2 },
+        { id: "n3", family: "output", op: "Output", stage: 3 },
+      ],
+      edges: [
+        { id: "e0", source: "n0", target: "n1" },
+        { id: "e1", source: "n0", target: "n2" },
+        { id: "e2", source: "n0", target: "n3" },
+        { id: "e4", source: "n1", target: "n2" },
+        { id: "e6", source: "n2", target: "n0" },
+      ],
+    },
+  });
+
+  assert.equal(normal.status, "ready_for_visio");
+  assert.equal(normal.readyForVisio, true);
+  assert.ok(normal.visioDiagramPlan);
+  assert.equal(invalidLayout.status, "invalid_input");
+  assert.equal(invalidLayout.readyForVisio, false);
+  assert.equal(invalidLayout.visioDiagramPlan, undefined);
+  assert.ok(invalidLayout.diagnostics.some((item) => (
+    item.kind === "layout-issue"
+    && item.issueCode === "connector-body-intersection"
+  )));
+});
+
+test("production Scene preserves finite nested container bounds", () => {
+  const result = analyzeArchitectureInput({
+    kind: "ir",
+    ir: {
+      nodes: [
+        { id: "left", family: "conv", containerId: "encoder" },
+        { id: "right", family: "output", containerId: "decoder" },
+      ],
+      edges: [{ id: "flow", source: "left", target: "right" }],
+      containers: [
+        { id: "model", children: ["encoder", "decoder"] },
+        { id: "encoder", parentId: "model", children: ["left"] },
+        { id: "decoder", parentId: "model", children: ["right"] },
+      ],
+    },
+  });
+
+  assert.equal(result.readyForVisio, true);
+  const groups = new Map(result.visioDiagramPlan.scene.groups.map((group) => [group.id, group]));
+  assert.ok(["model", "encoder", "decoder"].every((id) => Object.values(groups.get(id).bounds).every(Number.isFinite)));
+  assert.ok(groups.get("encoder").bounds.x + groups.get("encoder").bounds.w <= groups.get("decoder").bounds.x);
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
+});
+
+test("agent pipeline has no production dependency on layoutUniversalFigure", () => {
+  const source = readFileSync(new URL("./agent-pipeline.mjs", import.meta.url), "utf8");
+
+  assert.doesNotMatch(source, /\blayoutUniversalFigure\b/);
+  assert.doesNotMatch(source, /["']\.\/universal-figure\.mjs["']/);
 });
 
 test("production analysis exposes one Visio Diagram Plan for direct IR", () => {
@@ -173,7 +264,8 @@ example = torch.randn(1, 3, 224, 224)
   assert.ok(result.ir.nodes.some((node) => node.family === "pool"));
   assert.ok(result.ir.nodes.some((node) => node.family === "dense"));
   assert.equal(result.ir.nodes.find((node) => node.family === "input").subtitle, "source tensor");
-  assert.equal(result.figureLayout.grammar.id, "tensor-flow");
+  assert.equal(result.figureLayout, undefined);
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
 });
 
 test("agent pipeline validates IR input without requiring a model registry", () => {
@@ -191,7 +283,8 @@ test("agent pipeline validates IR input without requiring a model registry", () 
   assert.equal(result.status, "needs_confirmation");
   assert.equal(result.readyForVisio, true);
   assert.equal(result.validation.ok, true);
-  assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "loop").compoundKind, "operator");
+  assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "loop").shapeKind, "cell");
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
 });
 
 test("agent pipeline refuses to invent a diagram from an image without a vision analyzer", () => {

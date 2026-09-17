@@ -7,7 +7,6 @@ import { createProjectionMap } from "./neural-projection-map.mjs";
 import { compileSemanticScene } from "./semantic-neural-scene.mjs";
 import { layoutNeuralScene, validateLaidOutScene } from "./neural-scene-layout.mjs";
 import { createVisioDiagramPlan, validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
-import { layoutUniversalFigure } from "./universal-figure.mjs";
 import { buildVisioRenderPlan } from "./visio-bridge.mjs";
 
 test("generic structure fixtures compile without architecture-name dispatch", () => {
@@ -20,7 +19,7 @@ test("generic structure fixtures compile without architecture-name dispatch", ()
     const projection = createProjectionMap(fixture.ir, facts, { detail: "balanced" });
     const scene = compileSemanticScene(fixture.ir, facts, projection);
     const laidOut = layoutNeuralScene(scene);
-    const plan = createVisioDiagramPlan({ ir: fixture.ir, scene: laidOut, geometry: layoutUniversalFigure(fixture.ir) });
+    const plan = createVisioDiagramPlan({ ir: fixture.ir, scene: laidOut });
     const render = buildVisioRenderPlan(plan, { documentPath: `C:\\acceptance\\${fixture.capability}.vsdx` });
 
     assert.equal(validateLaidOutScene(laidOut).ok, true, fixture.capability);
@@ -28,6 +27,7 @@ test("generic structure fixtures compile without architecture-name dispatch", ()
     assert.ok(fixture.ir.nodes.every((node) => laidOut.primitives.some((primitive) => primitive.sourceNodeIds.includes(node.id))), fixture.capability);
     assert.ok(fixture.ir.edges.every((edge) => laidOut.connectors.some((connector) => connector.sourceEdgeIds.includes(edge.id))
       || laidOut.primitives.some((primitive) => primitive.sourceEdgeIds.includes(edge.id))), fixture.capability);
+    assert.deepEqual(render.shapes.map((shape) => shape.id).sort(), laidOut.primitives.map((primitive) => primitive.id).sort(), fixture.capability);
     assert.ok(render.shapes.every((shape) => shape.sceneForm), fixture.capability);
   }
 });

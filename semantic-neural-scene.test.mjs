@@ -76,3 +76,120 @@ test("validation rejects a source node owned by multiple bodies and dangling sce
   assert.ok(validation.issues.some((issue) => issue.code === "source-node-in-multiple-bodies" && issue.nodeId === "a"));
   assert.ok(validation.issues.some((issue) => issue.code === "dangling-scene-relation" && issue.relationId === "relation:e"));
 });
+
+test("projects Universal IR groups to projection body primitive identities", () => {
+  const { scene, ir, projectionMap } = compile({
+    figure: { title: "A Model Name That Must Not Become A Member" },
+    nodes: [{ id: "stem", family: "conv" }, { id: "head", family: "output" }],
+    edges: [{ id: "out", source: "stem", target: "head", type: "output" }],
+    groups: [{ id: "backbone", label: "Backbone", kind: "stage", nodeIds: ["stem"] }],
+  });
+
+  assert.deepEqual(scene.groups, [{
+    id: "backbone",
+    label: "Backbone",
+    role: "stage",
+    parentId: "",
+    primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.stem]],
+  }]);
+  assert.equal(scene.groups[0].primitiveIds.includes("stem"), false);
+  assert.equal(scene.groups[0].primitiveIds.includes(ir.figure.title), false);
+  assert.equal(validateSemanticScene(scene, ir, projectionMap).ok, true);
+});
+
+test("projects nested containers with descendant body membership and parentId", () => {
+  const { scene, ir, projectionMap } = compile({
+    nodes: [
+      { id: "inside", family: "conv", containerId: "inner" },
+      { id: "outside", family: "output", containerId: "outer" },
+    ],
+    edges: [{ id: "out", source: "inside", target: "outside", type: "output" }],
+    containers: [
+      { id: "outer", label: "Outer", kind: "module", children: ["inner", "outside"] },
+      { id: "inner", label: "Inner", kind: "stage", parentId: "outer", children: ["inside"] },
+    ],
+  });
+  const bodyFor = (nodeId) => scene.projectionToBody[projectionMap.nodeToProjection[nodeId]];
+
+  assert.deepEqual(scene.groups, [
+    { id: "outer", label: "Outer", role: "module", parentId: "", primitiveIds: [bodyFor("inside"), bodyFor("outside")] },
+    { id: "inner", label: "Inner", role: "stage", parentId: "outer", primitiveIds: [bodyFor("inside")] },
+  ]);
+  assert.equal(validateSemanticScene(scene, ir, projectionMap).ok, true);
+});
+
+test("creates deterministic scene groups from node containerId assignments", () => {
+  const { scene, ir, projectionMap } = compile({
+    nodes: [
+      { id: "a", family: "conv", containerId: "encoder" },
+      { id: "b", family: "output", containerId: "head" },
+    ],
+    edges: [{ id: "ab", source: "a", target: "b", type: "output" }],
+  });
+
+  assert.deepEqual(scene.groups, [
+    { id: "encoder", label: "encoder", role: "module", parentId: "", primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.a]] },
+    { id: "head", label: "head", role: "module", parentId: "", primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.b]] },
+  ]);
+  assert.equal(validateSemanticScene(scene, ir, projectionMap).ok, true);
+});
+
+test("diagnoses conflicting group ownership when one projection aggregates multiple nodes", () => {
+  const { scene, projectionMap } = compile({
+    nodes: [{ id: "a", family: "conv" }, { id: "b", family: "norm" }],
+    edges: [{ id: "ab", source: "a", target: "b" }],
+    groups: [
+      { id: "left", nodeIds: ["a"] },
+      { id: "right", nodeIds: ["b"] },
+    ],
+  }, { detail: "overview" });
+  const aggregate = projectionMap.projections.find((projection) => projection.orderedNodeIds.length > 1);
+
+  assert.ok(aggregate);
+  assert.equal(scene.groups.some((group) => group.primitiveIds.includes(scene.projectionToBody[aggregate.id])), false);
+  assert.deepEqual(scene.diagnostics.find((diagnostic) => diagnostic.code === "projection-group-membership-conflict"), {
+    code: "projection-group-membership-conflict",
+    severity: "error",
+    projectionId: aggregate.id,
+    nodeIds: ["a", "b"],
+    groupIds: ["left", "right"],
+  });
+});
+
+test("validation rejects dangling group primitive and parent references", () => {
+  const { scene, ir, projectionMap } = compile({
+    nodes: [{ id: "a", family: "conv", containerId: "child" }],
+    edges: [],
+    containers: [{ id: "child", parentId: "root", children: ["a"] }, { id: "root", children: ["child"] }],
+  });
+  scene.primitives.push({ id: "primitive:existing:decoration", role: "decoration" });
+  scene.groups.find((group) => group.id === "child").primitiveIds.push("primitive:missing:body");
+  scene.groups.find((group) => group.id === "child").primitiveIds.push("primitive:existing:decoration");
+  scene.groups.find((group) => group.id === "child").parentId = "missing-parent";
+
+  const validation = validateSemanticScene(scene, ir, projectionMap);
+  assert.ok(validation.issues.some((issue) => issue.code === "dangling-group-primitive" && issue.groupId === "child" && issue.primitiveId === "primitive:missing:body"));
+  assert.ok(validation.issues.some((issue) => issue.code === "non-body-group-primitive" && issue.groupId === "child"));
+  assert.ok(validation.issues.some((issue) => issue.code === "dangling-group-parent" && issue.groupId === "child" && issue.parentId === "missing-parent"));
+});
+
+test("relations retain deterministic source and target group context", () => {
+  const { scene } = compile({
+    nodes: [
+      { id: "encoder", family: "conv", containerId: "encoder-group" },
+      { id: "decoder", family: "output", containerId: "decoder-group" },
+    ],
+    edges: [{ id: "skip", source: "encoder", target: "decoder", type: "signal" }],
+    containers: [
+      { id: "model", children: ["encoder-group", "decoder-group"] },
+      { id: "encoder-group", parentId: "model", children: ["encoder"] },
+      { id: "decoder-group", parentId: "model", children: ["decoder"] },
+    ],
+  });
+
+  assert.deepEqual(scene.relations.find((relation) => relation.id === "relation:skip").groupContext, {
+    sourceGroupPath: ["model", "encoder-group"],
+    targetGroupPath: ["model", "decoder-group"],
+    relationScope: "cross-sibling-container",
+  });
+});

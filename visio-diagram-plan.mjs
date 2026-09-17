@@ -1,7 +1,11 @@
 const VISIO_DIAGRAM_PLAN_VERSION = "visio-diagram-plan/v1";
 
 export function createVisioDiagramPlan({ ir = {}, scene, geometry, layout, diagnostics = [] } = {}) {
-  const sourceLayout = hasLayoutContent(geometry) ? geometry : (layout || {});
+  const sourceLayout = scene?.version === "laid-out-neural-scene/v1"
+    ? sceneCompatibilityLayout(ir, scene)
+    : hasLayoutContent(geometry)
+      ? geometry
+      : (layout || {});
   const layoutNodes = Array.isArray(sourceLayout.nodes) ? sourceLayout.nodes : [];
   const layoutEdges = Array.isArray(sourceLayout.edges) ? sourceLayout.edges : [];
   const recurrentLayout = sourceLayout.recurrentLayout;
@@ -249,6 +253,66 @@ function validateVisioDiagramPlanBase(plan = {}) {
 
 function hasLayoutContent(value) {
   return value !== null && typeof value === "object" && Object.keys(value).length > 0;
+}
+
+function sceneCompatibilityLayout(ir, scene) {
+  const bodies = (scene.primitives || []).filter((primitive) => primitive.role === "body");
+  const bodyBySourceNode = new Map();
+  for (const body of bodies) {
+    for (const sourceNodeId of body.sourceNodeIds || []) bodyBySourceNode.set(String(sourceNodeId), body);
+  }
+  const connectorBySourceEdge = new Map();
+  for (const connector of scene.connectors || []) {
+    for (const sourceEdgeId of connector.sourceEdgeIds || []) connectorBySourceEdge.set(String(sourceEdgeId), connector);
+  }
+
+  const nodes = (ir.nodes || []).map((node, index) => {
+    const body = bodyBySourceNode.get(String(node.id));
+    const bounds = body?.bounds || {};
+    return {
+      ...cloneValue(node),
+      id: String(node.id || `scene-node-${index + 1}`),
+      sourceNodeId: String(node.id || `scene-node-${index + 1}`),
+      sourceNodeIds: [String(node.id || `scene-node-${index + 1}`)],
+      figureLabel: String(body?.labels?.[0]?.text || node.label || node.op || "Operator"),
+      visualRole: sceneCompatibilityVisualRole(node, body),
+      representation: String(body?.form || node.shapeKind || node.family || "operator"),
+      styleProfile: String(body?.category || node.styleProfile || "operator"),
+      x: finiteOr(bounds.x, 0),
+      y: finiteOr(bounds.y, 0),
+      w: finiteOr(bounds.w, 0),
+      h: finiteOr(bounds.h, 0),
+    };
+  });
+
+  const edges = (ir.edges || []).map((edge, index) => {
+    const connector = connectorBySourceEdge.get(String(edge.id));
+    return {
+      ...cloneValue(edge),
+      id: String(edge.id || `scene-edge-${index + 1}`),
+      sourceEdgeId: String(edge.id || `scene-edge-${index + 1}`),
+      routeClass: String(connector?.routeClass || edge.routeClass || "main-flow"),
+      route: { kind: "polyline", points: cloneValue(connector?.points || []) },
+    };
+  });
+
+  return {
+    figure: cloneValue(ir.figure || {}),
+    artboard: cloneValue(scene.page || {}),
+    nodes,
+    edges,
+    groups: cloneValue(scene.groups || []),
+    architectureLayout: cloneValue(ir.architectureLayout || {}),
+  };
+}
+
+function sceneCompatibilityVisualRole(node, body) {
+  if (node.visualRole) return String(node.visualRole);
+  const tags = new Set(body?.semanticTags || []);
+  if (node.family === "recurrent" || tags.has("stateful")) return "recurrent-state";
+  if (node.family === "input") return "input";
+  if (node.family === "output") return "output";
+  return String(body?.category || "operator");
 }
 
 function validSceneBounds(bounds) {

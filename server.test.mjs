@@ -7,6 +7,26 @@ import { createMemoryRunStore } from "./run-store.mjs";
 
 const agentInput = { kind: "source", source: "class Net: pass", framework: "pytorch" };
 
+function minimalScene(sourceNodeId = "input") {
+  return {
+    version: "laid-out-neural-scene/v1",
+    units: "layout-unit",
+    primitives: [{
+      id: `primitive:${sourceNodeId}`,
+      role: "body",
+      form: "band",
+      category: "input",
+      sourceNodeIds: [sourceNodeId],
+      sourceEdgeIds: [],
+      bounds: { x: 20, y: 20, w: 90, h: 54 },
+      anchors: { inputs: [], outputs: [] },
+    }],
+    connectors: [],
+    groups: [],
+    page: { x: 0, y: 0, width: 160, height: 110 },
+  };
+}
+
 function agentDependencies(overrides = {}) {
   return {
     inspect: async (input) => ({ source: input.source, evidence: [{ status: "confirmed" }] }),
@@ -16,6 +36,7 @@ function agentDependencies(overrides = {}) {
       ir: value,
       visioDiagramPlan: {
         version: "visio-diagram-plan/v1",
+        scene: minimalScene(),
         nodes: [{ id: "figure-input", sourceNodeId: "input" }],
         edges: [],
       },
@@ -449,7 +470,7 @@ test("/api/render-visio executes render and readback through one Agent Run", asy
       normalize: (value) => { calls.push("normalize"); return { ir: { ...value, nodes: [{ id: "input", family: "input" }] } }; },
       plan: (value) => {
         calls.push("plan");
-        return { ir: value.ir, visioDiagramPlan: { version: "visio-diagram-plan/v1", renderId: "shared", nodes: [{ id: "f-input", sourceNodeId: "input" }], edges: [] } };
+        return { ir: value.ir, visioDiagramPlan: { version: "visio-diagram-plan/v1", renderId: "shared", scene: minimalScene(), nodes: [{ id: "f-input", sourceNodeId: "input" }], edges: [] } };
       },
       render: async (visioDiagramPlan) => { calls.push(["render", visioDiagramPlan.renderId]); return { renderId: "shared", visioDiagramPlan }; },
       readback: async (visioDiagramPlan, renderResult) => { calls.push(["readback", visioDiagramPlan.renderId, renderResult.visioDiagramPlan.renderId]); return { renderId: "shared", nodes: [{ sourceNodeId: "input" }], connectors: [] }; },

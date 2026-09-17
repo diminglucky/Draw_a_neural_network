@@ -3,11 +3,15 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   buildVisioPowerShellCommand,
-  buildVisioRenderPlan,
+  buildVisioRenderPlan as buildVisioRenderPlanStrict,
   validateVisioReadback,
 } from "./visio-bridge.mjs";
 import { createVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { layoutUniversalFigure } from "./universal-figure.mjs";
+
+function buildVisioRenderPlan(input, options = {}) {
+  return buildVisioRenderPlanStrict(input, { ...options, allowLegacyProjection: true });
+}
 
 const layout = {
   grammar: { id: "residual-graph" },
@@ -28,6 +32,22 @@ const layout = {
   }],
   edges: [],
 };
+
+test("buildVisioRenderPlan rejects input without a laid-out scene by default", () => {
+  assert.throws(
+    () => buildVisioRenderPlanStrict(layout, { documentPath: "C:\\project\\existing.vsdx" }),
+    /must contain a laid-out neural scene/,
+  );
+});
+
+test("buildVisioRenderPlan allows legacy projection only when explicitly enabled", () => {
+  const plan = buildVisioRenderPlanStrict(layout, {
+    documentPath: "C:\\project\\existing.vsdx",
+    allowLegacyProjection: true,
+  });
+
+  assert.equal(plan.shapes[0].shapeData.sourceNodeId, "n1");
+});
 
 test("scene projection maps every primitive form mechanically with identity, anchors, z-order, and glue", () => {
   const forms = ["plane", "volume", "stack", "band", "wedge", "glyph", "cell", "strip", "callout", "text"];
@@ -73,7 +93,7 @@ test("scene projection maps every primitive form mechanically with identity, anc
     },
   };
 
-  const plan = buildVisioRenderPlan(input, { documentPath: "C:\\project\\existing.vsdx" });
+  const plan = buildVisioRenderPlanStrict(input, { documentPath: "C:\\project\\existing.vsdx" });
   assert.deepEqual(plan.shapes.map((shape) => shape.sceneForm), forms);
   assert.deepEqual(plan.shapes.map((shape) => shape.id), primitives.map((primitive) => primitive.id));
   assert.ok(plan.shapes.every((shape, index) => shape.zIndex === 100 + index));
@@ -85,6 +105,28 @@ test("scene projection maps every primitive form mechanically with identity, anc
   assert.equal(plan.connectors[0].targetShapeId, "primitive-volume");
   assert.deepEqual(plan.connectors[0].sourceEndpointIds, { source: "out", target: "in" });
   assert.equal(plan.connectors[0].sourceEdgeId, "source-flow");
+});
+
+test("scene projection preserves every source identity for an aggregated primitive", () => {
+  const sourceNodeIds = ["source-left", "source-center", "source-right"];
+  const plan = buildVisioRenderPlanStrict({
+    version: "visio-diagram-plan/v1",
+    scene: {
+      version: "laid-out-neural-scene/v1",
+      primitives: [{
+        id: "aggregate-primitive",
+        form: "band",
+        sourceNodeIds,
+        bounds: { x: 20, y: 40, w: 240, h: 80 },
+      }],
+      connectors: [],
+      groups: [],
+      page: { x: 0, y: 0, width: 300, height: 160 },
+    },
+  }, { documentPath: "C:\\project\\existing.vsdx", renderId: "aggregate-run" });
+
+  assert.equal(plan.shapes[0].shapeData.sourceNodeId, "source-left");
+  assert.deepEqual(plan.shapes[0].shapeData.sourceNodeIds, sourceNodeIds);
 });
 
 test("PowerShell dispatches Scene forms without inspecting model or operator labels", () => {
@@ -132,7 +174,7 @@ test("evidenced inner topology uses semantic primitives without fabricating chil
 
 test("Visio bridge rejects retired Figure Plan versions", () => {
   assert.throws(
-    () => buildVisioRenderPlan({ version: "figure-plan/v1", nodes: [], edges: [] }, { documentPath: "C:/test/model.vsdx" }),
+    () => buildVisioRenderPlanStrict({ version: "figure-plan/v1", nodes: [], edges: [] }, { documentPath: "C:/test/model.vsdx" }),
     /accepts only Visio Diagram Plan input/,
   );
 });
@@ -387,6 +429,39 @@ test("validateVisioReadback fails when a planned source node was not written", (
   });
   assert.equal(report.ok, false);
   assert.deepEqual(report.missingSourceNodeIds, ["n1"]);
+});
+
+test("validateVisioReadback fails when an aggregated primitive loses one source identity", () => {
+  const plan = buildVisioRenderPlanStrict({
+    version: "visio-diagram-plan/v1",
+    scene: {
+      version: "laid-out-neural-scene/v1",
+      primitives: [{
+        id: "aggregate-primitive",
+        form: "band",
+        sourceNodeIds: ["source-left", "source-center", "source-right"],
+        bounds: { x: 20, y: 40, w: 240, h: 80 },
+      }],
+      connectors: [],
+      groups: [],
+      page: { x: 0, y: 0, width: 300, height: 160 },
+    },
+  }, { documentPath: "C:\\project\\existing.vsdx", renderId: "aggregate-run" });
+
+  const report = validateVisioReadback(plan, {
+    renderId: "aggregate-run",
+    sourceNodeIds: ["source-left", "source-right"],
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.expectedSourceNodeIds, ["source-center", "source-left", "source-right"]);
+  assert.deepEqual(report.missingSourceNodeIds, ["source-center"]);
+});
+
+test("PowerShell persists and parses sourceNodeIds as JSON Shape Data", () => {
+  const script = readFileSync(new URL("./visio-bridge.ps1", import.meta.url), "utf8");
+  assert.match(script, /sourceNodeIds[\s\S]{0,300}ConvertTo-Json\s+-Compress/);
+  assert.match(script, /Prop\.sourceNodeIds[\s\S]{0,500}ConvertFrom-Json/);
 });
 
 test("validateVisioReadback also requires every planned connector edge to be present", () => {
