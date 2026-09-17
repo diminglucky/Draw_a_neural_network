@@ -23,7 +23,9 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
     }
   }
   const bodyPosition = new Map(laidBodies.map((primitive) => [primitive.id, primitive]));
-  const laidPrimitives = laidBodies.map((primitive) => ({ ...primitive, anchors: anchorsFor(primitive) }));
+  const groups = placeGroups(scene.groups || [], bodyPosition);
+  const positionedBodies = [...bodyPosition.values()];
+  const laidPrimitives = positionedBodies.map((primitive) => ({ ...primitive, anchors: anchorsFor(primitive) }));
   for (const primitive of primitives.filter((item) => item.role !== "body")) {
     const owner = bodyPosition.get(primitive.projectionId) || bodyPosition.get(primitive.sourceNodeIds?.[0]);
     if (!owner) continue;
@@ -34,12 +36,11 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
   const page = { x: 0, y: 0, width: maxX + MARGIN, height: maxY + MARGIN };
   const connectors = [];
   for (const relation of relations) connectors.push(routeRelation(relation, bodyPosition, laidPrimitives, connectors));
-  const groups = layoutGroups(scene.groups || [], bodyPosition);
   const diagnostics = [...(scene.diagnostics || [])];
   for (const relation of relations) if (relation.relationTags?.includes("crossScale")) diagnostics.push({ code: "cross-scale-transfer", relationId: relation.id, severity: "warning" });
   const maxPrimitives = Number.isFinite(profiles.maxPrimitives) ? profiles.maxPrimitives : Infinity;
   if (laidPrimitives.length > maxPrimitives) diagnostics.push({ code: "layout-budget-exceeded", primitiveCount: laidPrimitives.length, budget: maxPrimitives, severity: "warning" });
-  const result = { version: VERSION, units: "layout-unit", primitives: laidPrimitives.sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id)), connectors, groups, page, diagnostics, softScore: scoreLayout(laidBodies, connectors) };
+  const result = { version: VERSION, units: "layout-unit", primitives: laidPrimitives.sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id)), connectors, groups, page, diagnostics, softScore: scoreLayout(positionedBodies, connectors) };
   return result;
 }
 
@@ -84,44 +85,109 @@ export function validateLaidOutScene(layout = {}) {
   return { ok: issues.length === 0, issues, summary: { primitiveCount: layout.primitives?.length || 0, connectorCount: layout.connectors?.length || 0 } };
 }
 
-function layoutGroups(sourceGroups, bodyPosition) {
+function placeGroups(sourceGroups, bodyPosition) {
+  if (!sourceGroups.length) return [];
+  const hasPlacementIntent = sourceGroups.some((group) => group.direction === "horizontal" || group.direction === "vertical");
+  if (!hasPlacementIntent) return measureGroupBounds(sourceGroups, bodyPosition);
   const definitions = sourceGroups.map((group) => ({
     id: String(group.id),
     parentId: group.parentId ? String(group.parentId) : "",
     primitiveIds: [...(group.primitiveIds || [])],
     role: String(group.role || "module"),
     label: String(group.label || group.id || ""),
+    direction: group.direction === "vertical" ? "vertical" : "horizontal",
+    padding: finiteNonNegative(group.padding, 24),
+    gap: finiteNonNegative(group.gap, 32),
   }));
   const byId = new Map(definitions.map((group) => [group.id, group]));
   const childrenByParent = new Map(definitions.map((group) => [group.id, []]));
   for (const group of definitions) if (byId.has(group.parentId)) childrenByParent.get(group.parentId).push(group.id);
-  const boundsById = new Map();
+  const measurements = new Map();
   const visiting = new Set();
   const measure = (group) => {
-    if (boundsById.has(group.id)) return boundsById.get(group.id);
-    if (visiting.has(group.id)) return { x: MARGIN, y: MARGIN, w: 48, h: 48 };
+    if (measurements.has(group.id)) return measurements.get(group.id);
+    if (visiting.has(group.id)) return { w: group.padding * 2, h: group.padding * 2, items: [] };
     visiting.add(group.id);
-    const boxes = group.primitiveIds.map((id) => bodyPosition.get(id)?.bounds).filter(Boolean);
-    for (const childId of childrenByParent.get(group.id) || []) boxes.push(measure(byId.get(childId)));
+    const childIds = childrenByParent.get(group.id) || [];
+    const childPrimitiveIds = new Set(childIds.flatMap((id) => byId.get(id).primitiveIds));
+    const directPrimitiveIds = group.primitiveIds.filter((id) => bodyPosition.has(id) && !childPrimitiveIds.has(id));
+    const items = [
+      ...directPrimitiveIds.map((id) => ({ kind: "body", id, ...bodyPosition.get(id).bounds })),
+      ...childIds.map((id) => ({ kind: "group", id, ...measure(byId.get(id)) })),
+    ];
     visiting.delete(group.id);
-    const padding = 24;
-    const bounds = boxes.length
-      ? boundingBox(boxes, padding)
-      : { x: MARGIN, y: MARGIN, w: padding * 2, h: padding * 2 };
+    const primary = items.reduce((sum, item) => sum + (group.direction === "horizontal" ? item.w : item.h), 0)
+      + Math.max(0, items.length - 1) * group.gap;
+    const cross = items.reduce((max, item) => Math.max(max, group.direction === "horizontal" ? item.h : item.w), 0);
+    const measured = {
+      w: group.padding * 2 + (group.direction === "horizontal" ? primary : cross),
+      h: group.padding * 2 + (group.direction === "horizontal" ? cross : primary),
+      items,
+    };
+    measurements.set(group.id, measured);
+    return measured;
+  };
+  const boundsById = new Map();
+  const place = (group, x, y) => {
+    const measured = measure(group);
+    const bounds = { x, y, w: measured.w, h: measured.h };
     boundsById.set(group.id, bounds);
+    let cursor = group.direction === "horizontal" ? x + group.padding : y + group.padding;
+    for (const item of measured.items) {
+      const itemX = group.direction === "horizontal" ? cursor : x + group.padding;
+      const itemY = group.direction === "horizontal" ? y + group.padding : cursor;
+      if (item.kind === "group") place(byId.get(item.id), itemX, itemY);
+      else {
+        const body = bodyPosition.get(item.id);
+        body.bounds = { ...body.bounds, x: itemX, y: itemY };
+      }
+      cursor += (group.direction === "horizontal" ? item.w : item.h) + group.gap;
+    }
+  };
+  let rootX = MARGIN;
+  for (const root of definitions.filter((group) => !byId.has(group.parentId))) {
+    place(root, rootX, MARGIN);
+    rootX += measure(root).w + 48;
+  }
+  return definitions.map((group) => ({ ...group, bounds: boundsById.get(group.id) || { x: MARGIN, y: MARGIN, w: 0, h: 0 } }));
+}
+
+function measureGroupBounds(sourceGroups, bodyPosition) {
+  const definitions = sourceGroups.map((group) => ({
+    ...group,
+    id: String(group.id),
+    parentId: group.parentId ? String(group.parentId) : "",
+    primitiveIds: [...(group.primitiveIds || [])],
+  }));
+  const byId = new Map(definitions.map((group) => [group.id, group]));
+  const childrenByParent = new Map(definitions.map((group) => [group.id, []]));
+  for (const group of definitions) if (byId.has(group.parentId)) childrenByParent.get(group.parentId).push(group.id);
+  const measured = new Map();
+  const measure = (group, visiting = new Set()) => {
+    if (measured.has(group.id)) return measured.get(group.id);
+    if (visiting.has(group.id)) return { x: MARGIN, y: MARGIN, w: 48, h: 48 };
+    const next = new Set(visiting).add(group.id);
+    const boxes = group.primitiveIds.map((id) => bodyPosition.get(id)?.bounds).filter(Boolean);
+    for (const childId of childrenByParent.get(group.id) || []) boxes.push(measure(byId.get(childId), next));
+    const padding = 24;
+    const bounds = boxes.length ? boundingBox(boxes, padding) : { x: MARGIN, y: MARGIN, w: 48, h: 48 };
+    measured.set(group.id, bounds);
     return bounds;
   };
   return definitions.map((group) => ({ ...group, bounds: measure(group) }));
 }
 
 function boundingBox(boxes, padding) {
-  const minX = Math.min(...boxes.map((box) => box.x)) - padding;
-  const minY = Math.min(...boxes.map((box) => box.y)) - padding;
+  const minX = Math.max(0, Math.min(...boxes.map((box) => box.x)) - padding);
+  const minY = Math.max(0, Math.min(...boxes.map((box) => box.y)) - padding);
   const maxX = Math.max(...boxes.map((box) => box.x + box.w)) + padding;
   const maxY = Math.max(...boxes.map((box) => box.y + box.h)) + padding;
-  const x = Math.max(0, minX);
-  const y = Math.max(0, minY);
-  return { x, y, w: maxX - x, h: maxY - y };
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+function finiteNonNegative(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
 function topologicalLayers(bodies, relations) {

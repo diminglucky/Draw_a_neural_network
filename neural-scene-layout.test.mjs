@@ -183,6 +183,33 @@ test("nested groups participate in placement without sibling overlap or non-fini
   assert.equal(validateLaidOutScene(result).ok, true);
 });
 
+test("places nested container children according to declared direction, padding, and gap", () => {
+  const grouped = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      sceneBody("a", "band", "flow"),
+      sceneBody("b", "band", "flow"),
+      sceneBody("c", "band", "flow"),
+      sceneBody("d", "band", "flow"),
+    ],
+    relations: [],
+    groups: [
+      { id: "root", parentId: "", primitiveIds: ["a", "b", "c", "d"], direction: "horizontal", padding: 30, gap: 70 },
+      { id: "left", parentId: "root", primitiveIds: ["a", "b"], direction: "vertical", padding: 20, gap: 35 },
+      { id: "right", parentId: "root", primitiveIds: ["c", "d"], direction: "vertical", padding: 20, gap: 35 },
+    ],
+  };
+
+  const result = layoutNeuralScene(grouped);
+  const bodyById = new Map(result.primitives.filter((item) => item.role === "body").map((item) => [item.id, item]));
+  const groupById = new Map(result.groups.map((item) => [item.id, item]));
+  assert.equal(bodyById.get("a").bounds.x, bodyById.get("b").bounds.x);
+  assert.ok(bodyById.get("b").bounds.y >= bodyById.get("a").bounds.y + bodyById.get("a").bounds.h + 35);
+  assert.ok(groupById.get("right").bounds.x >= groupById.get("left").bounds.x + groupById.get("left").bounds.w + 70);
+  assert.equal(groupById.get("left").bounds.x - groupById.get("root").bounds.x, 30);
+  assert.equal(validateLaidOutScene(result).ok, true);
+});
+
 function corridorScene({ blockTop }) {
   const primitives = [
     sceneBody("a-top-seed", "plane", "top"),

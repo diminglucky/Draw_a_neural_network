@@ -172,6 +172,9 @@ function compileGroups(ir, projectionMap, projectionToBody) {
       label: group.label,
       role: group.role,
       parentId: group.parentId,
+      direction: group.direction,
+      padding: group.padding,
+      gap: group.gap,
       primitiveIds: [...new Set(primitiveIdsByGroup.get(group.id) || [])],
     })),
     diagnostics,
@@ -195,6 +198,9 @@ function groupDefinitions(ir) {
       label: String(source.label || id),
       role: String(source.role || "module"),
       parentId: String(source.parentId || ""),
+      direction: source.direction === "vertical" ? "vertical" : "horizontal",
+      padding: finiteNonNegative(source.padding, 24),
+      gap: finiteNonNegative(source.gap, 32),
       nodeIds: directChildren.filter((childId) => nodeIds.has(childId)),
       childGroupIds: directChildren.filter((childId) => !nodeIds.has(childId)),
     };
@@ -211,7 +217,7 @@ function groupDefinitions(ir) {
   for (const node of nodes) {
     const containerId = String(node.containerId || "");
     if (containerId && !byId.has(containerId)) {
-      const group = { id: containerId, label: containerId, role: "module", parentId: "", nodeIds: [], childGroupIds: [] };
+      const group = { id: containerId, label: containerId, role: "module", parentId: "", direction: "horizontal", padding: 24, gap: 32, nodeIds: [], childGroupIds: [] };
       definitions.push(group);
       byId.set(containerId, group);
     }
@@ -225,6 +231,11 @@ function groupDefinitions(ir) {
     }
   }
   return definitions;
+}
+
+function finiteNonNegative(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
 function enrichPrimitive(primitive, common, id, role) {

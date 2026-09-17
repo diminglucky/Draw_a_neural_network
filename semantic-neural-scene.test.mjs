@@ -90,6 +90,9 @@ test("projects Universal IR groups to projection body primitive identities", () 
     label: "Backbone",
     role: "stage",
     parentId: "",
+    direction: "horizontal",
+    padding: 24,
+    gap: 32,
     primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.stem]],
   }]);
   assert.equal(scene.groups[0].primitiveIds.includes("stem"), false);
@@ -112,10 +115,23 @@ test("projects nested containers with descendant body membership and parentId", 
   const bodyFor = (nodeId) => scene.projectionToBody[projectionMap.nodeToProjection[nodeId]];
 
   assert.deepEqual(scene.groups, [
-    { id: "outer", label: "Outer", role: "module", parentId: "", primitiveIds: [bodyFor("inside"), bodyFor("outside")] },
-    { id: "inner", label: "Inner", role: "stage", parentId: "outer", primitiveIds: [bodyFor("inside")] },
+    { id: "outer", label: "Outer", role: "module", parentId: "", direction: "horizontal", padding: 24, gap: 32, primitiveIds: [bodyFor("inside"), bodyFor("outside")] },
+    { id: "inner", label: "Inner", role: "stage", parentId: "outer", direction: "horizontal", padding: 24, gap: 32, primitiveIds: [bodyFor("inside")] },
   ]);
   assert.equal(validateSemanticScene(scene, ir, projectionMap).ok, true);
+});
+
+test("preserves generic container layout intent in semantic scene groups", () => {
+  const { scene } = compile({
+    nodes: [{ id: "a", family: "conv", containerId: "stage" }],
+    edges: [],
+    containers: [{ id: "stage", children: ["a"], direction: "horizontal", padding: 31, gap: 47 }],
+  });
+
+  assert.deepEqual(
+    { direction: scene.groups[0].direction, padding: scene.groups[0].padding, gap: scene.groups[0].gap },
+    { direction: "horizontal", padding: 31, gap: 47 },
+  );
 });
 
 test("creates deterministic scene groups from node containerId assignments", () => {
@@ -128,8 +144,8 @@ test("creates deterministic scene groups from node containerId assignments", () 
   });
 
   assert.deepEqual(scene.groups, [
-    { id: "encoder", label: "encoder", role: "module", parentId: "", primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.a]] },
-    { id: "head", label: "head", role: "module", parentId: "", primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.b]] },
+    { id: "encoder", label: "encoder", role: "module", parentId: "", direction: "horizontal", padding: 24, gap: 32, primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.a]] },
+    { id: "head", label: "head", role: "module", parentId: "", direction: "horizontal", padding: 24, gap: 32, primitiveIds: [scene.projectionToBody[projectionMap.nodeToProjection.b]] },
   ]);
   assert.equal(validateSemanticScene(scene, ir, projectionMap).ok, true);
 });
