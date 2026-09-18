@@ -24,6 +24,9 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
   }
   const bodyPosition = new Map(laidBodies.map((primitive) => [primitive.id, primitive]));
   const groups = placeGroups(scene.groups || [], bodyPosition);
+  if ((scene.groups || []).some((group) => ["horizontal", "vertical"].includes(group.direction))) {
+    arrangeTopLevelUnits(groups, bodyPosition, relations);
+  }
   const positionedBodies = [...bodyPosition.values()];
   const laidPrimitives = positionedBodies.map((primitive) => ({ ...primitive, anchors: anchorsFor(primitive) }));
   for (const primitive of primitives.filter((item) => item.role !== "body")) {
@@ -31,8 +34,9 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
     if (!owner) continue;
     laidPrimitives.push({ ...primitive, bounds: { x: owner.bounds.x, y: owner.bounds.y + owner.bounds.h + 12, w: owner.bounds.w, h: 18 }, anchors: { inputs: [], outputs: [] }, zIndex: owner.zIndex + 10 });
   }
-  const maxX = Math.max(...laidPrimitives.map((primitive) => primitive.bounds.x + primitive.bounds.w), MARGIN);
-  const maxY = Math.max(...laidPrimitives.map((primitive) => primitive.bounds.y + primitive.bounds.h), MARGIN);
+  const visualBounds = [...laidPrimitives.map((primitive) => primitive.bounds), ...groups.map((group) => group.bounds)];
+  const maxX = Math.max(...visualBounds.map((bounds) => bounds.x + bounds.w), MARGIN);
+  const maxY = Math.max(...visualBounds.map((bounds) => bounds.y + bounds.h), MARGIN);
   const page = { x: 0, y: 0, width: maxX + MARGIN, height: maxY + MARGIN };
   const connectors = [];
   for (const relation of relations) connectors.push(routeRelation(relation, bodyPosition, laidPrimitives, connectors));
@@ -63,6 +67,7 @@ export function validateLaidOutScene(layout = {}) {
     }
   }
   for (const group of layout.groups || []) {
+    if (!validBounds(group.bounds) || !insidePage(group.bounds, layout.page)) issues.push({ code: "group-out-of-page", groupId: group.id });
     for (const primitiveId of group.primitiveIds || []) {
       const member = primitiveById.get(primitiveId);
       if (!member) issues.push({ code: "missing-group-primitive", groupId: group.id, primitiveId });
@@ -188,6 +193,63 @@ function boundingBox(boxes, padding) {
 function finiteNonNegative(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function arrangeTopLevelUnits(groups, bodyPosition, relations) {
+  const groupById = new Map(groups.map((group) => [group.id, group]));
+  const roots = groups.filter((group) => !groupById.has(group.parentId));
+  const rootByBody = new Map();
+  for (const root of roots) for (const primitiveId of root.primitiveIds) if (!rootByBody.has(primitiveId)) rootByBody.set(primitiveId, root.id);
+  const units = [
+    ...roots.map((group) => ({ id: `group:${group.id}`, kind: "group", sourceId: group.id, bounds: group.bounds })),
+    ...[...bodyPosition.values()]
+      .filter((body) => !rootByBody.has(body.id))
+      .map((body) => ({ id: `body:${body.id}`, kind: "body", sourceId: body.id, bounds: body.bounds })),
+  ];
+  const unitIdForBody = (bodyId) => rootByBody.has(bodyId) ? `group:${rootByBody.get(bodyId)}` : `body:${bodyId}`;
+  const unitRelations = relations
+    .map((relation) => ({
+      ...relation,
+      sourcePrimitiveId: unitIdForBody(relation.sourcePrimitiveId),
+      targetPrimitiveId: unitIdForBody(relation.targetPrimitiveId),
+    }))
+    .filter((relation) => relation.sourcePrimitiveId !== relation.targetPrimitiveId);
+  const layers = topologicalLayers(units, unitRelations);
+  let x = MARGIN;
+  for (const layer of layers) {
+    let y = MARGIN;
+    let layerWidth = 0;
+    for (const unit of layer) {
+      translateTopLevelUnit(unit, x - unit.bounds.x, y - unit.bounds.y, groups, groupById, bodyPosition);
+      y += unit.bounds.h + GAP_Y;
+      layerWidth = Math.max(layerWidth, unit.bounds.w);
+    }
+    x += layerWidth + GAP_X;
+  }
+}
+
+function translateTopLevelUnit(unit, dx, dy, groups, groupById, bodyPosition) {
+  if (unit.kind === "body") {
+    const body = bodyPosition.get(unit.sourceId);
+    body.bounds = translateBounds(body.bounds, dx, dy);
+    unit.bounds = body.bounds;
+    return;
+  }
+  const root = groupById.get(unit.sourceId);
+  for (const primitiveId of root.primitiveIds) {
+    const body = bodyPosition.get(primitiveId);
+    if (body) body.bounds = translateBounds(body.bounds, dx, dy);
+  }
+  for (const group of groups) {
+    let ancestor = group;
+    while (ancestor && ancestor.id !== root.id) ancestor = groupById.get(ancestor.parentId);
+    if (ancestor) group.bounds = translateBounds(group.bounds, dx, dy);
+  }
+  unit.bounds = root.bounds;
+}
+
+function translateBounds(bounds, dx, dy) {
+  return { ...bounds, x: bounds.x + dx, y: bounds.y + dy };
 }
 
 function topologicalLayers(bodies, relations) {

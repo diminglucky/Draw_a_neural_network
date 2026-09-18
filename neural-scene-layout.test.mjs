@@ -210,6 +210,47 @@ test("places nested container children according to declared direction, padding,
   assert.equal(validateLaidOutScene(result).ok, true);
 });
 
+test("sizes the page to include container padding and bounds", () => {
+  const result = layoutNeuralScene({
+    version: "semantic-neural-scene/v1",
+    primitives: [sceneBody("only", "band", "flow")],
+    relations: [],
+    groups: [{ id: "frame", primitiveIds: ["only"], direction: "horizontal", padding: 120, gap: 32 }],
+  });
+  const frame = result.groups[0].bounds;
+
+  assert.ok(frame.x + frame.w <= result.page.width);
+  assert.ok(frame.y + frame.h <= result.page.height);
+  assert.equal(validateLaidOutScene(result).ok, true);
+});
+
+test("places grouped and ungrouped top-level bodies without overlap in data-flow order", () => {
+  const result = layoutNeuralScene({
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      sceneBody("input", "band", "flow"),
+      sceneBody("inside-a", "band", "flow"),
+      sceneBody("inside-b", "band", "flow"),
+      sceneBody("output", "band", "flow"),
+    ],
+    relations: [
+      relation("enter", "input", "inside-a"),
+      relation("internal", "inside-a", "inside-b"),
+      relation("leave", "inside-b", "output"),
+    ],
+    groups: [{ id: "module", primitiveIds: ["inside-a", "inside-b"], direction: "vertical", padding: 24, gap: 30 }],
+  });
+  const bodies = result.primitives.filter((item) => item.role === "body");
+  const byId = new Map(bodies.map((item) => [item.id, item.bounds]));
+
+  assert.ok(byId.get("input").x + byId.get("input").w <= result.groups[0].bounds.x);
+  assert.ok(result.groups[0].bounds.x + result.groups[0].bounds.w <= byId.get("output").x);
+  for (let left = 0; left < bodies.length; left += 1) {
+    for (let right = left + 1; right < bodies.length; right += 1) assert.equal(overlaps(bodies[left].bounds, bodies[right].bounds), false);
+  }
+  assert.equal(validateLaidOutScene(result).ok, true);
+});
+
 function corridorScene({ blockTop }) {
   const primitives = [
     sceneBody("a-top-seed", "plane", "top"),
