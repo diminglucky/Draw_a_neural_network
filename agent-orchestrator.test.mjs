@@ -156,6 +156,36 @@ test("known topology with unknown operator semantics can still be rendered as op
   assert.equal(result.visioDiagramPlan.nodes[0].sourceNodeId, "input");
 });
 
+test("prefers the publication plan for render and preserves it in public state", async () => {
+  let renderedPlan;
+  const publicationPlan = {
+    version: "visio-diagram-plan/v1",
+    bridgeVersion: "visio-dsl-bridge/v1",
+    nodes: [{ id: "publication-input", sourceNodeId: "input" }],
+    edges: [],
+  };
+  const run = createAgentRun(input, dependencies({
+    plan: (value) => ({
+      visioDiagramPlan: { version: "visio-diagram-plan/v1", nodes: [{ id: "scene-input", sourceNodeId: "input" }], edges: [] },
+      publicationVisioDiagramPlan: publicationPlan,
+      publicationVisioDiagramPlanValidation: { ok: true, issues: [] },
+      ir: value,
+    }),
+    render: async (value) => {
+      renderedPlan = value;
+      return { renderId: "render-publication", visioDiagramPlan: value };
+    },
+    readback: async (_plan, rendered) => ({ renderId: rendered.renderId, nodes: [{ sourceNodeId: "input" }], connectors: [] }),
+  }));
+  const result = await runAgentPipeline(run);
+
+  assert.equal(result.status, "completed");
+  assert.equal(renderedPlan.bridgeVersion, "visio-dsl-bridge/v1");
+  assert.equal(result.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
+  assert.equal(result.publicationVisioDiagramPlanValidation.ok, true);
+  assert.equal(result.planOutput.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
+});
+
 test("named modules (compoundKind module) do not trigger the confirmation gate", async () => {
   const run = createAgentRun(input, dependencies({
     extract: () => ({ nodes: [{ id: "c2f", family: "custom", compoundKind: "module", label: "C2f" }], edges: [] }),

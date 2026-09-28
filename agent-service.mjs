@@ -345,17 +345,20 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
         status: "needs_external_vision",
       });
     }
-    if (!result.visioDiagramPlan) {
+    const selectedPlan = result.publicationVisioDiagramPlan || result.visioDiagramPlan;
+    if (!selectedPlan) {
       const firstError = (result.diagnostics || []).find((d) => d.severity === "error");
       return jsonResponse(422, {
-        error: firstError?.message || "Architecture input did not produce a Visio Diagram Plan; Visio was not modified.",
+        error: firstError?.message || "Architecture input did not produce a renderable publication plan; Visio was not modified.",
         diagnostics: result.diagnostics,
         ...nextResult(result),
         status: "invalid_layout",
       });
     }
-    const renderPlan = result.renderResult?.plan || buildVisioRenderPlan(result.visioDiagramPlan, options);
-    const validation = result.visioDiagramPlan.validation || validateVisioDiagramPlan(result.visioDiagramPlan);
+    const renderPlan = result.renderResult?.plan || buildVisioRenderPlan(selectedPlan, options);
+    const validation = result.publicationVisioDiagramPlan
+      ? (result.publicationVisioDiagramPlanValidation || selectedPlan.validation || validateVisioDiagramPlan(selectedPlan))
+      : (result.visioDiagramPlan.validation || validateVisioDiagramPlan(selectedPlan));
     if (!validation.ok) {
       return jsonResponse(422, {
         status: "invalid_layout",
@@ -437,6 +440,11 @@ function nextResult(run) {
     input: run.input,
     ir: run.ir,
     visioDiagramPlan: run.visioDiagramPlan,
+    visioDiagramPlanValidation: run.visioDiagramPlanValidation,
+    publicationVisioDiagramPlan: run.publicationVisioDiagramPlan,
+    publicationVisioDiagramPlanValidation: run.publicationVisioDiagramPlanValidation,
+    neuralFigureProgram: run.neuralFigureProgram,
+    neuralFigurePlanValidation: run.neuralFigurePlanValidation,
     planOutput: run.planOutput,
     renderResult: run.renderResult,
     readback: run.readback,

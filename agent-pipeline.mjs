@@ -481,12 +481,16 @@ function buildVisioPlan(ir, diagnostics) {
       subtitle: canonicalIR.figure?.subtitle,
     })
     : null;
+  const publicationVisioDiagramPlanValidation = publicationVisioDiagramPlan
+    ? validateVisioDiagramPlan(publicationVisioDiagramPlan)
+    : neuralFigurePlanValidation;
   return {
     visioDiagramPlan: { ...visioDiagramPlan, validation: visioDiagramPlanValidation },
     visioDiagramPlanValidation,
     neuralFigureProgram,
     neuralFigurePlanValidation,
     publicationVisioDiagramPlan,
+    publicationVisioDiagramPlanValidation,
     sceneValidation,
     layoutDiagnostics,
   };

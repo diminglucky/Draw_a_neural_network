@@ -12,6 +12,8 @@ test("agent service discards closed Visio workers before the next render", () =>
   const source = readFileSync("agent-service.mjs", "utf8");
   assert.match(source, /visioWorker\.closed/);
   assert.match(source, /visioWorker = createVisioWorkerClient\(\)/);
+  assert.match(source, /publicationVisioDiagramPlan/);
+  assert.match(source, /buildVisioRenderPlan\(selectedPlan/);
 });
 
 // 拆分 server.js 时，这些内部纯函数随 createAgentService 一起移入了

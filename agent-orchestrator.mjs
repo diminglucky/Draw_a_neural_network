@@ -27,7 +27,9 @@ export function createAgentRun(input, dependencies = {}, options = {}) {
     diagnostics: [],
     attempts: { repair: 0 },
     inspect: undefined, extract: undefined, normalize: undefined, ir: undefined,
-    plan: undefined, planOutput: undefined, visioDiagramPlan: undefined,
+    plan: undefined, planOutput: undefined, visioDiagramPlan: undefined, visioDiagramPlanValidation: undefined,
+    publicationVisioDiagramPlan: undefined, publicationVisioDiagramPlanValidation: undefined,
+    neuralFigureProgram: undefined, neuralFigurePlanValidation: undefined,
     renderResult: undefined, readback: undefined,
   };
   runtimeByRun.set(run, {
@@ -62,6 +64,10 @@ export async function runAgentPipeline(run, options = {}) {
       if (stage === "plan") {
         current.planOutput = current.plan;
         current.visioDiagramPlan = current.plan?.visioDiagramPlan || current.plan;
+        current.publicationVisioDiagramPlan = current.plan?.publicationVisioDiagramPlan;
+        current.publicationVisioDiagramPlanValidation = current.plan?.publicationVisioDiagramPlanValidation;
+        current.neuralFigureProgram = current.plan?.neuralFigureProgram;
+        current.neuralFigurePlanValidation = current.plan?.neuralFigurePlanValidation;
         if (current.plan?.ir) current.ir = current.plan.ir;
       }
       await appendSnapshot(current, stage, value, runtime.runStore);
@@ -114,7 +120,7 @@ export function resumeAgentRun(run, event = {}) {
     next.snapshots = upsertSnapshot(next.snapshots, "render", event.value);
   } else if (event.type === "readback-result") {
     next.readback = clone(event.value);
-    const issues = diagnoseReadback(next.renderResult?.visioDiagramPlan || next.visioDiagramPlan, next.readback);
+    const issues = diagnoseReadback(selectedRenderPlan(next), next.readback);
     next.diagnostics = uniqueDiagnostics([...next.diagnostics, ...issues]);
     next.status = issues.length ? "readback-mismatch" : "completed";
     next.stage = "readback";
@@ -189,14 +195,21 @@ async function continueRepair(current, runtime) {
   const reason = current.repairReason || current.repair?.reason || "unspecified";
   try {
     const repair = runtime.dependencies?.repairVisioDiagramPlan;
-    const nextPlan = typeof repair === "function" ? await repair(clone(current.visioDiagramPlan), reason, current) : clone(current.visioDiagramPlan);
+    const activePlan = selectedRenderPlan(current);
+    const nextPlan = typeof repair === "function" ? await repair(clone(activePlan), reason, current) : clone(activePlan);
     if (nextPlan === undefined) throw new Error("repairDiagramPlan must return a Visio Diagram Plan.");
-    current.visioDiagramPlan = clone(nextPlan);
-    current.planOutput = current.planOutput?.visioDiagramPlan
-      ? { ...clone(current.planOutput), visioDiagramPlan: clone(nextPlan) }
-      : clone(nextPlan);
+    if (current.publicationVisioDiagramPlan) {
+      current.publicationVisioDiagramPlan = clone(nextPlan);
+    } else {
+      current.visioDiagramPlan = clone(nextPlan);
+    }
+    current.planOutput = mergePlanIntoOutput(current.planOutput, nextPlan, Boolean(current.publicationVisioDiagramPlan));
     current.plan = current.planOutput;
-    await appendSnapshot(current, "repair", { reason, visioDiagramPlan: nextPlan }, runtime.runStore);
+    await appendSnapshot(current, "repair", {
+      reason,
+      visioDiagramPlan: current.visioDiagramPlan,
+      publicationVisioDiagramPlan: current.publicationVisioDiagramPlan,
+    }, runtime.runStore);
     return runPostPlan(current, runtime);
   } catch (error) {
     return failAt(current, "repair", error, "repair-failed");
@@ -207,17 +220,17 @@ async function runPostPlan(current, runtime) {
   if (typeof runtime.dependencies?.render === "function") {
     current.stage = "render";
     try {
-      current.renderResult = await runtime.dependencies.render(clone(current.visioDiagramPlan), current);
+      current.renderResult = await runtime.dependencies.render(clone(selectedRenderPlan(current)), current);
       await appendSnapshot(current, "render", current.renderResult, runtime.runStore);
     } catch (error) { return failAt(current, "render", error, "render-failed"); }
   }
   if (typeof runtime.dependencies?.readback === "function") {
     current.stage = "readback";
     try {
-      current.readback = await runtime.dependencies.readback(clone(current.visioDiagramPlan), current.renderResult, current);
+      current.readback = await runtime.dependencies.readback(clone(selectedRenderPlan(current)), current.renderResult, current);
       await appendSnapshot(current, "readback", current.readback, runtime.runStore);
     } catch (error) { return failAt(current, "readback", error, "readback-mismatch"); }
-    const issues = diagnoseReadback(current.renderResult?.visioDiagramPlan || current.visioDiagramPlan, current.readback);
+    const issues = diagnoseReadback(selectedRenderPlan(current), current.readback);
     if (issues.length) {
       current.diagnostics = uniqueDiagnostics([...current.diagnostics, ...issues]);
       current.status = "readback-mismatch";
@@ -287,6 +300,10 @@ function restoreSnapshots(run) {
       run.plan = upgraded;
       run.planOutput = upgraded;
       run.visioDiagramPlan = upgraded?.visioDiagramPlan || upgraded;
+      run.publicationVisioDiagramPlan = upgraded?.publicationVisioDiagramPlan;
+      run.publicationVisioDiagramPlanValidation = upgraded?.publicationVisioDiagramPlanValidation;
+      run.neuralFigureProgram = upgraded?.neuralFigureProgram;
+      run.neuralFigurePlanValidation = upgraded?.neuralFigurePlanValidation;
       if (upgraded?.ir) run.ir = upgraded.ir;
     }
     if (snapshot.stage === "render") run.renderResult = upgradeLegacyRenderResult(value);
@@ -319,6 +336,19 @@ function upgradeLegacyPlan(value) {
   return { ...clone(value), version: "visio-diagram-plan/v1" };
 }
 
+function selectedRenderPlan(run = {}) {
+  return run.publicationVisioDiagramPlan || run.visioDiagramPlan;
+}
+
+function mergePlanIntoOutput(planOutput, nextPlan, publication) {
+  const base = planOutput && typeof planOutput === "object" && !Array.isArray(planOutput)
+    ? { ...clone(planOutput) }
+    : {};
+  if (publication) base.publicationVisioDiagramPlan = clone(nextPlan);
+  else base.visioDiagramPlan = clone(nextPlan);
+  return base;
+}
+
 function rememberResult(current, runtime) {
   const result = resultOf(current);
   const metadata = { ...runtime, state: current };
@@ -333,7 +363,7 @@ function resultOf(run) {
 }
 
 function publicState(run) {
-  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), visioDiagramPlan: clone(run.visioDiagramPlan), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
+  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), visioDiagramPlan: clone(run.visioDiagramPlan), publicationVisioDiagramPlan: clone(run.publicationVisioDiagramPlan), visioDiagramPlanValidation: clone(run.visioDiagramPlanValidation), publicationVisioDiagramPlanValidation: clone(run.publicationVisioDiagramPlanValidation), neuralFigureProgram: clone(run.neuralFigureProgram), neuralFigurePlanValidation: clone(run.neuralFigurePlanValidation), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
 }
 
 async function invoke(dependency, value, run) { return typeof dependency === "function" ? dependency(value, run) : value; }
