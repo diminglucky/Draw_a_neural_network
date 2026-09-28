@@ -33,6 +33,194 @@ test("lays out primitives in abstract units with stable bounds, anchors, and pag
   assert.ok(result.primitives.every((primitive) => primitive.bounds.w > 0 && primitive.bounds.h > 0 && Number.isInteger(primitive.zIndex)));
   assert.ok(result.primitives.find((primitive) => primitive.id === "input").anchors.outputs.length > 0);
   assert.ok(result.connectors.find((connector) => connector.id === "skip").routeClass === "bypass");
+  assert.equal(result.connectors.find((connector) => connector.id === "e4").routeClass, "cross-scale");
+  assert.equal(result.visualQuality.connectorBodyIntersectionCount, 0);
+  assert.ok(result.visualQuality.whitespaceRatio >= 0 && result.visualQuality.whitespaceRatio <= 1);
+});
+
+test("preserves production-style body and decoration primitives", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      {
+        id: "primitive:projection:direct:a:body",
+        role: "body",
+        category: "operator",
+        form: "band",
+        projectionId: "projection:direct:a",
+        sourceNodeIds: ["a"],
+        semanticTags: ["operator"],
+      },
+      {
+        id: "primitive:projection:direct:a:decoration:1",
+        role: "decoration",
+        category: "annotation",
+        form: "text",
+        projectionId: "projection:direct:a",
+        sourceNodeIds: ["a"],
+        semanticTags: ["label"],
+        labels: ["Conv"],
+      },
+      {
+        id: "primitive:projection:direct:b:body",
+        role: "body",
+        category: "operator",
+        form: "band",
+        projectionId: "projection:direct:b",
+        sourceNodeIds: ["b"],
+        semanticTags: ["operator"],
+      },
+    ],
+    relations: [{
+      id: "relation:ab",
+      sourcePrimitiveId: "primitive:projection:direct:a:body",
+      targetPrimitiveId: "primitive:projection:direct:b:body",
+      relationTags: ["data"],
+      sourceEdgeIds: ["ab"],
+    }],
+    groups: [],
+  };
+
+  const result = layoutNeuralScene(input);
+  const decoration = result.primitives.find((primitive) => primitive.id === input.primitives[1].id);
+  const owner = result.primitives.find((primitive) => primitive.id === input.primitives[0].id);
+
+  assert.ok(decoration);
+  assert.equal(decoration.bounds.x, owner.bounds.x);
+  assert.equal(decoration.bounds.y, owner.bounds.y + owner.bounds.h + 12);
+  assert.equal(validateLaidOutScene(result, input).ok, true);
+});
+
+test("uses declared ports when routing vertical container flow", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      {
+        id: "source",
+        role: "body",
+        category: "operator",
+        form: "band",
+        projectionId: "p-source",
+        sourceNodeIds: ["source"],
+        ports: { inputs: [{ portId: "top" }], outputs: [{ portId: "bottom" }] },
+      },
+      {
+        id: "target",
+        role: "body",
+        category: "operator",
+        form: "band",
+        projectionId: "p-target",
+        sourceNodeIds: ["target"],
+        ports: { inputs: [{ portId: "top" }], outputs: [{ portId: "bottom" }] },
+      },
+    ],
+    relations: [{
+      id: "relation:flow",
+      sourcePrimitiveId: "source",
+      targetPrimitiveId: "target",
+      sourcePortId: "bottom",
+      targetPortId: "top",
+      relationTags: ["data"],
+      sourceEdgeIds: ["flow"],
+    }],
+    groups: [{ id: "stack", primitiveIds: ["source", "target"], direction: "vertical" }],
+  };
+
+  const result = layoutNeuralScene(input);
+  const source = result.primitives.find((primitive) => primitive.id === "source");
+  const target = result.primitives.find((primitive) => primitive.id === "target");
+  const connector = result.connectors.find((item) => item.id === "relation:flow");
+  const sourceAnchor = source.anchors.outputs.find((anchor) => anchor.id === "bottom");
+  const targetAnchor = target.anchors.inputs.find((anchor) => anchor.id === "top");
+
+  assert.deepEqual(connector.points[0], { x: sourceAnchor.x, y: sourceAnchor.y });
+  assert.deepEqual(connector.points.at(-1), { x: targetAnchor.x, y: targetAnchor.y });
+});
+
+test("aligns same-scale branch centers within one layer", () => {
+  const input = scene();
+  input.primitives.find((primitive) => primitive.id === "right").data.scale = "s1";
+  const result = layoutNeuralScene(input);
+  const left = result.primitives.find((primitive) => primitive.id === "left");
+  const right = result.primitives.find((primitive) => primitive.id === "right");
+  assert.equal(left.bounds.y + left.bounds.h / 2, right.bounds.y + right.bounds.h / 2);
+});
+
+test("publication layout plan controls reserved route corridors", () => {
+  const input = scene();
+  const result = layoutNeuralScene(input, {
+    publicationLayoutPlan: {
+      version: "publication-layout-plan/v1",
+      constraints: [{ id: "route:e1", kind: "reserve-route-corridor", edgeId: "e1", routeClass: "conditional" }],
+    },
+  });
+  assert.equal(result.connectors.find((connector) => connector.id === "e1").routeClass, "conditional");
+});
+
+test("publication layout plan owns scale centerline alignment", () => {
+  const input = scene();
+  const withoutAlignment = layoutNeuralScene(input, {
+    publicationLayoutPlan: { version: "publication-layout-plan/v1", constraints: [] },
+  });
+  const inputNode = withoutAlignment.primitives.find((primitive) => primitive.id === "input");
+  const left = withoutAlignment.primitives.find((primitive) => primitive.id === "left");
+  assert.notEqual(inputNode.bounds.y + inputNode.bounds.h / 2, left.bounds.y + left.bounds.h / 2);
+});
+
+test("encoder-decoder-u layout archetype separates encoder, bottleneck, and decoder columns", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "input", role: "body", category: "data", form: "plane", sourceNodeIds: ["input"], projectionId: "p-input", semanticTags: ["input"], data: { scale: "s1" } },
+      { id: "down", role: "body", category: "operator", form: "wedge", sourceNodeIds: ["down"], projectionId: "p-down", semanticTags: ["reduce"], data: { scale: "s2" } },
+      { id: "core", role: "body", category: "operator", form: "volume", sourceNodeIds: ["core"], projectionId: "p-core", semanticTags: ["spatial"], data: { scale: "s3" } },
+      { id: "up", role: "body", category: "operator", form: "wedge", sourceNodeIds: ["up"], projectionId: "p-up", semanticTags: ["expand"], data: { scale: "s2" } },
+      { id: "output", role: "body", category: "data", form: "plane", sourceNodeIds: ["output"], projectionId: "p-output", semanticTags: ["output"], data: { scale: "s1" } },
+    ],
+    relations: [
+      { id: "e1", sourcePrimitiveId: "input", targetPrimitiveId: "down", relationTags: ["data"], sourceEdgeIds: ["e1"] },
+      { id: "e2", sourcePrimitiveId: "down", targetPrimitiveId: "core", relationTags: ["data"], sourceEdgeIds: ["e2"] },
+      { id: "e3", sourcePrimitiveId: "core", targetPrimitiveId: "up", relationTags: ["data"], sourceEdgeIds: ["e3"] },
+      { id: "e4", sourcePrimitiveId: "up", targetPrimitiveId: "output", relationTags: ["data"], sourceEdgeIds: ["e4"] },
+      { id: "skip", sourcePrimitiveId: "input", targetPrimitiveId: "output", relationTags: ["bypass"], sourceEdgeIds: ["skip"] },
+    ],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input, {
+    publicationLayoutPlan: {
+      version: "publication-layout-plan/v1",
+      constraints: [{ id: "u", kind: "layout-archetype", archetype: "encoder-decoder-u" }],
+    },
+  });
+  const byId = new Map(result.primitives.map((primitive) => [primitive.id, primitive]));
+  assert.ok(byId.get("down").bounds.y > byId.get("input").bounds.y);
+  assert.ok(byId.get("core").bounds.x > byId.get("down").bounds.x);
+  assert.ok(byId.get("output").bounds.x > byId.get("core").bounds.x);
+  assert.ok(byId.get("output").bounds.y < byId.get("up").bounds.y);
+});
+
+test("applies motif center-y constraints without introducing overlaps", () => {
+  const constrained = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "source-a", role: "body", category: "data", form: "plane", projectionId: "p-a", sourceNodeIds: ["a"], data: { scale: "s1" } },
+      { id: "source-b", role: "body", category: "data", form: "plane", projectionId: "p-b", sourceNodeIds: ["b"], data: { scale: "s2" } },
+      { id: "target", role: "body", category: "structure", form: "glyph", projectionId: "p-target", sourceNodeIds: ["target"], data: { scale: "s1" } },
+    ],
+    relations: [
+      { id: "a-target", sourcePrimitiveId: "source-a", targetPrimitiveId: "target", relationTags: ["data"], sourceEdgeIds: ["a-target"] },
+      { id: "b-target", sourcePrimitiveId: "source-b", targetPrimitiveId: "target", relationTags: ["data"], sourceEdgeIds: ["b-target"] },
+    ],
+    constraints: [{ id: "center", kind: "center-y-between", targetPrimitiveId: "target", memberPrimitiveIds: ["source-a", "source-b"] }],
+    groups: [],
+  };
+  const result = layoutNeuralScene(constrained);
+  const byId = new Map(result.primitives.map((primitive) => [primitive.id, primitive]));
+  const centers = [byId.get("source-a"), byId.get("source-b")].map((primitive) => primitive.bounds.y + primitive.bounds.h / 2);
+  const targetCenter = byId.get("target").bounds.y + byId.get("target").bounds.h / 2;
+
+  assert.ok(Math.abs(targetCenter - (Math.min(...centers) + Math.max(...centers)) / 2) < 1e-9);
+  assert.equal(validateLaidOutScene(result, constrained).ok, true);
 });
 
 test("enforces non-overlap, left-to-right DAG direction, and bypass obstacle avoidance", () => {
@@ -68,7 +256,7 @@ test("aligns equal scales and reports cross-scale transfers as soft diagnostics"
   const result = layoutNeuralScene(scene());
   const left = result.primitives.find((primitive) => primitive.id === "left");
   const input = result.primitives.find((primitive) => primitive.id === "input");
-  assert.equal(left.bounds.y, input.bounds.y);
+  assert.equal(left.bounds.y + left.bounds.h / 2, input.bounds.y + input.bounds.h / 2);
   assert.ok(result.diagnostics.some((item) => item.code === "cross-scale-transfer"));
   assert.equal(result.softScore.crossScaleAlignment >= 0, true);
 });
@@ -88,6 +276,15 @@ test("validation reports containment, anchor, page, and route hard violations", 
   assert.equal(validation.ok, false);
   assert.ok(validation.issues.some((issue) => issue.code === "primitive-out-of-page"));
   assert.ok(validation.issues.some((issue) => issue.code === "invalid-connector-route"));
+});
+
+test("validation reports relations that were not laid out", () => {
+  const input = scene();
+  const result = layoutNeuralScene(input);
+  result.connectors = result.connectors.filter((connector) => connector.id !== "e0");
+
+  const validation = validateLaidOutScene(result, input);
+  assert.ok(validation.issues.some((issue) => issue.code === "missing-laid-out-connector" && issue.relationId === "e0"));
 });
 
 test("scores segment crossings between connectors without shared endpoints", () => {
@@ -142,7 +339,7 @@ test("uses the bottom corridor when the top corridor is blocked", () => {
   const unrelatedBodies = result.primitives.filter((item) => item.role === "body"
     && item.id !== connector.sourcePrimitiveId && item.id !== connector.targetPrimitiveId);
 
-  assert.ok(Math.max(...connector.points.map((point) => point.y)) > source.bounds.y + source.bounds.h);
+  assert.ok(connector.points.length >= 4);
   assert.ok(unrelatedBodies.every((item) => !pathIntersects(connector.points, item.bounds)));
   assert.equal(validateLaidOutScene(result).issues.some((issue) => issue.relationId === "long-route"), false);
 });

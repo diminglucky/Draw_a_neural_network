@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   applyShapeInference,
@@ -6,6 +7,12 @@ import {
   validateIRSemantics,
   buildSemanticFeedback,
 } from "./agent-service.mjs";
+
+test("agent service discards closed Visio workers before the next render", () => {
+  const source = readFileSync("agent-service.mjs", "utf8");
+  assert.match(source, /visioWorker\.closed/);
+  assert.match(source, /visioWorker = createVisioWorkerClient\(\)/);
+});
 
 // 拆分 server.js 时，这些内部纯函数随 createAgentService 一起移入了
 // agent-service.mjs。此前它们只通过 HTTP 边界被间接覆盖，缺少直接断言。

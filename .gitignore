@@ -8,6 +8,8 @@ coverage/
 .worktrees/
 synapse-*.png
 llm-config.json
+__pycache__/
+*.pyc
 
 # Rendering artifacts and scratch output
 artifacts/

@@ -2,11 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createUniversalIR,
+  UNIVERSAL_IR_VERSION,
   normalizeUniversalIR,
   normalizeRecurrentEvidence,
   recurrentEvidenceForNode,
   validateUniversalIR,
 } from "./universal-ir.mjs";
+
+test("Universal IR freezes its version contract", () => {
+  const ir = createUniversalIR({ nodes: [], edges: [] });
+  assert.equal(ir.version, UNIVERSAL_IR_VERSION);
+  assert.equal(validateUniversalIR({ ...ir, version: "universal-neural-ir/v0" }).issues
+    .some((issue) => issue.kind === "invalid-ir-version"), true);
+});
 
 test("Universal IR normalizes explicit recurrent evidence without inferring topology from names", () => {
   const node = {

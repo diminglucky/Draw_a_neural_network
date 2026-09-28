@@ -1,10 +1,10 @@
-const KINDS = new Set(["source", "ir", "image", "prompt", "repository", "config", "artifact"]);
-const FIELDS = ["kind", "source", "framework", "ir", "images", "prompt", "sourceId", "metadata", "repository", "revision", "entryPoint", "config", "artifact", "diagnostics"];
+const KINDS = new Set(["source", "ir", "image", "prompt", "repository", "config", "artifact", "evidence"]);
+const FIELDS = ["kind", "source", "framework", "ir", "images", "prompt", "sourceId", "metadata", "repository", "revision", "entryPoint", "config", "artifact", "diagnostics", "sources"];
 const CONTEXT_FIELDS = new Set(["documentPath", "pageName", "renderId", "unitScale", "previewPath"]);
 
 export function normalizeArchitectureInput(input) {
   if (!input || typeof input !== "object" || Array.isArray(input) || !KINDS.has(input.kind)) {
-    throw invalidInput("kind must be source, ir, image, prompt, repository, config, or artifact");
+    throw invalidInput("kind must be source, ir, image, prompt, repository, config, artifact, or evidence");
   }
   const unknown = Object.keys(input).find((key) => !FIELDS.includes(key) && !CONTEXT_FIELDS.has(key));
   if (unknown) throw invalidInput(`unknown field ${unknown}`);
@@ -17,7 +17,8 @@ export function normalizeArchitectureInput(input) {
     || (input.kind === "config" && ((typeof input.config === "string" && input.config.trim()) || (input.config && typeof input.config === "object" && !Array.isArray(input.config))))
     || (input.kind === "artifact" && input.artifact && typeof input.artifact === "object" && !Array.isArray(input.artifact)
       && typeof input.artifact.format === "string" && input.artifact.format.trim().length > 0
-      && (typeof input.artifact.path === "string" || input.artifact.data !== undefined));
+      && (typeof input.artifact.path === "string" || input.artifact.data !== undefined))
+    || (input.kind === "evidence" && Array.isArray(input.sources) && input.sources.length > 0);
   if (!valid) throw invalidInput(`missing payload for ${input.kind}`);
   return result;
 }

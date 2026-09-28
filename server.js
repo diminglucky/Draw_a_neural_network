@@ -7,12 +7,13 @@ import { analyzeArchitectureInput } from "./agent-pipeline.mjs";
 import { createEmptyVisioDocument, resolveVisioDocumentPath } from "./visio-bridge.mjs";
 import { createLLMAnalyzer } from "./llm-analyzer.mjs";
 import { loadLLMConfig, maskApiKey, persistLLMConfig, fetchModelList } from "./llm-config.mjs";
-import { createAgentService, setLLMAnalyzer } from "./agent-service.mjs";
+import { closeVisioWorker, createAgentService, setLLMAnalyzer } from "./agent-service.mjs";
 
 // Re-export for backward compatibility: server.test.mjs and server-llm.test.mjs
 // import createAgentService from "./server.js". The implementation now lives in
 // agent-service.mjs.
 export { createAgentService };
+export { closeVisioWorker };
 
 const port = Number(process.env.PORT || 4173);
 // 静态文件目录 = server.js 所在目录（不依赖 cwd；Electron 打包后从 app.asar 读取）
@@ -60,6 +61,13 @@ async function handleAgentRequest(request, response) {
 function createAppServer() {
   return createServer(async (request, response) => {
   try {
+    if (request.method === "POST") {
+      const rejection = validateLocalPostRequest(request);
+      if (rejection) {
+        sendJson(response, rejection.status, rejection.payload);
+        return;
+      }
+    }
     if (request.method === "GET" && request.url === "/api/llm-config") {
       sendJson(response, 200, {
         baseUrl: llmConfig.baseUrl,
@@ -94,14 +102,20 @@ function createAppServer() {
     }
     if (request.method === "POST" && request.url === "/api/llm-models") {
       const body = await readJson(request);
-      const baseUrl = String(body.baseUrl || llmConfig.baseUrl || "").trim().replace(/\/+$/, "");
-      const apiKey = String(body.apiKey || "").trim() || llmConfig.apiKey || "";
+      const baseUrl = normalizeBaseUrl(body.baseUrl || llmConfig.baseUrl || "");
+      const storedBaseUrl = normalizeBaseUrl(llmConfig.baseUrl || "");
+      const explicitApiKey = String(body.apiKey || "").trim();
+      const apiKey = explicitApiKey || (baseUrl === storedBaseUrl ? llmConfig.apiKey : "");
       if (!baseUrl) {
         sendJson(response, 400, { status: "invalid_input", message: "请先填写 Base URL。" });
         return;
       }
       if (!apiKey) {
-        sendJson(response, 400, { status: "invalid_input", message: "请先填写 API Key。" });
+        sendJson(response, 400, {
+          status: "invalid_input",
+          code: "api-key-required-for-new-base-url",
+          message: "更换 Base URL 后必须重新填写 API Key，不能复用已保存的密钥。",
+        });
         return;
       }
       try {
@@ -166,8 +180,56 @@ function createAppServer() {
   });
 }
 
+function validateLocalPostRequest(request) {
+  const contentType = String(request.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  if (contentType !== "application/json") {
+    return {
+      status: 415,
+      payload: {
+        status: "unsupported_media_type",
+        code: "unsupported-content-type",
+        message: "POST requests must use application/json.",
+      },
+    };
+  }
+  const origin = String(request.headers.origin || "").trim();
+  if (!origin) return null;
+  let originHost;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return {
+      status: 403,
+      payload: {
+        status: "forbidden",
+        code: "cross-origin-request",
+        message: "Request origin is not allowed.",
+      },
+    };
+  }
+  const requestHost = String(request.headers.host || "").trim();
+  if (!requestHost || originHost !== requestHost) {
+    return {
+      status: 403,
+      payload: {
+        status: "forbidden",
+        code: "cross-origin-request",
+        message: "Request origin is not allowed.",
+      },
+    };
+  }
+  return null;
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
 export function startServer({ port: listenPort = port, host = "127.0.0.1" } = {}) {
   const appServer = createAppServer();
+  appServer.once("close", () => {
+    closeVisioWorker().catch(() => {});
+  });
   return new Promise((resolve, reject) => {
     appServer.once("error", reject);
     appServer.listen(listenPort, host, () => {

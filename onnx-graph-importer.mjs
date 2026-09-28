@@ -17,14 +17,37 @@ export function importOnnxGraph(buffer, context = {}) {
   }
   if (!model.graph) return { status: "invalid", graph: emptyGraph(), claims: [], diagnostics: [{ code: "missing-onnx-graph" }] };
 
-  const nodeIds = allocateNodeIds(model.graph.node);
-  const nodes = model.graph.node.map((node, index) => ({
-    id: nodeIds[index],
-    operator: String(node.opType || ""),
-    domain: String(node.domain || ""),
-    attributes: Object.fromEntries(node.attribute.map((attribute) => [attribute.name, attributeValue(attribute)])),
-  }));
+  const sourceId = String(context.sourceId || "onnx-source");
   const tensors = collectTensors(model.graph);
+  const tensorById = new Map(tensors.map((tensor) => [String(tensor.id), tensor]));
+  const nodeIds = allocateNodeIds(model.graph.node);
+  const nodes = model.graph.node.map((node, index) => {
+    const tensor = tensorById.get(String(node.output?.[0] || ""));
+    const shape = Array.isArray(tensor?.shape) ? tensor.shape : [];
+    return {
+      id: nodeIds[index],
+      operator: String(node.opType || ""),
+      domain: String(node.domain || ""),
+      attributes: Object.fromEntries(node.attribute.map((attribute) => [attribute.name, attributeValue(attribute)])),
+      ...(shape.length ? {
+        shape: {
+          output: shape,
+          ordering: "NCHW",
+          source: "declared",
+          confidence: 1,
+          evidence: [{ kind: "onnx-tensor-shape", sourceId, analyzer: "onnx", tensorId: String(node.output?.[0] || "") }],
+        },
+      } : {}),
+      evidence: [{
+        kind: "onnx-node",
+        sourceId,
+        analyzer: "onnx",
+        nodeIndex: index,
+        name: String(node.name || ""),
+        operator: String(node.opType || ""),
+      }],
+    };
+  });
   const producerByTensor = new Map();
   const ports = [];
   for (let index = 0; index < model.graph.node.length; index += 1) {
@@ -39,11 +62,26 @@ export function importOnnxGraph(buffer, context = {}) {
   for (let index = 0; index < model.graph.node.length; index += 1) {
     for (const tensorId of model.graph.node[index].input) {
       const source = producerByTensor.get(tensorId);
-      if (source) edges.push({ id: `onnx-edge-${edges.length + 1}`, source, target: nodes[index].id, tensorId, status: "grounded" });
+      if (source) edges.push({
+        id: `onnx-edge-${edges.length + 1}`,
+        source,
+        target: nodes[index].id,
+        tensorId,
+        status: "grounded",
+        evidence: [{
+          kind: "onnx-tensor-edge",
+          sourceId,
+          analyzer: "onnx",
+          targetNodeIndex: index,
+          tensorId,
+        }],
+      });
     }
   }
-  const sourceId = String(context.sourceId || "onnx-source");
-  const claims = nodes.map((node) => ({ id: `${node.id}:operator`, subjectId: node.id, predicate: "operator", value: node.operator, sourceIds: [sourceId], confidence: 1, status: "grounded" }));
+  const claims = nodes.flatMap((node) => [
+    { id: `${node.id}:operator`, subjectId: node.id, predicate: "operator", value: node.operator, sourceIds: [sourceId], confidence: 1, status: "grounded" },
+    ...(node.shape ? [{ id: `${node.id}:shape`, subjectId: node.id, predicate: "shape", value: node.shape.output, sourceIds: [sourceId], confidence: 1, status: "grounded" }] : []),
+  ]);
   return {
     status: "grounded",
     sources: [{ id: sourceId, kind: "artifact", format: "onnx", uri: context.uri || "", revision: context.revision || "", sha256: createHash("sha256").update(bytes).digest("hex"), authority: Number(context.authority || 0) }],

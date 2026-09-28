@@ -7,10 +7,19 @@ import { importArchitectureConfig } from "./architecture-config-importer.mjs";
 import { importOnnxGraph } from "./onnx-graph-importer.mjs";
 import { createVisioDiagramPlan, validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
-import { deriveNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
-import { createProjectionMap } from "./neural-projection-map.mjs";
-import { compileSemanticScene } from "./semantic-neural-scene.mjs";
+import { deriveNeuralSemanticFacts, validateNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
+import { createProjectionMap, validateProjectionMap } from "./neural-projection-map.mjs";
+import { compileSemanticScene, validateSemanticScene } from "./semantic-neural-scene.mjs";
 import { layoutNeuralScene, validateLaidOutScene } from "./neural-scene-layout.mjs";
+import { containsUncertainTopology } from "./topology-uncertainty.mjs";
+import { fuseGraphEvidence } from "./graph-evidence-fusion.mjs";
+import { fuseAutomaticEvidence } from "./automatic-evidence.mjs";
+import { buildCanonicalModelGraph, validateCanonicalModelGraph } from "./canonical-model-graph.mjs";
+import { createPublicationLayoutPlan, validatePublicationLayoutPlan } from "./publication-layout-plan.mjs";
+import { planNeuralFigure, validateNeuralFigurePlan } from "./figure-planner.mjs";
+import { compileNeuralFigureDslToVisioLayout } from "./visio-dsl-bridge.mjs";
+import { createPlotNeuralNetStyleSpec } from "./reference-figure-spec.mjs";
+import { compileReferenceStyle } from "./reference-style-compiler.mjs";
 
 const STATUS = Object.freeze({
   READY: "ready_for_visio",
@@ -55,10 +64,34 @@ export function analyzeArchitectureInput(input = {}, options = {}) {
  */
 export function extractArchitectureEvidence(input = {}, options = {}) {
   const kind = inferInputKind(input);
-  if (!["source", "ir", "image", "prompt", "repository", "config", "artifact"].includes(kind)) {
-    throw new TypeError("Expected source, ir, image, prompt, repository, config, or artifact architecture input.");
+  if (!["source", "ir", "image", "prompt", "repository", "config", "artifact", "evidence"].includes(kind)) {
+    throw new TypeError("Expected source, ir, image, prompt, repository, config, artifact, or evidence architecture input.");
   }
   normalizeArchitectureInput({ ...input, kind });
+
+  if (options.autoFuseEvidence === true) {
+    return fuseAutomaticEvidence(input, options).then((fused) => evidenceFromFusion(fused, input));
+  }
+
+  if (kind === "evidence") {
+    const fused = fuseGraphEvidence(input.sources);
+    return evidenceFromFusion(fused, input);
+  }
+
+  if (kind === "source" && typeof options.codeAnalyzer === "function") {
+    return Promise.resolve(options.codeAnalyzer(input)).then((analyzed) => {
+      if (!analyzed?.ir) return extractArchitectureEvidence(input);
+      return {
+        kind,
+        rawIR: analyzed.ir,
+        nodes: analyzed.ir.nodes || [],
+        edges: analyzed.ir.edges || [],
+        source: analyzed.ir.source,
+        baseDiagnostics: analyzed.diagnostics,
+        input,
+      };
+    });
+  }
 
   if (kind === "config") return packageImportedEvidence(input, importArchitectureConfig(input.config, sourceContext(input)));
   if (kind === "artifact") {
@@ -109,6 +142,20 @@ export function extractArchitectureEvidence(input = {}, options = {}) {
         ? "Image input is waiting for a vision analyzer to extract Universal IR."
         : "Image input must include at least one image before vision analysis."
     )],
+    input,
+  };
+}
+
+function evidenceFromFusion(fused, input) {
+  return {
+    kind: input.kind,
+    status: fused.status,
+    rawIR: fused.ir,
+    nodes: fused.ir.nodes || [],
+    edges: fused.ir.edges || [],
+    source: fused.ir.source,
+    diagnostics: fused.conflicts,
+    fusion: fused,
     input,
   };
 }
@@ -369,17 +416,51 @@ function computeDiagnostics(ir, evidenceGraph, validation) {
     ...(Array.isArray(evidenceGraph?.diagnostics) ? evidenceGraph.diagnostics : []),
     ...(Array.isArray(ir.diagnostics) ? ir.diagnostics : []),
     ...unresolvedDiagnostics(ir),
+    ...assumedShapeDiagnostics(ir),
     ...((validation?.issues) || []).map((issue) => ({ ...issue, severity: "error" })),
   ]);
 }
 
 // 把已归一化的 IR 布局成 Figure Plan。plan 阶段与同步 finalize 共用。
 function buildVisioPlan(ir, diagnostics) {
-  const semanticFacts = deriveNeuralSemanticFacts(ir);
-  const projectionMap = createProjectionMap(ir, semanticFacts, { detail: "balanced" });
-  const semanticScene = compileSemanticScene(ir, semanticFacts, projectionMap);
-  const scene = layoutNeuralScene(semanticScene);
-  const sceneValidation = validateLaidOutScene(scene);
+  const canonicalModel = buildCanonicalModelGraph(ir);
+  const canonicalValidation = validateCanonicalModelGraph(canonicalModel);
+  if (!canonicalValidation.ok) return invalidSceneContract("canonical-model", canonicalValidation.issues);
+  const canonicalIR = canonicalModel.ir;
+  const semanticFacts = deriveNeuralSemanticFacts(canonicalModel);
+  const semanticFactsValidation = validateNeuralSemanticFacts(semanticFacts, canonicalIR);
+  if (!semanticFactsValidation.ok) {
+    return invalidSceneContract("semantic-facts", semanticFactsValidation.issues);
+  }
+  const projectionMap = createProjectionMap(canonicalIR, semanticFacts, { detail: "balanced" });
+  const projectionValidation = validateProjectionMap(projectionMap, canonicalIR);
+  if (!projectionValidation.ok) {
+    return invalidSceneContract("projection", projectionValidation.issues);
+  }
+  const semanticScene = compileSemanticScene(canonicalIR, semanticFacts, projectionMap);
+  const semanticSceneValidation = validateSemanticScene(semanticScene, canonicalIR, projectionMap);
+  const semanticErrors = (semanticScene.diagnostics || []).filter((item) => item.severity === "error");
+  if (!semanticSceneValidation.ok || semanticErrors.length) {
+    return invalidSceneContract("semantic-scene", [
+      ...semanticSceneValidation.issues,
+      ...semanticErrors.map((item) => ({ code: item.code || "semantic-scene-error", ...item })),
+    ]);
+  }
+  const publicationLayoutPlan = createPublicationLayoutPlan({
+    canonicalModel,
+    facts: semanticFacts,
+    motifs: { motifs: semanticScene.motifs || [] },
+    styleCompilation: compileReferenceStyle({
+      style: createPlotNeuralNetStyleSpec(),
+      canonicalModel,
+    }),
+  });
+  const publicationLayoutValidation = validatePublicationLayoutPlan(publicationLayoutPlan, canonicalModel);
+  if (!publicationLayoutValidation.ok) {
+    return invalidSceneContract("publication-layout", publicationLayoutValidation.issues);
+  }
+  const scene = layoutNeuralScene(semanticScene, { publicationLayoutPlan });
+  const sceneValidation = validateLaidOutScene(scene, semanticScene);
   const layoutDiagnostics = sceneValidation.issues.map((issue) => diagnostic(
     "layout-issue",
     "error",
@@ -387,22 +468,50 @@ function buildVisioPlan(ir, diagnostics) {
     { issueCode: issue.code, issue },
   ));
   if (!sceneValidation.ok) return { sceneValidation, layoutDiagnostics };
-  const visioDiagramPlan = createVisioDiagramPlan({ ir, scene, diagnostics });
+  const visioDiagramPlan = createVisioDiagramPlan({ ir: canonicalIR, scene, diagnostics });
   const visioDiagramPlanValidation = validateVisioDiagramPlan(visioDiagramPlan);
+  const neuralFigureProgram = planNeuralFigure(canonicalModel, {
+    facts: semanticFacts,
+    motifs: { motifs: semanticScene.motifs || [] },
+  });
+  const neuralFigurePlanValidation = validateNeuralFigurePlan(neuralFigureProgram, canonicalModel);
+  const publicationVisioDiagramPlan = neuralFigurePlanValidation.ok
+    ? compileNeuralFigureDslToVisioLayout(neuralFigureProgram, {
+      title: canonicalIR.figure?.title,
+      subtitle: canonicalIR.figure?.subtitle,
+    })
+    : null;
   return {
     visioDiagramPlan: { ...visioDiagramPlan, validation: visioDiagramPlanValidation },
     visioDiagramPlanValidation,
+    neuralFigureProgram,
+    neuralFigurePlanValidation,
+    publicationVisioDiagramPlan,
     sceneValidation,
     layoutDiagnostics,
+  };
+}
+
+function invalidSceneContract(stage, issues) {
+  const validation = { ok: false, issues, summary: { issueCount: issues.length, stage } };
+  return {
+    sceneValidation: validation,
+    layoutDiagnostics: issues.map((issue) => diagnostic(
+      "layout-issue",
+      "error",
+      `Scene contract validation failed at ${stage}: ${issue.code}.`,
+      { issueCode: issue.code, stage, issue },
+    )),
   };
 }
 
 function finalizeResult(rawIR, context = {}) {
   const { evidenceGraph, ir, validation } = buildEvidenceGraphIR(rawIR, context);
   const uniqueDiagnostics = computeDiagnostics(ir, evidenceGraph, validation);
-  const hasUncertainty = uniqueDiagnostics.some((item) =>
-    item.kind === "unresolved-operator" || item.kind === "dynamic-control-flow" || item.kind === "prompt-topology-unresolved"
-  ) || ir.nodes.some((node) => isUnresolvedNode(node) || unresolvedRecurrentNode(node));
+  const hasUncertainty = containsUncertainTopology({
+    nodes: ir.nodes,
+    diagnostics: uniqueDiagnostics,
+  });
 
   const reviewableUncertainty = hasUncertainty && validation.issues.every((issue) =>
     ["low-confidence-edge", "missing-edge-evidence", "unresolved-edge"].includes(issue.kind)
@@ -439,6 +548,9 @@ function finalizeResult(rawIR, context = {}) {
     ir: publicIR(ir),
     visioDiagramPlan: planned.visioDiagramPlan,
     visioDiagramPlanValidation: planned.visioDiagramPlanValidation,
+    neuralFigureProgram: planned.neuralFigureProgram,
+    neuralFigurePlanValidation: planned.neuralFigurePlanValidation,
+    publicationVisioDiagramPlan: planned.publicationVisioDiagramPlan,
     validation,
     diagnostics,
     summary: summaryFor(ir, context.sourceKind),
@@ -454,6 +566,17 @@ function unresolvedDiagnostics(ir) {
       "warning",
       `Operator ${node.op} is preserved as an unresolved compound and needs review.`,
       { nodeId: node.id, operator: node.op, confidence: node.confidence }
+    ));
+}
+
+function assumedShapeDiagnostics(ir) {
+  return ir.nodes
+    .filter((node) => node.shape?.source === "assumed-default")
+    .map((node) => diagnostic(
+      "assumed-shape",
+      "warning",
+      `Node ${node.id} uses an assumed input shape; confirm the tensor shape before publication.`,
+      { nodeId: node.id, shape: [...(node.shape.output || [])], confidence: node.shape.confidence }
     ));
 }
 

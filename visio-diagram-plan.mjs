@@ -1,4 +1,4 @@
-const VISIO_DIAGRAM_PLAN_VERSION = "visio-diagram-plan/v1";
+export const VISIO_DIAGRAM_PLAN_VERSION = "visio-diagram-plan/v1";
 
 export function createVisioDiagramPlan({ ir = {}, scene, geometry, layout, diagnostics = [] } = {}) {
   const sourceLayout = scene?.version === "laid-out-neural-scene/v1"
@@ -160,7 +160,9 @@ function validateEmbeddedScene(plan, issues) {
   const coveredEdgeIds = new Set();
   for (const primitive of primitives) {
     const primitiveId = String(primitive?.id || "");
-    if (primitiveId) primitiveIds.add(primitiveId);
+    if (!primitiveId) issues.push({ code: "missing-scene-primitive-id" });
+    else if (primitiveIds.has(primitiveId)) issues.push({ code: "duplicate-scene-primitive", primitiveId });
+    else primitiveIds.add(primitiveId);
     for (const nodeId of primitive?.sourceNodeIds || []) coveredNodeIds.add(String(nodeId));
     for (const edgeId of primitive?.sourceEdgeIds || []) coveredEdgeIds.add(String(edgeId));
     if (primitive?.role !== "body") continue;
@@ -274,7 +276,7 @@ function sceneCompatibilityLayout(ir, scene) {
       id: String(node.id || `scene-node-${index + 1}`),
       sourceNodeId: String(node.id || `scene-node-${index + 1}`),
       sourceNodeIds: [String(node.id || `scene-node-${index + 1}`)],
-      figureLabel: String(body?.labels?.[0]?.text || node.label || node.op || "Operator"),
+      figureLabel: String(sceneLabelText(body?.labels?.[0]) || node.label || node.op || "Operator"),
       visualRole: sceneCompatibilityVisualRole(node, body),
       representation: String(body?.form || node.shapeKind || node.family || "operator"),
       styleProfile: String(body?.category || node.styleProfile || "operator"),
@@ -304,6 +306,11 @@ function sceneCompatibilityLayout(ir, scene) {
     groups: cloneValue(scene.groups || []),
     architectureLayout: cloneValue(ir.architectureLayout || {}),
   };
+}
+
+function sceneLabelText(label) {
+  if (typeof label === "string") return label;
+  return String(label?.text || "");
 }
 
 function sceneCompatibilityVisualRole(node, body) {

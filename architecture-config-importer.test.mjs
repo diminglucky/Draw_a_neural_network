@@ -18,6 +18,8 @@ branches:
   assert.equal(result.graph.nodes[1].repeat, 3);
   assert.deepEqual(result.graph.edges.filter((edge) => edge.target === "join").map((edge) => edge.source).sort(), ["left", "right"]);
   assert.ok(result.claims.every((claim) => claim.status === "grounded"));
+  assert.equal(result.graph.nodes[0].evidence[0].kind, "config-declaration");
+  assert.equal(result.graph.edges[0].evidence[0].kind, "config-reference");
 });
 
 test("follows relative references and preserves parameters without expanding repeats", () => {

@@ -7,9 +7,13 @@ export function createDefaultNeuralVisualRules() {
     bodyRule("repeat-body", 95, (c) => c.projection.kind === "repeat-collapse", "structure", "stack", ["repeat"]),
     bodyRule("merge-body", 90, (c) => hasRole(c, "merge"), "structure", "glyph", ["merge"]),
     bodyRule("state-body", 85, (c) => hasDomain(c, "state"), "operator", "cell", ["stateful"]),
+    bodyRule("attention-body", 82, (c) => hasMotif(c, "attention-region"), "operator", "stack", ["attention", "sequence"]),
     bodyRule("sequence-body", 80, (c) => hasDomain(c, "sequence"), "data", "strip", ["sequence"]),
     bodyRule("input-plane-body", 75, (c) => hasRole(c, "input") && hasDomain(c, "spatial"), "data", "plane", ["spatial", "input"]),
-    bodyRule("scale-change-body", 70, (c) => hasEffect(c, "reduce") || hasEffect(c, "expand"), "operator", "wedge", ["scale-change"]),
+    bodyRule("scale-reduce-body", 70, (c) => hasEffect(c, "reduce"), "operator", "wedge", ["scale-change", "reduce"], { scaleChange: "reduce" }),
+    bodyRule("scale-expand-body", 69, (c) => hasEffect(c, "expand"), "operator", "wedge", ["scale-change", "expand"], { scaleChange: "expand" }),
+    bodyRule("graph-body", 68, (c) => hasMotif(c, "graph-message-passing"), "operator", "cell", ["graph"]),
+    bodyRule("conditional-body", 67, (c) => hasMotif(c, "conditional-route"), "structure", "glyph", ["conditional"]),
     bodyRule("spatial-volume-body", 65, (c) => hasDomain(c, "spatial"), "data", "volume", ["spatial"]),
     bodyRule("fallback-body", 1, () => true, "operator", "band", ["operator"]),
     {
@@ -25,7 +29,7 @@ export function createDefaultNeuralVisualRules() {
     },
     {
       id: "label-decoration", phase: "decoration", priority: 10, match: () => true,
-      emit: (c) => [{ category: "annotation", form: "text", semanticTags: ["label"], labels: c.nodes.map((node) => node.label || node.op || node.id), data: { decoration: "label" } }],
+      emit: (c) => [{ category: "annotation", form: "text", semanticTags: ["label"], labels: c.nodes.map(publicationLabel), data: { decoration: "label" } }],
     },
     { id: "normalize-phase", phase: "normalize", priority: 0, match: () => false, emit: () => [] },
   ];
@@ -71,14 +75,26 @@ function selectExclusiveBody(matches) {
   return winners;
 }
 
-function bodyRule(id, priority, match, category, form, semanticTags) {
-  return { id, phase: "body", priority, match, emit: () => [{ category, form, semanticTags }] };
+function bodyRule(id, priority, match, category, form, semanticTags, data = {}) {
+  return { id, phase: "body", priority, match, emit: () => [{ category, form, semanticTags, data }] };
 }
 function hasDomain(context, value) { return context.nodeFacts.some((facts) => facts.dataDomain?.value === value); }
 function hasEffect(context, value) { return context.nodeFacts.some((facts) => facts.operationEffect?.value === value); }
 function hasRole(context, value) { return context.nodeFacts.some((facts) => facts.structuralRole?.value === value); }
+function hasMotif(context, kind) {
+  const ids = new Set(context.nodes.map((node) => String(node.id)));
+  return (context.motifs?.motifs || []).some((motif) => motif.kind === kind && motif.nodeIds.some((nodeId) => ids.has(String(nodeId))));
+}
 function containsCoordinates(value) {
   if (Array.isArray(value)) return value.some(containsCoordinates);
   if (!value || typeof value !== "object") return false;
   return Object.entries(value).some(([key, child]) => COORDINATE_KEYS.has(key) || containsCoordinates(child));
+}
+
+function publicationLabel(node = {}) {
+  const title = String(node.label || node.op || node.id || "").trim();
+  const shape = Array.isArray(node.shape?.output) ? node.shape.output.map(String) : [];
+  while (shape.length > 1 && ["1", "-1", "null", "undefined"].includes(shape[0])) shape.shift();
+  const assumption = node.shape?.source === "assumed-default" ? "*" : "";
+  return shape.length ? `${title}\n${shape.join(" x ")}${assumption}` : title;
 }

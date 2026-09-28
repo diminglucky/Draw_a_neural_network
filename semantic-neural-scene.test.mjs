@@ -20,6 +20,7 @@ test("compiles generic data, operator, merge, state, sequence, repeat, and opaqu
       { id: "repeat", family: "conv", repeatCount: 3, shape: { output: [1, 32, 112, 112] } },
       { id: "merge", family: "merge" },
       { id: "state", family: "recurrent" },
+      { id: "sequence-input", family: "input", attributes: { dataDomain: "sequence" }, shape: { output: [1, 128, 768] } },
       { id: "tokens", family: "attention", shape: { output: [1, 128, 768] } },
       { id: "opaque", family: "custom", compoundKind: "unresolved" },
       { id: "out", family: "output", shape: { output: [1, 10] } },
@@ -28,7 +29,7 @@ test("compiles generic data, operator, merge, state, sequence, repeat, and opaqu
       { id: "e1", source: "image", target: "reduce" }, { id: "e2", source: "reduce", target: "repeat" },
       { id: "e3", source: "repeat", target: "merge" }, { id: "e4", source: "image", target: "merge", type: "residual" },
       { id: "e5", source: "merge", target: "state" }, { id: "loop", source: "state", target: "state", type: "state" },
-      { id: "e6", source: "state", target: "tokens" }, { id: "e7", source: "tokens", target: "opaque" },
+      { id: "e6", source: "state", target: "sequence-input" }, { id: "e6b", source: "sequence-input", target: "tokens" }, { id: "e7", source: "tokens", target: "opaque" },
       { id: "e8", source: "opaque", target: "out", type: "output" },
     ],
   });
@@ -49,6 +50,25 @@ test("branch topology emits a split structure without inventing source identitie
   assert.equal(validateSemanticScene(scene, ir, projectionMap).ok, true);
 });
 
+test("multi-scale fusion emits a deterministic center-y layout constraint", () => {
+  const { scene } = compile({
+    nodes: [
+      { id: "fine", family: "conv", shape: { output: [1, 64, 80, 80] } },
+      { id: "medium", family: "conv", shape: { output: [1, 128, 40, 40] } },
+      { id: "coarse", family: "conv", shape: { output: [1, 256, 20, 20] } },
+      { id: "fusion", family: "merge", semanticRole: "concat", shape: { output: [1, 448, 64, 64] } },
+    ],
+    edges: [
+      { id: "fine-fusion", source: "fine", target: "fusion", type: "cross-scale" },
+      { id: "medium-fusion", source: "medium", target: "fusion", type: "cross-scale" },
+      { id: "coarse-fusion", source: "coarse", target: "fusion", type: "cross-scale" },
+    ],
+  });
+
+  assert.ok(scene.constraints.some((constraint) =>
+    constraint.kind === "center-y-between" && constraint.memberPrimitiveIds.length === 3));
+});
+
 test("equivalent structural facts choose equivalent primitives after model and module renaming", () => {
   const document = { nodes: [{ id: "in", family: "input", shape: { output: [1, 3, 32, 32] } }, { id: "x", family: "pool", shape: { output: [1, 3, 16, 16] } }], edges: [{ id: "e", source: "in", target: "x" }] };
   const first = compile(document).scene;
@@ -65,6 +85,14 @@ test("validation rejects duplicate bodies and missing projection or source cover
   assert.equal(validation.ok, false);
   assert.ok(validation.issues.some((issue) => issue.code === "duplicate-projection-body"));
   assert.ok(validation.issues.some((issue) => issue.code === "missing-projection-body"));
+});
+
+test("validation rejects duplicate primitive identities", () => {
+  const { scene, ir, projectionMap } = compile({ nodes: [{ id: "a", family: "conv" }], edges: [] });
+  scene.primitives.push({ ...scene.primitives[0] });
+
+  const validation = validateSemanticScene(scene, ir, projectionMap);
+  assert.ok(validation.issues.some((issue) => issue.code === "duplicate-scene-primitive"));
 });
 
 test("validation rejects a source node owned by multiple bodies and dangling scene relations", () => {

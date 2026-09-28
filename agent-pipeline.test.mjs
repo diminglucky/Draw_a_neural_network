@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { analyzeArchitectureInput, extractArchitectureEvidence, normalizeArchitectureEvidence, planArchitectureFigure } from "./agent-pipeline.mjs";
+import { buildVisioRenderPlan } from "./visio-bridge.mjs";
 import onnxProto from "onnx-proto";
 
 test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
@@ -25,9 +26,38 @@ test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
   assert.equal(result.visioDiagramPlan.scene.units, "layout-unit");
   assert.ok(result.visioDiagramPlan.scene.primitives.every((primitive) => primitive.bounds));
   assert.equal(result.visioDiagramPlanValidation.ok, true);
+  assert.equal(result.neuralFigurePlanValidation.ok, true);
+  assert.equal(result.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
+  assert.ok(result.publicationVisioDiagramPlan.nodes.some((node) => node.sourceNodeId === "cell"));
   assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "cell").shapeKind, "cell");
   assert.equal(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").type, "loop");
   assert.ok(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").route.points.length > 1);
+});
+
+test("production scene keeps annotation primitives through the Visio render plan", () => {
+  const result = analyzeArchitectureInput({
+    kind: "ir",
+    ir: {
+      nodes: [
+        { id: "input", family: "input", op: "Input", stage: 0 },
+        { id: "conv", family: "conv", op: "Conv2d", stage: 1 },
+        { id: "output", family: "output", op: "Output", stage: 2 },
+      ],
+      edges: [
+        { id: "in-conv", source: "input", target: "conv", type: "signal" },
+        { id: "conv-out", source: "conv", target: "output", type: "signal" },
+      ],
+    },
+  });
+
+  assert.ok(result.visioDiagramPlan.scene.primitives.some((primitive) =>
+    primitive.role === "decoration" && primitive.form === "text"));
+
+  const renderPlan = buildVisioRenderPlan(result.visioDiagramPlan, {
+    documentPath: "C:/tmp/neural-model.vsdx",
+    pageName: "Page-1",
+  });
+  assert.ok(renderPlan.shapes.some((shape) => shape.sceneForm === "text" && shape.label.includes("Conv2d")));
 });
 
 test("agent pipeline preserves explicit architecture groups in IR while producing a valid Scene plan", () => {
@@ -88,7 +118,7 @@ class Net(nn.Module):
 `,
   });
 
-  assert.equal(result.status, "needs_confirmation");
+  assert.equal(result.status, "ready_for_visio");
   assert.equal(result.readyForVisio, true);
   assert.ok(result.ir.nodes.some((node) => node.compoundKind === "unresolved"));
   assert.ok(result.visioDiagramPlan.nodes.some((node) => node.compoundKind === "unresolved"));
@@ -97,6 +127,117 @@ class Net(nn.Module):
   assert.equal(result.figureLayout, undefined);
   assert.equal(result.visioDiagramPlan.scene.version, "laid-out-neural-scene/v1");
   assert.equal(result.visioDiagramPlanValidation.ok, true);
+});
+
+test("agent pipeline accepts an injected source code analyzer before local fallback", async () => {
+  let called = false;
+  const evidence = await extractArchitectureEvidence({
+    kind: "source",
+    framework: "pytorch",
+    source: "class Net: pass",
+  }, {
+    codeAnalyzer: async () => {
+      called = true;
+      return {
+        status: "grounded",
+        ir: {
+          version: "universal-neural-ir/v1",
+          nodes: [
+            { id: "input", family: "input", op: "Input" },
+            { id: "output", family: "output", op: "Output" },
+          ],
+          edges: [{ id: "flow", source: "input", target: "output" }],
+        },
+        diagnostics: [],
+      };
+    },
+  });
+
+  assert.equal(called, true);
+  assert.equal(evidence.rawIR.nodes.length, 2);
+});
+
+test("agent pipeline blocks contradictory multi-source evidence", async () => {
+  const evidence = await extractArchitectureEvidence({
+    kind: "evidence",
+    sources: [
+      {
+        id: "ast",
+        authority: 2,
+        analyzer: "python-ast",
+        ir: {
+          nodes: [{ id: "input", family: "input" }, { id: "output", family: "output" }],
+          edges: [{ id: "flow", source: "input", target: "output" }],
+        },
+      },
+      {
+        id: "onnx",
+        authority: 5,
+        analyzer: "onnx",
+        ir: {
+          nodes: [{ id: "input", family: "input" }, { id: "conv", family: "conv" }, { id: "output", family: "output" }],
+          edges: [{ id: "flow", source: "input", target: "conv" }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(evidence.status, "contradicted");
+  assert.equal(evidence.fusion.blocked, true);
+  assert.ok(evidence.diagnostics.some((item) => item.kind === "edge-conflict"));
+});
+
+test("agent pipeline auto-fuses matching explicit IR and config evidence", async () => {
+  const evidence = await extractArchitectureEvidence({
+    kind: "ir",
+    ir: {
+      version: "universal-neural-ir/v1",
+      nodes: [
+        { id: "input", op: "Input", family: "input" },
+        { id: "conv", op: "Conv2d", family: "conv" },
+        { id: "output", op: "Output", family: "output" },
+      ],
+      edges: [
+        { id: "flow-a", source: "input", target: "conv" },
+        { id: "flow-b", source: "conv", target: "output" },
+      ],
+    },
+    config: {
+      pipeline: [
+        [-1, 1, "Input", {}],
+        [-1, 1, "Conv2d", {}],
+        [-1, 1, "Output", {}],
+      ],
+    },
+  }, { autoFuseEvidence: true });
+
+  assert.equal(evidence.status, "grounded", JSON.stringify(evidence.diagnostics));
+  assert.equal(evidence.fusion.blocked, false);
+  assert.deepEqual(evidence.rawIR.nodes.map((node) => node.id), ["input", "conv", "output"]);
+});
+
+test("agent pipeline auto-fuses explicit IR with pinned repository evidence", async () => {
+  const evidence = await extractArchitectureEvidence({
+    kind: "ir",
+    ir: {
+      version: "universal-neural-ir/v1",
+      nodes: [{ id: "repo-block", op: "RepoDefinedBlock", family: "custom", compoundKind: "unresolved" }],
+      edges: [],
+    },
+    repository: "https://github.com/example/network",
+    revision: "a".repeat(40),
+    entryPoint: "models/network.yaml",
+    sourceId: "repo-config",
+  }, {
+    autoFuseEvidence: true,
+    resolver: {
+      fetchRepository: async () => ({ content: "pipeline:\n  - [-1, 1, RepoDefinedBlock, {width: 48}]", license: "MIT" }),
+    },
+  });
+
+  assert.equal(evidence.status, "grounded", JSON.stringify(evidence.diagnostics));
+  assert.equal(evidence.fusion.sources.some((source) => source.id === "repo-config" && source.analyzer === "repository-config"), true);
+  assert.deepEqual(evidence.rawIR.nodes.map((node) => node.id), ["repo-block"]);
 });
 
 test("production build exposes only the Scene-backed Visio Diagram Plan", () => {
@@ -280,7 +421,7 @@ test("agent pipeline validates IR input without requiring a model registry", () 
     },
   });
 
-  assert.equal(result.status, "needs_confirmation");
+  assert.equal(result.status, "ready_for_visio");
   assert.equal(result.readyForVisio, true);
   assert.equal(result.validation.ok, true);
   assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "loop").shapeKind, "cell");

@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 import { normalizeArchitectureInput } from "./input-adapters.mjs";
 import { createMemoryRunStore } from "./run-store.mjs";
+import { collectUncertainNodes, containsUncertainTopology } from "./topology-uncertainty.mjs";
 
 const MAX_REPAIR_ATTEMPTS = 2;
 const CORE_STAGES = ["inspect", "extract", "normalize", "plan"];
@@ -76,8 +77,8 @@ export async function runAgentPipeline(run, options = {}) {
       await saveRun(current, runtime.runStore);
       return rememberResult(current, runtime);
     }
-    if (stage === "extract" && containsUnresolved(current.extract)) {
-      const unresolvedNodes = collectUnresolvedNodes(current.extract);
+    if (stage === "extract" && containsUncertainTopology(current.extract)) {
+      const unresolvedNodes = collectUncertainNodes(current.extract);
       current.status = "needs-confirmation";
       current.diagnostics = uniqueDiagnostics([...current.diagnostics, {
         kind: "needs-confirmation", code: "unresolved-evidence", severity: "warning",
@@ -336,36 +337,6 @@ function publicState(run) {
 }
 
 async function invoke(dependency, value, run) { return typeof dependency === "function" ? dependency(value, run) : value; }
-
-function containsUnresolved(value) {
-  if (!value || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some(containsUnresolved);
-  if (["unresolved", "needs_resolution"].includes(value.status) || value.kind === "unresolved-operator" || value.code === "unresolved-operator") return true;
-  if (value.compoundKind === "unresolved") return true;
-  if (value.family === "custom" && value.compoundKind !== "module") return true;
-  if (["recurrent", "rnn", "lstm", "gru"].includes(String(value.family || "").toLowerCase())) {
-    const graph = value.attributes?.internalGraph || value.internalGraph;
-    if (!graph || graph.status === "unresolved" || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return true;
-  }
-  return Array.isArray(value.diagnostics) && value.diagnostics.some(containsUnresolved) || Array.isArray(value.nodes) && value.nodes.some(containsUnresolved);
-}
-
-function collectUnresolvedNodes(value, acc = []) {
-  if (!value || typeof value !== "object") return acc;
-  if (Array.isArray(value)) { value.forEach((item) => collectUnresolvedNodes(item, acc)); return acc; }
-  if (value.compoundKind === "unresolved" || (value.family === "custom" && value.compoundKind !== "module")) {
-    acc.push(String(value.op || value.label || value.id || "custom"));
-  }
-  if (["recurrent", "rnn", "lstm", "gru"].includes(String(value.family || "").toLowerCase())) {
-    const graph = value.attributes?.internalGraph || value.internalGraph;
-    if (!graph || graph.status === "unresolved" || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
-      acc.push(String(value.op || value.label || value.id || value.family));
-    }
-  }
-  if (Array.isArray(value.nodes)) value.nodes.forEach((node) => collectUnresolvedNodes(node, acc));
-  if (Array.isArray(value.diagnostics)) value.diagnostics.forEach((diag) => collectUnresolvedNodes(diag, acc));
-  return acc;
-}
 
 function mismatch(code, message, extra) { return { kind: "readback-mismatch", code, severity: "error", message, ...extra }; }
 function uniqueDiagnostics(items) {

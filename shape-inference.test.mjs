@@ -10,6 +10,26 @@ function run(nodes, edges) {
   }, {});
 }
 
+test("shape metadata distinguishes declared facts from assumed defaults", () => {
+  const assumed = [{ id: "in", family: "input", op: "Input" }];
+  inferShapes(assumed, []);
+  assert.equal(assumed[0].shape.source, "assumed-default");
+  assert.ok(assumed[0].shape.confidence < 1);
+  assert.equal(assumed[0].shape.evidence[0].kind, "shape-assumption");
+  assert.equal(assumed[0].shape.ordering, "HWC");
+
+  const declared = [{ id: "in", family: "input", op: "Input", shape: { output: [64, 64, 3] } }];
+  inferShapes(declared, []);
+  assert.equal(declared[0].shape.source, "declared");
+  assert.equal(declared[0].shape.confidence, 1);
+  assert.equal(declared[0].shape.ordering, "HWC");
+
+  const nchw = [{ id: "in", family: "input", op: "Input", shape: { output: [1, 3, 64, 64] } }];
+  inferShapes(nchw, []);
+  assert.deepEqual(nchw[0].shape.output, [64, 64, 3]);
+  assert.equal(nchw[0].shape.ordering, "HWC");
+});
+
 test("inferShapes propagates through a residual add with matching branch shapes", () => {
   const nodes = [
     { id: "in", family: "input", op: "Input", attributes: { inputShape: [56, 56, 64] } },

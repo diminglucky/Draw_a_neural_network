@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildVisioPowerShellCommand,
   buildVisioRenderPlan as buildVisioRenderPlanStrict,
+  renderUniversalFigureToVisio,
   validateVisioReadback,
 } from "./visio-bridge.mjs";
 import { createVisioDiagramPlan } from "./visio-diagram-plan.mjs";
@@ -32,6 +33,43 @@ const layout = {
   }],
   edges: [],
 };
+
+test("render retries transient Visio COM server faults", async () => {
+  let calls = 0;
+  const result = await renderUniversalFigureToVisio(layout, {
+    documentPath: "C:\\project\\existing.vsdx",
+    allowLegacyProjection: true,
+    runner: async (command) => {
+      calls += 1;
+      if (calls === 1) throw new Error("Visio bridge failed: HRESULT:0x80010105 (RPC_E_SERVERFAULT)");
+      const plan = JSON.parse(Buffer.from(command.stdin, "base64").toString("utf8"));
+      const sourceNodeIds = plan.shapes.flatMap((shape) => shape.shapeData.sourceNodeIds || [shape.shapeData.sourceNodeId]).filter(Boolean);
+      const edgeIds = plan.connectors.map((edge) => edge.id);
+      return {
+        status: "rendered",
+        readback: {
+          renderId: plan.renderId,
+          sourceNodeIds,
+          edgeIds,
+          gluedBeginEdgeIds: edgeIds,
+          gluedEndEdgeIds: edgeIds,
+          connectorEndpoints: {},
+        },
+      };
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.status, "rendered");
+  assert.equal(result.readbackValidation.ok, true);
+});
+
+test("PowerShell cleanup guards disconnected COM shape collections", () => {
+  const script = readFileSync("visio-bridge.ps1", "utf8");
+  assert.match(script, /function Remove-StaleAgentShapes[\s\S]*\$shapes = \$Page\.Shapes[\s\S]*if \(\$null -eq \$shapes\)/);
+  assert.match(script, /for \(\$index = \[int\]\$shapes\.Count;[\s\S]*try \{ \$shape = \$shapes\.Item\(\$index\) \} catch/);
+  assert.match(script, /try \{ \$totalShapes = \[int\]\$page\.Shapes\.Count \} catch \{\}/);
+});
 
 test("buildVisioRenderPlan rejects input without a laid-out scene by default", () => {
   assert.throws(
@@ -716,7 +754,7 @@ test("Visio bridge gives each publication role its own native geometry renderer"
   ]) {
     assert.match(script, new RegExp(`function ${renderer}`), `missing ${renderer}`);
   }
-  assert.match(script, /Draw-DownsampleFrustum[\s\S]*sourceAnchor/i);
+  assert.match(script, /Draw-DownsampleFrustum[\s\S]*scaleChange/i);
   assert.match(script, /Draw-FeatureMapStack[\s\S]*repeatCount/i);
   assert.match(script, /Draw-NeuronColumn[\s\S]*DrawOval/i);
   assert.match(script, /Draw-OutputDistribution[\s\S]*barCount/i);

@@ -202,7 +202,11 @@ test("default agent service stops prompt-only input for confirmation without pla
 
 test("agent service exposes needs-confirmation and resumes confirmation into planning", async () => {
   const service = createAgentService({ dependencies: agentDependencies({
-    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
+    extract: () => ({
+      status: "needs_resolution",
+      unresolvedQuestions: [{ code: "select-architecture-candidate" }],
+      nodes: [{ id: "opaque", family: "custom" }],
+    }),
   }) });
   const created = await requestAgent(service, "/api/agent-run", agentInput);
   assert.equal(created.response.status, 200);
@@ -288,7 +292,11 @@ test("agent service persists every externally supplied resume event", async () =
 test("HTTP resume restores a run from the Run Store when the in-memory map is empty", async () => {
   const runStore = createMemoryRunStore();
   const pausedRun = createAgentRun(agentInput, agentDependencies({
-    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
+    extract: () => ({
+      status: "needs_resolution",
+      unresolvedQuestions: [{ code: "select-architecture-candidate" }],
+      nodes: [{ id: "opaque", family: "custom" }],
+    }),
     render: undefined,
     readback: undefined,
   }), { runStore });
@@ -337,6 +345,72 @@ test("static server serves JavaScript modules with a JavaScript MIME type", asyn
   assert.match(response.headers.get("content-type") || "", /javascript/);
 });
 
+test("local API rejects cross-origin POST requests", async (t) => {
+  const port = 4186;
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), VISIO_DRY_RUN: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+
+  await waitForServer(child, port);
+  const response = await fetch(`http://127.0.0.1:${port}/api/render-visio`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://evil.test" },
+    body: JSON.stringify({ documentPath: "C:\\project\\existing.vsdx", ir: { nodes: [] } }),
+  });
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, "cross-origin-request");
+});
+
+test("local API requires JSON content type for POST requests", async (t) => {
+  const port = 4187;
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), VISIO_DRY_RUN: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+
+  await waitForServer(child, port);
+  const response = await fetch(`http://127.0.0.1:${port}/api/render-visio`, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: JSON.stringify({ documentPath: "C:\\project\\existing.vsdx", ir: { nodes: [] } }),
+  });
+
+  assert.equal(response.status, 415);
+  assert.equal((await response.json()).code, "unsupported-content-type");
+});
+
+test("model-list endpoint refuses to reuse a saved key for a different base URL", async (t) => {
+  const port = 4188;
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SYNAPSE_NO_SAVED_CONFIG: "1",
+      LLM_API_KEY: "saved-key",
+      LLM_BASE_URL: "https://llm.test/v1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+
+  await waitForServer(child, port);
+  const response = await fetch(`http://127.0.0.1:${port}/api/llm-models`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ baseUrl: "http://127.0.0.1:9" }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, "api-key-required-for-new-base-url");
+});
+
 test("/api/analyze-code routes arbitrary source through the Universal IR agent pipeline", async (t) => {
   const port = 4182;
   const child = spawn(process.execPath, ["server.js"], {
@@ -366,7 +440,7 @@ class Net(nn.Module):
 
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(payload.status, "needs_confirmation");
+  assert.equal(payload.status, "ready_for_visio");
   assert.ok(payload.ir.nodes.some((node) => node.compoundKind === "unresolved"));
   assert.ok(payload.diagnostics.some((item) => item.kind === "unresolved-operator"));
   assert.ok(payload.visioDiagramPlan);
@@ -455,8 +529,9 @@ test("/api/render-visio produces an existing-document plan without creating a ne
   assert.equal(payload.plan.documentPath, "C:\\project\\existing.vsdx");
   assert.equal(payload.plan.previewPath, "C:\\project\\existing-preview.png");
   assert.ok(payload.plan.shapes.some((shape) => shape.shapeData.sourceNodeId === "custom"));
+  assert.ok(payload.plan.shapes.some((shape) => shape.sceneForm === "text" && shape.label === "ConfirmedBlock"));
   assert.deepEqual(
-    payload.plan.shapes.filter((shape) => shape.parentNodeId === "").map((shape) => shape.shapeData.sourceNodeId).sort(),
+    [...new Set(payload.plan.shapes.flatMap((shape) => shape.shapeData.sourceNodeIds || []))].sort(),
     payload.plan.connectors.flatMap((edge) => [edge.sourceNodeId, edge.targetNodeId]).filter(Boolean).filter((id, index, list) => list.indexOf(id) === index).sort(),
   );
 });

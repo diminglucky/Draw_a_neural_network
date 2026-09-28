@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { deriveNeuralSemanticFacts, validateNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
 import { normalizeUniversalIR } from "./universal-ir.mjs";
+import { buildCanonicalModelGraph } from "./canonical-model-graph.mjs";
 
 function fixture() {
   return normalizeUniversalIR({
@@ -58,6 +59,31 @@ test("facts preserve evidence and confidence and are deeply immutable", () => {
   assert.equal(Object.isFrozen(facts), true);
   assert.equal(Object.isFrozen(facts.nodeFacts.stem.topology.value), true);
   assert.throws(() => { facts.nodeFacts.stem.topology.value.branch = false; }, TypeError);
+});
+
+test("treats channels-last HWC tensors as spatial feature maps", () => {
+  const ir = normalizeUniversalIR({
+    version: "universal-neural-ir/v1",
+    nodes: [
+      { id: "image", op: "Input", family: "input", shape: { output: [224, 224, 3] } },
+      { id: "conv", op: "Conv2d", family: "conv", shape: { output: [112, 112, 64] } },
+    ],
+    edges: [{ id: "down", source: "image", target: "conv", type: "signal" }],
+  });
+
+  const facts = deriveNeuralSemanticFacts(ir);
+  assert.equal(facts.nodeFacts.image.dataDomain.value, "spatial");
+  assert.equal(facts.nodeFacts.conv.dataDomain.value, "spatial");
+  assert.equal(facts.nodeFacts.conv.operationEffect.value, "reduce");
+  assert.equal(facts.edgeFacts.down.topology.value.crossScale, true);
+});
+
+test("derives semantic facts from the canonical model graph in the production path", () => {
+  const canonical = buildCanonicalModelGraph(fixture());
+  const facts = deriveNeuralSemanticFacts(canonical);
+  assert.equal(facts.canonicalModelVersion, "canonical-model-graph/v1");
+  assert.equal(facts.nodeFacts.stem.operationEffect.value, "reduce");
+  assert.equal(validateNeuralSemanticFacts(facts, canonical.ir).ok, true);
 });
 
 test("display labels and architecture names do not change semantic facts", () => {

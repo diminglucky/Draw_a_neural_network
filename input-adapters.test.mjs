@@ -36,6 +36,18 @@ test("normalizes repository, config, and artifact inputs without resolving them"
   }), { kind: "artifact", artifact: { format: "onnx", path: "C:\\models\\network.onnx" } });
 });
 
+test("normalizes multi-source evidence input", () => {
+  const normalized = normalizeArchitectureInput({
+    kind: "evidence",
+    sources: [
+      { id: "ast", authority: 2, ir: { nodes: [], edges: [] } },
+      { id: "onnx", authority: 5, ir: { nodes: [], edges: [] } },
+    ],
+  });
+  assert.equal(normalized.kind, "evidence");
+  assert.equal(normalized.sources.length, 2);
+});
+
 test("rejects unknown input fields and incomplete acquisition inputs", () => {
   assert.throws(() => normalizeArchitectureInput({ kind: "prompt", prompt: "model", coordinates: [] }), /unknown field coordinates/);
   assert.throws(() => normalizeArchitectureInput({ kind: "repository", repository: "" }), (error) => error.kind === "invalid-input");

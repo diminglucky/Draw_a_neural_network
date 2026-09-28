@@ -42,4 +42,39 @@ export const neuralStructureFixtures = [
     capability: "unknown-operator",
     ir: { nodes: [node("input", "input"), node("unknown", "custom", { op: "UnknownOperator", compoundKind: "unresolved", confidence: 0.4 }), node("output", "output")], edges: [edge("into-unknown", "input", "unknown"), edge("unknown-output", "unknown", "output")] },
   },
+  {
+    capability: "resnet-like",
+    ir: {
+      nodes: [node("input", "input"), node("stem", "conv"), node("block-a", "conv"), node("block-b", "conv"), node("add", "merge", { semanticRole: "add" }), node("output", "output")],
+      edges: [edge("stem", "input", "stem"), edge("main-a", "stem", "block-a"), edge("main-b", "block-a", "block-b"), edge("skip", "stem", "add", { type: "residual" }), edge("add", "block-b", "add"), edge("out", "add", "output")],
+    },
+  },
+  {
+    capability: "unet-like",
+    ir: {
+      nodes: [node("input", "input"), node("enc", "conv"), node("down", "pool"), node("bottleneck", "conv"), node("up", "upsample"), node("dec", "conv"), node("output", "output")],
+      edges: [edge("i-e", "input", "enc"), edge("e-d", "enc", "down"), edge("d-b", "down", "bottleneck"), edge("b-u", "bottleneck", "up"), edge("u-d", "up", "dec"), edge("d-o", "dec", "output"), edge("skip", "enc", "dec", { type: "skip" })],
+    },
+  },
+  {
+    capability: "transformer-like",
+    ir: {
+      nodes: [node("tokens", "input", { attributes: { dataDomain: "sequence" } }), node("attention", "attention"), node("ffn", "dense"), node("add", "merge", { semanticRole: "add" }), node("output", "output")],
+      edges: [edge("t-a", "tokens", "attention"), edge("a-f", "attention", "ffn"), edge("skip", "tokens", "add", { type: "residual" }), edge("f-add", "ffn", "add"), edge("out", "add", "output")],
+    },
+  },
+  {
+    capability: "rnn-like",
+    ir: {
+      nodes: [node("input", "input"), node("state", "recurrent", { ports: { inputs: ["x", "h"], outputs: ["y", "h"] } }), node("output", "output")],
+      edges: [edge("flow", "input", "state"), edge("loop", "state", "state", { type: "loop", ports: { source: "h", target: "h" } }), edge("out", "state", "output")],
+    },
+  },
+  {
+    capability: "gnn-like",
+    ir: {
+      nodes: [node("nodes", "input", { attributes: { dataDomain: "graph" } }), node("message", "graph", { attributes: { dataDomain: "graph" } }), node("aggregate", "merge"), node("output", "output")],
+      edges: [edge("n-m", "nodes", "message"), edge("m-a", "message", "aggregate"), edge("loop", "message", "message", { type: "loop" }), edge("out", "aggregate", "output")],
+    },
+  },
 ];

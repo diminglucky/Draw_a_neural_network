@@ -1,4 +1,5 @@
-const VERSION = "universal-neural-ir/v1";
+export const UNIVERSAL_IR_VERSION = "universal-neural-ir/v1";
+const VERSION = UNIVERSAL_IR_VERSION;
 
 export { normalizeRecurrentEvidence, recurrentEvidenceForNode } from "./semantic-visual-grammar.mjs";
 
@@ -76,6 +77,9 @@ export function validateUniversalIR(ir = {}) {
   const issues = [];
   const seen = new Set();
   const edgeIds = new Set();
+  if (normalized.version !== VERSION) {
+    issues.push({ kind: "invalid-ir-version", value: normalized.version });
+  }
   normalized.nodes.forEach((node) => {
     if (seen.has(node.id)) issues.push({ kind: "duplicate-node-id", nodeId: node.id });
     seen.add(node.id);
@@ -174,6 +178,8 @@ function normalizeNode(node = {}, index) {
       source: isRecord(node.source)
       ? { ...node.source }
       : Number.isFinite(node.sourceLine) ? { line: node.sourceLine } : undefined,
+      ...(Number.isFinite(node.sourceLine) ? { sourceLine: Number(node.sourceLine) } : {}),
+      ...(isRecord(node.sourceLocation) ? { sourceLocation: { ...node.sourceLocation } } : {}),
       evidence: Array.isArray(node.evidence) ? node.evidence.map((item) => ({ ...item })) : [],
       provenance: node.provenance,
       confidence: Number.isFinite(node.confidence) ? node.confidence : 1,

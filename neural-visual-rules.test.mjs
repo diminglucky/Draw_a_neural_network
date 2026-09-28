@@ -25,6 +25,21 @@ test("equal-priority exclusive body matches are rejected", () => {
   assert.throws(() => applyNeuralVisualRules(context, rules), /exclusive body rule conflict/);
 });
 
+test("scale-change bodies carry explicit direction instead of one ambiguous wedge", () => {
+  const rules = createDefaultNeuralVisualRules();
+  const reduce = applyNeuralVisualRules({
+    ...context,
+    nodeFacts: [{ dataDomain: { value: "spatial" }, operationEffect: { value: "reduce" }, topology: { value: {} }, structuralRole: { value: "transform" } }],
+  }, rules);
+  const expand = applyNeuralVisualRules({
+    ...context,
+    nodeFacts: [{ dataDomain: { value: "spatial" }, operationEffect: { value: "expand" }, topology: { value: {} }, structuralRole: { value: "transform" } }],
+  }, rules);
+  assert.equal(reduce.body[0].form, "wedge");
+  assert.equal(reduce.body[0].data.scaleChange, "reduce");
+  assert.equal(expand.body[0].data.scaleChange, "expand");
+});
+
 test("invalid phases and rules that emit coordinates are rejected", () => {
   assert.equal(validateVisualRuleRegistry([{ id: "bad", phase: "paint", priority: 1, match: () => true, emit: () => [] }]).ok, false);
   assert.throws(() => applyNeuralVisualRules(context, [{ id: "coords", phase: "body", priority: 1, match: () => true, emit: () => [{ category: "operator", form: "band", x: 10 }] }]), /coordinates/);

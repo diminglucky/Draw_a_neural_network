@@ -1,16 +1,23 @@
 import { applyNeuralVisualRules, createDefaultNeuralVisualRules } from "./neural-visual-rules.mjs";
+import { NEURAL_MOTIFS_VERSION, deriveNeuralMotifs, validateNeuralMotifs } from "./neural-motifs.mjs";
 
-const VERSION = "semantic-neural-scene/v1";
+export const SEMANTIC_NEURAL_SCENE_VERSION = "semantic-neural-scene/v1";
+const VERSION = SEMANTIC_NEURAL_SCENE_VERSION;
 
 export function compileSemanticScene(ir = {}, facts = {}, projectionMap = {}, intent = {}, options = {}) {
   const nodeById = new Map((ir.nodes || []).map((node) => [node.id, node]));
+  const motifs = deriveNeuralMotifs(ir, facts);
+  const motifValidation = validateNeuralMotifs(motifs, ir);
+  if (!motifValidation.ok) {
+    throw new TypeError(`Invalid Neural Motifs: ${motifValidation.issues.map((issue) => issue.code).join(", ")}`);
+  }
   const primitives = [];
   const projectionToBody = {};
   const rules = options.rules || createDefaultNeuralVisualRules();
   for (const projection of projectionMap.projections || []) {
     const nodes = projection.orderedNodeIds.map((id) => nodeById.get(id)).filter(Boolean);
     const nodeFacts = projection.orderedNodeIds.map((id) => facts.nodeFacts?.[id]).filter(Boolean);
-    const emitted = applyNeuralVisualRules({ projection, nodes, nodeFacts, facts, intent }, rules);
+    const emitted = applyNeuralVisualRules({ projection, nodes, nodeFacts, facts, motifs, intent }, rules);
     const common = {
       sourceNodeIds: [...projection.orderedNodeIds],
       sourceEdgeIds: [...projection.internalEdgeIds],
@@ -43,7 +50,46 @@ export function compileSemanticScene(ir = {}, facts = {}, projectionMap = {}, in
     });
   }
   const { groups, diagnostics: groupDiagnostics } = compileGroups(ir, projectionMap, projectionToBody);
-  return { version: VERSION, irVersion: String(ir.version || ""), primitives, relations, groups, constraints: [], projectionToBody, diagnostics: [...(projectionMap.diagnostics || []), ...groupDiagnostics] };
+  const constraints = compileMotifConstraints(motifs.motifs, projectionMap, projectionToBody);
+  return {
+    version: VERSION,
+    irVersion: String(ir.version || ""),
+    motifsVersion: motifs.version,
+    motifs: motifs.motifs,
+    primitives,
+    relations,
+    groups,
+    constraints,
+    projectionToBody,
+    diagnostics: [...(projectionMap.diagnostics || []), ...groupDiagnostics],
+  };
+}
+
+function compileMotifConstraints(motifs, projectionMap, projectionToBody) {
+  const constraints = [];
+  for (const motif of motifs || []) {
+    if (motif.kind !== "multi-scale-fusion" || motif.nodeIds.length < 3) continue;
+    const targetNodeId = motif.nodeIds.at(-1);
+    const sourceNodeIds = motif.nodeIds.slice(0, -1);
+    const targetPrimitiveId = primitiveIdForNode(targetNodeId, projectionMap, projectionToBody);
+    const memberPrimitiveIds = sourceNodeIds
+      .map((nodeId) => primitiveIdForNode(nodeId, projectionMap, projectionToBody))
+      .filter(Boolean);
+    if (!targetPrimitiveId || memberPrimitiveIds.length < 2) continue;
+    constraints.push({
+      id: `constraint:${motif.id}:center-y-between`,
+      kind: "center-y-between",
+      targetPrimitiveId,
+      memberPrimitiveIds,
+      evidenceIds: [...motif.evidenceIds],
+    });
+  }
+  return constraints;
+}
+
+function primitiveIdForNode(nodeId, projectionMap, projectionToBody) {
+  const projectionId = projectionMap.nodeToProjection?.[nodeId];
+  return projectionId ? projectionToBody[projectionId] || "" : "";
 }
 
 function createGroupContextIndex(ir) {
@@ -88,9 +134,16 @@ function commonPrefixLength(left, right) {
 export function validateSemanticScene(scene = {}, ir = {}, projectionMap = {}) {
   const issues = [];
   if (scene.version !== VERSION) issues.push({ code: "invalid-semantic-scene-version" });
+  if (scene.motifsVersion && scene.motifsVersion !== NEURAL_MOTIFS_VERSION) issues.push({ code: "invalid-motifs-version", value: scene.motifsVersion });
   const bodiesByProjection = new Map();
   const bodyBySourceNode = new Map();
-  const primitiveIds = new Set((scene.primitives || []).map((primitive) => primitive.id));
+  const primitiveIds = new Set();
+  for (const primitive of scene.primitives || []) {
+    const primitiveId = String(primitive?.id || "");
+    if (!primitiveId) issues.push({ code: "missing-scene-primitive-id" });
+    else if (primitiveIds.has(primitiveId)) issues.push({ code: "duplicate-scene-primitive", primitiveId });
+    else primitiveIds.add(primitiveId);
+  }
   const bodyPrimitiveIds = new Set((scene.primitives || []).filter((primitive) => primitive.role === "body").map((primitive) => primitive.id));
   const groupIds = new Set((scene.groups || []).map((group) => group.id));
   const sourceNodes = new Set();

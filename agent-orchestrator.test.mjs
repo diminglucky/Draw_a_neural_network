@@ -54,7 +54,15 @@ test("resumes after confirmation from the latest valid snapshot without rerunnin
   const calls = [];
   const run = createAgentRun(input, dependencies({
     inspect: async (value) => { calls.push("inspect"); return { source: value.source }; },
-    extract: (value) => { calls.push("extract"); return { ...value, nodes: [{ id: "opaque", family: "custom" }] }; },
+    extract: (value) => {
+      calls.push("extract");
+      return {
+        ...value,
+        status: "needs_resolution",
+        unresolvedQuestions: [{ code: "select-architecture-candidate" }],
+        nodes: [{ id: "opaque", family: "custom" }],
+      };
+    },
     normalize: (value) => { calls.push("normalize"); return { ...value, nodes: [{ id: "confirmed", family: "input" }] }; },
     plan: (value) => { calls.push("plan"); return { visioDiagramPlan: { version: "visio-diagram-plan/v1", nodes: [{ id: "confirmed", sourceNodeId: "confirmed" }], edges: [] }, ir: value }; },
     render: undefined,
@@ -75,7 +83,11 @@ test("resumes after confirmation from the latest valid snapshot without rerunnin
 
 test("rejecting confirmation does not continue the pipeline", async () => {
   const run = createAgentRun(input, dependencies({
-    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
+    extract: () => ({
+      status: "needs_resolution",
+      unresolvedQuestions: [{ code: "select-architecture-candidate" }],
+      nodes: [{ id: "opaque", family: "custom" }],
+    }),
     plan: () => { throw new Error("plan must not run after rejection"); },
   }));
   const paused = await runAgentPipeline(run);
@@ -118,13 +130,30 @@ test("stops with structured diagnostics when extraction or normalization fails",
 test("unresolved evidence stops before rendering and asks for confirmation", async () => {
   let rendered = false;
   const run = createAgentRun(input, dependencies({
-    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }], diagnostics: [{ kind: "unresolved-operator" }] }),
+    extract: () => ({
+      status: "needs_resolution",
+      unresolvedQuestions: [{ code: "select-architecture-candidate" }],
+      nodes: [],
+    }),
     render: () => { rendered = true; return {}; },
   }));
   const result = await runAgentPipeline(run);
   assert.equal(result.status, "needs-confirmation");
   assert.equal(result.stage, "extract");
   assert.equal(rendered, false);
+});
+
+test("known topology with unknown operator semantics can still be rendered as opaque", async () => {
+  const run = createAgentRun(input, dependencies({
+    extract: () => ({
+      nodes: [{ id: "opaque", family: "custom" }],
+      diagnostics: [{ kind: "unresolved-operator" }],
+    }),
+  }));
+  const result = await runAgentPipeline(run);
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.visioDiagramPlan.nodes[0].sourceNodeId, "input");
 });
 
 test("named modules (compoundKind module) do not trigger the confirmation gate", async () => {
@@ -141,7 +170,11 @@ test("named modules (compoundKind module) do not trigger the confirmation gate",
 test("legacy allowUnresolved options cannot bypass the confirmation gate", async () => {
   let rendered = false;
   const run = createAgentRun(input, dependencies({
-    extract: () => ({ nodes: [{ id: "opaque", family: "custom" }] }),
+    extract: () => ({
+      status: "needs_resolution",
+      unresolvedQuestions: [{ code: "select-architecture-candidate" }],
+      nodes: [{ id: "opaque", family: "custom" }],
+    }),
     render: () => { rendered = true; return {}; },
   }), { allowUnresolved: true });
 

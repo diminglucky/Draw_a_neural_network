@@ -149,6 +149,22 @@ test("rejects malformed laid-out scenes at the Visio Diagram Plan boundary", () 
   const danglingConnector = structuredClone(validPlan);
   danglingConnector.scene.connectors[0].targetPrimitiveId = "missing-body";
   assert.ok(validateVisioDiagramPlan(danglingConnector).issues.some((issue) => issue.code === "unresolved-scene-topology"));
+
+  const duplicatePrimitive = structuredClone(validPlan);
+  duplicatePrimitive.scene.primitives.push(structuredClone(duplicatePrimitive.scene.primitives[0]));
+  assert.ok(validateVisioDiagramPlan(duplicatePrimitive).issues.some((issue) => issue.code === "duplicate-scene-primitive"));
+});
+
+test("scene compatibility indexes string labels without dropping their text", () => {
+  const ir = {
+    nodes: [{ id: "input", family: "input", op: "Input" }, { id: "output", family: "output", op: "Output" }],
+    edges: [{ id: "flow", source: "input", target: "output" }],
+  };
+  const scene = laidOutSceneFor(ir);
+  scene.primitives.find((primitive) => primitive.sourceNodeIds.includes("input")).labels = ["Input image"];
+
+  const plan = createVisioDiagramPlan({ ir, scene });
+  assert.equal(plan.nodes.find((node) => node.sourceNodeId === "input").label, "Input image");
 });
 
 test("Visio Diagram Plan rejects the retired figure-plan version", () => {

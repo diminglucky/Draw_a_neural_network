@@ -4,15 +4,25 @@ import { extractArchitectureEvidence, normalizeArchitectureEvidence, planArchite
 import { validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { buildVisioRenderPlan, renderUniversalFigureToVisio } from "./visio-bridge.mjs";
 import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./shape-inference.mjs";
+import { createVisioWorkerClient } from "./visio-worker-client.mjs";
+import { analyzeTorchSource } from "./torch-code-analyzer.mjs";
+import { analyzeKerasSource } from "./keras-code-analyzer.mjs";
 
 // The LLM analyzer is injected by server.js and updated on config change. We
 // keep a module-level mutable reference (not a captured argument) so an updated
 // config is picked up by in-flight stage dependencies without recreating the
 // service route.
 let analyzer = null;
+let visioWorker = null;
 
 export function setLLMAnalyzer(next) {
   analyzer = next;
+}
+
+export function closeVisioWorker() {
+  const current = visioWorker;
+  visioWorker = null;
+  return current?.close();
 }
 
 export function createAgentService({ dependencies = {}, runStore: configuredRunStore } = {}) {
@@ -81,6 +91,14 @@ function createDefaultAgentDependencies(configuration = {}) {
   return {
     inspect: async (input) => input,
     extract: async (input) => {
+      if (shouldAutoFuseEvidence(input)) {
+        return extractArchitectureEvidence(input, {
+          autoFuseEvidence: true,
+          torchAnalyzer: analyzeTorchSourceWithShapes,
+          kerasAnalyzer: analyzeKerasSourceWithShapes,
+          resolver: configuration.resolver,
+        });
+      }
       if (input?.kind === "image") return extractImageEvidenceThroughProvider(input);
       if (input?.kind === "repository" || (input?.kind === "prompt" && configuration.resolver)) {
         return extractArchitectureEvidence(input, { resolver: configuration.resolver });
@@ -88,11 +106,36 @@ function createDefaultAgentDependencies(configuration = {}) {
       if (analyzer?.available && (input?.kind === "source" || input?.kind === "prompt")) {
         return extractThroughLLM(input);
       }
+      if (input?.kind === "source" && (!input.framework || input.framework === "auto" || input.framework === "pytorch")) {
+        return extractArchitectureEvidence(input, { codeAnalyzer: analyzeTorchSourceWithShapes });
+      }
+      if (input?.kind === "source" && ["keras", "tensorflow", "tf"].includes(String(input.framework || "").toLowerCase())) {
+        return extractArchitectureEvidence(input, { codeAnalyzer: analyzeKerasSourceWithShapes });
+      }
       return extractArchitectureEvidence(input);
     },
     normalize: (evidence) => normalizeArchitectureEvidence(evidence),
     plan: (normalized) => planArchitectureFigure(normalized),
   };
+}
+
+async function analyzeTorchSourceWithShapes(input = {}, options = {}) {
+  return withShapeInference(await analyzeTorchSource(input, options));
+}
+
+async function analyzeKerasSourceWithShapes(input = {}, options = {}) {
+  return withShapeInference(await analyzeKerasSource(input, options));
+}
+
+function withShapeInference(result = {}) {
+  if (!result?.ir) return result;
+  return { ...result, ir: applyShapeInference(result.ir) };
+}
+
+function shouldAutoFuseEvidence(input = {}) {
+  if (input?.kind === "evidence") return true;
+  const evidenceFields = ["ir", "source", "config", "artifact", "repository"].filter((field) => input?.[field] !== undefined);
+  return evidenceFields.length > 1;
 }
 
 async function extractImageEvidenceThroughProvider(input) {
@@ -366,9 +409,17 @@ function agentRunStatus(result = {}) {
 
 async function defaultVisioRender(visioDiagramPlan, current = {}) {
   const options = current.visioOptions || {};
+  const worker = visioWorkerForProcess();
+  if (worker) return worker.render(visioDiagramPlan, options);
   const plan = buildVisioRenderPlan(visioDiagramPlan, options);
   if (process.env.VISIO_DRY_RUN === "1") return { status: "dry_run", plan };
   return renderUniversalFigureToVisio(visioDiagramPlan, options);
+}
+
+function visioWorkerForProcess() {
+  if (process.env.VISIO_WORKER !== "1") return null;
+  if (!visioWorker || visioWorker.closed) visioWorker = createVisioWorkerClient();
+  return visioWorker;
 }
 
 async function defaultVisioReadback(_visioDiagramPlan, renderResult = {}) {

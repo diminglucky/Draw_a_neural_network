@@ -1,6 +1,11 @@
-const VERSION = "neural-semantic-facts/v1";
+import { CANONICAL_MODEL_GRAPH_VERSION } from "./canonical-model-graph.mjs";
 
-export function deriveNeuralSemanticFacts(ir = {}) {
+export const NEURAL_SEMANTIC_FACTS_VERSION = "neural-semantic-facts/v1";
+const VERSION = NEURAL_SEMANTIC_FACTS_VERSION;
+
+export function deriveNeuralSemanticFacts(input = {}) {
+  const canonicalModel = input?.version === CANONICAL_MODEL_GRAPH_VERSION ? input : null;
+  const ir = canonicalModel?.ir || input;
   const nodes = Array.isArray(ir.nodes) ? ir.nodes : [];
   const edges = Array.isArray(ir.edges) ? ir.edges : [];
   const nodeById = new Map(nodes.map((node) => [String(node.id), node]));
@@ -71,7 +76,15 @@ export function deriveNeuralSemanticFacts(ir = {}) {
     };
   }
 
-  return deepFreeze({ version: VERSION, irVersion: String(ir.version || ""), nodeFacts, edgeFacts, regionFacts, diagnostics: [] });
+  return deepFreeze({
+    version: VERSION,
+    irVersion: String(ir.version || ""),
+    ...(canonicalModel ? { canonicalModelVersion: canonicalModel.version } : {}),
+    nodeFacts,
+    edgeFacts,
+    regionFacts,
+    diagnostics: [],
+  });
 }
 
 export function validateNeuralSemanticFacts(facts = {}, ir = {}) {
@@ -92,7 +105,7 @@ function dataDomain(node) {
   if (node.family === "graph") return "graph";
   if (node.family === "attention") return "sequence";
   const shape = outputShape(node);
-  if (shape.length >= 4) return "spatial";
+  if (isSpatialShape(shape)) return "spatial";
   if (shape.length === 3) return "sequence";
   if (shape.length === 2) return "vector";
   if (shape.length === 1) return shape[0] === 1 ? "scalar" : "vector";
@@ -158,8 +171,20 @@ function compareSpatialScale(source, target) {
   return targetArea < sourceArea ? "reduce" : targetArea > sourceArea ? "expand" : null;
 }
 
-function spatialDimensions(shape) { return shape.length >= 4 ? shape.slice(-2).map(Number) : []; }
+function spatialDimensions(shape) {
+  if (shape.length >= 4) return shape.slice(-2).map(Number);
+  if (shape.length === 3 && isSpatialShape(shape)) return shape.slice(0, 2).map(Number);
+  return [];
+}
 function outputShape(node) { const value = node?.shape?.output; return Array.isArray(value) ? value : []; }
+function isSpatialShape(shape) {
+  if (!Array.isArray(shape) || !shape.length) return false;
+  if (shape.length >= 4) return true;
+  if (shape.length !== 3) return false;
+  const [height, width] = shape;
+  return Number.isFinite(Number(height)) && Number.isFinite(Number(width))
+    && Number(height) > 4 && Number(width) > 4;
+}
 function hasStatePorts(node) { return [...(node.ports?.inputs || []), ...(node.ports?.outputs || [])].some((port) => /(^|[-_])(?:h|c|state)(?:$|[-_])/i.test(String(port))); }
 function isBypass(edge) { return /residual|skip|bypass/i.test(String(edge.type || "")); }
 function isState(edge) { return /state|loop|recurrent|feedback/i.test(String(edge.type || "")); }

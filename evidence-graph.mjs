@@ -70,9 +70,12 @@ export function architectureEvidencePackageToEvidenceGraph(pkg = {}) {
     nodes: (pkg.graph?.nodes || []).map((node) => ({
       ...node,
       op: node.op || node.operator,
-      evidence: evidenceFor(node.id),
+      evidence: [...(Array.isArray(node.evidence) ? node.evidence : []), ...evidenceFor(node.id)],
     })),
-    edges: (pkg.graph?.edges || []).map((edge) => ({ ...edge, evidence: evidenceFor(edge.id) })),
+    edges: (pkg.graph?.edges || []).map((edge) => ({
+      ...edge,
+      evidence: [...(Array.isArray(edge.evidence) ? edge.evidence : []), ...evidenceFor(edge.id)],
+    })),
     containers: pkg.graph?.containers || [],
     diagnostics: pkg.diagnostics || [],
   });

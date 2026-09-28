@@ -14,18 +14,82 @@
 // spatialDimension/channelDimension heuristics.
 
 const DEFAULT_INPUT_SHAPE = [224, 224, 3];
+export const SHAPE_INFERENCE_VERSION = "shape-inference/v1";
 
 // LLM 可能输出带 batch 维的 shape（[1, 224, 224, 3] 或 [null, 224, 224, 3]），
 // 而 shape 传播约定是 channels-last 无 batch 的 [H, W, C]。剥掉显式的 batch 维。
 function normalizeInputShape(shape) {
   if (shape.length === 4 && (shape[0] === null || shape[0] === undefined || shape[0] === 1 || shape[0] === -1)) {
-    return shape.slice(1);
+    const candidate = shape.slice(1);
+    const channelFirst = Number(shape[1]);
+    const channelLast = Number(shape[3]);
+    if (Number.isFinite(channelFirst) && channelFirst > 0 && channelFirst <= 8 && (!Number.isFinite(channelLast) || channelLast > 8)) {
+      return [shape[2], shape[3], shape[1]];
+    }
+    return candidate;
   }
   return shape;
 }
 
+function setShapeMetadata(node, shape, metadata = {}) {
+  node.shape = {
+    output: [...shape],
+    ordering: metadata.ordering || inferShapeOrdering(shape, node),
+    source: String(metadata.source || "inferred"),
+    confidence: boundedConfidence(metadata.confidence, node.confidence),
+    evidence: Array.isArray(metadata.evidence) ? metadata.evidence.map((item) => ({ ...item })) : [],
+    inferenceVersion: SHAPE_INFERENCE_VERSION,
+  };
+}
+
+function shapeEvidence(node = {}) {
+  if (Array.isArray(node.shape?.evidence) && node.shape.evidence.length) {
+    return node.shape.evidence.map((item) => ({ ...item }));
+  }
+  if (Array.isArray(node.evidence) && node.evidence.length) {
+    return node.evidence.map((item) => ({ ...item }));
+  }
+  return [];
+}
+
+function inferredShapeEvidence(node = {}) {
+  return [
+    ...shapeEvidence(node),
+    { kind: "shape-inference", analyzer: "shape-inference", version: SHAPE_INFERENCE_VERSION },
+  ];
+}
+
+function inheritedShapeConfidence(node, predecessorIds, nodeById) {
+  const confidences = predecessorIds
+    .map((id) => boundedConfidence(nodeById.get(String(id))?.shape?.confidence, node.confidence))
+    .filter(Number.isFinite);
+  return Math.min(boundedConfidence(node.confidence), ...(confidences.length ? confidences : [boundedConfidence(node.confidence)]));
+}
+
+function inferPropagatedOrdering(node, predecessors) {
+  return inferShapeOrdering(predecessors[0] || []);
+}
+
+function inferShapeOrdering(shape) {
+  if (!Array.isArray(shape) || !shape.length) return "unknown";
+  if (shape.length === 2) return "sequence";
+  if (shape.length === 3) return "HWC";
+  if (shape.length >= 4) return "NCHW";
+  return "unknown";
+}
+
+function boundedConfidence(value, fallback = 1) {
+  const number = Number.isFinite(value) ? value : fallback;
+  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : 1;
+}
+
 export function inferShapes(nodes, edges, options = {}) {
+  const assumedInputShape = Array.isArray(options.assumeInputShape) && options.assumeInputShape.length
+    ? options.assumeInputShape
+    : DEFAULT_INPUT_SHAPE;
+  const allowAssumedInputShape = options.assumeInputShape !== false;
   const incoming = new Map(nodes.map((node) => [node.id, []]));
+  const nodeById = new Map(nodes.map((node) => [String(node.id), node]));
   for (const edge of edges) {
     if (incoming.has(edge.target)) incoming.get(edge.target).push(edge.source);
   }
@@ -37,28 +101,50 @@ export function inferShapes(nodes, edges, options = {}) {
   const shapeByNode = new Map();
   for (const node of ordered) {
     if (node.family === "input") {
-      const explicit = node.shape?.output || node.attributes?.inputShape || node.attributes?.shape;
-      const raw = Array.isArray(explicit) && explicit.length ? explicit : DEFAULT_INPUT_SHAPE;
+      const explicitAttribute = node.attributes?.inputShape || node.attributes?.shape;
+      const existingOutput = node.shape?.output;
+      const hasDeclared = (Array.isArray(explicitAttribute) && explicitAttribute.length > 0)
+        || (Array.isArray(existingOutput) && existingOutput.length > 0 && node.shape?.source !== "assumed-default");
+      const hasAssumedShape = Array.isArray(existingOutput) && existingOutput.length > 0 && node.shape?.source === "assumed-default";
+      const hasAnyShape = hasDeclared || hasAssumedShape;
+      if (!hasDeclared && !allowAssumedInputShape) continue;
+      const raw = hasDeclared ? (Array.isArray(explicitAttribute) && explicitAttribute.length ? explicitAttribute : existingOutput) : (hasAnyShape ? existingOutput : assumedInputShape);
       const seed = normalizeInputShape(raw);
       shapeByNode.set(node.id, [...seed]);
+      setShapeMetadata(node, seed, {
+        source: hasDeclared ? "declared" : "assumed-default",
+        confidence: hasDeclared ? boundedConfidence(node.confidence) : boundedConfidence(options.assumedShapeConfidence ?? 0.35),
+        ordering: inferShapeOrdering(seed),
+        evidence: hasDeclared ? shapeEvidence(node) : [{ kind: "shape-assumption", reason: "default-input-shape" }],
+      });
       continue;
     }
-    const predecessors = (incoming.get(node.id) || []).map((id) => shapeByNode.get(id)).filter(Boolean);
+    const predecessorIds = incoming.get(node.id) || [];
+    const predecessors = predecessorIds.map((id) => shapeByNode.get(id)).filter(Boolean);
     const inputShape = predecessors[0];
     if (!inputShape) continue;
     const outputShape = computeOutputShape(node, inputShape, predecessors);
-    if (outputShape && outputShape.length) shapeByNode.set(node.id, outputShape);
-  }
-  for (const node of nodes) {
-    const shape = shapeByNode.get(node.id);
-    if (shape && shape.length) node.shape = { output: shape };
+    if (outputShape && outputShape.length) {
+      shapeByNode.set(node.id, outputShape);
+      setShapeMetadata(node, outputShape, {
+        source: "inferred",
+        confidence: inheritedShapeConfidence(node, predecessorIds, nodeById),
+        ordering: inferPropagatedOrdering(node, predecessors),
+        evidence: inferredShapeEvidence(node, predecessors),
+      });
+    }
   }
 }
 
 // 与 inferShapes 相同的传播逻辑，但记录每个「算不出 shape」节点的原因，
 // 供闭环反馈使用——这是「验证」环节，让 LLM 输出的 IR 被规则验算并暴露矛盾。
 export function diagnoseShapes(nodes, edges, options = {}) {
+  const assumedInputShape = Array.isArray(options.assumeInputShape) && options.assumeInputShape.length
+    ? options.assumeInputShape
+    : DEFAULT_INPUT_SHAPE;
+  const allowAssumedInputShape = options.assumeInputShape !== false;
   const incoming = new Map(nodes.map((node) => [node.id, []]));
+  const nodeById = new Map(nodes.map((node) => [String(node.id), node]));
   for (const edge of edges) {
     if (incoming.has(edge.target)) incoming.get(edge.target).push(edge.source);
   }
@@ -69,13 +155,26 @@ export function diagnoseShapes(nodes, edges, options = {}) {
   const issues = [];
   for (const node of ordered) {
     if (node.family === "input") {
-      const explicit = node.shape?.output || node.attributes?.inputShape || node.attributes?.shape;
-      const raw = Array.isArray(explicit) && explicit.length ? explicit : DEFAULT_INPUT_SHAPE;
+      const explicitAttribute = node.attributes?.inputShape || node.attributes?.shape;
+      const existingOutput = node.shape?.output;
+      const hasDeclared = (Array.isArray(explicitAttribute) && explicitAttribute.length > 0)
+        || (Array.isArray(existingOutput) && existingOutput.length > 0 && node.shape?.source !== "assumed-default");
+      const hasAssumedShape = Array.isArray(existingOutput) && existingOutput.length > 0 && node.shape?.source === "assumed-default";
+      const hasAnyShape = hasDeclared || hasAssumedShape;
+      if (!hasDeclared && !allowAssumedInputShape) continue;
+      const raw = hasDeclared ? (Array.isArray(explicitAttribute) && explicitAttribute.length ? explicitAttribute : existingOutput) : (hasAnyShape ? existingOutput : assumedInputShape);
       const seed = normalizeInputShape(raw);
       shapeByNode.set(node.id, [...seed]);
+      setShapeMetadata(node, seed, {
+        source: hasDeclared ? "declared" : "assumed-default",
+        confidence: hasDeclared ? boundedConfidence(node.confidence) : boundedConfidence(options.assumedShapeConfidence ?? 0.35),
+        ordering: inferShapeOrdering(seed),
+        evidence: hasDeclared ? shapeEvidence(node) : [{ kind: "shape-assumption", reason: "default-input-shape" }],
+      });
       continue;
     }
-    const predecessors = (incoming.get(node.id) || []).map((id) => shapeByNode.get(id)).filter(Boolean);
+    const predecessorIds = incoming.get(node.id) || [];
+    const predecessors = predecessorIds.map((id) => shapeByNode.get(id)).filter(Boolean);
     const inputShape = predecessors[0];
     if (!inputShape) {
       if ((incoming.get(node.id) || []).length > 0) {
@@ -86,6 +185,12 @@ export function diagnoseShapes(nodes, edges, options = {}) {
     const outputShape = computeOutputShape(node, inputShape, predecessors);
     if (outputShape && outputShape.length) {
       shapeByNode.set(node.id, outputShape);
+      setShapeMetadata(node, outputShape, {
+        source: "inferred",
+        confidence: inheritedShapeConfidence(node, predecessorIds, nodeById),
+        ordering: inferPropagatedOrdering(node, predecessors),
+        evidence: inferredShapeEvidence(node, predecessors),
+      });
     } else {
       issues.push({
         kind: "shape-gap",
@@ -95,10 +200,6 @@ export function diagnoseShapes(nodes, edges, options = {}) {
         reason: classifyShapeGap(node, inputShape, predecessors),
       });
     }
-  }
-  for (const node of nodes) {
-    const shape = shapeByNode.get(node.id);
-    if (shape && shape.length) node.shape = { output: shape };
   }
   return { ok: issues.length === 0, issues, shapeByNode: Object.fromEntries(shapeByNode) };
 }

@@ -1,6 +1,6 @@
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$PlanBase64
+  [string]$PlanBase64 = "",
+  [switch]$WorkerMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -162,6 +162,18 @@ function Set-NativeShapeIdentity([object]$Shape, [object]$PlanId) {
   try { $Shape.NameU = $nativeId } catch {}
 }
 
+function Get-NativeShapeForPlan([object[]]$Shapes, [string]$PlanId) {
+  foreach ($shape in @($Shapes)) {
+    try {
+      if ([int]$shape.CellExistsU("Prop.planShapeId", 0) -eq 0) { continue }
+      $actual = Get-PlanString $shape.CellsU("Prop.planShapeId").ResultStr("")
+      if ($actual -eq $PlanId) { return $shape }
+    } catch {}
+  }
+  if (@($Shapes).Count -gt 0) { return @($Shapes)[0] }
+  return $null
+}
+
 function Get-RepeatCount([object]$Spec) {
   $count = 1
   try { $count = [int]$Spec.shapeData.repeatCount } catch { $count = 1 }
@@ -256,8 +268,12 @@ function Draw-FigureHeader([object]$Page, [object]$Plan, [double]$PageWidth, [do
 }
 
 function Remove-OwnedShapes([object]$Page, [string]$RenderId) {
-  for ($index = $Page.Shapes.Count; $index -ge 1; $index--) {
-    $shape = $Page.Shapes.Item($index)
+  $shapes = $Page.Shapes
+  if ($null -eq $shapes) { return }
+  for ($index = [int]$shapes.Count; $index -ge 1; $index--) {
+    $shape = $null
+    try { $shape = $shapes.Item($index) } catch { continue }
+    if ($null -eq $shape) { continue }
     try {
       if ([int]$shape.CellExistsU("Prop.renderId", 0) -ne 0) {
         $existing = $shape.CellsU("Prop.renderId").ResultStr("")
@@ -287,8 +303,19 @@ function Remove-StaleAgentShapes([object]$Page) {
   [int]$quarantined = 0
   [int]$failed = 0
   [System.Collections.Generic.List[string]]$errors = New-Object 'System.Collections.Generic.List[string]'
-  for ($index = $Page.Shapes.Count; $index -ge 1; $index--) {
-    $shape = $Page.Shapes.Item($index)
+  $shapes = $Page.Shapes
+  if ($null -eq $shapes) {
+    $errors.Add("Visio page shapes collection is unavailable.") | Out-Null
+    return [pscustomobject]@{ matched = $matched; removed = $removed; quarantined = $quarantined; failed = 1; errors = @($errors) }
+  }
+  for ($index = [int]$shapes.Count; $index -ge 1; $index--) {
+    $shape = $null
+    try { $shape = $shapes.Item($index) } catch {
+      $failed++
+      if ($errors.Count -lt 3) { $errors.Add($_.Exception.Message) | Out-Null }
+      continue
+    }
+    if ($null -eq $shape) { continue }
     try {
       if ([int]$shape.CellExistsU("Prop.renderId", 0) -eq 0) { continue }
       $existing = Get-PlanString $shape.CellsU("Prop.renderId").ResultStr("")
@@ -312,8 +339,12 @@ function Remove-LegacyShapesByPrefix([object]$Page, [string]$Prefix) {
   [int]$removed = 0
   [int]$failed = 0
   if ([string]::IsNullOrWhiteSpace($prefixValue)) { return [pscustomobject]@{ matched = 0; removed = 0; failed = 0 } }
-  for ($index = $Page.Shapes.Count; $index -ge 1; $index--) {
-    $shape = $Page.Shapes.Item($index)
+  $shapes = $Page.Shapes
+  if ($null -eq $shapes) { return [pscustomobject]@{ matched = 0; removed = 0; failed = 1 } }
+  for ($index = [int]$shapes.Count; $index -ge 1; $index--) {
+    $shape = $null
+    try { $shape = $shapes.Item($index) } catch { $failed++; continue }
+    if ($null -eq $shape) { continue }
     try {
       if ((Get-PlanString $shape.NameU) -like "$prefixValue*") {
         $matched++
@@ -417,6 +448,9 @@ function Draw-PublicationTensorTensorBox([object]$Page, [double]$X, [double]$Y, 
   $originY = $Y + (0.385 * $TensorDepth / 2)
   $halfDepth = $TensorDepth / 2
   $baseOpacity = 0.4
+  if ($null -ne $Spec.PSObject.Properties["fillOpacity"]) {
+    try { $baseOpacity = [double]$Spec.fillOpacity } catch { $baseOpacity = 0.4 }
+  }
   try { if ($null -ne $Spec.fillOpacity) { $baseOpacity = [double]$Spec.fillOpacity } } catch {}
   $pointA = Project-PublicationTensorTensorPoint $originX $originY 0 $H $halfDepth
   $pointB = Project-PublicationTensorTensorPoint $originX $originY 0 0 $halfDepth
@@ -479,6 +513,33 @@ function Draw-FeaturePlane([object]$Page, [object]$Spec, [double]$X, [double]$Y,
   $shape.CellsU("LineWeight").FormulaU = "0.012 in"
   Set-NativeShapeIdentity $shape $Spec.id
   $created.Add($shape) | Out-Null
+  foreach ($badge in @(Draw-RepeatBadge $Page $Spec $X $Y $W $H $Scale)) { $created.Add($badge) | Out-Null }
+  return $created.ToArray()
+}
+
+function Draw-FeatureVolume([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  # CNN feature maps should read as volumetric tensors, not flat flowchart
+  # cards. Keep the geometry in the PublicationTensor basis so the depth,
+  # top face, and east face stay consistent with the native tensor grammar.
+  $depth = [Math]::Max($W * 0.22, $H * 0.18)
+  $depth = [Math]::Min($depth, [Math]::Min($W * 0.46, $H * 0.72))
+  $volumeSpec = [pscustomobject]@{
+    label = $Spec.label
+    subtitle = $Spec.subtitle
+    fill = $Spec.fill
+    line = $Spec.line
+    shapeKind = $Spec.shapeKind
+    visualRole = $Spec.visualRole
+    styleProfile = $Spec.styleProfile
+    labelOutside = $Spec.labelOutside
+    shapeData = $Spec.shapeData
+    faceRole = "front"
+    fillOpacity = 0.72
+  }
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($shape in @(Draw-PublicationTensorTensorBox $Page $X $Y $W $H $depth $volumeSpec $Scale "feature-volume" $true)) {
+    $created.Add($shape) | Out-Null
+  }
   foreach ($badge in @(Draw-RepeatBadge $Page $Spec $X $Y $W $H $Scale)) { $created.Add($badge) | Out-Null }
   return $created.ToArray()
 }
@@ -606,6 +667,7 @@ function Draw-FeatureMapStack([object]$Page, [object]$Spec, [double]$X, [double]
       styleProfile = "feature-map"
       labelOutside = $false
       shapeData = $Spec.shapeData
+      fillOpacity = 0.62
     }
     foreach ($shape in @(Draw-RightBandedTensorCell $Page ($X + ($cellIndex * $cellWidth)) $Y $cellWidth $H $depth $cellSpec $Scale ($cellIndex -eq ($cellCount - 1)))) {
       $created.Add($shape) | Out-Null
@@ -691,16 +753,17 @@ function Draw-FeatureMapGrid([object]$Page, [object]$Spec, [double]$X, [double]$
 }
 
 function Draw-DownsampleFrustum([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
-  $sourceHeight = $H
-  $targetHeight = $H
-  $sourceAnchor = Get-PlanString $Spec.shapeData.sourceAnchor
-  $targetAnchor = Get-PlanString $Spec.shapeData.targetAnchor
-  try { if ([double]$Spec.shapeData.targetHeight -gt 0) { $targetHeight = [double]$Spec.shapeData.targetHeight * $Scale } } catch {}
-  # PublicationTensor's pooling primitive is a smaller Box representing the
-  # downsampled tensor, not a source-to-target trapezium.
-  $depth = $targetHeight
-  $poolSpec = [pscustomobject]@{ label = $Spec.label; subtitle = $Spec.subtitle; fill = $Spec.fill; line = $Spec.line; shapeKind = "pool-box"; visualRole = "pool-downsample"; styleProfile = "pool"; labelOutside = $Spec.labelOutside; shapeData = $Spec.shapeData; fillOpacity = 0.5 }
-  return @(Draw-PublicationTensorTensorBox $Page $X $Y $W $targetHeight $depth $poolSpec $Scale "pool-box" $true)
+  $scaleChange = (Get-PlanString $Spec.shapeData.scaleChange).ToLowerInvariant()
+  $isExpand = $scaleChange -eq "expand"
+  $targetHeight = if ($isExpand) { $H } else { $H * 0.72 }
+  $depth = if ($isExpand) { [Math]::Max($W * 0.25, $H * 0.22) } else { [Math]::Max($W * 0.18, $targetHeight * 0.75) }
+  $visualRole = if ($isExpand) { "upsample" } else { "pool-downsample" }
+  $styleProfile = if ($isExpand) { "upsample" } else { "pool" }
+  $shapeKind = if ($isExpand) { "upsample-box" } else { "pool-box" }
+  # PublicationTensor uses two different native primitives for resolution
+  # changes: a smaller Box for downsampling, a larger Box for upsampling.
+  $scaleSpec = [pscustomobject]@{ label = $Spec.label; subtitle = $Spec.subtitle; fill = $Spec.fill; line = $Spec.line; shapeKind = $shapeKind; visualRole = $visualRole; styleProfile = $styleProfile; labelOutside = $Spec.labelOutside; shapeData = $Spec.shapeData; fillOpacity = 0.5 }
+  return @(Draw-PublicationTensorTensorBox $Page $X $Y $W $targetHeight $depth $scaleSpec $Scale $shapeKind $true)
 }
 
 function Draw-NeuronColumn([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
@@ -833,6 +896,7 @@ function Draw-TextAnnotation([object]$Page, [string]$Text, [double]$X, [double]$
 
 function Draw-PlanLabel([object]$Page, [object]$Spec, [double]$Scale) {
   if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $Spec.parentNodeId))) { return @() }
+  if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $Spec.sceneForm))) { return @() }
   $visualRole = Get-PlanString $Spec.visualRole
   if ($visualRole -eq "repeat-marker" -or $visualRole -eq "annotation") { return @() }
   # Publication blocks carry their title and shape inside the card; no
@@ -1090,6 +1154,74 @@ function Draw-OperatorGlyph([object]$Page, [object]$Spec, [double]$X, [double]$Y
   return @($glyph)
 }
 
+function Draw-AttentionModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $body = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $body $Spec $Scale
+  $body.CellsU("Rounding").FormulaU = "0.06 in"
+  $body.Text = ""
+  $created.Add($body) | Out-Null
+  $padding = [Math]::Max(0.035, [Math]::Min($W, $H) * 0.12)
+  $tokenW = ($W - $padding * 2) * 0.42
+  $tokenH = ($H - $padding * 2) / 5
+  foreach ($index in 0..2) {
+    $tokenY = $Y + $padding + $index * ($tokenH + $tokenH * 0.25)
+    $token = $Page.DrawRectangle($X + $padding, $tokenY, $X + $padding + $tokenW, $tokenY + $tokenH)
+    $token.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#DCEAF4"
+    $token.CellsU("FillBkgnd").FormulaU = Get-RgbFormula "#DCEAF4"
+    $token.CellsU("LineColor").FormulaU = Get-RgbFormula "#6E91AA"
+    $token.CellsU("LineWeight").FormulaU = "0.005 in"
+    $token.Text = ""
+    Set-PlanData $token $Spec.shapeData
+    $created.Add($token) | Out-Null
+  }
+  $gridX = $X + $padding + $tokenW + $padding
+  $gridY = $Y + $padding
+  $gridW = $W - ($gridX - $X) - $padding
+  $gridH = $H - $padding * 2
+  $grid = $Page.DrawRectangle($gridX, $gridY, $gridX + $gridW, $gridY + $gridH)
+  $grid.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#F7FAFC"
+  $grid.CellsU("FillBkgnd").FormulaU = Get-RgbFormula "#F7FAFC"
+  $grid.CellsU("LineColor").FormulaU = Get-RgbFormula "#7E5CA4"
+  $grid.CellsU("LineWeight").FormulaU = "0.006 in"
+  $grid.Text = ""
+  Set-PlanData $grid $Spec.shapeData
+  $created.Add($grid) | Out-Null
+  foreach ($ratio in @((1.0 / 3.0), (2.0 / 3.0))) {
+    $vertical = $Page.DrawLine($gridX + $gridW * $ratio, $gridY, $gridX + $gridW * $ratio, $gridY + $gridH)
+    $vertical.CellsU("LineColor").FormulaU = Get-RgbFormula "#B9A6D4"
+    $vertical.CellsU("LineWeight").FormulaU = "0.004 in"
+    Set-PlanData $vertical $Spec.shapeData
+    $created.Add($vertical) | Out-Null
+    $horizontal = $Page.DrawLine($gridX, $gridY + $gridH * $ratio, $gridX + $gridW, $gridY + $gridH * $ratio)
+    $horizontal.CellsU("LineColor").FormulaU = Get-RgbFormula "#B9A6D4"
+    $horizontal.CellsU("LineWeight").FormulaU = "0.004 in"
+    Set-PlanData $horizontal $Spec.shapeData
+    $created.Add($horizontal) | Out-Null
+  }
+  return $created.ToArray()
+}
+
+function Draw-NormModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $body = $Page.DrawOval($X, $Y, $X + $W, $Y + $H)
+  Set-ShapeStyle $body $Spec $Scale
+  $body.Text = ""
+  $created.Add($body) | Out-Null
+  $midY = $Y + $H / 2
+  $lineA = $Page.DrawLine($X + $W * 0.25, $midY - ($H * 0.10), $X + $W * 0.75, $midY - ($H * 0.10))
+  $lineA.CellsU("LineColor").FormulaU = Get-RgbFormula "#3F5D78"
+  $lineA.CellsU("LineWeight").FormulaU = "0.008 in"
+  Set-PlanData $lineA $Spec.shapeData
+  $created.Add($lineA) | Out-Null
+  $lineB = $Page.DrawLine($X + $W * 0.25, $midY + ($H * 0.10), $X + $W * 0.75, $midY + ($H * 0.10))
+  $lineB.CellsU("LineColor").FormulaU = Get-RgbFormula "#3F5D78"
+  $lineB.CellsU("LineWeight").FormulaU = "0.008 in"
+  Set-PlanData $lineB $Spec.shapeData
+  $created.Add($lineB) | Out-Null
+  return $created.ToArray()
+}
+
 function Draw-InnerOperatorShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   $role = Get-PlanString $Spec.visualRole
   if ($role -eq "inner-capsule") {
@@ -1138,20 +1270,30 @@ function Draw-MergeAddShape([object]$Page, [object]$Spec, [double]$X, [double]$Y
 }
 
 function Draw-MergeConcatShape([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
-  $shape = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
-  $glyphSpec = [pscustomobject]@{ label = "||"; subtitle = ""; fill = $Spec.fill; line = $Spec.line; shapeKind = $Spec.shapeKind; visualRole = $Spec.visualRole; styleProfile = $Spec.styleProfile; shapeData = $Spec.shapeData; labelOutside = $false }
-  Set-ShapeStyle $shape $glyphSpec $Scale
-  Set-NativeShapeIdentity $shape $Spec.id
-  $shape.Text = "||"
-  $shape.CellsU("Char.Size").FormulaU = "9 pt"
-  $shape.CellsU("Char.Style").FormulaU = "1"
   $created = New-Object 'System.Collections.Generic.List[object]'
-  $created.Add($shape) | Out-Null
-  $label = Get-PlanString $Spec.label
-  if (-not [string]::IsNullOrWhiteSpace($label) -and $label -notmatch '^\|\|$') {
-    $caption = Draw-TextAnnotation $Page $label ($X - ($W * 0.35)) ($Y + $H + 0.03) ($W * 1.7) 0.16 "6 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "merge-caption"
-    if ($null -ne $caption) { $created.Add($caption) | Out-Null }
+  $barWidth = [Math]::Max(0.035, $W * 0.08)
+  $barX = $X + ($W * 0.62)
+  $bar = $Page.DrawRectangle($barX, $Y + ($H * 0.12), $barX + $barWidth, $Y + ($H * 0.88))
+  $bar.CellsU("FillForegnd").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+  $bar.CellsU("FillBkgnd").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+  $bar.CellsU("LinePattern").FormulaU = "0"
+  $bar.Text = ""
+  Set-NativeShapeIdentity $bar $Spec.id
+  Set-PlanData $bar $Spec.shapeData
+  $created.Add($bar) | Out-Null
+  foreach ($ratio in @(0.24, 0.50, 0.76)) {
+    $line = $Page.DrawLine($X + ($W * 0.12), $Y + ($H * $ratio), $barX, $Y + ($H * $ratio))
+    $line.CellsU("LineColor").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+    $line.CellsU("LineWeight").FormulaU = "0.011 in"
+    Set-PlanData $line $Spec.shapeData
+    $created.Add($line) | Out-Null
   }
+  $out = $Page.DrawLine($barX + $barWidth, $Y + ($H * 0.50), $X + ($W * 0.88), $Y + ($H * 0.50))
+  $out.CellsU("LineColor").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+  $out.CellsU("LineWeight").FormulaU = "0.011 in"
+  $out.CellsU("EndArrow").FormulaU = "13"
+  Set-PlanData $out $Spec.shapeData
+  $created.Add($out) | Out-Null
   return $created.ToArray()
 }
 
@@ -1202,25 +1344,12 @@ function Draw-AnnotationShape([object]$Page, [object]$Spec, [double]$X, [double]
 }
 
 function Draw-PublicationBlock([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
-  # Publication (journal) stage block: a uniform rounded card whose title is
-  # the operator and whose subtitle is the feature-map shape. Upsample and
-  # downsample operators carry a directional arrow inside the title so the
-  # resolution flow reads at a glance without a per-operator 3D glyph.
+  # Publication cards are intentionally quiet: rounded rectangular body,
+  # semantic side rail, operator label, and a small tensor-shape subtitle.
   $visualRole = Get-PlanString $Spec.visualRole
-  $cut = [Math]::Min($W * 0.16, $H * 0.16)
-  $points = [double[]]@(
-    ($X + $cut), $Y,
-    ($X + $W - $cut), $Y,
-    ($X + $W), ($Y + $cut),
-    ($X + $W), ($Y + $H - $cut),
-    ($X + $W - $cut), ($Y + $H),
-    ($X + $cut), ($Y + $H),
-    $X, ($Y + $H - $cut),
-    $X, ($Y + $cut),
-    ($X + $cut), $Y
-  )
-  $block = $Page.DrawPolyline($points, 0)
+  $block = $Page.DrawRectangle($X, $Y, $X + $W, $Y + $H)
   Set-ShapeStyle $block $Spec $Scale
+  $block.CellsU("Rounding").FormulaU = "0.08 in"
   $block.CellsU("Char.Size").FormulaU = "8 pt"
   $block.CellsU("Char.Style").FormulaU = "1"
   $label = Get-PlanString $Spec.label
@@ -1228,7 +1357,14 @@ function Draw-PublicationBlock([object]$Page, [object]$Spec, [double]$X, [double
   elseif ($visualRole -eq "pool-downsample") { $label = "`u{2193} $label" }
   $subtitle = Get-PlanString $Spec.subtitle
   $block.Text = if (-not [string]::IsNullOrWhiteSpace($subtitle)) { "$label`n$subtitle" } else { $label }
-  return @($block)
+  $railW = [Math]::Max(0.035, [Math]::Min(0.075, $W * 0.055))
+  $rail = $Page.DrawRectangle($X, $Y, $X + $railW, $Y + $H)
+  $rail.CellsU("FillForegnd").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+  $rail.CellsU("FillBkgnd").FormulaU = Get-RgbFormula (Get-SemanticLineColor $Spec)
+  $rail.CellsU("LinePattern").FormulaU = "0"
+  $rail.Text = ""
+  Set-PlanData $rail $Spec.shapeData
+  return @($block, $rail)
 }
 
 function Draw-NamedModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
@@ -1310,9 +1446,220 @@ function Draw-Legend([object]$Page, [object]$Plan, [double]$PageWidth, [double]$
   return $created.ToArray()
 }
 
+function Draw-PublicationPolygon([object]$Page, [object[]]$Points, [object]$Spec, [double]$Scale, [string]$Fill = "", [double]$Opacity = 0.72) {
+  if ($null -eq $Points -or @($Points).Count -lt 3) { return $null }
+  $coordinates = New-Object 'System.Collections.Generic.List[double]'
+  foreach ($point in @($Points)) {
+    $coordinates.Add([double]$point[0] * $Scale) | Out-Null
+    $coordinates.Add([double]$point[1] * $Scale) | Out-Null
+  }
+  $coordinates.Add([double]$Points[0][0] * $Scale) | Out-Null
+  $coordinates.Add([double]$Points[0][1] * $Scale) | Out-Null
+  $shape = $Page.DrawPolyline($coordinates.ToArray(), 0)
+  $lineColor = Get-PlanString $Spec.geometryData.style.stroke
+  if ([string]::IsNullOrWhiteSpace($lineColor)) { $lineColor = "#445668" }
+  $fillColor = if ([string]::IsNullOrWhiteSpace($Fill)) { Get-PlanString $Spec.geometryData.style.fill } else { $Fill }
+  if ([string]::IsNullOrWhiteSpace($fillColor)) { $fillColor = "#F5E1D2" }
+  $shape.CellsU("FillForegnd").FormulaU = Get-RgbFormula $fillColor
+  $shape.CellsU("FillBkgnd").FormulaU = Get-RgbFormula $fillColor
+  $shape.CellsU("LineColor").FormulaU = Get-RgbFormula $lineColor
+  $shape.CellsU("LineWeight").FormulaU = "0.006 in"
+  $transparency = (100 * (1 - $Opacity)).ToString("0.###", [Globalization.CultureInfo]::InvariantCulture) + "%"
+  $shape.CellsU("FillForegndTrans").FormulaU = $transparency
+  $shape.CellsU("FillBkgndTrans").FormulaU = $transparency
+  Set-PlanData $shape $Spec.shapeData
+  return $shape
+}
+
+function Draw-PublicationTensorPrimitive([object]$Page, [object]$Spec, [double]$Scale, [bool]$Banded) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $faces = $Spec.geometryData.faces
+  $opacity = 0.72
+  try { $opacity = [double]$Spec.geometryData.style.opacity } catch {}
+  $side = Draw-PublicationPolygon $Page $faces.side $Spec $Scale "" $opacity
+  if ($null -ne $side) { $created.Add($side) | Out-Null }
+  $top = Draw-PublicationPolygon $Page $faces.top $Spec $Scale "" $opacity
+  if ($null -ne $top) { $created.Add($top) | Out-Null }
+  $front = Draw-PublicationPolygon $Page $faces.front $Spec $Scale "" $opacity
+  if ($null -ne $front) {
+    Set-NativeShapeIdentity $front $Spec.id
+    $created.Add($front) | Out-Null
+  }
+  if ($Banded -and $null -ne $Spec.geometryData.band) {
+    $bandFill = Get-PlanString $Spec.geometryData.style.bandFill
+    $bandOpacity = 0.78
+    try { $bandOpacity = [double]$Spec.geometryData.style.bandOpacity } catch {}
+    $band = Draw-PublicationPolygon $Page $Spec.geometryData.band.front $Spec $Scale $bandFill $bandOpacity
+    if ($null -ne $band) { $created.Add($band) | Out-Null }
+    $bandTop = Draw-PublicationPolygon $Page $Spec.geometryData.band.top $Spec $Scale $bandFill $bandOpacity
+    if ($null -ne $bandTop) { $created.Add($bandTop) | Out-Null }
+  }
+  foreach ($labelShape in @(Draw-PublicationDimensionLabels $Page $Spec $Scale)) {
+    if ($null -ne $labelShape) { $created.Add($labelShape) | Out-Null }
+  }
+  return $created.ToArray()
+}
+
+function Draw-PublicationDimensionLabels([object]$Page, [object]$Spec, [double]$Scale) {
+  $labels = $Spec.geometryData.labels
+  if ($null -eq $labels) { return @() }
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $x = [double]$Spec.x * $Scale
+  $y = [double]$Spec.y * $Scale
+  $w = [double]$Spec.w * $Scale
+  $h = [double]$Spec.h * $Scale
+  $depth = 0.0
+  try { $depth = [double]$Spec.geometryData.geometry.depth * $Scale } catch {}
+  $renderId = Get-PlanString $Spec.shapeData.renderId
+  $sourceId = Get-PlanString $Spec.shapeData.sourceNodeId
+  if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $labels.x))) {
+    $shape = Draw-TextAnnotation $Page (Get-PlanString $labels.x) ($x + ($w / 2) - 0.35) ($y + $h + 0.10) 0.7 0.18 "6 pt" $renderId $sourceId "dimension-label"
+    if ($null -ne $shape) { $created.Add($shape) | Out-Null }
+  }
+  if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $labels.y))) {
+    $shape = Draw-TextAnnotation $Page (Get-PlanString $labels.y) ($x + 0.04) ($y + ($h / 2) - 0.09) 0.55 0.18 "6 pt" $renderId $sourceId "dimension-label"
+    if ($null -ne $shape) { $created.Add($shape) | Out-Null }
+  }
+  if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $labels.z))) {
+    $shape = Draw-TextAnnotation $Page (Get-PlanString $labels.z) ($x + $w + $depth * 0.58) ($y + $h - 0.32) 0.6 0.18 "6 pt" $renderId $sourceId "dimension-label"
+    if ($null -ne $shape) { $created.Add($shape) | Out-Null }
+  }
+  return $created.ToArray()
+}
+
+function Draw-PublicationDenseLayer([object]$Page, [object]$Spec, [double]$Scale) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $lineColor = Get-PlanString $Spec.geometryData.style.stroke
+  if ([string]::IsNullOrWhiteSpace($lineColor)) { $lineColor = "#5F6F7F" }
+  $renderId = Get-PlanString $Spec.shapeData.renderId
+  $sourceId = Get-PlanString $Spec.shapeData.sourceNodeId
+  foreach ($link in @($Spec.geometryData.links)) {
+    $points = @($link.points)
+    if ($points.Count -lt 2) { continue }
+    $line = $Page.DrawLine(
+      ([double]$points[0][0] * $Scale),
+      ([double]$points[0][1] * $Scale),
+      ([double]$points[1][0] * $Scale),
+      ([double]$points[1][1] * $Scale)
+    )
+    $line.CellsU("LineColor").FormulaU = Get-RgbFormula "#A8B1BB"
+    $line.CellsU("LineWeight").FormulaU = "0.004 in"
+    $line.CellsU("LineColorTrans").FormulaU = "28%"
+    Set-PlanData $line $Spec.shapeData
+    $created.Add($line) | Out-Null
+  }
+  $fill = Get-PlanString $Spec.geometryData.style.fill
+  if ([string]::IsNullOrWhiteSpace($fill)) { $fill = "#FBFCFD" }
+  foreach ($node in @($Spec.geometryData.nodes)) {
+    $r = [double]$node.r * $Scale
+    $cx = [double]$node.x * $Scale
+    $cy = [double]$node.y * $Scale
+    $circle = $Page.DrawOval($cx - $r, $cy - $r, $cx + $r, $cy + $r)
+    $circle.CellsU("FillForegnd").FormulaU = Get-RgbFormula $fill
+    $circle.CellsU("FillBkgnd").FormulaU = Get-RgbFormula $fill
+    $circle.CellsU("LineColor").FormulaU = Get-RgbFormula "#415164"
+    $circle.CellsU("LineWeight").FormulaU = "0.007 in"
+    $circle.Text = ""
+    Set-PlanData $circle $Spec.shapeData
+    $created.Add($circle) | Out-Null
+  }
+  foreach ($label in @($Spec.geometryData.layerLabels)) {
+    $text = Get-PlanString $label.text
+    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+    $labelShape = Draw-TextAnnotation $Page $text (([double]$label.x * $Scale) - 0.18) (([double]$label.y * $Scale) + 0.04) 0.36 0.16 "6 pt" $renderId $sourceId "dimension-label"
+    if ($null -ne $labelShape) { $created.Add($labelShape) | Out-Null }
+  }
+  return $created.ToArray()
+}
+
+function Draw-PublicationLayerStack([object]$Page, [object]$Spec, [double]$Scale) {
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $bounds = $Spec.geometryData.bounds
+  if ($null -ne $bounds) {
+    $frame = $Page.DrawRectangle(
+      ([double]$bounds.x * $Scale),
+      ([double]$bounds.y * $Scale),
+      (([double]$bounds.x + [double]$bounds.w) * $Scale),
+      (([double]$bounds.y + [double]$bounds.h) * $Scale)
+    )
+    $frame.CellsU("FillPattern").FormulaU = "0"
+    $frame.CellsU("LinePattern").FormulaU = "0"
+    Set-NativeShapeIdentity $frame $Spec.id
+    Set-PlanData $frame $Spec.shapeData
+    $created.Add($frame) | Out-Null
+  }
+  if ($null -ne $Spec.geometryData.backing) {
+    $backingSpec = [pscustomobject]@{ id = $Spec.geometryData.backing.id; shapeData = $Spec.shapeData; geometryData = $Spec.geometryData.backing }
+    foreach ($shape in @(Draw-PublicationTensorPrimitive $Page $backingSpec $Scale $false)) {
+      $created.Add($shape) | Out-Null
+    }
+  }
+  foreach ($cell in @($Spec.geometryData.cells)) {
+    $cellSpec = [pscustomobject]@{ id = $cell.id; shapeData = $Spec.shapeData; geometryData = $cell }
+    $banded = (Get-PlanString $cell.kind) -eq "right-banded-tensor"
+    foreach ($shape in @(Draw-PublicationTensorPrimitive $Page $cellSpec $Scale $banded)) {
+      $created.Add($shape) | Out-Null
+    }
+  }
+  return $created.ToArray()
+}
+
+function Draw-PublicationGroupBox([object]$Page, [object]$Spec, [double]$Scale) {
+  $bounds = $Spec.geometryData.bounds
+  $x = [double]$bounds.x * $Scale
+  $y = [double]$bounds.y * $Scale
+  $w = [double]$bounds.w * $Scale
+  $h = [double]$bounds.h * $Scale
+  $shape = $Page.DrawRectangle($x, $y, $x + $w, $y + $h)
+  $shape.Text = ""
+  $shape.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#F7FAFC"
+  $shape.CellsU("FillBkgnd").FormulaU = Get-RgbFormula "#F7FAFC"
+  $shape.CellsU("FillForegndTrans").FormulaU = "78%"
+  $shape.CellsU("FillBkgndTrans").FormulaU = "78%"
+  $shape.CellsU("LineColor").FormulaU = Get-RgbFormula "#7A8EA3"
+  $shape.CellsU("LineWeight").FormulaU = "0.008 in"
+  $shape.CellsU("LinePattern").FormulaU = "2"
+  Set-PlanData $shape $Spec.shapeData
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $created.Add($shape) | Out-Null
+  $label = Get-PlanString $Spec.geometryData.label
+  if (-not [string]::IsNullOrWhiteSpace($label)) {
+    $renderId = Get-PlanString $Spec.shapeData.renderId
+    $sourceId = Get-PlanString $Spec.shapeData.sourceNodeId
+    $labelShape = Draw-TextAnnotation $Page $label ($x + 0.10) ($y + 0.07) ($w - 0.20) 0.22 "7 pt" $renderId $sourceId "group-label"
+    if ($null -ne $labelShape) { $created.Add($labelShape) | Out-Null }
+  }
+  return $created.ToArray()
+}
+
+function Draw-PublicationLabel([object]$Page, [object]$Spec, [double]$Scale) {
+  $x = [double]$Spec.x * $Scale
+  $y = [double]$Spec.y * $Scale
+  $w = [double]$Spec.w * $Scale
+  $h = [double]$Spec.h * $Scale
+  $text = Get-PlanString $Spec.geometryData.text
+  if ([string]::IsNullOrWhiteSpace($text)) { return @() }
+  $shape = $Page.DrawRectangle($x, $y, $x + $w, $y + $h)
+  $shape.Text = $text
+  $shape.CellsU("FillPattern").FormulaU = "0"
+  $shape.CellsU("LinePattern").FormulaU = "0"
+  $shape.CellsU("Char.Size").FormulaU = "6.5 pt"
+  $shape.CellsU("Char.Color").FormulaU = "RGB(35,45,55)"
+  try { $shape.CellsU("Para.Wrap").FormulaU = "FALSE" } catch {}
+  $shape.CellsU("Para.HorzAlign").FormulaU = "1"
+  $shape.CellsU("VerticalAlign").FormulaU = "1"
+  Set-PlanData $shape $Spec.shapeData
+  return @($shape)
+}
+
 function Draw-ScenePrimitive([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   $form = (Get-PlanString $Spec.sceneForm).ToLowerInvariant()
-  if ($form -eq "plane" -or $form -eq "volume") { return @(Draw-FeaturePlane $Page $Spec $X $Y $W $H $Scale) }
+  if ($form -eq "plane") {
+    $tags = (Get-PlanString $Spec.shapeData.semanticTags).ToLowerInvariant()
+    if ($tags -match "input" -and $tags -match "spatial") { return @(Draw-ImageInput $Page $Spec $X $Y $W $H $Scale) }
+    return @(Draw-FeaturePlane $Page $Spec $X $Y $W $H $Scale)
+  }
+  if ($form -eq "volume") { return @(Draw-FeatureVolume $Page $Spec $X $Y $W $H $Scale) }
   if ($form -eq "stack") { return @(Draw-FeatureMapStack $Page $Spec $X $Y $W $H $Scale) }
   if ($form -eq "band") { return @(Draw-PublicationBlock $Page $Spec $X $Y $W $H $Scale) }
   if ($form -eq "wedge") { return @(Draw-DownsampleFrustum $Page $Spec $X $Y $W $H $Scale) }
@@ -1336,11 +1683,20 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   $sceneForm = Get-PlanString $Spec.sceneForm
   if (-not [string]::IsNullOrWhiteSpace($sceneForm)) { return @(Draw-ScenePrimitive $Page $Spec $x $y $w $h $Scale) }
   $kind = Get-PlanString $Spec.shapeKind
+  if ($kind -eq "publication-tensor-box") { return @(Draw-PublicationTensorPrimitive $Page $Spec $Scale $false) }
+  if ($kind -eq "publication-right-banded-tensor") { return @(Draw-PublicationTensorPrimitive $Page $Spec $Scale $true) }
+  if ($kind -eq "publication-dense-layer") { return @(Draw-PublicationDenseLayer $Page $Spec $Scale) }
+  if ($kind -eq "publication-layer-stack") { return @(Draw-PublicationLayerStack $Page $Spec $Scale) }
+  if ($kind -eq "publication-group-box") { return @(Draw-PublicationGroupBox $Page $Spec $Scale) }
+  if ($kind -eq "publication-label") { return @(Draw-PublicationLabel $Page $Spec $Scale) }
   if ($kind -eq "publication-block") { return @(Draw-PublicationBlock $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "named-module") { return @(Draw-NamedModule $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "classifier-prism") { return @(Draw-NeuronColumn $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "softmax-prism") { return @(Draw-OutputDistribution $Page $Spec $x $y $w $h $Scale) }
   if ($kind -eq "pool-prism") {
+    return @(Draw-DownsampleFrustum $Page $Spec $x $y $w $h $Scale)
+  }
+  if ($kind -eq "upsample-box" -or (Get-PlanString $Spec.visualRole) -eq "upsample") {
     return @(Draw-DownsampleFrustum $Page $Spec $x $y $w $h $Scale)
   }
   $visualRole = Get-PlanString $Spec.visualRole
@@ -1351,7 +1707,9 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   if ($visualRole -eq "junction") { return @(Draw-JunctionShape $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "repeat-marker") { return @(Draw-RepeatMarkerShape $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "annotation") { return @(Draw-AnnotationShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "inner-operator" -or $visualRole -eq "inner-capsule" -or $visualRole -eq "inner-attention") { return @(Draw-InnerOperatorShape $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "inner-attention") { return @(Draw-AttentionModule $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "inner-norm") { return @(Draw-NormModule $Page $Spec $x $y $w $h $Scale) }
+  if ($visualRole -eq "inner-operator" -or $visualRole -eq "inner-capsule") { return @(Draw-InnerOperatorShape $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "image-input") { return @(Draw-ImageInput $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "sequence-input") { return @(Draw-SequenceInput $Page $Spec $x $y $w $h $Scale) }
   if ($visualRole -eq "state-input") { return @(Draw-StateInput $Page $Spec $x $y $w $h $Scale) }
@@ -1426,13 +1784,13 @@ function Draw-PlanConnector([object]$Page, [object]$Spec, [double]$Scale, [hasht
       ([double]$to.y * $Scale)
     )
     $routeClass = (Get-PlanString $Spec.routeClass).ToLowerInvariant()
-    $line.CellsU("LineColor").FormulaU = if ($Spec.recurrentRailKind -eq "feedback" -or $routeClass -eq "feedback") { "RGB(231,126,34)" } elseif ($Spec.recurrentRailKind -eq "update") { "RGB(0,160,120)" } elseif ($Spec.recurrentRailKind -eq "carry") { "RGB(44,150,190)" } elseif ($routeClass -match "skip|residual|branch" -or $Spec.type -match "skip|residual") { "RGB(36,130,112)" } elseif ($routeClass -match "scale-transfer|merge") { "RGB(79,112,155)" } else { "RGB(63,84,112)" }
+    $line.CellsU("LineColor").FormulaU = if ($Spec.recurrentRailKind -eq "feedback" -or $routeClass -eq "feedback") { "RGB(196,124,48)" } elseif ($Spec.recurrentRailKind -eq "update") { "RGB(36,140,106)" } elseif ($Spec.recurrentRailKind -eq "carry") { "RGB(70,126,166)" } elseif ($routeClass -match "conditional") { "RGB(126,92,164)" } elseif ($routeClass -match "skip|residual|branch" -or $Spec.type -match "skip|residual") { "RGB(49,132,112)" } elseif ($routeClass -match "cross-scale|scale-transfer|merge") { "RGB(82,112,158)" } else { "RGB(63,84,112)" }
     $line.CellsU("LineWeight").FormulaU = "0.009 in"
-    if ($routeClass -match "skip|residual|branch|feedback") { $line.CellsU("LinePattern").FormulaU = "2" }
+    if ($routeClass -match "skip|residual|branch|feedback|conditional|cross-scale") { $line.CellsU("LinePattern").FormulaU = "2" }
     if ($index -eq $points.Count - 2) { $line.CellsU("EndArrow").FormulaU = "13" }
     $segmentRole = if ($points.Count -eq 2) { "direct" } elseif ($index -eq 0) { "begin" } elseif ($index -eq $points.Count - 2) { "end" } else { "middle" }
-    if ($index -eq 0) { Glue-Endpoint $line "BeginX" $ShapeMap[[string]$Spec.sourceShapeId] $true }
-    if ($index -eq $points.Count - 2) { Glue-Endpoint $line "EndX" $ShapeMap[[string]$Spec.targetShapeId] $false }
+    if ($index -eq 0 -and -not $Spec.avoidGlue) { Glue-Endpoint $line "BeginX" $ShapeMap[[string]$Spec.sourceShapeId] $true }
+    if ($index -eq $points.Count - 2 -and -not $Spec.avoidGlue) { Glue-Endpoint $line "EndX" $ShapeMap[[string]$Spec.targetShapeId] $false }
     Set-PlanData $line ([pscustomobject]@{
       renderId = $Spec.renderId
       edgeId = $Spec.id
@@ -1460,12 +1818,14 @@ function Draw-PlanConnector([object]$Page, [object]$Spec, [double]$Scale, [hasht
   return $created.ToArray()
 }
 
+function Invoke-VisioBridgePlan([string]$EncodedPlanBase64) {
+$PlanBase64 = $EncodedPlanBase64
 $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($PlanBase64))
 $plan = $json | ConvertFrom-Json
 if ($plan.createDocument -ne $false) { throw "The Visio bridge only accepts existing documents." }
 if ([string]::IsNullOrWhiteSpace([string]$plan.documentPath)) { throw "documentPath is required." }
 
-$visio = $null
+$visio = if ($WorkerMode) { $script:SynapsePersistentVisio } else { $null }
 $attachedViaMoniker = $false
 if ([string]$plan.openMode -eq "fresh") {
   $visio = New-Object -ComObject Visio.Application
@@ -1475,7 +1835,7 @@ if ([string]$plan.openMode -eq "fresh") {
     $doc = [Runtime.InteropServices.Marshal]::BindToMoniker([string]$plan.documentPath)
     $attachedViaMoniker = $true
   } catch {
-    $visio = New-Object -ComObject Visio.Application
+    if ($null -eq $visio) { $visio = New-Object -ComObject Visio.Application }
     try {
       $doc = $visio.Documents.Open([string]$plan.documentPath)
     } catch {
@@ -1500,7 +1860,7 @@ if ($attachedViaMoniker) {
     try {
       if ($null -ne $attachedApplication -and $attachedApplication.Documents.Count -eq 0) { $attachedApplication.Quit() }
     } catch {}
-    $visio = New-Object -ComObject Visio.Application
+    if ($null -eq $visio) { $visio = New-Object -ComObject Visio.Application }
     try {
       $doc = $visio.Documents.Open([string]$plan.documentPath)
     } catch {
@@ -1531,7 +1891,7 @@ if ([bool]$doc.ReadOnly) {
       if (-not $nextHiddenSaved) { break }
     }
     if ($null -eq $doc -or [bool]$doc.ReadOnly) {
-      $visio = New-Object -ComObject Visio.Application
+      if ($null -eq $visio) { $visio = New-Object -ComObject Visio.Application }
       try {
         $doc = $visio.Documents.Open([string]$plan.documentPath)
       } catch {
@@ -1569,7 +1929,7 @@ foreach ($group in @($plan.groups)) {
 foreach ($spec in @($plan.shapes)) {
   $drawn = @(Draw-PlanShape $page $spec ([double]$plan.unitScale))
   $shapeCount = [int]$shapeCount + [int]$drawn.Count
-  if ($drawn.Count -gt 0) { $shapeMap[$spec.id] = $drawn[0] }
+  if ($drawn.Count -gt 0) { $shapeMap[$spec.id] = Get-NativeShapeForPlan $drawn ([string]$spec.id) }
   $junctionDots = @(Draw-JunctionDot $page $spec ([double]$plan.unitScale))
   $shapeCount = [int]$shapeCount + [int]$junctionDots.Count
   $labels = @(Draw-PlanLabel $page $spec ([double]$plan.unitScale))
@@ -1630,8 +1990,11 @@ $readbackConnectorEndpoints = @{}
 [System.Collections.Generic.List[string]]$gluedBeginEdgeIds = New-Object 'System.Collections.Generic.List[string]'
 [System.Collections.Generic.List[string]]$gluedEndEdgeIds = New-Object 'System.Collections.Generic.List[string]'
 $readbackConnectorCount = 0
-for ($index = 1; $index -le $page.Shapes.Count; $index++) {
-  $shape = $page.Shapes.Item($index)
+$readbackShapes = $page.Shapes
+for ($index = 1; $index -le [int]$readbackShapes.Count; $index++) {
+  $shape = $null
+  try { $shape = $readbackShapes.Item($index) } catch { continue }
+  if ($null -eq $shape) { continue }
   try {
     if ([int]$shape.CellExistsU("Prop.renderId", 0) -eq 0) { continue }
     if ($shape.CellsU("Prop.renderId").ResultStr("") -ne [string]$plan.renderId) { continue }
@@ -1678,6 +2041,11 @@ for ($index = 1; $index -le $page.Shapes.Count; $index++) {
   } catch {}
 }
 
+if ($WorkerMode) {
+  try { $script:SynapsePersistentVisio = $doc.Application } catch {}
+}
+$totalShapes = 0
+try { $totalShapes = [int]$page.Shapes.Count } catch {}
 [pscustomobject]@{
   status = "rendered"
   documentPath = $doc.FullName
@@ -1686,7 +2054,7 @@ for ($index = 1; $index -le $page.Shapes.Count; $index++) {
   renderId = [string]$plan.renderId
   createdShapes = $shapeCount
   createdConnectorSegments = $connectorCount
-  totalShapes = $page.Shapes.Count
+  totalShapes = $totalShapes
   saved = $true
   previewExport = $previewExport
   agentCleanup = $agentCleanup
@@ -1705,3 +2073,30 @@ for ($index = 1; $index -le $page.Shapes.Count; $index++) {
     shapeCount = @($readbackSourceNodeIds | Sort-Object -Unique).Count
   }
 } | ConvertTo-Json -Compress -Depth 10
+}
+
+if ($WorkerMode) {
+  while ($true) {
+    $line = [Console]::In.ReadLine()
+    if ($null -eq $line) { break }
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try {
+      Write-Output (Invoke-VisioBridgePlan $line)
+      [Console]::Out.Flush()
+    } catch {
+      $detail = $_.Exception.GetType().FullName + " | " + $_.Exception.Message
+      if ($_.Exception.InnerException) { $detail += " | inner: " + $_.Exception.InnerException.Message }
+      Write-Output ([ordered]@{ status = "error"; message = ($detail -replace '[\r\n]', ' ') } | ConvertTo-Json -Compress)
+      [Console]::Out.Flush()
+    }
+  }
+  try {
+    if ($null -ne $script:SynapsePersistentVisio) {
+      $script:SynapsePersistentVisio.Quit()
+      $script:SynapsePersistentVisio = $null
+    }
+  } catch {}
+  exit 0
+}
+
+Write-Output (Invoke-VisioBridgePlan $PlanBase64)

@@ -116,9 +116,43 @@ test("default neural primitives are flat, evidence-driven, and free of per-modul
   assert.doesNotMatch(script, /\$legendShapes\s*=\s*@\(Draw-Legend/);
 });
 
+test("scene spatial volumes use tensor geometry while spatial inputs keep image grammar", () => {
+  const dispatch = script.match(/function Draw-ScenePrimitive[\s\S]*?\r?\n}\r?\n/);
+  const featureVolume = script.match(/function Draw-FeatureVolume[\s\S]*?\r?\n}\r?\n/);
+  const label = script.match(/function Draw-PlanLabel[\s\S]*?\r?\n}\r?\n/);
+  assert.ok(dispatch, "expected scene primitive dispatcher");
+  assert.ok(featureVolume, "expected feature-volume renderer");
+  assert.ok(label, "expected legacy label renderer guard");
+  assert.match(dispatch[0], /form -eq "volume"[\s\S]*Draw-FeatureVolume/);
+  assert.match(dispatch[0], /form -eq "plane"[\s\S]*Draw-ImageInput/);
+  assert.match(featureVolume[0], /Draw-PublicationTensorTensorBox/);
+  assert.match(label[0], /sceneForm[\s\S]*return @\(\)/);
+});
+
+test("scene scale changes preserve downsample and upsample direction", () => {
+  const scale = script.match(/function Draw-DownsampleFrustum[\s\S]*?\r?\n}\r?\n/);
+  const connector = script.match(/function Draw-PlanConnector[\s\S]*?\r?\n}\r?\n/);
+  assert.ok(scale, "expected scale-change renderer");
+  assert.ok(connector, "expected connector renderer");
+  assert.match(scale[0], /shapeData\.scaleChange/);
+  assert.match(scale[0], /upsample-box/);
+  assert.match(scale[0], /pool-box/);
+  assert.match(connector[0], /conditional/);
+  assert.match(connector[0], /cross-scale/);
+});
+
 test("compound modules dispatch through topology patterns, not architecture names", () => {
   assert.match(script, /function Draw-StructuredModule/);
   assert.match(script, /shapeData\.modulePattern/);
   assert.match(script, /Draw-StructuredModule[\s\S]*\$pattern/);
   assert.doesNotMatch(script, /Draw-StructuredModule[\s\S]*YOLO|Draw-StructuredModule[\s\S]*ResNet/);
+});
+
+test("publication primitive dispatch supports DSL tensor, dense, stack, and group shapes", () => {
+  assert.match(script, /publication-tensor-box[\s\S]*Draw-PublicationTensorPrimitive/);
+  assert.match(script, /publication-right-banded-tensor[\s\S]*Draw-PublicationTensorPrimitive/);
+  assert.match(script, /publication-dense-layer[\s\S]*Draw-PublicationDenseLayer/);
+  assert.match(script, /publication-layer-stack[\s\S]*Draw-PublicationLayerStack/);
+  assert.match(script, /publication-group-box[\s\S]*Draw-PublicationGroupBox/);
+  assert.match(script, /publication-label[\s\S]*Draw-PublicationLabel/);
 });

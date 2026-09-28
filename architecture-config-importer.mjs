@@ -17,6 +17,7 @@ export function importArchitectureConfig(document, context = {}) {
   const nodes = declarations.map((declaration, index) => normalizeDeclaration(declaration, index));
   const edges = [];
   const diagnostics = [];
+  const sourceId = String(context.sourceId || "config-source");
   for (let index = 0; index < nodes.length; index += 1) {
     for (const reference of asReferences(nodes[index].from)) {
       const source = resolveReference(reference, index, nodes);
@@ -24,11 +25,22 @@ export function importArchitectureConfig(document, context = {}) {
         if (!(index === 0 && reference === -1)) diagnostics.push({ code: "unresolved-module-reference", nodeId: nodes[index].id, reference });
         continue;
       }
-      edges.push({ id: `config-edge-${edges.length + 1}`, source, target: nodes[index].id, status: "grounded" });
+      edges.push({
+        id: `config-edge-${edges.length + 1}`,
+        source,
+        target: nodes[index].id,
+        status: "grounded",
+        evidence: [{
+          kind: "config-reference",
+          sourceId,
+          analyzer: "config",
+          targetNodeId: nodes[index].id,
+          reference,
+        }],
+      });
     }
   }
   const publicNodes = nodes.map(({ from, ...node }) => node);
-  const sourceId = String(context.sourceId || "config-source");
   const claims = publicNodes.flatMap((node) => [
     claim(`${node.id}:operator`, node.id, "operator", node.operator, sourceId),
     claim(`${node.id}:repeat`, node.id, "repeat", node.repeat, sourceId),
@@ -67,7 +79,20 @@ function normalizeDeclaration(declaration, index) {
   const value = declaration.value;
   const prefix = declaration.path.slice(0, -1).map(String).join("-") || "module";
   if (Array.isArray(value)) {
-    return { id: `${prefix}-${declaration.path.at(-1)}`, operator: value[2], repeat: positiveRepeat(value[1]), parameters: clone(value[3]), from: value[0], declarationIndex: index };
+    return {
+      id: `${prefix}-${declaration.path.at(-1)}`,
+      operator: value[2],
+      repeat: positiveRepeat(value[1]),
+      parameters: clone(value[3]),
+      from: value[0],
+      declarationIndex: index,
+      evidence: [{
+        kind: "config-declaration",
+        analyzer: "config",
+        declarationIndex: index,
+        path: declaration.path.map(String),
+      }],
+    };
   }
   return {
     id: String(value.id || `${prefix}-${declaration.path.at(-1)}`),
@@ -76,6 +101,12 @@ function normalizeDeclaration(declaration, index) {
     parameters: clone(value.args ?? value.parameters ?? {}),
     from: value.from ?? value.inputs ?? -1,
     declarationIndex: index,
+    evidence: [{
+      kind: "config-declaration",
+      analyzer: "config",
+      declarationIndex: index,
+      path: declaration.path.map(String),
+    }],
   };
 }
 

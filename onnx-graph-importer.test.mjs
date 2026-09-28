@@ -32,8 +32,13 @@ test("decodes ONNX nodes, tensor shapes, attributes, ports, and producer-consume
   assert.equal(result.graph.nodes[0].attributes.stride, 2);
   assert.deepEqual(result.graph.nodes[1].attributes.labels, ["a", "b"]);
   assert.deepEqual(result.graph.tensors.find((tensor) => tensor.id === "features").shape, [1, 16, 112, 112]);
+  assert.deepEqual(result.graph.nodes[0].shape.output, [1, 16, 112, 112]);
+  assert.equal(result.graph.nodes[0].shape.source, "declared");
+  assert.equal(result.claims.some((claim) => claim.subjectId === "stem" && claim.predicate === "shape"), true);
   assert.deepEqual(result.graph.edges.map((edge) => [edge.source, edge.target, edge.tensorId]), [["stem", "head", "features"]]);
   assert.ok(result.graph.ports.some((port) => port.nodeId === "stem" && port.tensorId === "image" && port.direction === "input"));
+  assert.equal(result.graph.nodes[0].evidence[0].kind, "onnx-node");
+  assert.equal(result.graph.edges[0].evidence[0].kind, "onnx-tensor-edge");
 });
 
 test("rejects pickle artifacts with an isolated-trace diagnostic", () => {

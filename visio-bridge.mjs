@@ -4,8 +4,13 @@ import { existsSync, statSync } from "node:fs";
 import { join, normalize, dirname, basename } from "node:path";
 import { compileSemanticVisualNode } from "./semantic-visual-grammar.mjs";
 import { getCompoundLayout } from "./compound-module.mjs";
+import {
+  VISIO_OPERATION_PLAN_VERSION,
+  validateVisioOperationPlan,
+} from "./visio-operation-plan.mjs";
 
-const BRIDGE_VERSION = "visio-native-bridge/v1";
+export { VISIO_OPERATION_PLAN_VERSION };
+const BRIDGE_VERSION = VISIO_OPERATION_PLAN_VERSION;
 
 // 解析 PowerShell 脚本路径：开发模式在模块同目录；electron-builder 打包后
 // （模块在 app.asar 内）脚本通过 extraResources 复制到 resources/ 下，因为
@@ -45,7 +50,7 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
     ? projectSceneConnectors(layout.scene, registry, renderId)
     : planConnectors(layout, registry, renderId);
 
-  return {
+  const plan = {
     version: BRIDGE_VERSION,
     documentPath,
     pageName,
@@ -65,6 +70,11 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
     shapes: registry.shapes,
     connectors,
   };
+  const validation = validateVisioOperationPlan(plan);
+  if (!validation.ok) {
+    throw new Error(`Invalid Visio Operation Plan: ${validation.issues.map((issue) => issue.code).join(", ")}`);
+  }
+  return plan;
 }
 
 function projectScene(scene, registry, renderId) {
@@ -105,6 +115,7 @@ function projectScene(scene, registry, renderId) {
         primitiveId: String(primitive.id),
         sceneForm: String(primitive.form || "band"),
         sceneRole: String(primitive.role || "body"),
+        scaleChange: String(primitive.data?.scaleChange || ""),
         semanticTags: (primitive.semanticTags || []).map(String).join("|"),
         derivedFrom: (primitive.derivedFrom || []).map(String).join("|"),
         planVersion: BRIDGE_VERSION,
@@ -145,10 +156,19 @@ function sceneArtboard(page = {}) {
 }
 
 function sceneStyleProfile(primitive) {
-  if (primitive.category === "data") return primitive.form === "strip" ? "token" : "feature-map";
+  const tags = new Set((primitive.semanticTags || []).map((tag) => String(tag).toLowerCase()));
+  if (primitive.category === "data") {
+    if (tags.has("input") && tags.has("spatial")) return "image-input";
+    if (tags.has("input") && tags.has("sequence")) return "sequence-input";
+    if (tags.has("input") && tags.has("state")) return "state-input";
+    if (tags.has("input") && tags.has("vector")) return "vector-input";
+    return primitive.form === "strip" ? "token" : "feature-map";
+  }
   if (primitive.category === "boundary") return "unresolved";
   if (primitive.category === "annotation") return "annotation";
-  if ((primitive.semanticTags || []).includes("merge")) return "merge";
+  if (tags.has("attention")) return "attention";
+  if (tags.has("stateful") || tags.has("graph")) return "compound";
+  if (tags.has("merge")) return "merge";
   return "operator";
 }
 
@@ -287,30 +307,43 @@ function planConnectors(layout, registry, renderId) {
     if (node.recurrentLayout) recurrentExpandedShapeIds.set(String(node.id), `recurrent-instance::${node.id}::expanded`);
   }
   for (const edge of Array.isArray(layout.edges) ? layout.edges : []) {
-    const points = Array.isArray(edge.route?.points) ? edge.route.points : [];
+    const sourceNodeId = String(edge.sourceNodeId || edge.source);
+    const targetNodeId = String(edge.targetNodeId || edge.target);
+    const sourceShapeId = recurrentExpandedShapeIds.get(sourceNodeId)
+      || outerShapeIds.get(sourceNodeId)
+      || `outer::${sourceNodeId}`;
+    const targetShapeId = recurrentExpandedShapeIds.get(targetNodeId)
+      || outerShapeIds.get(targetNodeId)
+      || `outer::${targetNodeId}`;
+    const routedPoints = Array.isArray(edge.route?.points) ? edge.route.points : [];
+    const sourceShape = shapes.find((shape) => shape.id === sourceShapeId);
+    const targetShape = shapes.find((shape) => shape.id === targetShapeId);
+    const points = routedPoints.length >= 2 || !sourceShape || !targetShape
+      ? routedPoints
+      : [
+        { x: sourceShape.x + sourceShape.w, y: sourceShape.y + sourceShape.h / 2 },
+        { x: targetShape.x, y: targetShape.y + targetShape.h / 2 },
+      ];
     connectors.push({
       id: `outer-edge::${edge.id}`,
-      source: String(edge.sourceNodeId || edge.source),
-      target: String(edge.targetNodeId || edge.target),
+      source: sourceNodeId,
+      target: targetNodeId,
       type: edge.type || "signal",
       label: edge.label || "",
       points,
       renderId,
       sourceEdgeId: String(edge.sourceEdgeId || edge.id),
-      sourceNodeId: String(edge.sourceNodeId || edge.source),
-      targetNodeId: String(edge.targetNodeId || edge.target),
+      sourceNodeId,
+      targetNodeId,
       sourceEndpointIds: normalizeEndpointIds(edge.sourceEndpointIds || edge.ports),
       routeClass: String(edge.routeClass || "main-flow"),
+      avoidGlue: edge.avoidGlue === true,
       sourceContainerId: String(edge.sourceContainerId || ""),
       targetContainerId: String(edge.targetContainerId || ""),
       sourceLaneId: String(edge.sourceLaneId || ""),
       targetLaneId: String(edge.targetLaneId || ""),
-      sourceShapeId: recurrentExpandedShapeIds.get(String(edge.source || edge.sourceNodeId))
-        || outerShapeIds.get(String(edge.source || edge.sourceNodeId))
-        || `outer::${String(edge.source || edge.sourceNodeId)}`,
-      targetShapeId: recurrentExpandedShapeIds.get(String(edge.target || edge.targetNodeId))
-        || outerShapeIds.get(String(edge.target || edge.targetNodeId))
-        || `outer::${String(edge.target || edge.targetNodeId)}`,
+      sourceShapeId,
+      targetShapeId,
       evidenceCount: Array.isArray(edge.evidence) ? edge.evidence.length : 0,
     });
   }
@@ -383,7 +416,22 @@ export async function renderUniversalFigureToVisio(layout, options = {}) {
     scriptPath: options.scriptPath || resolveScriptPath("visio-bridge.ps1"),
   });
   const runner = options.runner || runPowerShell;
-  const result = await runner(command);
+  const maxAttempts = Number.isInteger(options.comRetryAttempts) && options.comRetryAttempts > 0
+    ? options.comRetryAttempts
+    : 2;
+  let result;
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      result = await runner(command);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isRetryableVisioComFailure(error)) throw error;
+      await delay(250 * attempt);
+    }
+  }
+  if (!result) throw lastError || new Error("Visio bridge failed without an error.");
   const readbackValidation = validateVisioReadback(plan, result.readback || result);
   return {
     plan,
@@ -393,8 +441,18 @@ export async function renderUniversalFigureToVisio(layout, options = {}) {
   };
 }
 
+function isRetryableVisioComFailure(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /RPC_E_SERVERFAULT|0x80010105|服务器出现意外情况|serverfault|不能对 Null 值表达式调用方法|call method on a null/i.test(message);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 export function validateVisioReadback(plan = {}, readback = {}) {
   const expected = [...new Set((plan.shapes || []).flatMap((shape) => {
+    if (String(shape.shapeKind || shape.shapeData?.visualRole || "") === "publication-label") return [];
     const sourceNodeIds = shape.shapeData?.sourceNodeIds;
     if (Array.isArray(sourceNodeIds) && sourceNodeIds.length > 0) {
       return sourceNodeIds.map(String).filter(Boolean);
@@ -411,8 +469,12 @@ export function validateVisioReadback(plan = {}, readback = {}) {
   const glueReported = Array.isArray(readback.gluedBeginEdgeIds) || Array.isArray(readback.gluedEndEdgeIds);
   const gluedBegin = new Set((readback.gluedBeginEdgeIds || []).map(String));
   const gluedEnd = new Set((readback.gluedEndEdgeIds || []).map(String));
-  const missingGluedBeginEdgeIds = glueReported ? expectedEdgeIds.filter((id) => !gluedBegin.has(id)) : [];
-  const missingGluedEndEdgeIds = glueReported ? expectedEdgeIds.filter((id) => !gluedEnd.has(id)) : [];
+  const glueExpectedEdgeIds = (plan.connectors || [])
+    .filter((edge) => edge.avoidGlue !== true)
+    .map((edge) => String(edge.id || ""))
+    .filter(Boolean);
+  const missingGluedBeginEdgeIds = glueReported ? glueExpectedEdgeIds.filter((id) => !gluedBegin.has(id)) : [];
+  const missingGluedEndEdgeIds = glueReported ? glueExpectedEdgeIds.filter((id) => !gluedEnd.has(id)) : [];
   const actualConnectors = Array.isArray(readback.connectors)
     ? readback.connectors
     : Object.values(readback.connectorEndpoints || {});
@@ -569,8 +631,8 @@ function shapePlan(node, options) {
     y: Number(node.y ?? node.geometry?.y) || 0,
     w: Number(node.w ?? node.geometry?.width) || 120,
     h: Number(node.h ?? node.geometry?.height) || 80,
-    label: String(node.figureLabel || node.label || node.op || "Operator"),
-    subtitle: String(node.figureSubtitle || node.subtitle || ""),
+    label: String(node.figureLabel ?? node.label ?? node.op ?? "Operator"),
+    subtitle: String(node.figureSubtitle ?? node.subtitle ?? ""),
     shapeKind: isInputRole ? visualRole : options.shapeKind,
     visualRole,
     styleProfile,

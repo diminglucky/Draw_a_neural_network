@@ -1,9 +1,14 @@
-const VERSION = "laid-out-neural-scene/v1";
-const GAP_X = 90;
-const GAP_Y = 54;
-const MARGIN = 48;
+export const LAID_OUT_NEURAL_SCENE_VERSION = "laid-out-neural-scene/v1";
+const VERSION = LAID_OUT_NEURAL_SCENE_VERSION;
+const GAP_X = 108;
+const GAP_Y = 64;
+const MARGIN = 56;
 
 export function layoutNeuralScene(scene = {}, profiles = {}) {
+  const publicationLayoutPlan = profiles.publicationLayoutPlan;
+  const plannedRouteClasses = new Map((publicationLayoutPlan?.constraints || [])
+    .filter((constraint) => constraint.kind === "reserve-route-corridor" && constraint.edgeId)
+    .map((constraint) => [String(constraint.edgeId), String(constraint.routeClass || "main-flow")]));
   const primitives = Array.isArray(scene.primitives) ? scene.primitives : [];
   const bodies = primitives.filter((primitive) => primitive.role === "body");
   const bodyById = new Map(bodies.map((primitive) => [primitive.id, primitive]));
@@ -22,35 +27,224 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
       laidBodies.push({ ...primitive, bounds: { x: MARGIN + layerIndex * GAP_X + layerIndex * 88, y: MARGIN + row * (size.h + GAP_Y), w: size.w, h: size.h }, zIndex: 100 + layerIndex });
     }
   }
+  centerLayersVertically(laidBodies, layers);
+  if (!publicationLayoutPlan || (publicationLayoutPlan.constraints || []).some((constraint) => constraint.kind === "align-scale-centerlines")) {
+    alignSharedScaleCenters(laidBodies, layers);
+  }
+  applyLayoutArchetype(laidBodies, publicationLayoutPlan);
   const bodyPosition = new Map(laidBodies.map((primitive) => [primitive.id, primitive]));
   const groups = placeGroups(scene.groups || [], bodyPosition);
   if ((scene.groups || []).some((group) => ["horizontal", "vertical"].includes(group.direction))) {
     arrangeTopLevelUnits(groups, bodyPosition, relations);
   }
+  const constraintDiagnostics = applySceneConstraints(bodyPosition, scene.constraints || []);
   const positionedBodies = [...bodyPosition.values()];
-  const laidPrimitives = positionedBodies.map((primitive) => ({ ...primitive, anchors: anchorsFor(primitive) }));
+  const directionByPrimitive = groupDirections(scene.groups || []);
+  const laidPrimitives = positionedBodies.map((primitive) => ({
+    ...primitive,
+    anchors: anchorsFor(primitive, directionByPrimitive.get(primitive.id) || "horizontal"),
+  }));
+  const bodyByProjection = new Map(positionedBodies.map((primitive) => [String(primitive.projectionId || ""), primitive]));
+  const bodyBySourceNode = new Map();
+  for (const body of positionedBodies) {
+    for (const sourceNodeId of body.sourceNodeIds || []) bodyBySourceNode.set(String(sourceNodeId), body);
+  }
   for (const primitive of primitives.filter((item) => item.role !== "body")) {
-    const owner = bodyPosition.get(primitive.projectionId) || bodyPosition.get(primitive.sourceNodeIds?.[0]);
+    const owner = bodyByProjection.get(String(primitive.projectionId || ""))
+      || bodyBySourceNode.get(String(primitive.sourceNodeIds?.[0] || ""));
     if (!owner) continue;
-    laidPrimitives.push({ ...primitive, bounds: { x: owner.bounds.x, y: owner.bounds.y + owner.bounds.h + 12, w: owner.bounds.w, h: 18 }, anchors: { inputs: [], outputs: [] }, zIndex: owner.zIndex + 10 });
+    laidPrimitives.push({ ...primitive, bounds: { x: owner.bounds.x, y: owner.bounds.y + owner.bounds.h + 12, w: owner.bounds.w, h: 34 }, anchors: { inputs: [], outputs: [] }, zIndex: owner.zIndex + 10 });
   }
   const visualBounds = [...laidPrimitives.map((primitive) => primitive.bounds), ...groups.map((group) => group.bounds)];
   const maxX = Math.max(...visualBounds.map((bounds) => bounds.x + bounds.w), MARGIN);
   const maxY = Math.max(...visualBounds.map((bounds) => bounds.y + bounds.h), MARGIN);
   const page = { x: 0, y: 0, width: maxX + MARGIN, height: maxY + MARGIN };
   const connectors = [];
-  for (const relation of relations) connectors.push(routeRelation(relation, bodyPosition, laidPrimitives, connectors));
+  const primitiveById = new Map(laidPrimitives.map((primitive) => [primitive.id, primitive]));
+  for (const relation of relations) connectors.push(routeRelation(
+    relation,
+    primitiveById,
+    laidPrimitives,
+    connectors,
+    plannedRouteClasses.get(String((relation.sourceEdgeIds || [])[0] || "")),
+  ));
   const diagnostics = [...(scene.diagnostics || [])];
+  diagnostics.push(...constraintDiagnostics);
   for (const relation of relations) if (relation.relationTags?.includes("crossScale")) diagnostics.push({ code: "cross-scale-transfer", relationId: relation.id, severity: "warning" });
   const maxPrimitives = Number.isFinite(profiles.maxPrimitives) ? profiles.maxPrimitives : Infinity;
   if (laidPrimitives.length > maxPrimitives) diagnostics.push({ code: "layout-budget-exceeded", primitiveCount: laidPrimitives.length, budget: maxPrimitives, severity: "warning" });
-  const result = { version: VERSION, units: "layout-unit", primitives: laidPrimitives.sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id)), connectors, groups, page, diagnostics, softScore: scoreLayout(positionedBodies, connectors) };
+  const visualQuality = analyzeVisualQuality(laidPrimitives, connectors, page);
+  diagnostics.push(...visualQuality.diagnostics);
+  const result = { version: VERSION, units: "layout-unit", primitives: laidPrimitives.sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id)), connectors, groups, page, diagnostics, visualQuality: visualQuality.metrics, softScore: scoreLayout(positionedBodies, connectors) };
   return result;
 }
 
-export function validateLaidOutScene(layout = {}) {
+function applySceneConstraints(bodyPosition, constraints) {
+  const diagnostics = [];
+  for (const constraint of constraints) {
+    if (constraint.kind !== "center-y-between") continue;
+    const target = bodyPosition.get(String(constraint.targetPrimitiveId || ""));
+    const members = (constraint.memberPrimitiveIds || [])
+      .map((primitiveId) => bodyPosition.get(String(primitiveId)))
+      .filter(Boolean);
+    if (!target || members.length < 2) {
+      diagnostics.push({ code: "constraint-target-missing", constraintId: constraint.id, severity: "warning" });
+      continue;
+    }
+    const centers = members.map((primitive) => primitive.bounds.y + primitive.bounds.h / 2);
+    const desiredY = (Math.min(...centers) + Math.max(...centers)) / 2 - target.bounds.h / 2;
+    const previousY = target.bounds.y;
+    target.bounds = { ...target.bounds, y: desiredY };
+    if (overlapsAny(target, bodyPosition.values())) {
+      target.bounds = { ...target.bounds, y: previousY };
+      diagnostics.push({ code: "constraint-skipped-overlap", constraintId: constraint.id, severity: "warning" });
+    }
+  }
+  return diagnostics;
+}
+
+function overlapsAny(target, bodies) {
+  for (const body of bodies) {
+    if (body.id === target.id) continue;
+    if (overlaps(target.bounds, body.bounds)) return true;
+  }
+  return false;
+}
+
+function centerLayersVertically(laidBodies, layers) {
+  if (!laidBodies.length) return;
+  const bodyById = new Map(laidBodies.map((body) => [body.id, body]));
+  const bottom = Math.max(...laidBodies.map((body) => body.bounds.y + body.bounds.h));
+  const centerY = MARGIN + (bottom - MARGIN) / 2;
+  for (const layer of layers) {
+    const bodies = layer.map((body) => bodyById.get(body.id)).filter(Boolean);
+    if (!bodies.length) continue;
+    const top = Math.min(...bodies.map((body) => body.bounds.y));
+    const layerBottom = Math.max(...bodies.map((body) => body.bounds.y + body.bounds.h));
+    const delta = centerY - (top + layerBottom) / 2;
+    for (const body of bodies) body.bounds = { ...body.bounds, y: body.bounds.y + delta };
+  }
+}
+
+function alignSharedScaleCenters(laidBodies, layers) {
+  const groups = new Map();
+  for (const body of laidBodies) {
+    const scale = scaleKey(body);
+    if (scale === "unknown") continue;
+    if (!groups.has(scale)) groups.set(scale, []);
+    groups.get(scale).push(body);
+  }
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const targetCenter = group.reduce((sum, body) => sum + body.bounds.y + body.bounds.h / 2, 0) / group.length;
+    const previous = group.map((body) => ({ body, y: body.bounds.y }));
+    for (const body of group) body.bounds = { ...body.bounds, y: targetCenter - body.bounds.h / 2 };
+    if (laidBodies.some((first, index) => laidBodies.slice(index + 1).some((second) => overlaps(first.bounds, second.bounds)))) {
+      for (const item of previous) item.body.bounds = { ...item.body.bounds, y: item.y };
+    }
+  }
+}
+
+function applyLayoutArchetype(laidBodies, publicationLayoutPlan) {
+  const archetype = (publicationLayoutPlan?.constraints || [])
+    .find((constraint) => constraint.kind === "layout-archetype")?.archetype;
+  if (archetype !== "encoder-decoder-u" || laidBodies.length < 3) return;
+  const ordered = [...laidBodies].sort((left, right) => left.bounds.x - right.bounds.x);
+  const poolIndex = ordered.findIndex((body) => body.data?.scaleChange === "reduce" || body.semanticTags?.includes("reduce"));
+  const upIndex = ordered.findIndex((body) => body.data?.scaleChange === "expand" || body.semanticTags?.includes("expand"));
+  if (poolIndex < 0 || upIndex <= poolIndex) return;
+  const encoder = ordered.slice(0, poolIndex + 1);
+  const bottleneck = ordered.slice(poolIndex + 1, upIndex);
+  const decoder = ordered.slice(upIndex);
+  const columnWidth = Math.max(...ordered.map((body) => body.bounds.w));
+  const leftX = MARGIN;
+  const centerX = MARGIN + columnWidth + GAP_X;
+  const rightX = MARGIN + (columnWidth + GAP_X) * 2;
+  let cursorY = MARGIN;
+  for (const body of encoder) {
+    body.bounds = { ...body.bounds, x: leftX + (columnWidth - body.bounds.w) / 2, y: cursorY };
+    cursorY += body.bounds.h + GAP_Y;
+  }
+  const bottomY = cursorY;
+  for (const body of bottleneck) {
+    body.bounds = { ...body.bounds, x: centerX + (columnWidth - body.bounds.w) / 2, y: bottomY };
+    cursorY += body.bounds.h + GAP_Y;
+  }
+  let decoderY = bottomY;
+  for (const body of decoder) {
+    body.bounds = { ...body.bounds, x: rightX + (columnWidth - body.bounds.w) / 2, y: decoderY };
+    decoderY -= body.bounds.h + GAP_Y;
+  }
+}
+
+function analyzeVisualQuality(primitives, connectors, page) {
+  const bodies = primitives.filter((primitive) => primitive.role === "body");
+  const decorations = primitives.filter((primitive) => primitive.role === "decoration");
+  const diagnostics = [];
+  let labelOverlapCount = 0;
+  for (let i = 0; i < decorations.length; i += 1) {
+    for (let j = i + 1; j < decorations.length; j += 1) {
+      if (overlaps(decorations[i].bounds, decorations[j].bounds)) labelOverlapCount += 1;
+    }
+  }
+  let labelBodyOverlapCount = 0;
+  for (const decoration of decorations) {
+    for (const body of bodies) {
+      if (!overlaps(decoration.bounds, body.bounds)) continue;
+      if ((decoration.sourceNodeIds || []).some((id) => (body.sourceNodeIds || []).includes(String(id)))) continue;
+      labelBodyOverlapCount += 1;
+    }
+  }
+  let connectorBodyIntersectionCount = 0;
+  for (const connector of connectors) {
+    for (const body of bodies) {
+      if (body.id === connector.sourcePrimitiveId || body.id === connector.targetPrimitiveId) continue;
+      if (pathIntersectsRectInterior(connector.points, body.bounds)) connectorBodyIntersectionCount += 1;
+    }
+  }
+  const pageArea = Math.max(1, Number(page?.width || 0) * Number(page?.height || 0));
+  const bodyArea = bodies.reduce((sum, body) => sum + Math.max(0, body.bounds.w * body.bounds.h), 0);
+  const whitespaceRatio = Math.max(0, Math.min(1, 1 - bodyArea / pageArea));
+  if (labelOverlapCount) diagnostics.push({ code: "label-overlap", severity: "warning", count: labelOverlapCount });
+  if (labelBodyOverlapCount) diagnostics.push({ code: "label-body-overlap", severity: "warning", count: labelBodyOverlapCount });
+  if (connectorBodyIntersectionCount) diagnostics.push({ code: "connector-body-intersection", severity: "error", count: connectorBodyIntersectionCount });
+  return {
+    metrics: {
+      labelOverlapCount,
+      labelBodyOverlapCount,
+      connectorBodyIntersectionCount,
+      whitespaceRatio,
+      bodyCount: bodies.length,
+      decorationCount: decorations.length,
+      connectorCount: connectors.length,
+    },
+    diagnostics,
+  };
+}
+
+export function validateLaidOutScene(layout = {}, sourceScene = {}) {
   const issues = [];
   if (layout.version !== VERSION || layout.units !== "layout-unit") issues.push({ code: "invalid-laid-out-scene-version" });
+  const primitiveIds = new Set();
+  for (const primitive of layout.primitives || []) {
+    const primitiveId = String(primitive?.id || "");
+    if (!primitiveId) issues.push({ code: "missing-laid-out-primitive-id" });
+    else if (primitiveIds.has(primitiveId)) issues.push({ code: "duplicate-laid-out-primitive", primitiveId });
+    else primitiveIds.add(primitiveId);
+  }
+  if (Array.isArray(sourceScene.primitives)) {
+    for (const sourcePrimitive of sourceScene.primitives) {
+      const primitiveId = String(sourcePrimitive?.id || "");
+      if (primitiveId && !primitiveIds.has(primitiveId)) issues.push({ code: "missing-laid-out-primitive", primitiveId });
+    }
+  }
+  const connectorIds = new Set((layout.connectors || []).map((connector) => String(connector?.id || "")).filter(Boolean));
+  if (Array.isArray(sourceScene.relations)) {
+    for (const sourceRelation of sourceScene.relations) {
+      const relationId = String(sourceRelation?.id || "");
+      if (relationId && !connectorIds.has(relationId)) issues.push({ code: "missing-laid-out-connector", relationId });
+    }
+  }
   const bodies = (layout.primitives || []).filter((primitive) => primitive.role === "body");
   for (const primitive of layout.primitives || []) {
     if (!validBounds(primitive.bounds) || !insidePage(primitive.bounds, layout.page)) issues.push({ code: "primitive-out-of-page", primitiveId: primitive.id });
@@ -155,6 +349,18 @@ function placeGroups(sourceGroups, bodyPosition) {
     rootX += measure(root).w + 48;
   }
   return definitions.map((group) => ({ ...group, bounds: boundsById.get(group.id) || { x: MARGIN, y: MARGIN, w: 0, h: 0 } }));
+}
+
+function groupDirections(groups = []) {
+  const directions = new Map();
+  for (const group of groups) {
+    const direction = group.direction === "vertical" ? "vertical" : "horizontal";
+    for (const primitiveId of group.primitiveIds || []) {
+      const id = String(primitiveId);
+      if (direction === "vertical" || !directions.has(id)) directions.set(id, direction);
+    }
+  }
+  return directions;
 }
 
 function measureGroupBounds(sourceGroups, bodyPosition) {
@@ -276,12 +482,24 @@ function topologicalLayers(bodies, relations) {
   return result;
 }
 
-function routeRelation(relation, bodyPosition, primitives, routedConnectors) {
-  const source = bodyPosition.get(relation.sourcePrimitiveId);
-  const target = bodyPosition.get(relation.targetPrimitiveId);
-  const sourceAnchor = source ? { x: source.bounds.x + source.bounds.w, y: source.bounds.y + source.bounds.h / 2 } : null;
-  const targetAnchor = target ? { x: target.bounds.x, y: target.bounds.y + target.bounds.h / 2 } : null;
-  const routeClass = relation.relationTags?.includes("state") ? "state" : relation.relationTags?.includes("bypass") ? "bypass" : relation.relationTags?.includes("crossScale") ? "cross-scale" : "main-flow";
+function routeRelation(relation, primitiveById, primitives, routedConnectors, plannedRouteClass = "") {
+  const source = primitiveById.get(relation.sourcePrimitiveId);
+  const target = primitiveById.get(relation.targetPrimitiveId);
+  const sourcePort = findAnchor(source, "outputs", relation.sourcePortId);
+  const targetPort = findAnchor(target, "inputs", relation.targetPortId);
+  const sourceAnchor = sourcePort ? { x: sourcePort.x, y: sourcePort.y } : null;
+  const targetAnchor = targetPort ? { x: targetPort.x, y: targetPort.y } : null;
+  const relationTags = new Set(relation.relationTags || []);
+  const routeClass = String(plannedRouteClass || "")
+    || (relationTags.has("state")
+      ? "state"
+      : relationTags.has("conditional")
+        ? "conditional"
+        : relationTags.has("bypass")
+          ? "bypass"
+          : relationTags.has("crossScale")
+            ? "cross-scale"
+            : "main-flow");
   if (!sourceAnchor || !targetAnchor) return { ...relation, routeClass, points: [] };
   if (routeClass === "bypass") {
     const top = Math.min(source.bounds.y, target.bounds.y) - 30;
@@ -393,7 +611,8 @@ function compareCost(first, second) {
 
 function primitiveSize(primitive) {
   const form = primitive.form;
-  if (form === "plane") return { w: 72, h: 86 };
+  if (form === "plane") return { w: 80, h: 84 };
+  if (form === "volume") return { w: 98, h: 66 };
   if (form === "stack") return { w: 92, h: 62 };
   if (form === "glyph" || form === "cell") return { w: 58, h: 58 };
   if (form === "strip") return { w: 96, h: 48 };
@@ -402,7 +621,56 @@ function primitiveSize(primitive) {
   return { w: 90, h: 54 };
 }
 
-function anchorsFor(primitive) { return { inputs: [{ id: "in", x: primitive.bounds.x, y: primitive.bounds.y + primitive.bounds.h / 2 }], outputs: [{ id: "out", x: primitive.bounds.x + primitive.bounds.w, y: primitive.bounds.y + primitive.bounds.h / 2 }] }; }
+function anchorsFor(primitive, direction = "horizontal") {
+  const inputs = declaredPorts(primitive, "inputs", "in");
+  const outputs = declaredPorts(primitive, "outputs", "out");
+  return {
+    inputs: inputs.map((port, index, ports) => anchorForPort(primitive.bounds, port.id, "input", direction, index, ports.length)),
+    outputs: outputs.map((port, index, ports) => anchorForPort(primitive.bounds, port.id, "output", direction, index, ports.length)),
+  };
+}
+
+function declaredPorts(primitive, side, fallback) {
+  const ports = Array.isArray(primitive.ports?.[side]) ? primitive.ports[side] : [];
+  if (!ports.length) return [{ id: fallback }];
+  const used = new Set();
+  return ports.map((port, index) => {
+    const base = String(port?.portId || port?.id || (typeof port === "string" ? port : "") || fallback);
+    let id = base;
+    let suffix = 2;
+    while (used.has(id)) id = `${base}-${suffix++}`;
+    used.add(id);
+    return { id };
+  });
+}
+
+function findAnchor(primitive, side, portId) {
+  const anchors = primitive?.anchors?.[side] || [];
+  if (portId !== undefined && portId !== null && String(portId)) {
+    const matched = anchors.find((anchor) => String(anchor.id) === String(portId));
+    if (matched) return matched;
+  }
+  return anchors[0] || null;
+}
+
+function anchorForPort(bounds, portId, kind, direction, index, count) {
+  const side = anchorSide(portId, kind, direction);
+  const ratio = (index + 1) / (count + 1);
+  if (side === "top") return { id: portId, x: bounds.x + bounds.w * ratio, y: bounds.y };
+  if (side === "bottom") return { id: portId, x: bounds.x + bounds.w * ratio, y: bounds.y + bounds.h };
+  if (side === "left") return { id: portId, x: bounds.x, y: bounds.y + bounds.h * ratio };
+  return { id: portId, x: bounds.x + bounds.w, y: bounds.y + bounds.h * ratio };
+}
+
+function anchorSide(portId, kind, direction) {
+  const id = String(portId || "").toLowerCase();
+  if (/top|north/.test(id)) return "top";
+  if (/bottom|south/.test(id)) return "bottom";
+  if (/left|west/.test(id)) return "left";
+  if (/right|east/.test(id)) return "right";
+  if (direction === "vertical") return kind === "input" ? "top" : "bottom";
+  return kind === "input" ? "left" : "right";
+}
 function scaleKey(primitive) { return String(primitive.data?.scale || primitive.semanticTags?.find((tag) => /^scale[:=]/.test(tag)) || "unknown"); }
 function validBounds(bounds) { return bounds && [bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite) && bounds.w > 0 && bounds.h > 0; }
 function insidePage(bounds, page) { return validBounds(bounds) && page && bounds.x >= page.x && bounds.y >= page.y && bounds.x + bounds.w <= page.x + page.width && bounds.y + bounds.h <= page.y + page.height; }
