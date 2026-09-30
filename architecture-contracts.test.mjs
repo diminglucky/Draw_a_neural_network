@@ -25,6 +25,8 @@ test("freezes the graph, semantic, visual-plan, and Visio-operation versions", (
     publicationPrimitive: "publication-primitive/v1",
     neuralFigureDsl: "neural-figure-dsl/v1",
     neuralFigurePlanner: "neural-figure-planner/v1",
+    figureQa: "figure-qa/v1",
+    modelWorkspace: "model-workspace/v1",
     evidenceFusion: "graph-evidence-fusion/v1",
     evidenceMetadata: "evidence-metadata/v1",
     shapeInference: "shape-inference/v1",

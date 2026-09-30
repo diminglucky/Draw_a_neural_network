@@ -7,6 +7,12 @@ import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./shape-inferen
 import { createVisioWorkerClient } from "./visio-worker-client.mjs";
 import { analyzeTorchSource } from "./torch-code-analyzer.mjs";
 import { analyzeKerasSource } from "./keras-code-analyzer.mjs";
+import { validateNeuralFigureProgram } from "./neural-figure-dsl.mjs";
+import { compileNeuralFigureDslToVisioLayout } from "./visio-dsl-bridge.mjs";
+import { applyModelWorkspaceOperation, createModelWorkspace, modelWorkspaceToIR, validateModelWorkspace } from "./model-workspace.mjs";
+import { buildCanonicalModelGraph } from "./canonical-model-graph.mjs";
+import { planNeuralFigure, validateNeuralFigurePlan } from "./figure-planner.mjs";
+import { evaluatePublicationFigure } from "./figure-qa.mjs";
 
 // The LLM analyzer is injected by server.js and updated on config change. We
 // keep a module-level mutable reference (not a captured argument) so an updated
@@ -37,6 +43,12 @@ export function createAgentService({ dependencies = {}, runStore: configuredRunS
     if (request.method !== "POST") return jsonResponse(404, { status: "not_found", code: "route-not-found", message: "Agent route not found." });
     try {
       const body = await request.json();
+      if (url.pathname === "/api/model-workspace/apply") {
+        return applyWorkspaceEdit(body);
+      }
+      if (url.pathname === "/api/model-workspace/plan") {
+        return planWorkspaceEdit(body);
+      }
       if (url.pathname === "/api/render-visio") {
         return renderVisioThroughAgent(body, stageDependencies, runs, runStore);
       }
@@ -115,7 +127,135 @@ function createDefaultAgentDependencies(configuration = {}) {
       return extractArchitectureEvidence(input);
     },
     normalize: (evidence) => normalizeArchitectureEvidence(evidence),
-    plan: (normalized) => planArchitectureFigure(normalized),
+    plan: (normalized) => planWithOptionalLLMFigure(normalized),
+  };
+}
+
+function applyWorkspaceEdit(body = {}) {
+  const workspace = body.workspace;
+  const validation = validateModelWorkspace(workspace);
+  if (!validation.ok) {
+    return jsonResponse(422, {
+      status: "invalid_workspace",
+      error: "The model workspace is invalid.",
+      validation,
+    });
+  }
+  const result = applyModelWorkspaceOperation(workspace, body.operation || {});
+  return jsonResponse(200, {
+    status: result.diagnostics.length ? "operation_rejected" : "applied",
+    workspace: result.workspace,
+    diagnostics: result.diagnostics,
+    ir: result.diagnostics.length ? undefined : modelWorkspaceToIR(result.workspace),
+  });
+}
+
+async function planWorkspaceEdit(body = {}) {
+  const workspace = body.workspace;
+  const validation = validateModelWorkspace(workspace);
+  if (!validation.ok) {
+    return jsonResponse(422, {
+      status: "invalid_workspace",
+      error: "The model workspace is invalid.",
+      validation,
+    });
+  }
+  const ir = modelWorkspaceToIR(workspace);
+  const planned = await planWithOptionalLLMFigure({ ir });
+  const publicationFallback = planned.publicationVisioDiagramPlan
+    ? {
+      program: planned.neuralFigureProgram,
+      plan: planned.publicationVisioDiagramPlan,
+      validation: planned.publicationVisioDiagramPlanValidation,
+      qa: planned.publicationFigureQa,
+    }
+    : buildWorkspacePublicationFallback(ir);
+  const nextWorkspace = createModelWorkspace({
+    id: workspace.modelId,
+    revision: Number(workspace.revision || 0) + 1,
+    ir: planned.ir || ir,
+    visioDiagramPlan: planned.visioDiagramPlan,
+    publicationVisioDiagramPlan: publicationFallback.plan,
+    publicationFigureQa: publicationFallback.qa,
+  });
+  return jsonResponse(200, {
+    status: publicationFallback.plan ? "planned" : "invalid_layout",
+    workspace: nextWorkspace,
+    ir: planned.ir || ir,
+    visioDiagramPlan: planned.visioDiagramPlan,
+    visioDiagramPlanValidation: planned.visioDiagramPlanValidation,
+    publicationVisioDiagramPlan: publicationFallback.plan,
+    publicationVisioDiagramPlanValidation: publicationFallback.validation,
+    publicationFigureQa: publicationFallback.qa,
+    neuralFigureProgram: publicationFallback.program,
+    neuralFigurePlanValidation: publicationFallback.program
+      ? validateNeuralFigurePlan(publicationFallback.program, buildCanonicalModelGraph(planned.ir || ir))
+      : undefined,
+    diagnostics: planned.diagnostics || [],
+  });
+}
+
+function buildWorkspacePublicationFallback(ir) {
+  try {
+    const canonicalModel = buildCanonicalModelGraph(ir);
+    const program = planNeuralFigure(canonicalModel);
+    const validation = validateNeuralFigurePlan(program, canonicalModel);
+    const plan = validation.ok
+      ? compileNeuralFigureDslToVisioLayout(program, {
+        title: ir.figure?.title,
+        subtitle: ir.figure?.subtitle,
+      })
+      : null;
+    return {
+      program,
+      plan,
+      validation: plan ? validateVisioDiagramPlan(plan) : validation,
+      qa: plan ? evaluatePublicationFigure(plan, { canonicalModel, neuralFigureProgram: program }) : null,
+    };
+  } catch (error) {
+    return {
+      program: undefined,
+      plan: null,
+      validation: { ok: false, issues: [{ code: "workspace-publication-plan-failed", message: error.message }] },
+      qa: null,
+    };
+  }
+}
+
+async function planWithOptionalLLMFigure(normalized) {
+  const deterministic = planArchitectureFigure(normalized);
+  if (!analyzer?.available || typeof analyzer.planFigure !== "function" || !deterministic?.neuralFigureProgram) {
+    return deterministic;
+  }
+  const planned = await analyzer.planFigure({
+    ir: deterministic.ir,
+    deterministicProgram: deterministic.neuralFigureProgram,
+    semanticFacts: deterministic.semanticFacts,
+    motifs: deterministic.motifs,
+  });
+  if (planned?.status || !planned?.program) {
+    return {
+      ...deterministic,
+      diagnostics: [...(deterministic.diagnostics || []), ...(planned?.diagnostics || [])],
+    };
+  }
+  const validation = validateNeuralFigureProgram(planned.program);
+  if (!validation.ok) {
+    return {
+      ...deterministic,
+      diagnostics: [...(deterministic.diagnostics || []), ...validation.issues],
+    };
+  }
+  const publicationVisioDiagramPlan = compileNeuralFigureDslToVisioLayout(planned.program, {
+    title: deterministic.ir?.figure?.title,
+    subtitle: deterministic.ir?.figure?.subtitle,
+  });
+  return {
+    ...deterministic,
+    neuralFigureProgram: planned.program,
+    neuralFigurePlanValidation: validation,
+    publicationVisioDiagramPlan,
+    publicationVisioDiagramPlanValidation: validateVisioDiagramPlan(publicationVisioDiagramPlan),
   };
 }
 
@@ -296,6 +436,8 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
 
   const input = body.images
     ? { kind: "image", images: body.images, prompt: body.prompt, metadata: body.metadata }
+    : body.workspace
+    ? { kind: "ir", ir: modelWorkspaceToIR(body.workspace), diagnostics: body.diagnostics }
     : body.ir
     ? { kind: "ir", ir: body.ir, diagnostics: body.diagnostics }
     : body.prompt
@@ -379,6 +521,7 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
       analysisStatus: result.status,
       diagnostics: result.diagnostics,
       validation,
+      figureQa: result.publicationFigureQa,
       plan: renderPlan,
     };
     runs.set(result.id, result);
@@ -430,6 +573,15 @@ async function defaultVisioReadback(_visioDiagramPlan, renderResult = {}) {
 }
 
 function nextResult(run) {
+  const modelWorkspace = run.ir
+    ? createModelWorkspace({
+      id: run.id,
+      ir: run.ir,
+      visioDiagramPlan: run.visioDiagramPlan,
+      publicationVisioDiagramPlan: run.publicationVisioDiagramPlan,
+      publicationFigureQa: run.publicationFigureQa,
+    })
+    : undefined;
   return {
     id: run.id,
     status: run.status,
@@ -445,6 +597,8 @@ function nextResult(run) {
     publicationVisioDiagramPlanValidation: run.publicationVisioDiagramPlanValidation,
     neuralFigureProgram: run.neuralFigureProgram,
     neuralFigurePlanValidation: run.neuralFigurePlanValidation,
+    publicationFigureQa: run.publicationFigureQa,
+    modelWorkspace,
     planOutput: run.planOutput,
     renderResult: run.renderResult,
     readback: run.readback,

@@ -4,6 +4,7 @@ import test from "node:test";
 import { createAgentService } from "./server.js";
 import { createAgentRun, runAgentPipeline } from "./agent-orchestrator.mjs";
 import { createMemoryRunStore } from "./run-store.mjs";
+import { createModelWorkspace } from "./model-workspace.mjs";
 
 const agentInput = { kind: "source", source: "class Net: pass", framework: "pytorch" };
 
@@ -69,6 +70,66 @@ test("agent service returns stage snapshots and preserves Visio Diagram Plan ide
   assert.deepEqual(payload.snapshots.map((snapshot) => snapshot.stage), ["inspect", "extract", "normalize", "plan", "render", "readback"]);
   assert.equal(payload.visioDiagramPlan.nodes[0].sourceNodeId, "input");
   assert.equal(payload.renderResult.visioDiagramPlan.nodes[0].sourceNodeId, "input");
+});
+
+test("agent service applies model workspace edit operations", async () => {
+  const service = createAgentService();
+  const workspace = createModelWorkspace({
+    ir: {
+      nodes: [{ id: "input", op: "Input", family: "input", label: "Input" }],
+      edges: [],
+    },
+  });
+  const { response, payload } = await requestAgent(service, "/api/model-workspace/apply", {
+    workspace,
+    operation: { type: "rename-node", nodeId: "input", label: "Image" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, "applied");
+  assert.equal(payload.workspace.nodes[0].label, "Image");
+  assert.equal(payload.ir.nodes[0].label, "Image");
+});
+
+test("agent service replans a model workspace after edits", async () => {
+  const service = createAgentService();
+  const workspace = createModelWorkspace({
+    ir: {
+      nodes: [
+        { id: "input", op: "Input", family: "input", label: "Input" },
+        { id: "conv", op: "Conv2d", family: "conv", label: "Conv", shape: { output: [32, 32, 16] } },
+        { id: "output", op: "Output", family: "output", label: "Output" },
+      ],
+      edges: [
+        { id: "e1", source: "input", target: "conv" },
+        { id: "e2", source: "conv", target: "output" },
+      ],
+    },
+  });
+  const { response, payload } = await requestAgent(service, "/api/model-workspace/plan", { workspace });
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, "planned");
+  assert.equal(payload.workspace.version, "model-workspace/v1");
+  assert.equal(payload.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
+});
+
+test("render-visio accepts an edited model workspace", async () => {
+  const service = createAgentService({ dependencies: agentDependencies({ render: undefined, readback: undefined }) });
+  const workspace = createModelWorkspace({
+    ir: {
+      nodes: [{ id: "input", op: "Input", family: "input", label: "Input" }],
+      edges: [],
+    },
+  });
+  const { response, payload } = await requestAgent(service, "/api/render-visio", {
+    documentPath: "C:\\tmp\\model.vsdx",
+    workspace,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.plan.version, "visio-native-bridge/v1");
+  assert.ok(payload.plan.shapes.some((shape) => shape.sourceNodeId === "input"));
 });
 
 test("default agent service extracts source topology before producing a Visio Diagram Plan", async () => {

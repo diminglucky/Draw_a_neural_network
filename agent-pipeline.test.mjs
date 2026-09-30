@@ -28,6 +28,7 @@ test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
   assert.equal(result.visioDiagramPlanValidation.ok, true);
   assert.equal(result.neuralFigurePlanValidation.ok, true);
   assert.equal(result.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
+  assert.equal(result.publicationFigureQa.version, "figure-qa/v1");
   assert.ok(result.publicationVisioDiagramPlan.nodes.some((node) => node.sourceNodeId === "cell"));
   assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "cell").shapeKind, "cell");
   assert.equal(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").type, "loop");

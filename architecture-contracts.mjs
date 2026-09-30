@@ -16,6 +16,8 @@ import { FIGURE_COMPARISON_VERSION } from "./figure-comparator.mjs";
 import { PUBLICATION_PRIMITIVE_VERSION } from "./publication-primitives.mjs";
 import { NEURAL_FIGURE_DSL_VERSION } from "./neural-figure-dsl.mjs";
 import { NEURAL_FIGURE_PLANNER_VERSION } from "./figure-planner.mjs";
+import { FIGURE_QA_VERSION } from "./figure-qa.mjs";
+import { MODEL_WORKSPACE_VERSION } from "./model-workspace.mjs";
 
 export const ARCHITECTURE_IR_CONTRACTS = Object.freeze({
   graph: UNIVERSAL_IR_VERSION,
@@ -39,6 +41,8 @@ export const ARCHITECTURE_IR_CONTRACTS = Object.freeze({
   publicationPrimitive: PUBLICATION_PRIMITIVE_VERSION,
   neuralFigureDsl: NEURAL_FIGURE_DSL_VERSION,
   neuralFigurePlanner: NEURAL_FIGURE_PLANNER_VERSION,
+  figureQa: FIGURE_QA_VERSION,
+  modelWorkspace: MODEL_WORKSPACE_VERSION,
   evidenceFusion: GRAPH_EVIDENCE_FUSION_VERSION,
   evidenceMetadata: EVIDENCE_METADATA_VERSION,
   shapeInference: SHAPE_INFERENCE_VERSION,

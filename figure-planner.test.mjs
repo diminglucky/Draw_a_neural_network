@@ -46,3 +46,36 @@ test("planner output remains structurally stable when labels are renamed", () =>
   assert.equal(validateNeuralFigurePlan(renamedPlan, buildCanonicalModelGraph(renamed)).ok, true);
   assert.deepEqual(shape(basePlan), shape(renamedPlan));
 });
+
+test("planner automatically renders convolution nodes as editable feature-map stacks", () => {
+  const fixture = neuralStructureFixtures.find((item) => item.capability === "unet-like");
+  const graph = buildCanonicalModelGraph({
+    ...fixture.ir,
+    nodes: fixture.ir.nodes.map((node) => node.family === "conv"
+      ? { ...node, shape: { output: [32, 32, 64] } }
+      : node),
+  });
+  const plan = planNeuralFigure(graph);
+  const convPrimitives = plan.primitives.filter((primitive) => ["enc", "bottleneck", "dec"].includes(primitive.id));
+
+  assert.equal(convPrimitives.length, 3);
+  assert.ok(convPrimitives.every((primitive) => primitive.kind === "layer_stack"));
+  assert.ok(convPrimitives.every((primitive) => primitive.options.cellKind === "right_banded_tensor"));
+  assert.ok(convPrimitives.every((primitive) => primitive.options.count >= 3));
+  assert.equal(validateNeuralFigurePlan(plan, graph).ok, true);
+});
+
+test("planner gives encoder-decoder topology a U-shaped publication layout", () => {
+  const fixture = neuralStructureFixtures.find((item) => item.capability === "unet-like");
+  const graph = buildCanonicalModelGraph(fixture.ir);
+  const plan = planNeuralFigure(graph);
+  const optionsById = Object.fromEntries(plan.primitives.map((primitive) => [primitive.id, primitive.options]));
+
+  assert.ok(optionsById.bottleneck.y > optionsById.enc.y);
+  assert.ok(optionsById.up.y < optionsById.bottleneck.y);
+  assert.ok(optionsById.dec.y < optionsById.up.y);
+  assert.ok(optionsById.enc.x < optionsById.bottleneck.x);
+  assert.ok(optionsById.dec.x > optionsById.bottleneck.x);
+  assert.equal(plan.connectors.find((connector) => connector.id === "skip").routeClass, "bypass");
+  assert.equal(validateNeuralFigurePlan(plan, graph).ok, true);
+});

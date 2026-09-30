@@ -1,7 +1,7 @@
 import { renderCurrentIRToVisio } from "./visio-client.mjs";
 
 const $ = (selector) => document.querySelector(selector);
-const state = { images: [] };
+const state = { images: [], modelWorkspace: undefined };
 
 function setStatus(message) {
   $("#statusText").textContent = message;
@@ -62,6 +62,340 @@ function formatResult(result) {
   return `✅ 已绘制到 Visio：${result.createdShapes || 0} 个 Shape，${result.createdConnectorSegments || 0} 段连接。`;
 }
 
+function shapeText(shape) {
+  const output = Array.isArray(shape?.output) ? shape.output : [];
+  return output.length ? `[${output.join(", ")}]` : "";
+}
+
+function renderWorkspacePanel(bubble, workspace) {
+  if (!workspace) return;
+  state.modelWorkspace = workspace;
+  const panel = document.createElement("div");
+  panel.className = "workspace-panel";
+  bubble.appendChild(panel);
+
+  const render = (current) => {
+    panel.innerHTML = "";
+    const head = document.createElement("div");
+    head.className = "workspace-head";
+    const title = document.createElement("strong");
+    title.textContent = `模型工作区 · ${current.nodes?.length || 0} 层 / ${current.edges?.length || 0} 连接`;
+    const revision = document.createElement("span");
+    revision.textContent = `rev ${current.revision || 1}`;
+    const replan = document.createElement("button");
+    replan.type = "button";
+    replan.className = "workspace-small-button";
+    replan.textContent = "重新规划";
+    replan.addEventListener("click", async () => {
+      await planCurrentWorkspace(render);
+    });
+    const writeVisio = document.createElement("button");
+    writeVisio.type = "button";
+    writeVisio.className = "workspace-small-button";
+    writeVisio.textContent = "写入 Visio";
+    writeVisio.addEventListener("click", async () => {
+      await renderCurrentWorkspaceToVisio(render);
+    });
+    const headRight = document.createElement("span");
+    headRight.className = "workspace-head-actions";
+    headRight.append(revision, replan, writeVisio);
+    head.append(title, headRight);
+
+    const list = document.createElement("div");
+    list.className = "workspace-list";
+    for (const node of current.nodes || []) {
+      const row = document.createElement("div");
+      row.className = "workspace-node";
+      const label = document.createElement("button");
+      label.className = "workspace-node-name";
+      label.type = "button";
+      label.title = "重命名节点";
+      label.textContent = node.label || node.id;
+      label.disabled = node.locked === true;
+      label.addEventListener("click", async () => {
+        const nextLabel = window.prompt("节点名称", node.label || node.id);
+        if (!nextLabel || nextLabel === node.label) return;
+        await applyWorkspaceOperation({ type: "rename-node", nodeId: node.id, label: nextLabel }, render);
+      });
+
+      const meta = document.createElement("span");
+      meta.className = "workspace-node-meta";
+      meta.textContent = [node.family, shapeText(node.shape)].filter(Boolean).join(" · ");
+
+      const toggle = document.createElement("button");
+      toggle.className = "workspace-toggle";
+      toggle.type = "button";
+      toggle.title = node.visible === false ? "显示节点" : "隐藏节点";
+      toggle.textContent = node.visible === false ? "○" : "●";
+      toggle.addEventListener("click", async () => {
+        await applyWorkspaceOperation({ type: "set-node-visibility", nodeId: node.id, visible: node.visible === false }, render);
+      });
+
+      const edit = document.createElement("button");
+      edit.className = "workspace-small-button";
+      edit.type = "button";
+      edit.textContent = "参数";
+      edit.title = "编辑 shape 参数";
+      edit.addEventListener("click", async () => {
+        const raw = window.prompt("Shape JSON，例如 [1,64,64] 或 { output: [1,64,64] }", JSON.stringify(node.shape?.output || node.shape || []));
+        if (!raw) return;
+        let shape;
+        try {
+          shape = JSON.parse(raw);
+        } catch {
+          setStatus("参数不是合法 JSON");
+          return;
+        }
+        await applyWorkspaceOperation({ type: "update-node", nodeId: node.id, patch: { shape } }, render);
+      });
+
+      row.append(label, meta, edit, toggle);
+      list.appendChild(row);
+    }
+
+    panel.append(head, renderWorkspaceQa(current), renderWorkspaceGraph(current, render), renderWorkspaceEdges(current, render), list);
+  };
+  render(workspace);
+}
+
+function renderWorkspaceQa(workspace) {
+  const qa = workspace.figureQa;
+  const wrap = document.createElement("div");
+  wrap.className = `workspace-qa ${qa?.ok === false ? "error" : "ok"}`;
+  if (!qa) {
+    wrap.textContent = "QA：未运行";
+    return wrap;
+  }
+  const errors = (qa.issues || []).filter((issue) => issue.severity === "error");
+  wrap.textContent = qa.ok ? "QA：通过" : `QA：${errors.length} 个问题`;
+  if (errors.length) {
+    const list = document.createElement("div");
+    list.className = "workspace-qa-list";
+    for (const issue of errors.slice(0, 4)) {
+      const row = document.createElement("span");
+      row.textContent = issue.nodeId ? `${issue.nodeId}: ${issue.code}` : issue.code;
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+  }
+  return wrap;
+}
+
+function renderWorkspaceEdges(workspace, rerender) {
+  const wrap = document.createElement("div");
+  wrap.className = "workspace-edges";
+  const head = document.createElement("div");
+  head.className = "workspace-section-head";
+  const title = document.createElement("span");
+  title.textContent = `连接 ${workspace.edges?.length || 0}`;
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "workspace-small-button";
+  add.textContent = "新增连接";
+  add.addEventListener("click", async () => {
+    const source = window.prompt("Source node id");
+    if (!source) return;
+    const target = window.prompt("Target node id");
+    if (!target) return;
+    const type = window.prompt("Connection type: signal / skip / residual / output", "signal") || "signal";
+    await applyWorkspaceOperation({ type: "add-edge", edge: { source, target, type } }, rerender);
+  });
+  head.append(title, add);
+  wrap.appendChild(head);
+  const list = document.createElement("div");
+  list.className = "workspace-edge-list";
+  for (const edge of workspace.edges || []) {
+    const row = document.createElement("div");
+    row.className = "workspace-edge-row";
+    const text = document.createElement("span");
+    text.textContent = `${edge.source} → ${edge.target}`;
+    const type = document.createElement("span");
+    type.className = "workspace-edge-type";
+    type.textContent = edge.type || "signal";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "workspace-small-button danger";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      await applyWorkspaceOperation({ type: "remove-edge", edgeId: edge.id }, rerender);
+    });
+    row.append(text, type, remove);
+    list.appendChild(row);
+  }
+  wrap.appendChild(list);
+  return wrap;
+}
+
+function renderWorkspaceGraph(workspace, rerender) {
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.classList.add("workspace-graph");
+  const nodes = (workspace.nodes || []).filter((node) => node.visible !== false);
+  if (!nodes.length) return svg;
+  const positioned = nodes.map((node, index) => {
+    const ui = node.ui || {};
+    return {
+      node,
+      x: Number.isFinite(Number(ui.x)) ? Number(ui.x) : index * 130,
+      y: Number.isFinite(Number(ui.y)) ? Number(ui.y) : 0,
+      w: Number.isFinite(Number(ui.w)) ? Math.max(36, Number(ui.w)) : 90,
+      h: Number.isFinite(Number(ui.h)) ? Math.max(30, Number(ui.h)) : 54,
+    };
+  });
+  const minX = Math.min(...positioned.map((item) => item.x));
+  const minY = Math.min(...positioned.map((item) => item.y));
+  const maxX = Math.max(...positioned.map((item) => item.x + item.w));
+  const maxY = Math.max(...positioned.map((item) => item.y + item.h));
+  const pad = 34;
+  svg.setAttribute("viewBox", `${minX - pad} ${minY - pad} ${Math.max(1, maxX - minX + pad * 2)} ${Math.max(1, maxY - minY + pad * 2)}`);
+  const byId = new Map(positioned.map((item) => [String(item.node.id), item]));
+  const qaNodeIds = new Set();
+  for (const issue of workspace.figureQa?.issues || []) {
+    if (issue.nodeId) qaNodeIds.add(String(issue.nodeId));
+    for (const id of issue.overlaps || []) qaNodeIds.add(String(id));
+    for (const id of issue.obstacleNodeIds || []) qaNodeIds.add(String(id));
+  }
+  for (const edge of workspace.edges || []) {
+    if (edge.visible === false) continue;
+    const source = byId.get(String(edge.source));
+    const target = byId.get(String(edge.target));
+    if (!source || !target) continue;
+    const line = document.createElementNS(svgNs, "line");
+    line.setAttribute("x1", source.x + source.w);
+    line.setAttribute("y1", source.y + source.h / 2);
+    line.setAttribute("x2", target.x);
+    line.setAttribute("y2", target.y + target.h / 2);
+    line.setAttribute("class", `workspace-edge ${/skip|residual|bypass/i.test(edge.type) ? "skip" : ""}`);
+    svg.appendChild(line);
+  }
+  for (const item of positioned) {
+    const group = document.createElementNS(svgNs, "g");
+    group.setAttribute("class", "workspace-shape");
+    group.setAttribute("transform", `translate(${item.x} ${item.y})`);
+    const rect = document.createElementNS(svgNs, "rect");
+    rect.setAttribute("width", item.w);
+    rect.setAttribute("height", item.h);
+    rect.setAttribute("rx", "6");
+    rect.setAttribute("class", `workspace-rect ${item.node.family || "custom"} ${qaNodeIds.has(String(item.node.id)) ? "qa-error" : ""}`);
+    const text = document.createElementNS(svgNs, "text");
+    text.setAttribute("x", item.w / 2);
+    text.setAttribute("y", item.h / 2);
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("dominant-baseline", "middle");
+    text.textContent = item.node.label || item.node.id;
+    group.append(rect, text);
+    makeWorkspaceNodeDraggable(group, item, svg, rerender);
+    svg.appendChild(group);
+  }
+  return svg;
+}
+
+function makeWorkspaceNodeDraggable(group, item, svg, rerender) {
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let originX = 0;
+  let originY = 0;
+  const scale = () => {
+    const box = svg.getBoundingClientRect();
+    const viewBox = svg.viewBox.baseVal;
+    return {
+      x: box.width ? viewBox.width / box.width : 1,
+      y: box.height ? viewBox.height / box.height : 1,
+    };
+  };
+  group.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    startX = event.clientX;
+    startY = event.clientY;
+    originX = item.x;
+    originY = item.y;
+    group.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  group.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    const ratio = scale();
+    item.x = Math.round(originX + (event.clientX - startX) * ratio.x);
+    item.y = Math.round(originY + (event.clientY - startY) * ratio.y);
+    group.setAttribute("transform", `translate(${item.x} ${item.y})`);
+  });
+  group.addEventListener("pointerup", async (event) => {
+    if (!dragging) return;
+    dragging = false;
+    try { group.releasePointerCapture(event.pointerId); } catch {}
+    await applyWorkspaceOperation({
+      type: "move-node",
+      nodeId: item.node.id,
+      ui: { x: item.x, y: item.y, w: item.w, h: item.h },
+    }, rerender);
+  });
+}
+
+async function applyWorkspaceOperation(operation, rerender) {
+  if (!state.modelWorkspace) return;
+  const response = await fetch("/api/model-workspace/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace: state.modelWorkspace, operation }),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.diagnostics?.length) {
+    setStatus("模型编辑失败");
+    return;
+  }
+  state.modelWorkspace = payload.workspace;
+  setStatus("模型已更新");
+  rerender(payload.workspace);
+}
+
+async function planCurrentWorkspace(rerender) {
+  if (!state.modelWorkspace) return;
+  setStatus("正在重新规划");
+  const response = await fetch("/api/model-workspace/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace: state.modelWorkspace }),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.status === "invalid_workspace") {
+    setStatus("重新规划失败");
+    return;
+  }
+  state.modelWorkspace = payload.workspace;
+  setStatus(payload.status === "planned" ? "重新规划完成" : "重新规划有问题");
+  rerender(payload.workspace);
+}
+
+async function renderCurrentWorkspaceToVisio(rerender) {
+  if (!state.modelWorkspace) return;
+  const documentPath = (localStorage.getItem("visioDocumentPath") || "").trim();
+  const pageName = (localStorage.getItem("visioPage") || "Page-1").trim();
+  if (!documentPath) {
+    addMessage("assistant", "⚠️ 尚未配置 Visio 文档路径。请点击左下角 ⚙ 设置，填入 .vsdx 路径。");
+    openSettings();
+    return;
+  }
+  setStatus("正在写入 Visio");
+  const response = await fetch("/api/render-visio", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace: state.modelWorkspace, documentPath, pageName }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    setStatus("写入 Visio 失败");
+    addMessage("assistant", `⚠️ 写入 Visio 失败：${friendlyError(payload)}`);
+    return;
+  }
+  setStatus(payload.status === "dry_run" ? "已生成计划" : "已写入 Visio");
+  addMessage("assistant", formatResult(payload));
+  if (payload.modelWorkspace) {
+    state.modelWorkspace = payload.modelWorkspace;
+    rerender(payload.modelWorkspace);
+  }
+}
+
 // === 发送 ===
 async function handleSend() {
   const input = $("#input");
@@ -107,6 +441,7 @@ async function handleSend() {
     const result = await renderCurrentIRToVisio(options);
     pending.classList.remove("pending");
     pending.textContent = formatResult(result);
+    renderWorkspacePanel(pending, result.modelWorkspace);
     setStatus(result.status === "dry_run" ? "已生成计划" : "已渲染");
   } catch (error) {
     pending.classList.remove("pending");
@@ -162,6 +497,7 @@ async function confirmAndRender(runId, bubble, button) {
       setStatus("失败");
     } else {
       bubble.textContent = formatResult(payload);
+      renderWorkspacePanel(bubble, payload.modelWorkspace);
       setStatus(payload.status === "dry_run" ? "已生成计划" : "已渲染");
     }
   } catch (err) {

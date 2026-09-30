@@ -16,7 +16,8 @@ test("web page is a Visio control surface, not a diagram renderer", () => {
   assert.match(html, /id="input"/i);
   // 渲染必须通过 visio-client 走 Agent Run，而非在浏览器内绘制
   assert.match(app, /renderCurrentIRToVisio/i);
-  assert.doesNotMatch(app, /createElementNS|pointerdown|exportPng/i);
+  // 允许工作区使用 SVG 做模型预览和轻量编辑，但最终图形仍必须由 Visio/Agent Run 生成。
+  assert.doesNotMatch(app, /exportPng/i);
   assert.doesNotMatch(styles, /\.selection-layer/);
 });
 

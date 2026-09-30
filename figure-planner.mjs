@@ -100,10 +100,12 @@ function planGraphColumns(canonicalModel, facts, options) {
   const nodes = canonicalModel.nodes || [];
   const edges = (canonicalModel.edges || []).filter((edge) => String(edge.canonicalSource) !== String(edge.canonicalTarget));
   const rankByNodeId = computeRanks(nodes, edges);
+  const encoderDecoder = encoderDecoderRanks(nodes, rankByNodeId, facts);
+  if (encoderDecoder) return planEncoderDecoderGrid(nodes, rankByNodeId, facts, options, encoderDecoder);
   const yOffsets = scaleYOffsets(nodes, rankByNodeId, facts, options);
   const sizeByNodeId = new Map();
   for (const node of nodes) {
-    sizeByNodeId.set(node.canonicalId, sizeForNode(node, facts));
+    sizeByNodeId.set(node.canonicalId, sizeForNode(node, facts, options));
   }
   const rankGroups = new Map();
   for (const node of nodes) {
@@ -222,7 +224,7 @@ function computeRanks(nodes, edges) {
   return rankByNodeId;
 }
 
-function sizeForNode(node, facts) {
+function sizeForNode(node, facts, options = {}) {
   if (isDenseNode(node)) {
     const dense = denseOptionsForNode(node, 0, 0);
     const layerCount = Math.max(1, dense.layers.length);
@@ -233,16 +235,18 @@ function sizeForNode(node, facts) {
       depth: 0,
     };
   }
-  const repeatCount = repeatCountForNode(node);
+  const stackCount = stackCountForNode(node, options);
   const shape = outputShape(node);
   const spatial = spatialSize(shape, node);
   const widthScale = spatial ? clamp(Math.sqrt(spatial.w / Math.max(1, spatial.h)), 0.72, 1.42) : 1;
   const baseWidth = node.family === "input" || node.family === "output" ? DEFAULT_NODE_WIDTH * 1.05 : DEFAULT_NODE_WIDTH;
   const baseHeight = node.family === "attention" ? DEFAULT_NODE_HEIGHT * 1.12 : DEFAULT_NODE_HEIGHT;
   const semanticScale = facts?.nodeFacts?.[node.canonicalId]?.spatialScale?.value?.dimensions?.length ? 1.06 : 1;
-  if (repeatCount > 1) {
+  if (stackCount > 1) {
+    const cellWidth = finite(options.stackCellWidth, 16);
+    const gap = finite(options.stackGap, 6);
     return {
-      w: repeatCount * (46 + 7) - 7 + DEFAULT_DEPTH * 0.45,
+      w: stackCount * cellWidth + Math.max(0, stackCount - 1) * gap + DEFAULT_DEPTH * 0.58,
       h: baseHeight,
       depth: DEFAULT_DEPTH,
     };
@@ -283,7 +287,8 @@ function primitiveForNode(placed, options) {
       },
     };
   }
-  if (repeatCountForNode(node) > 1) {
+  const stackCount = stackCountForNode(node, options);
+  if (stackCount > 1) {
     return {
       id: node.canonicalId,
       kind: "layer_stack",
@@ -293,9 +298,13 @@ function primitiveForNode(placed, options) {
         ...shared,
         id: node.canonicalId,
         sourceNodeIds: [node.canonicalId],
-        count: repeatCountForNode(node),
-        cellWidth: 46,
-        gap: 7,
+        count: stackCount,
+        cellKind: "right_banded_tensor",
+        cellWidth: finite(options.stackCellWidth, 16),
+        gap: finite(options.stackGap, 6),
+        depth: DEFAULT_DEPTH,
+        backingDepth: DEFAULT_DEPTH * 1.12,
+        bandRatio: 0.24,
         ...labels,
       },
     };
@@ -379,6 +388,7 @@ function routeClassForEdge(edge, facts) {
 
 function routePointsForEdge(edge, source, target, routeClass, sourceAnchor, targetAnchor, options) {
   if (!source || !target) return [];
+  if (isHorizontalTransfer(source, target, routeClass)) return [];
   const sourcePoint = pointForPrimitive(source, sourceAnchor);
   const targetPoint = pointForPrimitive(target, targetAnchor);
   if (String(edge.canonicalSource) === String(edge.canonicalTarget) || routeClass === "state") {
@@ -409,6 +419,7 @@ function routePointsForEdge(edge, source, target, routeClass, sourceAnchor, targ
 
 function chooseSourceAnchor(edge, source, target, routeClass) {
   if (String(edge.canonicalSource) === String(edge.canonicalTarget) || routeClass === "state") return "north";
+  if (isHorizontalTransfer(source, target, routeClass)) return "east";
   if (routeClass === "bypass" || routeClass === "cross-scale") return "south";
   if (routeClass === "conditional") return "east";
   const sourceBounds = primitiveEntryBounds(source);
@@ -418,6 +429,7 @@ function chooseSourceAnchor(edge, source, target, routeClass) {
 
 function chooseTargetAnchor(edge, source, target, routeClass) {
   if (String(edge.canonicalSource) === String(edge.canonicalTarget) || routeClass === "state") return "west";
+  if (isHorizontalTransfer(source, target, routeClass)) return "west";
   if (routeClass === "bypass" || routeClass === "cross-scale") return "south";
   if (routeClass === "conditional") return "north";
   const sourceBounds = primitiveEntryBounds(source);
@@ -547,6 +559,83 @@ function isSpatialTriple(shape, node) {
 
 function repeatCountForNode(node) {
   return Math.max(1, Math.floor(Number(node.repeatCount || node.repeat || 1) || 1));
+}
+
+function isHorizontalTransfer(source, target, routeClass) {
+  if (!source || !target) return false;
+  if (!["main-flow", "bypass", "cross-scale"].includes(routeClass)) return false;
+  const sourceBounds = primitiveEntryBounds(source);
+  const targetBounds = primitiveEntryBounds(target);
+  const sourceY = sourceBounds.y + sourceBounds.h / 2;
+  const targetY = targetBounds.y + targetBounds.h / 2;
+  return targetBounds.x > sourceBounds.x + sourceBounds.w + 20
+    && Math.abs(sourceY - targetY) <= Math.max(sourceBounds.h, targetBounds.h) * 0.55;
+}
+
+function planEncoderDecoderGrid(nodes, rankByNodeId, facts, options, encoderDecoder) {
+  const sorted = [...nodes].sort((left, right) => left.sourceOrder - right.sourceOrder || left.canonicalId.localeCompare(right.canonicalId));
+  const left = sorted.filter((node) => (rankByNodeId.get(node.canonicalId) || 0) <= encoderDecoder.reduceRank);
+  const middle = sorted.filter((node) => {
+    const rank = rankByNodeId.get(node.canonicalId) || 0;
+    return rank > encoderDecoder.reduceRank && rank < encoderDecoder.expandRank;
+  });
+  const right = sorted.filter((node) => (rankByNodeId.get(node.canonicalId) || 0) >= encoderDecoder.expandRank);
+  const placedNodes = [];
+  const leftX = MARGIN;
+  const rightX = MARGIN + finite(options.encoderDecoderWidth, 760);
+  const topY = 0;
+  const verticalStep = finite(options.encoderDecoderVerticalStep, 190);
+  const placeColumn = (items, x, descending) => {
+    items.forEach((node, index) => {
+      const size = sizeForNode(node, facts, options);
+      const y = descending ? topY + index * verticalStep : topY + (items.length - 1 - index) * verticalStep;
+      placedNodes.push({ node, x, y, w: size.w, h: size.h, depth: size.depth, rank: rankByNodeId.get(node.canonicalId) || 0 });
+    });
+  };
+  placeColumn(left, leftX, true);
+  placeColumn(right, rightX, false);
+  const bottomY = topY + Math.max(left.length, 1) * verticalStep + finite(options.encoderDecoderBottleneckGap, 70);
+  middle.forEach((node, index) => {
+    const size = sizeForNode(node, facts, options);
+    placedNodes.push({
+      node,
+      x: MARGIN + finite(options.encoderDecoderBottleneckX, 390) + index * finite(options.encoderDecoderBottleneckStep, 220),
+      y: bottomY,
+      w: size.w,
+      h: size.h,
+      depth: size.depth,
+      rank: rankByNodeId.get(node.canonicalId) || 0,
+    });
+  });
+  return { nodes: placedNodes, rankByNodeId, columnX: new Map([[0, leftX], [1, rightX]]) };
+}
+
+function encoderDecoderRanks(nodes, rankByNodeId, facts) {
+  const reduceNodes = nodes
+    .filter((node) => isReduceNode(node, facts))
+    .sort((left, right) => (rankByNodeId.get(left.canonicalId) || 0) - (rankByNodeId.get(right.canonicalId) || 0));
+  const expandNodes = nodes
+    .filter((node) => isExpandNode(node, facts))
+    .sort((left, right) => (rankByNodeId.get(left.canonicalId) || 0) - (rankByNodeId.get(right.canonicalId) || 0));
+  const firstExpand = expandNodes.find((node) => rankByNodeId.get(node.canonicalId) > (rankByNodeId.get(reduceNodes.at(-1)?.canonicalId) || 0));
+  const lastReduce = [...reduceNodes].reverse().find((node) => rankByNodeId.get(node.canonicalId) < (rankByNodeId.get(firstExpand?.canonicalId) || 0));
+  if (!firstExpand || !lastReduce) return null;
+  const reduceRank = rankByNodeId.get(lastReduce.canonicalId) || 0;
+  const expandRank = rankByNodeId.get(firstExpand.canonicalId) || 0;
+  if (expandRank <= reduceRank) return null;
+  return { reduceRank, expandRank };
+}
+
+function stackCountForNode(node, options = {}) {
+  const explicit = Math.floor(Number(node.repeatCount || node.repeat || 0) || 0);
+  if (explicit > 1) return explicit;
+  if (options.stackConvolutions === false) return 1;
+  if (String(node.family || "") !== "conv") return 1;
+  const channels = Number(outputShape(node).at(-1));
+  if (!Number.isFinite(channels)) return 3;
+  if (channels <= 32) return 3;
+  if (channels <= 128) return 4;
+  return 5;
 }
 
 function isDenseNode(node) {

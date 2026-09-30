@@ -18,6 +18,7 @@ import { buildCanonicalModelGraph, validateCanonicalModelGraph } from "./canonic
 import { createPublicationLayoutPlan, validatePublicationLayoutPlan } from "./publication-layout-plan.mjs";
 import { planNeuralFigure, validateNeuralFigurePlan } from "./figure-planner.mjs";
 import { compileNeuralFigureDslToVisioLayout } from "./visio-dsl-bridge.mjs";
+import { evaluatePublicationFigure } from "./figure-qa.mjs";
 import { createPlotNeuralNetStyleSpec } from "./reference-figure-spec.mjs";
 import { compileReferenceStyle } from "./reference-style-compiler.mjs";
 
@@ -484,6 +485,12 @@ function buildVisioPlan(ir, diagnostics) {
   const publicationVisioDiagramPlanValidation = publicationVisioDiagramPlan
     ? validateVisioDiagramPlan(publicationVisioDiagramPlan)
     : neuralFigurePlanValidation;
+  const publicationFigureQa = publicationVisioDiagramPlan
+    ? evaluatePublicationFigure(publicationVisioDiagramPlan, {
+      canonicalModel,
+      neuralFigureProgram,
+    })
+    : { version: "figure-qa/v1", ok: false, issues: neuralFigurePlanValidation.issues, metrics: {} };
   return {
     visioDiagramPlan: { ...visioDiagramPlan, validation: visioDiagramPlanValidation },
     visioDiagramPlanValidation,
@@ -491,6 +498,7 @@ function buildVisioPlan(ir, diagnostics) {
     neuralFigurePlanValidation,
     publicationVisioDiagramPlan,
     publicationVisioDiagramPlanValidation,
+    publicationFigureQa,
     sceneValidation,
     layoutDiagnostics,
   };
@@ -555,6 +563,8 @@ function finalizeResult(rawIR, context = {}) {
     neuralFigureProgram: planned.neuralFigureProgram,
     neuralFigurePlanValidation: planned.neuralFigurePlanValidation,
     publicationVisioDiagramPlan: planned.publicationVisioDiagramPlan,
+    publicationVisioDiagramPlanValidation: planned.publicationVisioDiagramPlanValidation,
+    publicationFigureQa: planned.publicationFigureQa,
     validation,
     diagnostics,
     summary: summaryFor(ir, context.sourceKind),
