@@ -25,7 +25,10 @@ export function createDefaultNeuralVisualRules() {
     {
       id: "repeat-decoration", phase: "decoration", priority: 30,
       match: (c) => c.projection.kind === "repeat-collapse" || c.nodes.some((node) => Number(node.repeatCount || node.repeat || 1) > 1),
-      emit: (c) => [{ category: "annotation", form: "text", semanticTags: ["repeat"], data: { decoration: "repeat", count: Math.max(...c.nodes.map((node) => Number(node.repeatCount || node.repeat || 1))) } }],
+      emit: (c) => {
+        const count = Math.max(...c.nodes.map((node) => Number(node.repeatCount || node.repeat || 1)));
+        return [{ category: "annotation", form: "text", semanticTags: ["repeat"], labels: [`x${count}`], data: { decoration: "repeat", count } }];
+      },
     },
     {
       id: "label-decoration", phase: "decoration", priority: 10, match: () => true,

@@ -2,13 +2,19 @@
   "name": "synapse-studio",
   "version": "0.3.0",
   "description": "LLM-driven neural network architecture compiler with native Visio rendering",
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --win",
     "dist": "electron-builder",
-    "test": "node --import ./test-setup.mjs --test"
+    "test": "node --import ./test-setup.mjs --test",
+    "block:acceptance": "node scripts/render-block-acceptance.mjs",
+    "block:plan-audit": "node scripts/render-block-acceptance.mjs --fixture=all --plan-only",
+    "scene:preview": "node scripts/render-scene-preview.mjs --fixture=all"
   },
   "build": {
     "appId": "com.synapse.studio",
@@ -30,6 +36,13 @@
       {
         "from": "visio-create-empty.ps1",
         "to": "visio-create-empty.ps1"
+      },
+      {
+        "from": "tools",
+        "to": "tools",
+        "filter": [
+          "*.py"
+        ]
       }
     ],
     "win": {

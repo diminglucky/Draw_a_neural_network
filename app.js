@@ -153,31 +153,112 @@ function renderWorkspacePanel(bubble, workspace) {
       list.appendChild(row);
     }
 
-    panel.append(head, renderWorkspaceQa(current), renderWorkspaceGraph(current, render), renderWorkspaceEdges(current, render), list);
+    panel.append(
+      head,
+      renderWorkspaceGraph(current, render),
+      renderWorkspaceQuality(current),
+      renderWorkspaceBlocks(current, render),
+      renderWorkspaceEdges(current, render),
+      list,
+    );
   };
   render(workspace);
 }
 
-function renderWorkspaceQa(workspace) {
-  const qa = workspace.figureQa;
+function renderWorkspaceQuality(workspace) {
   const wrap = document.createElement("div");
-  wrap.className = `workspace-qa ${qa?.ok === false ? "error" : "ok"}`;
-  if (!qa) {
-    wrap.textContent = "QA：未运行";
+  wrap.className = "workspace-quality";
+  const quality = workspace.visualQuality;
+  if (!quality) {
+    wrap.textContent = "视觉 QA：未运行";
     return wrap;
   }
-  const errors = (qa.issues || []).filter((issue) => issue.severity === "error");
-  wrap.textContent = qa.ok ? "QA：通过" : `QA：${errors.length} 个问题`;
-  if (errors.length) {
+  const issues = [
+    quality.connectorBodyIntersectionCount,
+    quality.labelOverlapCount,
+    quality.labelBodyOverlapCount,
+    quality.blockBadgeMissingCount,
+    quality.blockPortMissingCount,
+  ].reduce((sum, value) => sum + (Number(value) || 0), 0);
+  wrap.textContent = issues ? `视觉 QA：${issues} 个问题` : "视觉 QA：通过";
+  if (workspace.visualDiagnostics?.length) {
     const list = document.createElement("div");
-    list.className = "workspace-qa-list";
-    for (const issue of errors.slice(0, 4)) {
-      const row = document.createElement("span");
-      row.textContent = issue.nodeId ? `${issue.nodeId}: ${issue.code}` : issue.code;
+    list.className = "workspace-quality-list";
+    for (const diagnostic of workspace.visualDiagnostics.slice(0, 4)) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "workspace-quality-item";
+      row.textContent = diagnostic.code || diagnostic.kind || "diagnostic";
+      row.title = diagnostic.message || row.textContent;
+      row.addEventListener("click", () => {
+        const target = diagnostic.nodeId || diagnostic.primitiveId || diagnostic.relationId || "";
+        setStatus(target ? `${row.textContent}: ${target}` : row.textContent);
+        highlightWorkspaceTarget(target);
+      });
       list.appendChild(row);
     }
     wrap.appendChild(list);
   }
+  wrap.classList.toggle("ok", issues === 0);
+  wrap.classList.toggle("error", issues > 0);
+  return wrap;
+}
+
+function renderWorkspaceBlocks(workspace, rerender) {
+  const wrap = document.createElement("div");
+  wrap.className = "workspace-blocks";
+  const head = document.createElement("div");
+  head.className = "workspace-section-head";
+  const title = document.createElement("span");
+  title.textContent = `Block ${workspace.blocks?.length || 0}`;
+  head.appendChild(title);
+  wrap.appendChild(head);
+  if (!workspace.blocks?.length) {
+    const empty = document.createElement("div");
+    empty.className = "workspace-block-empty";
+    empty.textContent = "暂无 Block";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+  const list = document.createElement("div");
+  list.className = "workspace-block-list";
+  for (const block of workspace.blocks) {
+    const row = document.createElement("div");
+    row.className = "workspace-block-row";
+    if (block.conflicted) row.classList.add("conflict");
+    const label = document.createElement("span");
+    label.className = "workspace-block-name";
+    label.textContent = block.kind || block.id;
+    const meta = document.createElement("span");
+    meta.className = "workspace-block-meta";
+    meta.textContent = `${block.nodeIds?.length || 0} 层`;
+    if (block.conflicted) meta.textContent += " · 冲突";
+    const expand = document.createElement("button");
+    expand.type = "button";
+    expand.className = "workspace-small-button";
+    expand.textContent = block.expanded ? "折叠" : "展开";
+    expand.addEventListener("click", async () => {
+      await applyWorkspaceOperation({
+        type: "set-block-expanded",
+        blockId: block.id,
+        expanded: !block.expanded,
+      }, rerender);
+    });
+    const lock = document.createElement("button");
+    lock.type = "button";
+    lock.className = `workspace-small-button ${block.locked ? "active" : ""}`;
+    lock.textContent = block.locked ? "已锁定" : "锁定";
+    lock.addEventListener("click", async () => {
+      await applyWorkspaceOperation({
+        type: "set-block-locked",
+        blockId: block.id,
+        locked: !block.locked,
+      }, rerender);
+    });
+    row.append(label, meta, expand, lock);
+    list.appendChild(row);
+  }
+  wrap.appendChild(list);
   return wrap;
 }
 
@@ -249,12 +330,6 @@ function renderWorkspaceGraph(workspace, rerender) {
   const pad = 34;
   svg.setAttribute("viewBox", `${minX - pad} ${minY - pad} ${Math.max(1, maxX - minX + pad * 2)} ${Math.max(1, maxY - minY + pad * 2)}`);
   const byId = new Map(positioned.map((item) => [String(item.node.id), item]));
-  const qaNodeIds = new Set();
-  for (const issue of workspace.figureQa?.issues || []) {
-    if (issue.nodeId) qaNodeIds.add(String(issue.nodeId));
-    for (const id of issue.overlaps || []) qaNodeIds.add(String(id));
-    for (const id of issue.obstacleNodeIds || []) qaNodeIds.add(String(id));
-  }
   for (const edge of workspace.edges || []) {
     if (edge.visible === false) continue;
     const source = byId.get(String(edge.source));
@@ -266,17 +341,19 @@ function renderWorkspaceGraph(workspace, rerender) {
     line.setAttribute("x2", target.x);
     line.setAttribute("y2", target.y + target.h / 2);
     line.setAttribute("class", `workspace-edge ${/skip|residual|bypass/i.test(edge.type) ? "skip" : ""}`);
+    line.setAttribute("data-edge-id", String(edge.id));
     svg.appendChild(line);
   }
   for (const item of positioned) {
     const group = document.createElementNS(svgNs, "g");
     group.setAttribute("class", "workspace-shape");
     group.setAttribute("transform", `translate(${item.x} ${item.y})`);
+    group.setAttribute("data-node-id", String(item.node.id));
     const rect = document.createElementNS(svgNs, "rect");
     rect.setAttribute("width", item.w);
     rect.setAttribute("height", item.h);
     rect.setAttribute("rx", "6");
-    rect.setAttribute("class", `workspace-rect ${item.node.family || "custom"} ${qaNodeIds.has(String(item.node.id)) ? "qa-error" : ""}`);
+    rect.setAttribute("class", `workspace-rect ${item.node.family || "custom"}`);
     const text = document.createElementNS(svgNs, "text");
     text.setAttribute("x", item.w / 2);
     text.setAttribute("y", item.h / 2);
@@ -288,6 +365,22 @@ function renderWorkspaceGraph(workspace, rerender) {
     svg.appendChild(group);
   }
   return svg;
+}
+
+function highlightWorkspaceTarget(target) {
+  const value = String(target || "");
+  document.querySelectorAll(".workspace-highlight").forEach((element) => element.classList.remove("workspace-highlight"));
+  if (!value) return;
+  const directNode = document.querySelector(`[data-node-id="${CSS.escape(value)}"]`);
+  const directEdge = document.querySelector(`[data-edge-id="${CSS.escape(value)}"]`);
+  if (directNode || directEdge) {
+    (directNode || directEdge).classList.add("workspace-highlight");
+    return;
+  }
+  const node = (state.modelWorkspace?.nodes || []).find((item) => value.includes(String(item.id)));
+  if (node) {
+    document.querySelector(`[data-node-id="${CSS.escape(String(node.id))}"]`)?.classList.add("workspace-highlight");
+  }
 }
 
 function makeWorkspaceNodeDraggable(group, item, svg, rerender) {
@@ -345,8 +438,8 @@ async function applyWorkspaceOperation(operation, rerender) {
     return;
   }
   state.modelWorkspace = payload.workspace;
-  setStatus("模型已更新");
-  rerender(payload.workspace);
+  setStatus("模型已更新，正在重新规划");
+  await planCurrentWorkspace(rerender);
 }
 
 async function planCurrentWorkspace(rerender) {

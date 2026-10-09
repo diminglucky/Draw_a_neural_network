@@ -39,7 +39,8 @@ export function deriveNeuralMotifs(ir = {}, facts = {}) {
       add("attention-region", [nodeId], [], "attention operator");
     }
     const domain = facts.nodeFacts?.[nodeId]?.dataDomain?.value;
-    if (String(node.family || "").toLowerCase() === "graph" || domain === "graph") {
+    const family = String(node.family || "").toLowerCase();
+    if (family !== "input" && (family === "graph" || domain === "graph")) {
       add("graph-message-passing", [nodeId], [], "graph-domain evidence");
     }
     if (node.compoundKind === "unresolved") {

@@ -28,20 +28,14 @@ test("creates an editable model workspace from Universal IR", () => {
   const workspace = createModelWorkspace({
     id: "run-1",
     ir: sampleIR(),
-    publicationVisioDiagramPlan: {
-      nodes: [{ id: "outer::conv", sourceNodeId: "conv", x: 100, y: 200, w: 50, h: 60, shapeKind: "publication-layer-stack" }],
-    },
-    publicationFigureQa: {
-      version: "figure-qa/v1",
-      ok: false,
-      issues: [{ code: "label-overlaps-node", nodeId: "conv" }],
+    visioDiagramPlan: {
+      nodes: [{ id: "scene::conv", sourceNodeId: "conv", x: 100, y: 200, w: 50, h: 60, shapeKind: "scene-volume" }],
     },
   });
   assert.equal(workspace.version, "model-workspace/v1");
   assert.equal(workspace.nodes.length, 3);
   assert.deepEqual(workspace.nodes.find((node) => node.id === "conv").groupIds, ["encoder"]);
-  assert.deepEqual(workspace.nodes.find((node) => node.id === "conv").ui, { x: 100, y: 200, w: 50, h: 60, shapeKind: "publication-layer-stack" });
-  assert.equal(workspace.figureQa.issues[0].nodeId, "conv");
+  assert.deepEqual(workspace.nodes.find((node) => node.id === "conv").ui, { x: 100, y: 200, w: 50, h: 60, shapeKind: "scene-volume" });
   assert.equal(validateModelWorkspace(workspace).ok, true);
 });
 
@@ -106,4 +100,53 @@ test("converts an edited workspace back to valid Universal IR", () => {
   assert.equal(roundtrip.ok, true);
   assert.equal(ir.nodes.find((node) => node.id === "input").containerId, "encoder");
   assert.equal(ir.groups.find((group) => group.id === "encoder").nodeIds.includes("input"), true);
+});
+
+test("stores and applies Block expand and lock preferences", () => {
+  const workspace = createModelWorkspace({
+    ir: sampleIR(),
+    blockIr: {
+      blocks: [{ id: "block:conv:conv", kind: "conv-block", nodeIds: ["conv"] }],
+    },
+  });
+  assert.equal(workspace.blocks[0].expanded, false);
+  assert.equal(workspace.blocks[0].locked, false);
+
+  const expanded = applyModelWorkspaceOperation(workspace, {
+    type: "set-block-expanded",
+    blockId: "block:conv:conv",
+    expanded: true,
+  }).workspace;
+  const locked = applyModelWorkspaceOperation(expanded, {
+    type: "set-block-locked",
+    blockId: "block:conv:conv",
+    locked: true,
+  }).workspace;
+  const ir = modelWorkspaceToIR(locked);
+
+  assert.equal(locked.blocks[0].expanded, false);
+  assert.equal(locked.blocks[0].locked, true);
+  assert.deepEqual(ir.blockOverrides["block:conv:conv"], { expanded: false, locked: true });
+});
+
+test("workspace exposes visual diagnostics and marks conflicting Block preferences", () => {
+  const workspace = createModelWorkspace({
+    ir: sampleIR(),
+    blockIr: {
+      blocks: [{ id: "block:conv:conv", kind: "conv-block", nodeIds: ["conv"] }],
+    },
+    blockOverrides: {
+      "block:conv:conv": { expanded: true, locked: true },
+    },
+    visualQuality: {
+      connectorBodyIntersectionCount: 0,
+      labelOverlapCount: 0,
+      blockBadgeMissingCount: 1,
+      blockPortMissingCount: 0,
+    },
+    visualDiagnostics: [{ code: "block-badge-missing", severity: "warning" }],
+  });
+  assert.equal(workspace.blocks[0].conflicted, true);
+  assert.equal(workspace.visualQuality.blockBadgeMissingCount, 1);
+  assert.equal(workspace.visualDiagnostics[0].code, "block-badge-missing");
 });

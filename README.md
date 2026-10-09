@@ -1,106 +1,161 @@
-# Draw_a_neural_network
+# Synapse Studio
 
-这是一个以 Microsoft Visio 为唯一绘图后端的神经网络架构编译器。所有最终图形都通过 PowerShell/COM 写入已有 `.vsdx`，生成原生 Shape、连接器和 Shape Data，并执行回读校验。
+Synapse Studio 是一个面向源码输入的神经网络架构编译器。它先把代码或模型描述解析成 Universal IR，再推导语义事实、生成 Scene 布局，最后通过 PowerShell/COM 写入 Microsoft Visio 原生 Shape、连接器和 Shape Data。
 
-## 架构定位
+当前主分支为 `main`，生产服务只使用 `visio-diagram-plan/v1` 携带 `laid-out-neural-scene/v1`。Visio bridge 只接受 Scene-backed plan，旧 publication/DSL plan、`allowLegacyProjection` 和 legacy 布局模块已经移除。
 
-本项目是**「LLM 前端提取 + 确定性编译器 + 可恢复状态机」**，不是自主 LLM Agent：
-
-- **LLM 负责看懂结构**（源码 / 自然语言 / 图像 → 结构化 Universal IR），不做形状计算；
-- **规则负责算准尺寸**（`inferShapes` 静态传播特征图尺寸，算不准就返回 `null` 而非猜测）；
-- **可恢复状态机**（`agent-orchestrator`）按固定阶段 `inspect → extract → normalize → plan` 推进，支持快照恢复与确认/修复门控。
-
-代码中的 `agent` 命名（`agent-orchestrator.mjs`、`/api/agent-run`）是历史遗留，不表示具备工具调用循环或自主规划能力。
-
-## 主链路
+## 当前链路
 
 ```text
-源码 / 图像 / IR
-    -> 证据提取
-    -> Universal IR
-    -> 语义图形语法
-    -> Visio Diagram Plan
-    -> Visio PowerShell/COM
-    -> 原生 Shape / Connector / Shape Data
-    -> 回读验证
+源码 / IR / 配置 / ONNX / 图像
+  -> 输入归一化
+  -> Evidence Graph
+  -> Universal IR
+  -> Canonical Model Graph
+  -> Neural Semantic Facts
+  -> Projection Map
+  -> Semantic Scene
+  -> Rendering Profile + Scene Layout
+  -> Visio Diagram Plan
+  -> PowerShell / Visio COM
+  -> Shape Data / Connector Glue 回读
 ```
 
-网页只负责输入、参数、状态和 Visio 执行控制，不生成或保存网络图形。
+网页只负责输入、配置、状态展示和模型工作区编辑。图形由确定性的编译器和 Visio bridge 生成。
 
-## 快速开始
+## 环境要求
 
-```bash
+- Windows 10/11
+- Node.js 20 或更高版本
+- Python 3.10 或更高版本，PyTorch/Keras 源码分析需要
+- Microsoft Visio，真实 `.vsdx` 写入和回读需要
+
+开发和测试不强制启动 Visio；设置 `VISIO_DRY_RUN=1` 时可以只验证 Render Plan。
+
+## 本地运行
+
+```powershell
+npm.cmd ci
 node server.js
 ```
 
-打开 `http://127.0.0.1:4173/`，填写已有 Visio 文档路径和页面名称，然后提交源码、架构描述或参考图像。
+打开 `http://127.0.0.1:4173/`。
 
-### 接入大模型分析（可选）
+也可以运行 Electron：
 
-不配置时，代码走内置规则提取、图片返回 `needs_external_vision`。配置任意 OpenAI-compatible 端点后，源码、自然语言描述和图片都改由大模型理解并输出结构化 IR，再由内置 shape inference 精确计算特征图尺寸：
+```powershell
+npm.cmd start
+```
 
-```bash
-export LLM_BASE_URL=https://api.deepseek.com/v1   # 兼容 OpenAI / DeepSeek / Ollama / vLLM
-export LLM_API_KEY=sk-...                          # 或沿用 OPENAI_API_KEY
-export LLM_MODEL=deepseek-chat                     # 或沿用 OPENAI_VISION_MODEL
+## 配置
+
+### LLM
+
+未配置 API Key 时，源码走本地 AST 分析；自然语言和图像分析会停止并提示配置模型。
+
+```powershell
+$env:LLM_BASE_URL = "https://api.deepseek.com/v1"
+$env:LLM_API_KEY = "sk-..."
+$env:LLM_MODEL = "deepseek-chat"
 node server.js
 ```
 
-三个环境变量都可选：未配置 `LLM_API_KEY` 时自动回退到规则提取，不影响已有功能。
+也可以在前端设置面板中配置 OpenAI-compatible 端点，配置会持久化到本地 `llm-config.json`。
 
-## 能力
+### Visio
 
-- 可选大模型分析：源码、自然语言描述、参考图像统一由 LLM 理解成结构化 IR（残差、封装展开、注意力、函数式调用），再由规则 shape inference 精确计算特征图尺寸。
-- PyTorch 与 Keras/TensorFlow 源码拓扑提取。
-- `forward()` 顺序、Sequential 展开、分支、合并、跳连和符号形状传播。
-- 自定义模块的源码内部拓扑证据；没有证据时保留 unresolved 状态。
-- 图像视觉分析接入统一 IR 边界；没有视觉能力时不会猜测固定网络。
-- 卷积特征图、池化、向量化、全连接、注意力、循环状态、循环边、体数据和复合模块的语义几何。
-- 稳定的 sourceNodeId/sourceEdgeId、端口、连接器胶合关系和 Shape Data 回读。
-- 现有文档内的 Agent 管理范围同步，不创建隐式空白文档。
+前端需要填写 Visio 文档路径和页面名。路径可以是目录或 `.vsdx` 文件；目录会解析为 `model.vsdx`，文件不存在时会通过 `/api/visio-prepare` 创建。
+
+### Dry Run
+
+```powershell
+$env:VISIO_DRY_RUN = "1"
+node server.js
+```
+
+Dry Run 只生成并校验 Render Plan，不修改 Visio 文档。
 
 ## API
 
-- `POST /api/analyze-code`：源码或 IR 的**规则分析**（同步、不接 LLM；prompt 输入会返回未解决假设节点而非真实结构，需要 LLM 理解请改用 `/api/agent-run`）。
-- `POST /api/agent-run`：可恢复的完整 Agent 运行（前端实际入口，源码/prompt 走 LLM、图片走视觉分析，均含 shape 验算自纠）。
-- `POST /api/render-visio`：将 Visio Diagram Plan 写入已有 Visio 文档。
-
-核心状态为 `ready_for_visio`、`needs_confirmation`、`needs_external_vision` 和 `invalid_input`。未确认的结构不会被伪造或静默展开。
-
-## 关键文件
-
-```text
-index.html                     输入与 Visio 控制面
-app.js                         输入、状态和 Visio 执行
-server.js                      HTTP 服务与 Agent API（纯路由层）
-agent-service.mjs              Agent 服务装配、LLM 提取、shape 验算自纠、Visio 执行
-llm-analyzer.mjs               可配置 OpenAI-compatible 大模型分析（代码/描述/图片 → IR）
-llm-config.mjs                 LLM 配置加载/持久化/模型列表拉取
-agent-pipeline.mjs             统一分析入口
-agent-orchestrator.mjs         可恢复运行状态机
-run-store.mjs                  运行状态持久化
-input-adapters.mjs             输入归一化
-generic-source-topology.mjs    源码拓扑提取（正则，Keras/PyTorch）
-shape-inference.mjs            特征图尺寸静态传播（shape inference）
-evidence-graph.mjs             证据图
-universal-ir.mjs               通用 IR 归一化与校验
-semantic-visual-grammar.mjs    语义视觉角色与输入语法
-universal-figure.mjs           兼容编排门面：语义节点、层级布局、端口和路由
-architecture-layout-ir.mjs     容器、lane、归属和路由类别编译
-visio-layout-tree.mjs          层级容器树与归属校验
-visio-hierarchical-layout.mjs   容器测量、放置和 lane 对齐
-visio-port-routing.mjs          端口解析与避障连接器路由
-compound-module.mjs            复合模块内部布局（recurrent 展开 + internalGraph 通用拓扑）
-visio-diagram-plan.mjs         Visio 唯一绘图计划契约与校验
-visio-client.mjs               Visio 请求边界
-visio-bridge.mjs               Visio 计划、COM 执行和回读校验
-visio-bridge.ps1               原生 Visio Shape/Connector bridge
-```
+- `POST /api/agent-run`：源码、prompt、IR、配置、ONNX 或图像进入可恢复分析状态机。
+- `POST /api/agent-run/:id/resume`：确认、修复、渲染结果和回读结果恢复。
+- `POST /api/render-visio`：从输入重新分析并写入 Visio，不接受客户端伪造 Figure/Visio Plan。
+- `POST /api/analyze-code`：同步规则分析入口，主要用于源码和 IR 调试。
+- `POST /api/model-workspace/apply`：编辑模型工作区节点、边、可见性和坐标。
+- `POST /api/model-workspace/plan`：重新规划编辑后的工作区。
+- `GET /api/llm-config`、`POST /api/llm-config`、`POST /api/llm-models`：LLM 配置和模型列表。
+- `POST /api/visio-prepare`：解析、创建并保存 Visio 文档配置。
 
 ## 验证
 
-```bash
-node --import ./test-setup.mjs --test
+```powershell
+npm.cmd test
+npm.cmd run block:acceptance -- --list
+npm.cmd run block:plan-audit
+npm.cmd run scene:preview
 ```
 
-测试覆盖 IR、证据、语义图形、循环网络、Visio 计划、Shape Data、连接器端点、运行恢复和 HTTP 边界。真实 Visio 验收仍需要 Windows 上已安装并可自动化的 Microsoft Visio，以及一个明确存在的 `.vsdx` 文档。
+当前测试覆盖输入边界、证据融合、Universal IR、Canonical Graph、语义事实、Scene 布局、Visio Plan、Shape Data、连接器回读、工作区编辑和 HTTP 路由。
+
+有真实 Visio 环境时，可以逐个执行：
+
+```powershell
+npm.cmd run block:acceptance -- --fixture=mixed
+npm.cmd run block:acceptance -- --fixture=graph
+```
+
+没有 Visio 时先跑 `block:plan-audit`。它会检查全部 fixture 的 Block IR、Scene 布局、QA 指标、预期模块和稳定 plan hash，并把审计结果写到 `artifacts/block-acceptance/<fixture>/`。
+
+`scene:preview` 会把每个 fixture 的最终 laid-out Scene 渲染成纯 Node SVG，输出到 `artifacts/scene-preview/<fixture>/`。它不依赖 Visio，用于快速检查节点、标签、连接器、Block badge 和端口。
+
+真实验收必须使用 Windows + Microsoft Visio + 实际 `.vsdx`，并检查：
+
+- 新建或打开目标文档
+- 写入原生 Shapes 和 Connectors
+- 保存并重新打开
+- 读取 `sourceNodeId`、`sourceEdgeId`、端点和 Glue
+- 导出 PNG 进行人工视觉检查
+
+## 构建
+
+```powershell
+npm.cmd run pack
+```
+
+输出位于 `dist/`。构建前请阅读 [docs/build.md](docs/build.md)，其中包含 Python、Visio、Electron 打包和已知风险。
+
+## 目录
+
+```text
+server.js                         HTTP 与静态资源服务
+agent-service.mjs                 服务编排、输入提取、Visio 执行
+agent-pipeline.mjs                Universal IR 到 Scene / Visio Plan 的主编译器
+agent-orchestrator.mjs            可恢复 inspect -> extract -> normalize -> plan 状态机
+model-workspace.mjs               可编辑模型工作区和 IR 往返
+torch-code-analyzer.mjs           PyTorch AST analyzer 调用
+keras-code-analyzer.mjs           Keras AST analyzer 调用
+shape-inference.mjs               张量形状传播
+neural-semantic-facts.mjs         语义事实
+neural-block-ir.mjs               论文模块聚合：Conv、Residual、Attention、FFN、Encoder/Decoder、Fusion、Head、Recurrent、MoE、GNN
+block-acceptance-fixtures.mjs     共享验收矩阵：CNN、U-Net、Transformer、ViT、多模态、RNN、MoE、GNN、GAN/多头
+neural-projection-map.mjs         节点、边和 Block 边界到可视对象的投影
+semantic-neural-scene.mjs         语义 Scene
+rendering-profile.mjs             布局约束和网络家族配置
+neural-scene-layout.mjs           Scene 布局与拓扑 QA
+scene-svg-renderer.mjs            纯 Node Scene -> SVG 预览渲染器
+visio-diagram-plan.mjs            唯一 Visio Diagram Plan 契约
+visio-bridge.mjs                  Render Plan、COM 执行、回读校验
+visio-bridge.ps1                  Visio 原生对象绘制
+```
+
+## 当前边界
+
+- PyTorch/Keras 源码输入是主要路径。
+- `ModuleList` 的列表和常量 `range` 循环已支持展开；变量次数、条件分支、函数式调用和运行时生成结构仍可能漏层或错边。
+- 精确覆盖这些模型需要接入 `torch.export`、torch.fx、Keras Model 遍历或 ONNX。
+- 自然语言和 LLM 只能辅助理解，不能替代真实模型图证据。
+- 当前安装包会把 analyzer 脚本复制到 `resources/tools`，但仍需要系统 Python 或通过 `PYTHON` 指向可用解释器。
+- `Block IR` 当前为 `neural-block-ir/v2`，v0/v1 会在投影和 Scene 编译边界自动升级。
+- `npm run block:acceptance -- --list` 可以列出真实 Visio 验收样本；没有 Visio 时只运行自动测试和 dry-run 契约，不把计划校验当作真实绘制验收。
+
+文档索引见 [docs/README.md](docs/README.md)，后续计划见 [docs/roadmap.md](docs/roadmap.md)。

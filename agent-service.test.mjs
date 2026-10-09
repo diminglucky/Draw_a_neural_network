@@ -12,7 +12,7 @@ test("agent service discards closed Visio workers before the next render", () =>
   const source = readFileSync("agent-service.mjs", "utf8");
   assert.match(source, /visioWorker\.closed/);
   assert.match(source, /visioWorker = createVisioWorkerClient\(\)/);
-  assert.match(source, /publicationVisioDiagramPlan/);
+  assert.match(source, /visioDiagramPlan/);
   assert.match(source, /buildVisioRenderPlan\(selectedPlan/);
 });
 

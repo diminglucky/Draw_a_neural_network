@@ -1,12 +1,12 @@
 export const LAID_OUT_NEURAL_SCENE_VERSION = "laid-out-neural-scene/v1";
 const VERSION = LAID_OUT_NEURAL_SCENE_VERSION;
 const GAP_X = 108;
-const GAP_Y = 64;
+const GAP_Y = 96;
 const MARGIN = 56;
 
 export function layoutNeuralScene(scene = {}, profiles = {}) {
-  const publicationLayoutPlan = profiles.publicationLayoutPlan;
-  const plannedRouteClasses = new Map((publicationLayoutPlan?.constraints || [])
+  const renderingProfile = profiles.renderingProfile;
+  const plannedRouteClasses = new Map((renderingProfile?.constraints || [])
     .filter((constraint) => constraint.kind === "reserve-route-corridor" && constraint.edgeId)
     .map((constraint) => [String(constraint.edgeId), String(constraint.routeClass || "main-flow")]));
   const primitives = Array.isArray(scene.primitives) ? scene.primitives : [];
@@ -16,6 +16,7 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
   const layers = topologicalLayers(bodies, relations);
   const scaleRows = new Map();
   const laidBodies = [];
+  const pinnedBounds = new Map();
   for (let layerIndex = 0; layerIndex < layers.length; layerIndex += 1) {
     const layer = layers[layerIndex];
     for (let rowIndex = 0; rowIndex < layer.length; rowIndex += 1) {
@@ -24,18 +25,31 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
       if (!scaleRows.has(scale)) scaleRows.set(scale, scaleRows.size);
       const row = scale === "unknown" ? rowIndex : scaleRows.get(scale);
       const size = primitiveSize(primitive);
-      laidBodies.push({ ...primitive, bounds: { x: MARGIN + layerIndex * GAP_X + layerIndex * 88, y: MARGIN + row * (size.h + GAP_Y), w: size.w, h: size.h }, zIndex: 100 + layerIndex });
+      const workspaceBounds = normalizeWorkspaceBounds(primitive.workspaceUi);
+      if (workspaceBounds) pinnedBounds.set(String(primitive.id), workspaceBounds);
+      laidBodies.push({
+        ...primitive,
+        bounds: workspaceBounds || { x: MARGIN + layerIndex * GAP_X + layerIndex * 88, y: MARGIN + row * (size.h + GAP_Y), w: size.w, h: size.h },
+        zIndex: 100 + layerIndex,
+      });
     }
   }
   centerLayersVertically(laidBodies, layers);
-  if (!publicationLayoutPlan || (publicationLayoutPlan.constraints || []).some((constraint) => constraint.kind === "align-scale-centerlines")) {
+  if (!renderingProfile || (renderingProfile.constraints || []).some((constraint) => constraint.kind === "align-scale-centerlines")) {
     alignSharedScaleCenters(laidBodies, layers);
   }
-  applyLayoutArchetype(laidBodies, publicationLayoutPlan);
+  applyLayoutArchetype(laidBodies, renderingProfile);
+  applyBlockKindArchetype(laidBodies);
+  applyTransformerBlockStack(laidBodies, relations);
+  applyFusionBranchLanes(laidBodies, relations);
   const bodyPosition = new Map(laidBodies.map((primitive) => [primitive.id, primitive]));
   const groups = placeGroups(scene.groups || [], bodyPosition);
   if ((scene.groups || []).some((group) => ["horizontal", "vertical"].includes(group.direction))) {
     arrangeTopLevelUnits(groups, bodyPosition, relations);
+  }
+  for (const primitive of laidBodies) {
+    const pinned = pinnedBounds.get(String(primitive.id));
+    if (pinned) primitive.bounds = { ...pinned };
   }
   const constraintDiagnostics = applySceneConstraints(bodyPosition, scene.constraints || []);
   const positionedBodies = [...bodyPosition.values()];
@@ -73,7 +87,7 @@ export function layoutNeuralScene(scene = {}, profiles = {}) {
   for (const relation of relations) if (relation.relationTags?.includes("crossScale")) diagnostics.push({ code: "cross-scale-transfer", relationId: relation.id, severity: "warning" });
   const maxPrimitives = Number.isFinite(profiles.maxPrimitives) ? profiles.maxPrimitives : Infinity;
   if (laidPrimitives.length > maxPrimitives) diagnostics.push({ code: "layout-budget-exceeded", primitiveCount: laidPrimitives.length, budget: maxPrimitives, severity: "warning" });
-  const visualQuality = analyzeVisualQuality(laidPrimitives, connectors, page);
+  const visualQuality = analyzeVisualQuality(laidPrimitives, connectors, page, profiles.visualQualityThresholds || {});
   diagnostics.push(...visualQuality.diagnostics);
   const result = { version: VERSION, units: "layout-unit", primitives: laidPrimitives.sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id)), connectors, groups, page, diagnostics, visualQuality: visualQuality.metrics, softScore: scoreLayout(positionedBodies, connectors) };
   return result;
@@ -145,8 +159,8 @@ function alignSharedScaleCenters(laidBodies, layers) {
   }
 }
 
-function applyLayoutArchetype(laidBodies, publicationLayoutPlan) {
-  const archetype = (publicationLayoutPlan?.constraints || [])
+function applyLayoutArchetype(laidBodies, renderingProfile) {
+  const archetype = (renderingProfile?.constraints || [])
     .find((constraint) => constraint.kind === "layout-archetype")?.archetype;
   if (archetype !== "encoder-decoder-u" || laidBodies.length < 3) return;
   const ordered = [...laidBodies].sort((left, right) => left.bounds.x - right.bounds.x);
@@ -177,7 +191,7 @@ function applyLayoutArchetype(laidBodies, publicationLayoutPlan) {
   }
 }
 
-function analyzeVisualQuality(primitives, connectors, page) {
+function analyzeVisualQuality(primitives, connectors, page, thresholdInput = {}) {
   const bodies = primitives.filter((primitive) => primitive.role === "body");
   const decorations = primitives.filter((primitive) => primitive.role === "decoration");
   const diagnostics = [];
@@ -205,9 +219,26 @@ function analyzeVisualQuality(primitives, connectors, page) {
   const pageArea = Math.max(1, Number(page?.width || 0) * Number(page?.height || 0));
   const bodyArea = bodies.reduce((sum, body) => sum + Math.max(0, body.bounds.w * body.bounds.h), 0);
   const whitespaceRatio = Math.max(0, Math.min(1, 1 - bodyArea / pageArea));
-  if (labelOverlapCount) diagnostics.push({ code: "label-overlap", severity: "warning", count: labelOverlapCount });
-  if (labelBodyOverlapCount) diagnostics.push({ code: "label-body-overlap", severity: "warning", count: labelBodyOverlapCount });
-  if (connectorBodyIntersectionCount) diagnostics.push({ code: "connector-body-intersection", severity: "error", count: connectorBodyIntersectionCount });
+  const blockBodies = bodies.filter((body) => body.blockKind);
+  const blockBadgeMissingCount = blockBodies.filter((body) => !body.blockBadge).length;
+  const blockPortMissingCount = blockBodies.filter((body) => {
+    const inputs = Array.isArray(body.ports?.inputs) ? body.ports.inputs : [];
+    const outputs = Array.isArray(body.ports?.outputs) ? body.ports.outputs : [];
+    return inputs.length === 0 && outputs.length === 0;
+  }).length;
+  const blockOverlayExpectedCount = blockBodies.filter((body) => ["residual-block", "recurrent-cell", "moe-block", "graph-block"].includes(String(body.blockKind))).length;
+  const thresholds = {
+    maxLabelOverlapCount: Number.isFinite(thresholdInput.maxLabelOverlapCount) ? thresholdInput.maxLabelOverlapCount : 0,
+    maxLabelBodyOverlapCount: Number.isFinite(thresholdInput.maxLabelBodyOverlapCount) ? thresholdInput.maxLabelBodyOverlapCount : 0,
+    maxConnectorBodyIntersectionCount: Number.isFinite(thresholdInput.maxConnectorBodyIntersectionCount) ? thresholdInput.maxConnectorBodyIntersectionCount : 0,
+    maxBlockBadgeMissingCount: Number.isFinite(thresholdInput.maxBlockBadgeMissingCount) ? thresholdInput.maxBlockBadgeMissingCount : 0,
+    maxBlockPortMissingCount: Number.isFinite(thresholdInput.maxBlockPortMissingCount) ? thresholdInput.maxBlockPortMissingCount : 0,
+  };
+  if (labelOverlapCount > thresholds.maxLabelOverlapCount) diagnostics.push({ code: "label-overlap", severity: "warning", count: labelOverlapCount, threshold: thresholds.maxLabelOverlapCount });
+  if (labelBodyOverlapCount > thresholds.maxLabelBodyOverlapCount) diagnostics.push({ code: "label-body-overlap", severity: "warning", count: labelBodyOverlapCount, threshold: thresholds.maxLabelBodyOverlapCount });
+  if (connectorBodyIntersectionCount > thresholds.maxConnectorBodyIntersectionCount) diagnostics.push({ code: "connector-body-intersection", severity: "error", count: connectorBodyIntersectionCount, threshold: thresholds.maxConnectorBodyIntersectionCount });
+  if (blockBadgeMissingCount > thresholds.maxBlockBadgeMissingCount) diagnostics.push({ code: "block-badge-missing", severity: "warning", count: blockBadgeMissingCount, threshold: thresholds.maxBlockBadgeMissingCount });
+  if (blockPortMissingCount > thresholds.maxBlockPortMissingCount) diagnostics.push({ code: "block-port-missing", severity: "warning", count: blockPortMissingCount, threshold: thresholds.maxBlockPortMissingCount });
   return {
     metrics: {
       labelOverlapCount,
@@ -217,6 +248,11 @@ function analyzeVisualQuality(primitives, connectors, page) {
       bodyCount: bodies.length,
       decorationCount: decorations.length,
       connectorCount: connectors.length,
+      blockPrimitiveCount: blockBodies.length,
+      blockBadgeMissingCount,
+      blockPortMissingCount,
+      blockOverlayExpectedCount,
+      thresholds,
     },
     diagnostics,
   };
@@ -259,6 +295,8 @@ export function validateLaidOutScene(layout = {}, sourceScene = {}) {
       if (body.id === connector.sourcePrimitiveId || body.id === connector.targetPrimitiveId) continue;
       if (pathIntersectsRectInterior(connector.points, body.bounds)) issues.push({ code: "connector-body-intersection", relationId: connector.id, primitiveId: body.id });
     }
+    validateConnectorPort(connector, "source", connector.sourcePortId, primitiveById, issues);
+    validateConnectorPort(connector, "target", connector.targetPortId, primitiveById, issues);
   }
   for (const group of layout.groups || []) {
     if (!validBounds(group.bounds) || !insidePage(group.bounds, layout.page)) issues.push({ code: "group-out-of-page", groupId: group.id });
@@ -502,8 +540,12 @@ function routeRelation(relation, primitiveById, primitives, routedConnectors, pl
             : "main-flow");
   if (!sourceAnchor || !targetAnchor) return { ...relation, routeClass, points: [] };
   if (routeClass === "bypass") {
-    const top = Math.min(source.bounds.y, target.bounds.y) - 30;
-    return withObstacleRouting({ ...relation, routeClass, points: [sourceAnchor, { x: sourceAnchor.x + 18, y: top }, { x: targetAnchor.x - 18, y: top }, targetAnchor] }, source, target, primitives, routedConnectors);
+    const residual = source?.blockKind === "residual-block" || target?.blockKind === "residual-block";
+    const clearance = residual ? 48 : 30;
+    const top = Math.min(source.bounds.y, target.bounds.y) - clearance;
+    const bottom = Math.max(source.bounds.y + source.bounds.h, target.bounds.y + target.bounds.h) + clearance;
+    const corridor = top < MARGIN / 2 ? bottom : top;
+    return withObstacleRouting({ ...relation, routeClass, points: [sourceAnchor, { x: sourceAnchor.x + 18, y: corridor }, { x: targetAnchor.x - 18, y: corridor }, targetAnchor] }, source, target, primitives, routedConnectors);
   }
   if (routeClass === "state") {
     const left = Math.min(source.bounds.x, target.bounds.x) - 36;
@@ -610,6 +652,8 @@ function compareCost(first, second) {
 }
 
 function primitiveSize(primitive) {
+  const blockSize = blockKindSize(primitive.blockKind || primitive.data?.blockKind);
+  if (blockSize) return blockSize;
   const form = primitive.form;
   if (form === "plane") return { w: 80, h: 84 };
   if (form === "volume") return { w: 98, h: 66 };
@@ -676,6 +720,157 @@ function validBounds(bounds) { return bounds && [bounds.x, bounds.y, bounds.w, b
 function insidePage(bounds, page) { return validBounds(bounds) && page && bounds.x >= page.x && bounds.y >= page.y && bounds.x + bounds.w <= page.x + page.width && bounds.y + bounds.h <= page.y + page.height; }
 function overlaps(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
 function contains(outer, inner) { return validBounds(outer) && validBounds(inner) && inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h; }
+function normalizeWorkspaceBounds(value) {
+  if (!value || typeof value !== "object") return null;
+  const x = Number(value.x);
+  const y = Number(value.y);
+  const w = Number(value.w);
+  const h = Number(value.h);
+  return [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0 ? { x, y, w, h } : null;
+}
+
+function validateConnectorPort(connector, side, portId, primitiveById, issues) {
+  if (!portId) return;
+  const primitiveId = side === "source" ? connector.sourcePrimitiveId : connector.targetPrimitiveId;
+  const primitive = primitiveById.get(String(primitiveId));
+  if (!primitive) return;
+  const anchors = primitive.anchors?.[side === "source" ? "outputs" : "inputs"] || [];
+  if (!anchors.some((anchor) => String(anchor.id) === String(portId))) {
+    issues.push({
+      code: "missing-block-port-anchor",
+      relationId: connector.id,
+      primitiveId,
+      side,
+      portId: String(portId),
+    });
+  }
+}
+
+function applyBlockKindArchetype(laidBodies) {
+  const encoders = laidBodies.filter((body) => body.blockKind === "encoder-stage");
+  const decoders = laidBodies.filter((body) => body.blockKind === "decoder-stage");
+  if (!encoders.length || !decoders.length) return;
+
+  const ordered = [...laidBodies].sort((left, right) => left.bounds.x - right.bounds.x);
+  const encoderSet = new Set(encoders);
+  const decoderSet = new Set(decoders);
+  const inputBodies = ordered.filter((body) => (body.sourceFamilies || []).includes("input"));
+  const outputBodies = ordered.filter((body) =>
+    body.blockKind === "detection-head" || (body.sourceFamilies || []).includes("output"));
+  const middle = ordered.filter((body) =>
+    !encoderSet.has(body)
+    && !decoderSet.has(body)
+    && !inputBodies.includes(body)
+    && !outputBodies.includes(body));
+  const columnWidth = Math.max(...ordered.map((body) => body.bounds.w));
+  const leftX = MARGIN;
+  const inputWidth = inputBodies.length ? Math.max(...inputBodies.map((body) => body.bounds.w)) : 0;
+  const encoderX = leftX + (inputWidth ? inputWidth + GAP_X : 0);
+  const centerX = encoderX + columnWidth + GAP_X;
+  const rightX = centerX + columnWidth + GAP_X;
+  let cursorY = MARGIN;
+
+  for (const body of inputBodies) {
+    body.bounds = { ...body.bounds, x: leftX, y: cursorY };
+    cursorY += body.bounds.h + GAP_Y;
+  }
+  for (const body of encoders) {
+    body.bounds = { ...body.bounds, x: encoderX + (columnWidth - body.bounds.w) / 2, y: cursorY };
+    cursorY += body.bounds.h + GAP_Y;
+  }
+  const bottomY = cursorY;
+  for (const body of middle) {
+    body.bounds = { ...body.bounds, x: centerX + (columnWidth - body.bounds.w) / 2, y: bottomY };
+    cursorY += body.bounds.h + GAP_Y;
+  }
+  let decoderY = bottomY;
+  for (const body of decoders) {
+    body.bounds = { ...body.bounds, x: rightX + (columnWidth - body.bounds.w) / 2, y: decoderY };
+    decoderY -= body.bounds.h + GAP_Y;
+  }
+  let outputY = MARGIN;
+  for (const body of outputBodies) {
+    body.bounds = { ...body.bounds, x: rightX + (columnWidth - body.bounds.w) / 2, y: outputY };
+    outputY += body.bounds.h + GAP_Y;
+  }
+}
+
+function applyTransformerBlockStack(laidBodies, relations) {
+  if (laidBodies.some((body) => body.blockKind === "encoder-stage" || body.blockKind === "decoder-stage")) return;
+  const stack = laidBodies
+    .filter((body) => body.blockKind === "attention-block" || body.blockKind === "ffn-block")
+    .sort((left, right) => left.bounds.x - right.bounds.x || left.bounds.y - right.bounds.y);
+  if (stack.length < 2) return;
+  const stackIds = new Set(stack.map((body) => String(body.id)));
+  const incoming = new Map(stack.map((body) => [String(body.id), 0]));
+  const outgoing = new Map(stack.map((body) => [String(body.id), 0]));
+  for (const relation of relations || []) {
+    const source = String(relation.sourcePrimitiveId || "");
+    const target = String(relation.targetPrimitiveId || "");
+    if (stackIds.has(source)) outgoing.set(source, (outgoing.get(source) || 0) + 1);
+    if (stackIds.has(target)) incoming.set(target, (incoming.get(target) || 0) + 1);
+  }
+  const linear = stack.every((body) => {
+    const id = String(body.id);
+    return (incoming.get(id) || 0) <= 1 && (outgoing.get(id) || 0) <= 1;
+  });
+  if (!linear) return;
+  const columnX = stack[0].bounds.x;
+  let cursorY = Math.min(...stack.map((body) => body.bounds.y));
+  for (const body of stack) {
+    body.bounds = { ...body.bounds, x: columnX, y: cursorY };
+    cursorY += body.bounds.h + GAP_Y;
+  }
+}
+
+function applyFusionBranchLanes(laidBodies, relations) {
+  const bodyById = new Map(laidBodies.map((body) => [String(body.id), body]));
+  const participants = new Set();
+  for (const relation of relations) {
+    const target = bodyById.get(String(relation.targetPrimitiveId));
+    if (!target || !["multi-scale-fusion", "moe-block"].includes(String(target.blockKind || ""))) continue;
+    const sources = [...new Set(relations
+      .filter((candidate) => String(candidate.targetPrimitiveId) === String(target.id))
+      .map((candidate) => bodyById.get(String(candidate.sourcePrimitiveId)))
+      .filter(Boolean))]
+      .sort((left, right) => left.bounds.x - right.bounds.x || left.bounds.y - right.bounds.y);
+    if (sources.length < 2) continue;
+    const previous = sources.map((source) => ({ source, bounds: { ...source.bounds } }));
+    const gap = GAP_Y;
+    const totalHeight = sources.reduce((sum, source) => sum + source.bounds.h, 0) + gap * (sources.length - 1);
+    const centerY = target.bounds.y + target.bounds.h / 2;
+    let cursor = centerY - totalHeight / 2;
+    for (const source of sources) {
+      source.bounds = { ...source.bounds, y: cursor };
+      cursor += source.bounds.h + gap;
+      participants.add(String(source.id));
+    }
+    participants.add(String(target.id));
+    const violation = laidBodies.some((first, index) => laidBodies.slice(index + 1).some((second) =>
+      participants.has(String(first.id)) !== participants.has(String(second.id)) && overlaps(first.bounds, second.bounds)));
+    if (violation) {
+      for (const item of previous) item.source.bounds = item.bounds;
+    }
+  }
+}
+
+function blockKindSize(blockKind) {
+  const sizes = {
+    "conv-block": { w: 120, h: 82 },
+    "residual-block": { w: 154, h: 108 },
+    "attention-block": { w: 138, h: 116 },
+    "ffn-block": { w: 130, h: 104 },
+    "encoder-stage": { w: 154, h: 118 },
+    "decoder-stage": { w: 154, h: 118 },
+    "multi-scale-fusion": { w: 96, h: 68 },
+    "detection-head": { w: 126, h: 78 },
+    "recurrent-cell": { w: 104, h: 84 },
+    "moe-block": { w: 156, h: 104 },
+    "repeat-block": { w: 132, h: 86 },
+    "graph-block": { w: 146, h: 112 },
+  };
+  return sizes[String(blockKind || "")] || null;
+}
 export function scoreLayout(bodies, connectors) {
   let crossings = 0;
   for (let firstIndex = 0; firstIndex < connectors.length; firstIndex += 1) {

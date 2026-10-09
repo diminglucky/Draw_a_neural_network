@@ -2,8 +2,6 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { existsSync, statSync } from "node:fs";
 import { join, normalize, dirname, basename } from "node:path";
-import { compileSemanticVisualNode } from "./semantic-visual-grammar.mjs";
-import { getCompoundLayout } from "./compound-module.mjs";
 import {
   VISIO_OPERATION_PLAN_VERSION,
   validateVisioOperationPlan,
@@ -25,9 +23,8 @@ function resolveScriptPath(relativeName) {
 }
 
 export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
-  if (inputLayout.version && inputLayout.version !== "visio-diagram-plan/v1"
-    && inputLayout.version !== "universal-publication-figure/v1") {
-    throw new Error(`Visio bridge accepts only Visio Diagram Plan input; received ${inputLayout.version}.`);
+  if (inputLayout.version && inputLayout.version !== "visio-diagram-plan/v1") {
+    throw new Error(`Visio bridge accepts only Scene-backed Visio Diagram Plan input; received ${inputLayout.version}.`);
   }
   const documentPath = String(options.documentPath || "").trim();
   if (!documentPath) throw new Error("documentPath is required; Visio rendering never creates an implicit document.");
@@ -43,12 +40,9 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
   };
 
   const hasScene = layout.scene?.version === "laid-out-neural-scene/v1";
-  if (hasScene) projectScene(layout.scene, registry, renderId);
-  else if (options.allowLegacyProjection === true) planOuterShapes(layout, registry, renderId, grammarId);
-  else throw new Error("Visio Diagram Plan must contain a laid-out neural scene.");
-  const connectors = hasScene
-    ? projectSceneConnectors(layout.scene, registry, renderId)
-    : planConnectors(layout, registry, renderId);
+  if (!hasScene) throw new Error("Visio Diagram Plan must contain a laid-out neural scene.");
+  projectScene(layout.scene, registry, renderId);
+  const connectors = projectSceneConnectors(layout.scene, registry, renderId);
 
   const plan = {
     version: BRIDGE_VERSION,
@@ -63,10 +57,10 @@ export function buildVisioRenderPlan(inputLayout = {}, options = {}) {
     previewPath: String(options.previewPath || "").trim() || undefined,
     renderId,
     unitScale: Number.isFinite(options.unitScale) ? options.unitScale : 0.0065,
-    artboard: hasScene ? sceneArtboard(layout.scene.page) : (layout.artboard || { x: 0, y: 0, width: 2260, height: 1060 }),
+    artboard: sceneArtboard(layout.scene.page),
     grammarId,
     figure: layout.figure || {},
-    groups: (hasScene ? layout.scene.groups || [] : (Array.isArray(layout.groups) ? layout.groups : [])).map((group) => ({ ...group, renderId })),
+    groups: (layout.scene.groups || []).map((group) => ({ ...group, renderId })),
     shapes: registry.shapes,
     connectors,
   };
@@ -117,11 +111,26 @@ function projectScene(scene, registry, renderId) {
         sceneRole: String(primitive.role || "body"),
         scaleChange: String(primitive.data?.scaleChange || ""),
         semanticTags: (primitive.semanticTags || []).map(String).join("|"),
+        blockKind: String(primitive.blockKind || primitive.data?.blockKind || ""),
+        blockLayoutHint: primitive.layoutHint ? JSON.stringify(primitive.layoutHint) : "",
+        blockBadge: String(primitive.blockBadge || ""),
+        blockDetails: primitive.blockDetails ? JSON.stringify(primitive.blockDetails) : "",
+        inputPorts: portLabels(primitive.ports?.inputs),
+        outputPorts: portLabels(primitive.ports?.outputs),
+        blockEntryPorts: portLabels(primitive.ports?.inputs),
+        blockExitPorts: portLabels(primitive.ports?.outputs),
         derivedFrom: (primitive.derivedFrom || []).map(String).join("|"),
         planVersion: BRIDGE_VERSION,
       },
     });
   }
+}
+
+function portLabels(ports = []) {
+  return (Array.isArray(ports) ? ports : [])
+    .map((port) => String(port?.portId || port?.id || (typeof port === "string" ? port : "") || ""))
+    .filter(Boolean)
+    .join("|");
 }
 
 function projectSceneConnectors(scene, registry, renderId) {
@@ -156,6 +165,7 @@ function sceneArtboard(page = {}) {
 }
 
 function sceneStyleProfile(primitive) {
+  if (primitive.blockKind) return String(primitive.blockKind);
   const tags = new Set((primitive.semanticTags || []).map((tag) => String(tag).toLowerCase()));
   if (primitive.category === "data") {
     if (tags.has("input") && tags.has("spatial")) return "image-input";
@@ -178,222 +188,6 @@ function sceneFill(primitive) {
   if (primitive.category === "boundary") return "#F5F0E7";
   if (primitive.category === "annotation") return "#FFFFFF";
   return "#E7EEF5";
-}
-
-// Build every shape (outer blocks, recurrent instances, inner operators) for
-// the figure. Named modules never expand their inner topology here — that
-// decision lives with the layout layer and is respected via visualRole.
-function planOuterShapes(layout, registry, renderId, grammarId) {
-  const { shapes, innerShapeIds, outerShapeIds, recurrentRailConnectors } = registry;
-  for (const node of Array.isArray(layout.nodes) ? layout.nodes : []) {
-    const shapeId = `outer::${node.id}`;
-    outerShapeIds.set(String(node.id || ""), shapeId);
-    if (node.sourceNodeId) outerShapeIds.set(String(node.sourceNodeId), shapeId);
-    const recurrentLayout = node.recurrentLayout;
-    if (!recurrentLayout) {
-      shapes.push(shapePlan(node, {
-        id: shapeId,
-        parentNodeId: "",
-        grammarId,
-        renderId,
-        shapeKind: node.shapeKind || node.representation || node.family || "operator",
-      }));
-    }
-    if (recurrentLayout) {
-      for (const instance of Array.isArray(recurrentLayout.instances) ? recurrentLayout.instances : []) {
-        const recurrentUnresolved = Boolean(instance.expanded && recurrentLayout.uncertainty?.unresolved);
-        shapes.push(shapePlan({
-          ...node,
-          id: `${node.id}::${instance.id}`,
-          x: Number.isFinite(instance.x) ? Number(instance.x) : Number(node.x || 0),
-          y: Number.isFinite(instance.y) ? Number(instance.y) : Number(node.y || 0),
-          w: Number(instance.w || node.w || 120),
-          h: Number(instance.h || node.h || 80),
-          label: instance.role === "expanded" ? node.label : "shared step",
-          subtitle: instance.role === "expanded" ? node.subtitle : instance.role,
-          sourceNodeId: node.sourceNodeId || node.id,
-          recurrentInstanceRole: instance.role,
-          recurrentExpanded: Boolean(instance.expanded),
-          ...(recurrentUnresolved ? { visualRole: "unresolved-module", shapeKind: "unresolved-module" } : {}),
-          unresolvedReason: instance.expanded && recurrentLayout.uncertainty?.unresolved
-            ? recurrentLayout.uncertainty.reason
-            : "",
-        }, {
-          id: `recurrent-instance::${node.id}::${instance.role}`,
-          parentNodeId: node.id,
-          grammarId,
-          renderId,
-          shapeKind: recurrentUnresolved ? "unresolved-module" : "recurrent-instance",
-        }));
-      }
-      for (const rail of Array.isArray(recurrentLayout.stateRails) ? recurrentLayout.stateRails : []) {
-        recurrentRailConnectors.push({
-          id: `recurrent-rail::${node.id}::${rail.id}`,
-          source: String(node.sourceNodeId || node.id),
-          target: String(node.sourceNodeId || node.id),
-          type: "state",
-          label: rail.kind || "carry",
-          points: Array.isArray(rail.points) ? rail.points.map((point) => ({
-            x: Number.isFinite(point.x) ? Number(point.x) : Number(node.x || 0),
-            y: Number.isFinite(point.y) ? Number(point.y) : Number(node.y || 0),
-          })) : [],
-          renderId,
-          sourceEdgeId: String(rail.sourceEdgeId || rail.id),
-          sourceEndpointIds: normalizeEndpointIds(rail.sourceEndpointIds),
-          sourceNodeId: String(node.sourceNodeId || node.id),
-          targetNodeId: String(node.sourceNodeId || node.id),
-          sourceShapeId: `recurrent-instance::${node.id}::previous`,
-          targetShapeId: `recurrent-instance::${node.id}::next`,
-          sourceInstanceId: `recurrent-instance::${node.id}::previous`,
-          targetInstanceId: `recurrent-instance::${node.id}::next`,
-          recurrentRailKind: String(rail.kind || "carry"),
-        });
-      }
-    }
-    const compoundLayout = node.recurrentLayout ? getCompoundLayout(node) : null;
-    // named-module（compoundKind="module"）是单色实心块，绝不展开内部：内部图
-    // 只用于 shape 穿透计算，渲染时保持一个 labeled color block。否则正则提取
-    // 路径（buildInternalGraph 会自动递归）会把 C2f/SPPF/Conv 的内部子节点画进
-    // 色块里，与 LLM 路径（不发射 internalGraph）产生不一致。
-    const innerNodes = node.renderInternalGraph === false || recurrentLayout?.uncertainty?.unresolved
-      ? []
-      : Array.isArray(node.inner?.nodes) ? node.inner.nodes
-        : compoundLayout?.kind === "recurrent" ? compoundLayout.children : [];
-    for (const child of innerNodes) {
-      const innerId = `inner::${node.id}::${child.id}`;
-      innerShapeIds.set(`${node.id}::${child.id}`, innerId);
-      shapes.push(shapePlan({
-        ...child,
-        x: node.x + 20 + child.x,
-        y: node.y + 36 + child.y,
-        parentNodeId: node.id,
-        family: child.family || child.kind || "operator",
-        semanticRole: child.semanticRole || "internal_operator",
-        visualRole: innerVisualRole(child),
-        confidence: child.confidence ?? node.confidence,
-        evidence: child.evidence || node.evidence,
-      }, {
-        id: innerId,
-        parentNodeId: node.id,
-        grammarId,
-        renderId,
-        shapeKind: "inner-operator",
-      }));
-    }
-  }
-}
-
-function innerVisualRole(child = {}) {
-  const semanticRole = String(child.semanticRole || "").toLowerCase();
-  if (["split", "branch", "fanout"].includes(semanticRole)) return "split";
-  if (["junction", "fan-in", "fanin"].includes(semanticRole)) return "junction";
-  if (["add", "sum", "merge-add"].includes(semanticRole)) return "merge-add";
-  if (["concat", "concatenate", "merge", "join", "merge-concat"].includes(semanticRole)) return "merge-concat";
-  const family = String(child.family || child.kind || semanticRole || "").toLowerCase();
-  if (["add", "sum"].includes(family)) return "merge-add";
-  if (["concat", "concatenate", "merge", "join"].includes(family)) return "merge-concat";
-  if (family === "attention") return "inner-attention";
-  if (["activation", "norm"].includes(family)) return "inner-capsule";
-  return "inner-operator";
-}
-
-// Build every connector (outer edges, recurrent rails, inner edges). Rails are
-// appended first so they sit under the data-flow edges in the render.
-function planConnectors(layout, registry, renderId) {
-  const { shapes, innerShapeIds, outerShapeIds, recurrentRailConnectors } = registry;
-  const connectors = [...recurrentRailConnectors];
-  const recurrentExpandedShapeIds = new Map();
-  for (const node of Array.isArray(layout.nodes) ? layout.nodes : []) {
-    if (node.recurrentLayout) recurrentExpandedShapeIds.set(String(node.id), `recurrent-instance::${node.id}::expanded`);
-  }
-  for (const edge of Array.isArray(layout.edges) ? layout.edges : []) {
-    const sourceNodeId = String(edge.sourceNodeId || edge.source);
-    const targetNodeId = String(edge.targetNodeId || edge.target);
-    const sourceShapeId = recurrentExpandedShapeIds.get(sourceNodeId)
-      || outerShapeIds.get(sourceNodeId)
-      || `outer::${sourceNodeId}`;
-    const targetShapeId = recurrentExpandedShapeIds.get(targetNodeId)
-      || outerShapeIds.get(targetNodeId)
-      || `outer::${targetNodeId}`;
-    const routedPoints = Array.isArray(edge.route?.points) ? edge.route.points : [];
-    const sourceShape = shapes.find((shape) => shape.id === sourceShapeId);
-    const targetShape = shapes.find((shape) => shape.id === targetShapeId);
-    const points = routedPoints.length >= 2 || !sourceShape || !targetShape
-      ? routedPoints
-      : [
-        { x: sourceShape.x + sourceShape.w, y: sourceShape.y + sourceShape.h / 2 },
-        { x: targetShape.x, y: targetShape.y + targetShape.h / 2 },
-      ];
-    connectors.push({
-      id: `outer-edge::${edge.id}`,
-      source: sourceNodeId,
-      target: targetNodeId,
-      type: edge.type || "signal",
-      label: edge.label || "",
-      points,
-      renderId,
-      sourceEdgeId: String(edge.sourceEdgeId || edge.id),
-      sourceNodeId,
-      targetNodeId,
-      sourceEndpointIds: normalizeEndpointIds(edge.sourceEndpointIds || edge.ports),
-      routeClass: String(edge.routeClass || "main-flow"),
-      avoidGlue: edge.avoidGlue === true,
-      sourceContainerId: String(edge.sourceContainerId || ""),
-      targetContainerId: String(edge.targetContainerId || ""),
-      sourceLaneId: String(edge.sourceLaneId || ""),
-      targetLaneId: String(edge.targetLaneId || ""),
-      sourceShapeId,
-      targetShapeId,
-      evidenceCount: Array.isArray(edge.evidence) ? edge.evidence.length : 0,
-    });
-  }
-  for (const node of Array.isArray(layout.nodes) ? layout.nodes : []) {
-    const innerEdges = Array.isArray(node.inner?.edges) ? node.inner.edges : [];
-    const recurrentInnerEdges = node.recurrentLayout ? getCompoundLayout(node).edges : [];
-    for (const edge of [...innerEdges, ...recurrentInnerEdges]) {
-      const source = innerShapeIds.get(`${node.id}::${edge.source}`);
-      const target = innerShapeIds.get(`${node.id}::${edge.target}`);
-      if (!source || !target) continue;
-      const sourceShape = shapes.find((shape) => shape.id === source);
-      const targetShape = shapes.find((shape) => shape.id === target);
-      const moduleOffset = { x: Number(node.x || 0) + 20, y: Number(node.y || 0) + 36 };
-      const localRoute = Array.isArray(edge.route?.points) ? edge.route.points : [];
-      const routedPoints = localRoute.length >= 2
-        ? localRoute.map((point) => ({
-          x: Number(point.x) + moduleOffset.x,
-          y: Number(point.y) + moduleOffset.y,
-        }))
-        : [
-          { x: sourceShape.x + sourceShape.w, y: sourceShape.y + sourceShape.h / 2 },
-          { x: targetShape.x, y: targetShape.y + targetShape.h / 2 },
-        ];
-      connectors.push({
-        id: `inner-edge::${node.id}::${edge.id}`,
-        source,
-        target,
-        type: edge.type || "signal",
-        label: edge.label || "",
-        points: routedPoints,
-        renderId,
-        sourceNodeId: node.id,
-        targetNodeId: node.id,
-        sourceShapeId: source,
-        targetShapeId: target,
-        sourceEdgeId: String(edge.sourceEdgeId || edge.id),
-        sourceEndpointIds: normalizeEndpointIds(edge.sourceEndpointIds || edge.ports),
-        evidence: Array.isArray(edge.evidence) ? edge.evidence : [],
-        confidence: Number.isFinite(edge.confidence) ? edge.confidence : 1,
-        evidenceCount: Array.isArray(edge.evidence) ? edge.evidence.length : 0,
-        routeClass: String(edge.routeClass || (edge.route?.kind === "bypass" ? "skip" : "main-flow")),
-        sourceContainerId: String(edge.sourceContainerId || node.id),
-        targetContainerId: String(edge.targetContainerId || node.id),
-        sourceLaneId: String(edge.sourceLaneId || ""),
-        targetLaneId: String(edge.targetLaneId || ""),
-      });
-    }
-  }
-
-  return connectors;
 }
 
 export function buildVisioPowerShellCommand(plan, options = {}) {
@@ -452,7 +246,6 @@ function delay(milliseconds) {
 
 export function validateVisioReadback(plan = {}, readback = {}) {
   const expected = [...new Set((plan.shapes || []).flatMap((shape) => {
-    if (String(shape.shapeKind || shape.shapeData?.visualRole || "") === "publication-label") return [];
     const sourceNodeIds = shape.shapeData?.sourceNodeIds;
     if (Array.isArray(sourceNodeIds) && sourceNodeIds.length > 0) {
       return sourceNodeIds.map(String).filter(Boolean);
@@ -600,108 +393,6 @@ export async function createEmptyVisioDocument(targetPath, options = {}) {
   };
   const runner = options.runner || runPowerShell;
   return runner(command);
-}
-
-function shapePlan(node, options) {
-  const semantic = compileSemanticVisualNode(node);
-  const visualRole = String(node.visualRole || semantic.visualRole || options.shapeKind || "operator");
-  const styleProfile = String(node.styleProfile || semantic.styleProfile || "operator");
-  const labelSlots = node.labelSlots || semantic.labelSlots;
-  const geometryData = node.geometryData || node.geometry?.data || semantic.geometryData || {};
-  const inputGrammar = node.inputGrammar || semantic.inputGrammar;
-  const isInputRole = visualRole.endsWith("-input");
-  const hasInternalTopology = Boolean(geometryData.hasInternalTopology || node.inner?.nodes?.length);
-  const internalDetail = String(node.internalDetail || (hasInternalTopology ? "expanded" : "opaque"));
-  const modulePattern = String(node.modulePattern || geometryData.modulePattern || node.attributes?.modulePattern || node.inner?.kind || "opaque");
-  return {
-    id: options.id,
-    sourceNodeId: String(node.sourceNodeId || node.id || ""),
-    sourceNodeIds: Array.isArray(node.sourceNodeIds)
-      ? node.sourceNodeIds.map(String)
-      : [String(node.sourceNodeId || node.id || "")],
-    containerId: String(node.containerId || ""),
-    laneId: String(node.laneId || ""),
-    containerPath: Array.isArray(node.containerPath) ? node.containerPath.map(String) : [],
-    scopedLaneId: String(node.scopedLaneId || ""),
-    ports: {
-      inputs: Array.isArray(node.ports?.inputs) ? node.ports.inputs.map(String) : [],
-      outputs: Array.isArray(node.ports?.outputs) ? node.ports.outputs.map(String) : [],
-    },
-    x: Number(node.x ?? node.geometry?.x) || 0,
-    y: Number(node.y ?? node.geometry?.y) || 0,
-    w: Number(node.w ?? node.geometry?.width) || 120,
-    h: Number(node.h ?? node.geometry?.height) || 80,
-    label: String(node.figureLabel ?? node.label ?? node.op ?? "Operator"),
-    subtitle: String(node.figureSubtitle ?? node.subtitle ?? ""),
-    shapeKind: isInputRole ? visualRole : options.shapeKind,
-    visualRole,
-    styleProfile,
-    labelSlots,
-    geometryData,
-    ...(inputGrammar ? { inputGrammar } : {}),
-    labelOutside: options.parentNodeId === "",
-    parentNodeId: options.parentNodeId,
-    fill: String(node.color || "#A855F7"),
-    line: String(node.lineColor || "#263248"),
-    ...(node.junctionRole ? { junctionRole: String(node.junctionRole) } : {}),
-    shapeData: {
-      renderId: options.renderId,
-      sourceNodeId: String(node.sourceNodeId || node.id || ""),
-      sourceNodeIds: Array.isArray(node.sourceNodeIds) ? node.sourceNodeIds.map(String) : [String(node.sourceNodeId || node.id || "")],
-      containerId: String(node.containerId || ""),
-      laneId: String(node.laneId || ""),
-      containerPath: Array.isArray(node.containerPath) ? node.containerPath.map(String).join("|") : "",
-      scopedLaneId: String(node.scopedLaneId || ""),
-      parentNodeId: options.parentNodeId,
-      visualRole: isInputRole ? visualRole : String(node.visualRole || options.shapeKind || node.family || "operator"),
-      semanticRole: visualRole,
-      styleProfile,
-      inputGrammar: inputGrammar?.kind || geometryData.inputGrammar || "",
-      modalityReason: inputGrammar?.reason || geometryData.modalityReason || "",
-      tensorRank: inputGrammar?.tensorRank ?? geometryData.tensorRank ?? "",
-      labelTitleSlot: String(labelSlots.title || "above"),
-      labelSubtitleSlot: String(labelSlots.subtitle || "below"),
-      labelTensorShapeSlot: String(labelSlots.tensorShape || "below"),
-      labelOperatorDetailsSlot: String(labelSlots.operatorDetails || "outside"),
-      labelOutside: options.parentNodeId === "",
-      layerRole: String(node.semanticRole || "feature_transform"),
-      tensorShape: shapeText(node.shape),
-      operatorFamily: String(node.family || node.type || node.op || ""),
-      inputPorts: Array.isArray(node.ports?.inputs) ? node.ports.inputs.map(String).join("|") : "",
-      outputPorts: Array.isArray(node.ports?.outputs) ? node.ports.outputs.map(String).join("|") : "",
-      operatorLabels: Array.isArray(geometryData.internalOperatorLabels)
-        ? geometryData.internalOperatorLabels.join("|")
-        : String(geometryData.operatorLabels || ""),
-      repeatCount: geometryData.repeatCount ?? node.repeatCount ?? node.layers ?? "",
-      spatialSize: geometryData.spatialSize ?? "",
-      channelCount: geometryData.channelCount ?? "",
-      preferredWidth: geometryData.preferredWidth ?? "",
-      preferredHeight: geometryData.preferredHeight ?? "",
-      sourceHeight: geometryData.sourceHeight ?? "",
-      targetHeight: geometryData.targetHeight ?? "",
-      sourceAnchor: geometryData.sourceAnchor ?? "",
-      targetAnchor: geometryData.targetAnchor ?? "",
-      geometryProfile: visualRole,
-      hasInternalTopology,
-      internalNodeCount: geometryData.internalNodeCount ?? 0,
-      internalDetail,
-      modulePattern,
-      confidence: Number.isFinite(node.confidence) ? node.confidence : 1,
-      evidenceCount: Array.isArray(node.evidence) ? node.evidence.length : 0,
-      recurrentInstanceRole: String(node.recurrentInstanceRole || ""),
-      recurrentExpanded: Boolean(node.recurrentExpanded),
-      sourceInstanceId: String(node.sourceInstanceId || ""),
-      targetInstanceId: String(node.targetInstanceId || ""),
-      unresolvedReason: String(node.unresolvedReason || ""),
-      grammarId: options.grammarId,
-      planVersion: BRIDGE_VERSION,
-    },
-  };
-}
-
-function shapeText(shape) {
-  const value = shape?.output || shape?.input;
-  return Array.isArray(value) ? value.join("×") : value ? String(value) : "";
 }
 
 function stableRenderId(documentPath, pageName) {

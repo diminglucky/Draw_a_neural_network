@@ -74,6 +74,35 @@ class Net(nn.Module):
   ]);
 });
 
+test("PyTorch AST analyzer expands ModuleList loops into ordered layers", async () => {
+  const result = await analyzeTorchSource({
+    source: `
+import torch.nn as nn
+class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Conv2d(3, 16, 3, padding=1)
+        self.blocks = nn.ModuleList([nn.Conv2d(16, 16, 3, padding=1) for _ in range(3)])
+    def forward(self, x):
+        x = self.stem(x)
+        for block in self.blocks:
+            x = block(x)
+        return x
+`,
+    framework: "pytorch",
+  });
+
+  assert.deepEqual(result.ir.nodes.map((node) => node.op), [
+    "Input",
+    "Conv2d",
+    "Conv2d",
+    "Conv2d",
+    "Conv2d",
+    "Output",
+  ]);
+  assert.equal(result.ir.edges.length, 5);
+});
+
 test("PyTorch AST analyzer preserves residual add topology", async () => {
   const result = await analyzeTorchSource({
     source: `

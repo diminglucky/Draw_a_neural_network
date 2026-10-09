@@ -142,6 +142,8 @@ def analyze_sequential(tree):
         if not layers and adds:
             layers.extend(next(iter(adds.values())))
         for layer in layers:
+            if call_name(layer).endswith("Input") or call_name(layer).endswith("InputLayer"):
+                continue
             node = builder.layer_node(layer, getattr(layer, "lineno", 0))
             builder.add_edge(previous, node["id"], "signal", getattr(layer, "lineno", 0))
             previous = node["id"]

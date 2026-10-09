@@ -26,6 +26,27 @@ model = tf.keras.Sequential([
   ]);
 });
 
+test("Keras AST analyzer does not duplicate Input layers inside Sequential", async () => {
+  const result = await analyzeKerasSource({
+    source: `
+import tensorflow as tf
+model = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(28, 28, 1)),
+    tf.keras.layers.Conv2D(32, 3, activation="relu"),
+    tf.keras.layers.Dense(10),
+])
+`,
+    framework: "keras",
+  });
+  assert.equal(result.status, "grounded");
+  assert.deepEqual(result.ir.nodes.map((node) => node.family), [
+    "input",
+    "conv",
+    "dense",
+    "output",
+  ]);
+});
+
 test("Keras AST analyzer extracts a basic Functional graph", async () => {
   const result = await analyzeKerasSource({
     source: `

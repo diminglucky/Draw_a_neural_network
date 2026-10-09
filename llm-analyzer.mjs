@@ -1,5 +1,3 @@
-import { validateNeuralFigureProgram } from "./neural-figure-dsl.mjs";
-
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-4.1-mini";
 
@@ -70,20 +68,6 @@ const SYSTEM_PROMPT = [
   "    state transition, or port solely from terminology or a model name.",
 ].join("\n");
 
-const FIGURE_PLANNER_SYSTEM_PROMPT = [
-  "You are a publication neural-network figure planner.",
-  "You receive a Canonical Model Graph, semantic facts, and motifs. Produce a Neural Figure DSL program.",
-  "Return ONLY JSON with shape { \"program\": { \"version\": \"neural-figure-dsl/v1\", ... } }.",
-  "Use DSL primitives: tensor_box, right_banded_tensor, dense_layer, layer_stack, group_box, anchor_connector.",
-  "Rules:",
-  "1. Every source canonical node id must appear as a primitive id or layer_stack id.",
-  "2. Conv/feature-map stacks should use layer_stack with cellKind right_banded_tensor when the source has repeated or multi-slice feature maps.",
-  "3. Encoder-decoder architectures with downsampling and upsampling must be laid out as a U shape: encoder downward on the left, bottleneck at the bottom, decoder upward on the right.",
-  "4. Skip/copy connections must be horizontal connector anchors when source and target align; do not draw them as ordinary left-to-right data-flow rows.",
-  "5. Use labels from the Canonical Graph. Do not rename model concepts into hard-coded architecture templates.",
-  "6. Keep all coordinates finite and use stable ids from the source graph.",
-].join("\n");
-
 function sourceUserPrompt(source, framework) {
   return [
     `Analyze this ${framework || "neural-network"} source code and return the IR.`,
@@ -143,25 +127,6 @@ function buildRequest(input) {
     };
   }
   return null;
-}
-
-function buildFigurePlanRequest(context = {}) {
-  const canonicalModel = context.canonicalModel || context.canonical || context;
-  const semanticFacts = context.semanticFacts || context.facts || {};
-  const motifs = context.motifs || {};
-  return {
-    messages: [
-      { role: "system", content: FIGURE_PLANNER_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: JSON.stringify({
-          canonicalModel,
-          semanticFacts,
-          motifs,
-        }),
-      },
-    ],
-  };
 }
 
 function extractJSONContent(content) {
@@ -320,28 +285,6 @@ export function createLLMAnalyzer(config = {}) {
     return post(messages);
   }
 
-  async function planFigure(context = {}) {
-    if (!available) {
-      return {
-        status: "unavailable",
-        diagnostics: [{ kind: "llm-figure-planner-required", message: "No LLM API key configured." }],
-      };
-    }
-    const request = buildFigurePlanRequest(context);
-    const result = await post(request.messages);
-    if (result.status) return result;
-    const program = result.ir?.program || result.ir;
-    const validation = validateNeuralFigureProgram(program);
-    if (!validation.ok) {
-      return {
-        status: "error",
-        message: `LLM figure plan was invalid: ${validation.issues.map((issue) => issue.code).join(", ")}`,
-        diagnostics: validation.issues,
-      };
-    }
-    return { program, diagnostics: result.diagnostics || [] };
-  }
-
   // Generic chat for the interactive UI: plain text, no forced JSON extraction.
   async function chat(messages) {
     if (!available) {
@@ -370,5 +313,5 @@ export function createLLMAnalyzer(config = {}) {
     }
   }
 
-  return { analyze, refine, planFigure, chat, available, config: { baseUrl, model, apiKeyConfigured: available } };
+  return { analyze, refine, chat, available, config: { baseUrl, model, apiKeyConfigured: available } };
 }

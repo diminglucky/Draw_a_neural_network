@@ -7,12 +7,7 @@ import { inferShapes, diagnoseShapes, buildShapeFeedback } from "./shape-inferen
 import { createVisioWorkerClient } from "./visio-worker-client.mjs";
 import { analyzeTorchSource } from "./torch-code-analyzer.mjs";
 import { analyzeKerasSource } from "./keras-code-analyzer.mjs";
-import { validateNeuralFigureProgram } from "./neural-figure-dsl.mjs";
-import { compileNeuralFigureDslToVisioLayout } from "./visio-dsl-bridge.mjs";
 import { applyModelWorkspaceOperation, createModelWorkspace, modelWorkspaceToIR, validateModelWorkspace } from "./model-workspace.mjs";
-import { buildCanonicalModelGraph } from "./canonical-model-graph.mjs";
-import { planNeuralFigure, validateNeuralFigurePlan } from "./figure-planner.mjs";
-import { evaluatePublicationFigure } from "./figure-qa.mjs";
 
 // The LLM analyzer is injected by server.js and updated on config change. We
 // keep a module-level mutable reference (not a captured argument) so an updated
@@ -127,7 +122,7 @@ function createDefaultAgentDependencies(configuration = {}) {
       return extractArchitectureEvidence(input);
     },
     normalize: (evidence) => normalizeArchitectureEvidence(evidence),
-    plan: (normalized) => planWithOptionalLLMFigure(normalized),
+    plan: (normalized) => planArchitectureFigure(normalized),
   };
 }
 
@@ -161,102 +156,28 @@ async function planWorkspaceEdit(body = {}) {
     });
   }
   const ir = modelWorkspaceToIR(workspace);
-  const planned = await planWithOptionalLLMFigure({ ir });
-  const publicationFallback = planned.publicationVisioDiagramPlan
-    ? {
-      program: planned.neuralFigureProgram,
-      plan: planned.publicationVisioDiagramPlan,
-      validation: planned.publicationVisioDiagramPlanValidation,
-      qa: planned.publicationFigureQa,
-    }
-    : buildWorkspacePublicationFallback(ir);
+  const planned = planArchitectureFigure({ ir });
   const nextWorkspace = createModelWorkspace({
     id: workspace.modelId,
     revision: Number(workspace.revision || 0) + 1,
     ir: planned.ir || ir,
     visioDiagramPlan: planned.visioDiagramPlan,
-    publicationVisioDiagramPlan: publicationFallback.plan,
-    publicationFigureQa: publicationFallback.qa,
+    blockIr: planned.blockIr,
+    diagnostics: planned.diagnostics || [],
   });
   return jsonResponse(200, {
-    status: publicationFallback.plan ? "planned" : "invalid_layout",
+    status: planned.visioDiagramPlan ? "planned" : "invalid_layout",
     workspace: nextWorkspace,
     ir: planned.ir || ir,
     visioDiagramPlan: planned.visioDiagramPlan,
     visioDiagramPlanValidation: planned.visioDiagramPlanValidation,
-    publicationVisioDiagramPlan: publicationFallback.plan,
-    publicationVisioDiagramPlanValidation: publicationFallback.validation,
-    publicationFigureQa: publicationFallback.qa,
-    neuralFigureProgram: publicationFallback.program,
-    neuralFigurePlanValidation: publicationFallback.program
-      ? validateNeuralFigurePlan(publicationFallback.program, buildCanonicalModelGraph(planned.ir || ir))
-      : undefined,
+    renderingProfile: planned.renderingProfile,
+    renderingProfileValidation: planned.renderingProfileValidation,
+    blockIr: planned.blockIr,
+    blockIrValidation: planned.blockIrValidation,
+    blockSummary: planned.blockSummary,
     diagnostics: planned.diagnostics || [],
   });
-}
-
-function buildWorkspacePublicationFallback(ir) {
-  try {
-    const canonicalModel = buildCanonicalModelGraph(ir);
-    const program = planNeuralFigure(canonicalModel);
-    const validation = validateNeuralFigurePlan(program, canonicalModel);
-    const plan = validation.ok
-      ? compileNeuralFigureDslToVisioLayout(program, {
-        title: ir.figure?.title,
-        subtitle: ir.figure?.subtitle,
-      })
-      : null;
-    return {
-      program,
-      plan,
-      validation: plan ? validateVisioDiagramPlan(plan) : validation,
-      qa: plan ? evaluatePublicationFigure(plan, { canonicalModel, neuralFigureProgram: program }) : null,
-    };
-  } catch (error) {
-    return {
-      program: undefined,
-      plan: null,
-      validation: { ok: false, issues: [{ code: "workspace-publication-plan-failed", message: error.message }] },
-      qa: null,
-    };
-  }
-}
-
-async function planWithOptionalLLMFigure(normalized) {
-  const deterministic = planArchitectureFigure(normalized);
-  if (!analyzer?.available || typeof analyzer.planFigure !== "function" || !deterministic?.neuralFigureProgram) {
-    return deterministic;
-  }
-  const planned = await analyzer.planFigure({
-    ir: deterministic.ir,
-    deterministicProgram: deterministic.neuralFigureProgram,
-    semanticFacts: deterministic.semanticFacts,
-    motifs: deterministic.motifs,
-  });
-  if (planned?.status || !planned?.program) {
-    return {
-      ...deterministic,
-      diagnostics: [...(deterministic.diagnostics || []), ...(planned?.diagnostics || [])],
-    };
-  }
-  const validation = validateNeuralFigureProgram(planned.program);
-  if (!validation.ok) {
-    return {
-      ...deterministic,
-      diagnostics: [...(deterministic.diagnostics || []), ...validation.issues],
-    };
-  }
-  const publicationVisioDiagramPlan = compileNeuralFigureDslToVisioLayout(planned.program, {
-    title: deterministic.ir?.figure?.title,
-    subtitle: deterministic.ir?.figure?.subtitle,
-  });
-  return {
-    ...deterministic,
-    neuralFigureProgram: planned.program,
-    neuralFigurePlanValidation: validation,
-    publicationVisioDiagramPlan,
-    publicationVisioDiagramPlanValidation: validateVisioDiagramPlan(publicationVisioDiagramPlan),
-  };
 }
 
 async function analyzeTorchSourceWithShapes(input = {}, options = {}) {
@@ -487,24 +408,22 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
         status: "needs_external_vision",
       });
     }
-    const selectedPlan = result.publicationVisioDiagramPlan || result.visioDiagramPlan;
+    const selectedPlan = result.visioDiagramPlan;
     if (!selectedPlan) {
       const firstError = (result.diagnostics || []).find((d) => d.severity === "error");
       return jsonResponse(422, {
-        error: firstError?.message || "Architecture input did not produce a renderable publication plan; Visio was not modified.",
+        error: firstError?.message || "Architecture input did not produce a renderable Visio plan; Visio was not modified.",
         diagnostics: result.diagnostics,
         ...nextResult(result),
         status: "invalid_layout",
       });
     }
     const renderPlan = result.renderResult?.plan || buildVisioRenderPlan(selectedPlan, options);
-    const validation = result.publicationVisioDiagramPlan
-      ? (result.publicationVisioDiagramPlanValidation || selectedPlan.validation || validateVisioDiagramPlan(selectedPlan))
-      : (result.visioDiagramPlan.validation || validateVisioDiagramPlan(selectedPlan));
+    const validation = result.visioDiagramPlanValidation || selectedPlan.validation || validateVisioDiagramPlan(selectedPlan);
     if (!validation.ok) {
       return jsonResponse(422, {
         status: "invalid_layout",
-        error: "Publication figure validation failed; Visio was not modified.",
+        error: "Visio plan validation failed; Visio was not modified.",
         validation,
         diagnostics: result.diagnostics,
         ...nextResult(result),
@@ -521,7 +440,6 @@ async function renderVisioThroughAgent(body = {}, stageDependencies, runs, runSt
       analysisStatus: result.status,
       diagnostics: result.diagnostics,
       validation,
-      figureQa: result.publicationFigureQa,
       plan: renderPlan,
     };
     runs.set(result.id, result);
@@ -578,8 +496,8 @@ function nextResult(run) {
       id: run.id,
       ir: run.ir,
       visioDiagramPlan: run.visioDiagramPlan,
-      publicationVisioDiagramPlan: run.publicationVisioDiagramPlan,
-      publicationFigureQa: run.publicationFigureQa,
+      blockIr: run.blockIr,
+      diagnostics: run.diagnostics,
     })
     : undefined;
   return {
@@ -593,11 +511,11 @@ function nextResult(run) {
     ir: run.ir,
     visioDiagramPlan: run.visioDiagramPlan,
     visioDiagramPlanValidation: run.visioDiagramPlanValidation,
-    publicationVisioDiagramPlan: run.publicationVisioDiagramPlan,
-    publicationVisioDiagramPlanValidation: run.publicationVisioDiagramPlanValidation,
-    neuralFigureProgram: run.neuralFigureProgram,
-    neuralFigurePlanValidation: run.neuralFigurePlanValidation,
-    publicationFigureQa: run.publicationFigureQa,
+    renderingProfile: run.renderingProfile,
+    renderingProfileValidation: run.renderingProfileValidation,
+    blockIr: run.blockIr,
+    blockIrValidation: run.blockIrValidation,
+    blockSummary: run.blockSummary,
     modelWorkspace,
     planOutput: run.planOutput,
     renderResult: run.renderResult,

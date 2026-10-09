@@ -91,6 +91,97 @@ test("preserves production-style body and decoration primitives", () => {
   assert.equal(validateLaidOutScene(result, input).ok, true);
 });
 
+test("uses blockKind-specific dimensions for block-aware projections", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "residual", role: "body", category: "structure", form: "band", blockKind: "residual-block", projectionId: "p-residual", sourceNodeIds: ["a", "b", "add"] },
+      { id: "attention", role: "body", category: "operator", form: "stack", blockKind: "attention-block", projectionId: "p-attention", sourceNodeIds: ["attn", "norm"] },
+    ],
+    relations: [],
+    groups: [],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input);
+  const residual = result.primitives.find((primitive) => primitive.id === "residual");
+  const attention = result.primitives.find((primitive) => primitive.id === "attention");
+  assert.deepEqual({ w: residual.bounds.w, h: residual.bounds.h }, { w: 154, h: 108 });
+  assert.deepEqual({ w: attention.bounds.w, h: attention.bounds.h }, { w: 138, h: 116 });
+});
+
+test("arranges encoder and decoder block stages into a U-shaped layout", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "encoder", role: "body", category: "structure", form: "band", blockKind: "encoder-stage", projectionId: "p-encoder", sourceNodeIds: ["enc1", "pool1"] },
+      { id: "bottleneck", role: "body", category: "operator", form: "band", blockKind: "attention-block", projectionId: "p-bottleneck", sourceNodeIds: ["attn"] },
+      { id: "decoder", role: "body", category: "structure", form: "band", blockKind: "decoder-stage", projectionId: "p-decoder", sourceNodeIds: ["up1", "dec1"] },
+    ],
+    relations: [
+      { id: "e1", sourcePrimitiveId: "encoder", targetPrimitiveId: "bottleneck", relationTags: ["data"], sourceEdgeIds: ["e1"] },
+      { id: "e2", sourcePrimitiveId: "bottleneck", targetPrimitiveId: "decoder", relationTags: ["data"], sourceEdgeIds: ["e2"] },
+      { id: "skip", sourcePrimitiveId: "encoder", targetPrimitiveId: "decoder", relationTags: ["bypass"], sourceEdgeIds: ["skip"] },
+    ],
+    groups: [],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input);
+  const byId = new Map(result.primitives.map((primitive) => [primitive.id, primitive]));
+  assert.ok(byId.get("bottleneck").bounds.y > byId.get("encoder").bounds.y);
+  assert.ok(byId.get("bottleneck").bounds.x > byId.get("encoder").bounds.x);
+  assert.ok(byId.get("decoder").bounds.x > byId.get("bottleneck").bounds.x);
+  assert.equal(validateLaidOutScene(result).ok, true);
+});
+
+test("stacks attention and FFN blocks vertically for transformer-style layout", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "input", role: "body", category: "data", form: "plane", sourceFamilies: ["input"], projectionId: "p-input", sourceNodeIds: ["input"] },
+      { id: "attn", role: "body", category: "operator", form: "stack", blockKind: "attention-block", projectionId: "p-attn", sourceNodeIds: ["attn", "norm"] },
+      { id: "ffn", role: "body", category: "operator", form: "stack", blockKind: "ffn-block", projectionId: "p-ffn", sourceNodeIds: ["ffn1", "ffn2"] },
+      { id: "output", role: "body", category: "data", form: "band", sourceFamilies: ["output"], projectionId: "p-output", sourceNodeIds: ["output"] },
+    ],
+    relations: [
+      { id: "e1", sourcePrimitiveId: "input", targetPrimitiveId: "attn", relationTags: ["data"], sourceEdgeIds: ["e1"] },
+      { id: "e2", sourcePrimitiveId: "attn", targetPrimitiveId: "ffn", relationTags: ["data"], sourceEdgeIds: ["e2"] },
+      { id: "e3", sourcePrimitiveId: "ffn", targetPrimitiveId: "output", relationTags: ["data"], sourceEdgeIds: ["e3"] },
+    ],
+    groups: [],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input);
+  const byId = new Map(result.primitives.map((primitive) => [primitive.id, primitive]));
+  assert.equal(byId.get("attn").bounds.x, byId.get("ffn").bounds.x);
+  assert.ok(byId.get("ffn").bounds.y > byId.get("attn").bounds.y);
+  assert.equal(validateLaidOutScene(result).ok, true);
+});
+
+test("aligns multi-scale fusion and MoE source branches around the target block", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "p3", role: "body", category: "operator", form: "band", projectionId: "p-p3", sourceNodeIds: ["p3"] },
+      { id: "p4", role: "body", category: "operator", form: "band", projectionId: "p-p4", sourceNodeIds: ["p4"] },
+      { id: "fusion", role: "body", category: "structure", form: "glyph", blockKind: "multi-scale-fusion", projectionId: "p-fusion", sourceNodeIds: ["p3", "p4", "cat"] },
+    ],
+    relations: [
+      { id: "e1", sourcePrimitiveId: "p3", targetPrimitiveId: "fusion", relationTags: ["data", "crossScale"], sourceEdgeIds: ["e1"] },
+      { id: "e2", sourcePrimitiveId: "p4", targetPrimitiveId: "fusion", relationTags: ["data", "crossScale"], sourceEdgeIds: ["e2"] },
+    ],
+    groups: [],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input);
+  const byId = new Map(result.primitives.map((primitive) => [primitive.id, primitive]));
+  const p3Center = byId.get("p3").bounds.y + byId.get("p3").bounds.h / 2;
+  const p4Center = byId.get("p4").bounds.y + byId.get("p4").bounds.h / 2;
+  const fusionCenter = byId.get("fusion").bounds.y + byId.get("fusion").bounds.h / 2;
+  assert.notEqual(p3Center, p4Center);
+  assert.ok(Math.abs((p3Center + p4Center) / 2 - fusionCenter) < 0.001);
+  assert.equal(validateLaidOutScene(result).ok, true);
+});
+
 test("uses declared ports when routing vertical container flow", () => {
   const input = {
     version: "semantic-neural-scene/v1",
@@ -146,21 +237,21 @@ test("aligns same-scale branch centers within one layer", () => {
   assert.equal(left.bounds.y + left.bounds.h / 2, right.bounds.y + right.bounds.h / 2);
 });
 
-test("publication layout plan controls reserved route corridors", () => {
+test("rendering profile controls reserved route corridors", () => {
   const input = scene();
   const result = layoutNeuralScene(input, {
-    publicationLayoutPlan: {
-      version: "publication-layout-plan/v1",
+    renderingProfile: {
+      version: "neural-rendering-profile/v1",
       constraints: [{ id: "route:e1", kind: "reserve-route-corridor", edgeId: "e1", routeClass: "conditional" }],
     },
   });
   assert.equal(result.connectors.find((connector) => connector.id === "e1").routeClass, "conditional");
 });
 
-test("publication layout plan owns scale centerline alignment", () => {
+test("rendering profile owns scale centerline alignment", () => {
   const input = scene();
   const withoutAlignment = layoutNeuralScene(input, {
-    publicationLayoutPlan: { version: "publication-layout-plan/v1", constraints: [] },
+    renderingProfile: { version: "neural-rendering-profile/v1", constraints: [] },
   });
   const inputNode = withoutAlignment.primitives.find((primitive) => primitive.id === "input");
   const left = withoutAlignment.primitives.find((primitive) => primitive.id === "left");
@@ -187,8 +278,8 @@ test("encoder-decoder-u layout archetype separates encoder, bottleneck, and deco
     constraints: [],
   };
   const result = layoutNeuralScene(input, {
-    publicationLayoutPlan: {
-      version: "publication-layout-plan/v1",
+    renderingProfile: {
+      version: "neural-rendering-profile/v1",
       constraints: [{ id: "u", kind: "layout-archetype", archetype: "encoder-decoder-u" }],
     },
   });
@@ -285,6 +376,96 @@ test("validation reports relations that were not laid out", () => {
 
   const validation = validateLaidOutScene(result, input);
   assert.ok(validation.issues.some((issue) => issue.code === "missing-laid-out-connector" && issue.relationId === "e0"));
+});
+
+test("validation rejects connectors that reference missing block port anchors", () => {
+  const result = layoutNeuralScene({
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      {
+        id: "block",
+        role: "body",
+        category: "structure",
+        form: "band",
+        blockKind: "residual-block",
+        projectionId: "p-block",
+        sourceNodeIds: ["a", "b"],
+        ports: { inputs: [{ portId: "image" }], outputs: [{ portId: "features" }] },
+      },
+    ],
+    relations: [],
+    groups: [],
+    constraints: [],
+  });
+  result.connectors.push({
+    id: "bad-port",
+    sourcePrimitiveId: "block",
+    targetPrimitiveId: "block",
+    sourcePortId: "missing-output",
+    targetPortId: "image",
+    relationTags: ["data"],
+    points: [{ x: 1, y: 1 }, { x: 2, y: 2 }],
+  });
+  const validation = validateLaidOutScene(result);
+  assert.ok(validation.issues.some((issue) =>
+    issue.code === "missing-block-port-anchor"
+    && issue.relationId === "bad-port"
+    && issue.side === "source"
+    && issue.portId === "missing-output"));
+});
+
+test("reports block badge and port QA metrics", () => {
+  const result = layoutNeuralScene({
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "block", role: "body", category: "structure", form: "band", blockKind: "residual-block", projectionId: "p-block", sourceNodeIds: ["a", "b"], ports: { inputs: [], outputs: [] } },
+    ],
+    relations: [],
+    groups: [],
+    constraints: [],
+  });
+  assert.equal(result.visualQuality.blockPrimitiveCount, 1);
+  assert.equal(result.visualQuality.blockBadgeMissingCount, 1);
+  assert.equal(result.visualQuality.blockPortMissingCount, 1);
+  assert.ok(result.diagnostics.some((issue) => issue.code === "block-badge-missing"));
+  assert.ok(result.diagnostics.some((issue) => issue.code === "block-port-missing"));
+});
+
+test("block QA thresholds are configurable", () => {
+  const result = layoutNeuralScene({
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "block", role: "body", category: "structure", form: "band", blockKind: "residual-block", projectionId: "p-block", sourceNodeIds: ["a", "b"], ports: { inputs: [], outputs: [] } },
+    ],
+    relations: [],
+    groups: [],
+    constraints: [],
+  }, {
+    visualQualityThresholds: {
+      maxBlockBadgeMissingCount: 1,
+      maxBlockPortMissingCount: 1,
+    },
+  });
+  assert.equal(result.diagnostics.some((issue) => issue.code === "block-badge-missing"), false);
+  assert.equal(result.diagnostics.some((issue) => issue.code === "block-port-missing"), false);
+  assert.equal(result.visualQuality.thresholds.maxBlockPortMissingCount, 1);
+});
+
+test("residual bypass chooses a bottom corridor when the top edge is too close", () => {
+  const result = layoutNeuralScene({
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "source", role: "body", category: "operator", form: "band", blockKind: "residual-block", projectionId: "p-source", sourceNodeIds: ["source"], ports: { inputs: [], outputs: [{ portId: "out" }] } },
+      { id: "target", role: "body", category: "operator", form: "band", blockKind: "residual-block", projectionId: "p-target", sourceNodeIds: ["target"], ports: { inputs: [{ portId: "in" }], outputs: [] } },
+    ],
+    relations: [
+      { id: "skip", sourcePrimitiveId: "source", targetPrimitiveId: "target", relationTags: ["bypass"], sourceEdgeIds: ["skip"] },
+    ],
+    groups: [],
+    constraints: [],
+  });
+  const connector = result.connectors.find((item) => item.id === "skip");
+  assert.ok(connector.points.some((point) => point.y > 100));
 });
 
 test("scores segment crossings between connectors without shared endpoints", () => {

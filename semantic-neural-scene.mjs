@@ -1,5 +1,11 @@
 import { applyNeuralVisualRules, createDefaultNeuralVisualRules } from "./neural-visual-rules.mjs";
 import { NEURAL_MOTIFS_VERSION, deriveNeuralMotifs, validateNeuralMotifs } from "./neural-motifs.mjs";
+import {
+  blockBadgeForKind,
+  deriveNeuralBlocks,
+  layoutHintForBlockKind,
+  normalizeNeuralBlocks,
+} from "./neural-block-ir.mjs";
 
 export const SEMANTIC_NEURAL_SCENE_VERSION = "semantic-neural-scene/v1";
 const VERSION = SEMANTIC_NEURAL_SCENE_VERSION;
@@ -7,6 +13,7 @@ const VERSION = SEMANTIC_NEURAL_SCENE_VERSION;
 export function compileSemanticScene(ir = {}, facts = {}, projectionMap = {}, intent = {}, options = {}) {
   const nodeById = new Map((ir.nodes || []).map((node) => [node.id, node]));
   const motifs = deriveNeuralMotifs(ir, facts);
+  const blockIr = options.blocks ? normalizeNeuralBlocks(options.blocks, ir) : deriveNeuralBlocks(ir, facts);
   const motifValidation = validateNeuralMotifs(motifs, ir);
   if (!motifValidation.ok) {
     throw new TypeError(`Invalid Neural Motifs: ${motifValidation.issues.map((issue) => issue.code).join(", ")}`);
@@ -18,12 +25,20 @@ export function compileSemanticScene(ir = {}, facts = {}, projectionMap = {}, in
     const nodes = projection.orderedNodeIds.map((id) => nodeById.get(id)).filter(Boolean);
     const nodeFacts = projection.orderedNodeIds.map((id) => facts.nodeFacts?.[id]).filter(Boolean);
     const emitted = applyNeuralVisualRules({ projection, nodes, nodeFacts, facts, motifs, intent }, rules);
+    const workspaceUi = nodes.length === 1 ? normalizeWorkspaceUi(nodes[0]?.attributes?.workspaceUi) : null;
+    const blockKind = String(projection.blockKind || blockKindForProjection(blockIr, projection) || "");
     const common = {
       sourceNodeIds: [...projection.orderedNodeIds],
+      sourceFamilies: nodes.map((node) => String(node.family || "")),
       sourceEdgeIds: [...projection.internalEdgeIds],
       projectionId: projection.id,
       ports: { inputs: [...projection.entryPorts], outputs: [...projection.exitPorts] },
       derivedFrom: [...projection.evidenceIds],
+      ...(workspaceUi ? { workspaceUi } : {}),
+      ...(blockKind ? { blockKind } : {}),
+      ...(layoutHintForBlockKind(blockKind) ? { layoutHint: layoutHintForBlockKind(blockKind) } : {}),
+      ...(blockBadgeForKind(blockKind) ? { blockBadge: blockBadgeForKind(blockKind) } : {}),
+      ...(projection.blockDetails ? { blockDetails: { ...projection.blockDetails } } : {}),
     };
     const body = enrichPrimitive(emitted.body[0], common, `primitive:${projection.id}:body`, "body");
     primitives.push(body);
@@ -41,8 +56,8 @@ export function compileSemanticScene(ir = {}, facts = {}, projectionMap = {}, in
       id: `relation:${edge.id}`,
       sourcePrimitiveId: projectionToBody[mapping.sourceProjectionId],
       targetPrimitiveId: projectionToBody[mapping.targetProjectionId],
-      sourcePortId: mapping.sourcePortId,
-      targetPortId: mapping.targetPortId,
+      sourcePortId: mapping.sourceBlockPortId || mapping.sourcePortId,
+      targetPortId: mapping.targetBlockPortId || mapping.targetPortId,
       relationTags: relationTags(facts.edgeFacts?.[edge.id]),
       groupContext: relationGroupContext(mapping, groupIndex),
       sourceEdgeIds: [edge.id],
@@ -51,11 +66,15 @@ export function compileSemanticScene(ir = {}, facts = {}, projectionMap = {}, in
   }
   const { groups, diagnostics: groupDiagnostics } = compileGroups(ir, projectionMap, projectionToBody);
   const constraints = compileMotifConstraints(motifs.motifs, projectionMap, projectionToBody);
+  const blockSummary = summarizeBlocks(blockIr.blocks, primitives);
   return {
     version: VERSION,
     irVersion: String(ir.version || ""),
     motifsVersion: motifs.version,
+    blocksVersion: blockIr.version,
     motifs: motifs.motifs,
+    blocks: blockIr.blocks,
+    blockSummary,
     primitives,
     relations,
     groups,
@@ -302,6 +321,58 @@ function enrichPrimitive(primitive, common, id, role) {
     labels: [...(primitive.labels || [])],
     data: { ...(primitive.data || {}) },
   };
+}
+
+function summarizeBlocks(blocks = [], primitives = []) {
+  const primitiveByBlockKind = new Map();
+  for (const primitive of primitives) {
+    if (!primitive.blockKind) continue;
+    if (!primitiveByBlockKind.has(primitive.blockKind)) primitiveByBlockKind.set(primitive.blockKind, []);
+    primitiveByBlockKind.get(primitive.blockKind).push(primitive);
+  }
+  const byKind = {};
+  for (const block of blocks) {
+    const kind = String(block.kind || "");
+    if (!kind) continue;
+    const rendered = primitiveByBlockKind.get(kind) || [];
+    if (!byKind[kind]) {
+      byKind[kind] = {
+        count: 0,
+        portCoverage: 0,
+        badgeCoverage: 0,
+        overlayCoverage: 0,
+      };
+    }
+    byKind[kind].count += 1;
+    if ((block.entryPorts || []).length || (block.exitPorts || []).length) byKind[kind].portCoverage += 1;
+  }
+  for (const [kind, items] of primitiveByBlockKind) {
+    if (!byKind[kind]) continue;
+    byKind[kind].badgeCoverage = items.filter((item) => item.blockBadge).length;
+    byKind[kind].overlayCoverage = items.filter((item) => ["residual-block", "recurrent-cell", "moe-block", "graph-block"].includes(kind)).length;
+  }
+  return {
+    total: blocks.length,
+    byKind,
+  };
+}
+
+function blockKindForProjection(blockIr, projection) {
+  const projectionNodeIds = new Set((projection.orderedNodeIds || []).map(String));
+  const block = (blockIr.blocks || []).find((candidate) => {
+    const matched = (candidate.nodeIds || []).filter((nodeId) => projectionNodeIds.has(String(nodeId))).length;
+    return matched > 0 && matched >= Math.min(2, projectionNodeIds.size);
+  });
+  return block ? String(block.kind) : "";
+}
+
+function normalizeWorkspaceUi(ui) {
+  if (!ui || typeof ui !== "object") return null;
+  const x = Number(ui.x);
+  const y = Number(ui.y);
+  const w = Number(ui.w);
+  const h = Number(ui.h);
+  return [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0 ? { x, y, w, h } : null;
 }
 
 function relationTags(edgeFacts) {

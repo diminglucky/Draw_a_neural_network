@@ -156,34 +156,33 @@ test("known topology with unknown operator semantics can still be rendered as op
   assert.equal(result.visioDiagramPlan.nodes[0].sourceNodeId, "input");
 });
 
-test("prefers the publication plan for render and preserves it in public state", async () => {
+test("renders the Scene-backed Visio plan and preserves it in public state", async () => {
   let renderedPlan;
-  const publicationPlan = {
+  const scenePlan = {
     version: "visio-diagram-plan/v1",
-    bridgeVersion: "visio-dsl-bridge/v1",
-    nodes: [{ id: "publication-input", sourceNodeId: "input" }],
+    bridgeVersion: "scene-bridge",
+    nodes: [{ id: "scene-input", sourceNodeId: "input" }],
     edges: [],
   };
   const run = createAgentRun(input, dependencies({
     plan: (value) => ({
-      visioDiagramPlan: { version: "visio-diagram-plan/v1", nodes: [{ id: "scene-input", sourceNodeId: "input" }], edges: [] },
-      publicationVisioDiagramPlan: publicationPlan,
-      publicationVisioDiagramPlanValidation: { ok: true, issues: [] },
+      visioDiagramPlan: scenePlan,
+      visioDiagramPlanValidation: { ok: true, issues: [] },
       ir: value,
     }),
     render: async (value) => {
       renderedPlan = value;
-      return { renderId: "render-publication", visioDiagramPlan: value };
+      return { renderId: "render-scene", visioDiagramPlan: value };
     },
     readback: async (_plan, rendered) => ({ renderId: rendered.renderId, nodes: [{ sourceNodeId: "input" }], connectors: [] }),
   }));
   const result = await runAgentPipeline(run);
 
   assert.equal(result.status, "completed");
-  assert.equal(renderedPlan.bridgeVersion, "visio-dsl-bridge/v1");
-  assert.equal(result.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
-  assert.equal(result.publicationVisioDiagramPlanValidation.ok, true);
-  assert.equal(result.planOutput.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
+  assert.equal(renderedPlan.bridgeVersion, "scene-bridge");
+  assert.equal(result.visioDiagramPlan.bridgeVersion, "scene-bridge");
+  assert.equal(result.visioDiagramPlanValidation.ok, true);
+  assert.equal(result.planOutput.visioDiagramPlan.bridgeVersion, "scene-bridge");
 });
 
 test("named modules (compoundKind module) do not trigger the confirmation gate", async () => {

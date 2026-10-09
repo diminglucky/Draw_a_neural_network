@@ -26,10 +26,7 @@ test("agent pipeline returns a Visio Diagram Plan for direct IR", () => {
   assert.equal(result.visioDiagramPlan.scene.units, "layout-unit");
   assert.ok(result.visioDiagramPlan.scene.primitives.every((primitive) => primitive.bounds));
   assert.equal(result.visioDiagramPlanValidation.ok, true);
-  assert.equal(result.neuralFigurePlanValidation.ok, true);
-  assert.equal(result.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
-  assert.equal(result.publicationFigureQa.version, "figure-qa/v1");
-  assert.ok(result.publicationVisioDiagramPlan.nodes.some((node) => node.sourceNodeId === "cell"));
+  assert.equal(result.renderingProfileValidation.ok, true);
   assert.equal(result.visioDiagramPlan.nodes.find((node) => node.sourceNodeId === "cell").shapeKind, "cell");
   assert.equal(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").type, "loop");
   assert.ok(result.visioDiagramPlan.edges.find((edge) => edge.sourceEdgeId === "loop").route.points.length > 1);
@@ -330,7 +327,6 @@ test("agent pipeline has no production dependency on layoutUniversalFigure", () 
   const source = readFileSync(new URL("./agent-pipeline.mjs", import.meta.url), "utf8");
 
   assert.doesNotMatch(source, /\blayoutUniversalFigure\b/);
-  assert.doesNotMatch(source, /["']\.\/universal-figure\.mjs["']/);
 });
 
 test("production analysis exposes one Visio Diagram Plan for direct IR", () => {

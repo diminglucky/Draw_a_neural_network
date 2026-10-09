@@ -1,4 +1,5 @@
 import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
+import { upgradeNeuralBlocks } from "./neural-block-ir.mjs";
 
 export const MODEL_WORKSPACE_VERSION = "model-workspace/v1";
 
@@ -6,6 +7,16 @@ export function createModelWorkspace(input = {}) {
   const ir = normalizeNetworkIR(input.ir || input);
   const groupMembership = membershipIndex(ir.groups || []);
   const visualIndex = visualNodeIndex(input);
+  const blockOverrides = clone(ir.blockOverrides || input.blockOverrides || {});
+  const blockIr = upgradeNeuralBlocks(input.blockIr || { blocks: [] });
+  const blocks = (blockIr.blocks || []).map((block) => ({
+    id: String(block.id),
+    kind: String(block.kind),
+    nodeIds: (block.nodeIds || []).map(String),
+    expanded: blockOverrides[block.id]?.expanded === true,
+    locked: blockOverrides[block.id]?.locked === true,
+    conflicted: blockOverrides[block.id]?.expanded === true && blockOverrides[block.id]?.locked === true,
+  }));
   return {
     version: MODEL_WORKSPACE_VERSION,
     modelId: String(input.id || input.modelId || "model-workspace"),
@@ -46,13 +57,16 @@ export function createModelWorkspace(input = {}) {
     containers: clone(ir.containers || []),
     lanes: clone(ir.lanes || []),
     constraints: clone(ir.constraints || []),
+    blocks,
+    blockOverrides,
+    visualQuality: input.visioDiagramPlan?.scene?.visualQuality || input.visualQuality || null,
+    visualDiagnostics: clone(input.visioDiagramPlan?.scene?.diagnostics || input.visualDiagnostics || input.diagnostics || []),
     capabilities: {
       editableModelGraph: true,
-      renderPlanAvailable: Boolean(input.visioDiagramPlan || input.publicationVisioDiagramPlan),
-      publicationPlanAvailable: Boolean(input.publicationVisioDiagramPlan),
-      visualQaAvailable: Boolean(input.publicationFigureQa),
+      renderPlanAvailable: Boolean(input.visioDiagramPlan),
+      blockEditingAvailable: blocks.length > 0,
+      visualQaAvailable: Boolean(input.visioDiagramPlan?.scene?.visualQuality || input.visualQuality),
     },
-    figureQa: input.publicationFigureQa ? clone(input.publicationFigureQa) : null,
     diagnostics: [],
   };
 }
@@ -66,6 +80,9 @@ export function validateModelWorkspace(workspace = {}) {
     if (!id) issues.push({ code: "missing-workspace-node-id" });
     else if (nodeIds.has(id)) issues.push({ code: "duplicate-workspace-node-id", nodeId: id });
     else nodeIds.add(id);
+  }
+  for (const block of workspace.blocks || []) {
+    if (!String(block.id || "")) issues.push({ code: "missing-workspace-block-id" });
   }
   for (const edge of workspace.edges || []) {
     if (!nodeIds.has(String(edge.source || ""))) issues.push({ code: "workspace-edge-missing-source", edgeId: edge.id, nodeId: edge.source });
@@ -146,6 +163,8 @@ export function applyModelWorkspaceOperation(workspace = {}, operation = {}) {
     next.figure = { ...(next.figure || {}), ...(operation.figure || {}) };
   } else if (type === "set-node-group") {
     setNodeGroup(next, operation, diagnostics);
+  } else if (type === "set-block-expanded" || type === "set-block-locked") {
+    setBlockPreference(next, operation, diagnostics);
   } else {
     diagnostics.push({ code: "unsupported-workspace-operation", operationType: type });
   }
@@ -179,6 +198,7 @@ export function modelWorkspaceToIR(workspace = {}) {
       attributes: {
         workspaceVisible: node.visible !== false,
         workspaceLocked: node.locked === true,
+        ...(normalizeWorkspaceUi(node.ui) ? { workspaceUi: normalizeWorkspaceUi(node.ui) } : {}),
       },
     })),
     edges: (workspace.edges || []).filter((edge) => edge.visible !== false).map((edge) => ({
@@ -201,6 +221,10 @@ export function modelWorkspaceToIR(workspace = {}) {
     lanes: clone(workspace.lanes || []),
     constraints: clone(workspace.constraints || []),
     diagnostics: clone(workspace.diagnostics || []),
+    blockOverrides: clone(workspace.blockOverrides || Object.fromEntries((workspace.blocks || []).map((block) => [
+      String(block.id),
+      { expanded: block.expanded === true, locked: block.locked === true },
+    ]))),
   });
 }
 
@@ -227,6 +251,23 @@ function setNodeGroup(workspace, operation, diagnostics) {
   }
 }
 
+function setBlockPreference(workspace, operation, diagnostics) {
+  const block = (workspace.blocks || []).find((item) => String(item.id) === String(operation.blockId || ""));
+  if (!block) {
+    diagnostics.push({ code: "workspace-block-not-found", blockId: operation.blockId });
+    return;
+  }
+  if (operation.type === "set-block-expanded") block.expanded = operation.expanded === true;
+  if (operation.type === "set-block-locked") {
+    block.locked = operation.locked === true;
+    if (block.locked) block.expanded = false;
+  }
+  workspace.blockOverrides = Object.fromEntries((workspace.blocks || []).map((item) => [
+    String(item.id),
+    { expanded: item.expanded === true, locked: item.locked === true },
+  ]));
+}
+
 function findNode(workspace, nodeId, diagnostics) {
   const node = (workspace.nodes || []).find((item) => String(item.id) === String(nodeId || ""));
   if (!node) diagnostics.push({ code: "workspace-node-not-found", nodeId });
@@ -247,7 +288,7 @@ function membershipIndex(groups = []) {
 
 function visualNodeIndex(input = {}) {
   const index = new Map();
-  const plan = input.publicationVisioDiagramPlan || input.visioDiagramPlan;
+  const plan = input.visioDiagramPlan;
   for (const node of plan?.nodes || []) {
     const id = String(node.sourceNodeId || node.id || "");
     if (!id || String(node.id || "").startsWith("label:")) continue;
@@ -270,6 +311,15 @@ function normalizeShape(shape) {
   if (Array.isArray(shape)) return { output: shape.map(String) };
   if (!shape || typeof shape !== "object") return { output: [String(shape)] };
   return { ...shape, ...(shape.output ? { output: shape.output.map(String) } : {}) };
+}
+
+function normalizeWorkspaceUi(ui) {
+  if (!ui || typeof ui !== "object") return null;
+  const x = Number(ui.x);
+  const y = Number(ui.y);
+  const w = Number(ui.w);
+  const h = Number(ui.h);
+  return [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0 ? { x, y, w, h } : null;
 }
 
 function clone(value) {

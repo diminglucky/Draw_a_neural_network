@@ -93,47 +93,6 @@ test("analyze returns the IR for prompt input", async () => {
   }
 });
 
-test("planFigure returns a validated Neural Figure DSL program", async () => {
-  const program = {
-    version: "neural-figure-dsl/v1",
-    primitives: [
-      { id: "input", kind: "tensor_box", options: { x: 0, y: 0, w: 100, h: 60, caption: "Input" } },
-    ],
-    connectors: [],
-  };
-  const restore = stubFetch(async (_url, init) => {
-    const body = JSON.parse(init.body);
-    assert.equal(body.messages[0].role, "system");
-    assert.match(body.messages[0].content, /publication neural-network figure planner/i);
-    return chatResponse(JSON.stringify({ program }));
-  });
-  try {
-    const analyzer = createLLMAnalyzer({ apiKey: "k" });
-    const result = await analyzer.planFigure({ canonicalModel: { nodes: [{ canonicalId: "input" }], edges: [] } });
-    assert.equal(result.program.version, "neural-figure-dsl/v1");
-    assert.equal(result.program.primitives[0].id, "input");
-  } finally {
-    restore();
-  }
-});
-
-test("planFigure rejects an invalid Neural Figure DSL program", async () => {
-  const restore = stubFetch(async () => chatResponse(JSON.stringify({
-    program: {
-      version: "neural-figure-dsl/v1",
-      primitives: [{ id: "bad", kind: "not_a_primitive", options: {} }],
-    },
-  })));
-  try {
-    const analyzer = createLLMAnalyzer({ apiKey: "k" });
-    const result = await analyzer.planFigure({ canonicalModel: { nodes: [], edges: [] } });
-    assert.equal(result.status, "error");
-    assert.match(result.message, /invalid-dsl-primitive-kind/);
-  } finally {
-    restore();
-  }
-});
-
 test("analyze returns unavailable for image without images", async () => {
   const analyzer = createLLMAnalyzer({ apiKey: "k" });
   const result = await analyzer.analyze({ kind: "image", images: [] });

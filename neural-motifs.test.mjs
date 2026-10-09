@@ -25,6 +25,24 @@ test("derives generic motifs from structure rather than architecture names", () 
   assert.equal(motifKinds("unknown-operator").has("opaque-module"), true);
 });
 
+test("graph-domain inputs stay outside graph message-passing motifs", () => {
+  const ir = normalizeUniversalIR({
+    version: "universal-neural-ir/v1",
+    nodes: [
+      { id: "nodes", family: "input", op: "GraphInput", attributes: { dataDomain: "graph" } },
+      { id: "gcn", family: "graph", op: "GCNConv", attributes: { dataDomain: "graph" } },
+      { id: "output", family: "output", op: "Output" },
+    ],
+    edges: [
+      { id: "e1", source: "nodes", target: "gcn" },
+      { id: "e2", source: "gcn", target: "output" },
+    ],
+  });
+  const motifs = deriveNeuralMotifs(ir, deriveNeuralSemanticFacts(ir));
+  const graphMotifs = motifs.motifs.filter((motif) => motif.kind === "graph-message-passing");
+  assert.deepEqual(graphMotifs.map((motif) => motif.nodeIds), [["gcn"]]);
+});
+
 test("motif identities remain stable when model and display labels change", () => {
   const fixture = neuralStructureFixtures.find((item) => item.capability === "bypass-add");
   const originalIR = normalizeUniversalIR({ version: "universal-neural-ir/v1", ...fixture.ir });

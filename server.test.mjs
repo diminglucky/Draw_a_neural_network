@@ -111,7 +111,51 @@ test("agent service replans a model workspace after edits", async () => {
   assert.equal(response.status, 200);
   assert.equal(payload.status, "planned");
   assert.equal(payload.workspace.version, "model-workspace/v1");
-  assert.equal(payload.publicationVisioDiagramPlan.bridgeVersion, "visio-dsl-bridge/v1");
+  assert.equal(payload.visioDiagramPlan.scene.version, "laid-out-neural-scene/v1");
+});
+
+test("workspace block edit replans and preserves Block IR", async () => {
+  const service = createAgentService();
+  const workspace = createModelWorkspace({
+    ir: {
+      nodes: [
+        { id: "input", family: "input", op: "Input" },
+        { id: "b1", family: "conv", op: "Conv2d" },
+        { id: "b2", family: "conv", op: "Conv2d" },
+        { id: "b3", family: "conv", op: "Conv2d" },
+        { id: "output", family: "output", op: "Output" },
+      ],
+      edges: [
+        { id: "e1", source: "input", target: "b1" },
+        { id: "e2", source: "b1", target: "b2" },
+        { id: "e3", source: "b2", target: "b3" },
+        { id: "e4", source: "b3", target: "output" },
+      ],
+    },
+    blockIr: {
+      blocks: [{ id: "block:repeat-block:b1+b2+b3", kind: "repeat-block", nodeIds: ["b1", "b2", "b3"] }],
+    },
+  });
+  const edited = await requestAgent(service, "/api/model-workspace/apply", {
+    workspace,
+    operation: {
+      type: "set-block-expanded",
+      blockId: "block:repeat-block:b1+b2+b3",
+      expanded: true,
+    },
+  });
+  assert.equal(edited.response.status, 200);
+
+  const planned = await requestAgent(service, "/api/model-workspace/plan", {
+    workspace: edited.payload.workspace,
+  });
+  assert.equal(planned.response.status, 200);
+  assert.equal(planned.payload.status, "planned");
+  assert.ok(planned.payload.blockIr.blocks.some((block) => block.kind === "repeat-block"));
+  assert.equal(
+    planned.payload.visioDiagramPlan.scene.primitives.some((primitive) => primitive.sourceNodeIds.length > 1 && primitive.blockKind === "repeat-block"),
+    false,
+  );
 });
 
 test("render-visio accepts an edited model workspace", async () => {
@@ -130,6 +174,79 @@ test("render-visio accepts an edited model workspace", async () => {
   assert.equal(response.status, 200);
   assert.equal(payload.plan.version, "visio-native-bridge/v1");
   assert.ok(payload.plan.shapes.some((shape) => shape.sourceNodeId === "input"));
+});
+
+test("render-visio applies editable workspace coordinates to the Scene plan", async () => {
+  const service = createAgentService({
+    dependencies: {
+      render: async (visioDiagramPlan) => ({ status: "dry_run", plan: visioDiagramPlan }),
+      readback: undefined,
+    },
+  });
+  const workspace = createModelWorkspace({
+    ir: {
+      nodes: [
+        { id: "input", op: "Input", family: "input", label: "Input" },
+        { id: "output", op: "Output", family: "output", label: "Output" },
+      ],
+      edges: [{ id: "flow", source: "input", target: "output" }],
+    },
+  });
+  workspace.nodes.find((node) => node.id === "output").ui = { x: 640, y: 240, w: 144, h: 72 };
+
+  const { response, payload } = await requestAgent(service, "/api/render-visio", {
+    documentPath: "C:\\tmp\\workspace-layout.vsdx",
+    workspace,
+  });
+
+  assert.equal(response.status, 200);
+  const output = payload.visioDiagramPlan.scene.primitives.find((primitive) => primitive.sourceNodeIds.includes("output"));
+  assert.deepEqual(
+    { x: output.bounds.x, y: output.bounds.y, w: output.bounds.w, h: output.bounds.h },
+    { x: 640, y: 240, w: 144, h: 72 },
+  );
+});
+
+test("render-visio restores repeat-block expanded state from workspace overrides", async () => {
+  const service = createAgentService({
+    dependencies: {
+      render: async (visioDiagramPlan) => ({ status: "dry_run", plan: visioDiagramPlan }),
+      readback: undefined,
+    },
+  });
+  const workspace = createModelWorkspace({
+    ir: {
+      nodes: [
+        { id: "input", family: "input", op: "Input" },
+        { id: "b1", family: "conv", op: "Conv2d" },
+        { id: "b2", family: "conv", op: "Conv2d" },
+        { id: "b3", family: "conv", op: "Conv2d" },
+        { id: "output", family: "output", op: "Output" },
+      ],
+      edges: [
+        { id: "e1", source: "input", target: "b1" },
+        { id: "e2", source: "b1", target: "b2" },
+        { id: "e3", source: "b2", target: "b3" },
+        { id: "e4", source: "b3", target: "output" },
+      ],
+    },
+    blockIr: {
+      blocks: [{ id: "block:repeat-block:b1+b2+b3", kind: "repeat-block", nodeIds: ["b1", "b2", "b3"] }],
+    },
+    blockOverrides: {
+      "block:repeat-block:b1+b2+b3": { expanded: true, locked: false },
+    },
+  });
+
+  const { response, payload } = await requestAgent(service, "/api/render-visio", {
+    documentPath: "C:\\tmp\\repeat-expanded.vsdx",
+    workspace,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.visioDiagramPlan.scene.primitives.some((primitive) => primitive.sourceNodeIds.length > 1 && primitive.blockKind === "repeat-block"), false);
+  assert.ok(payload.visioDiagramPlan.scene.primitives.some((primitive) => primitive.sourceNodeIds.includes("b1")));
+  assert.ok(payload.visioDiagramPlan.scene.primitives.some((primitive) => primitive.sourceNodeIds.includes("b2")));
+  assert.ok(payload.visioDiagramPlan.scene.primitives.some((primitive) => primitive.sourceNodeIds.includes("b3")));
 });
 
 test("default agent service extracts source topology before producing a Visio Diagram Plan", async () => {

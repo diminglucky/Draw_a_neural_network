@@ -30,20 +30,10 @@ test("semantic primitives use COM-supported page drawing methods", () => {
   assert.doesNotMatch(script, /DrawRoundedRectangle|DrawDiamond|DrawCircle/);
 });
 
-test("Draw-PlanShape dispatches semantic roles without architecture-name branches", () => {
+test("Draw-PlanShape dispatches only Scene primitives without architecture-name branches", () => {
   assert.ok(dispatch, "expected semantic Draw-PlanShape dispatch body");
-  for (const [role, primitive] of [
-    ["decision", "Draw-DecisionShape"],
-    ["merge-add", "Draw-MergeAddShape"],
-    ["merge-concat", "Draw-MergeConcatShape"],
-    ["split", "Draw-SplitShape"],
-    ["junction", "Draw-JunctionShape"],
-    ["repeat-marker", "Draw-RepeatMarkerShape"],
-    ["annotation", "Draw-AnnotationShape"],
-  ]) {
-    assert.match(dispatch[0], new RegExp(role));
-    assert.match(dispatch[0], new RegExp(primitive));
-  }
+  assert.match(dispatch[0], /Draw-ScenePrimitive/);
+  assert.doesNotMatch(dispatch[0], /Draw-DecisionShape|Draw-MergeAddShape|Draw-MergeConcatShape|Draw-SplitShape|Draw-JunctionShape/);
   assert.doesNotMatch(dispatch[0], /YOLO|ResNet|Transformer|GAN|VGG|U-Net/);
 });
 
@@ -111,22 +101,17 @@ test("default neural primitives are flat, evidence-driven, and free of per-modul
   assert.match(feature[0], /DrawRectangle/);
   assert.doesNotMatch(feature[0], /PublicationTensor|RightBanded/);
   assert.match(namedModule[0], /Draw-RepeatBadge/);
-  assert.match(dispatch[0], /feature-map-stage[\s\S]*Draw-FeaturePlane/);
-  assert.match(dispatch[0], /legacy-publication-tensor[\s\S]*Draw-FeatureMapStack/);
   assert.doesNotMatch(script, /\$legendShapes\s*=\s*@\(Draw-Legend/);
 });
 
 test("scene spatial volumes use tensor geometry while spatial inputs keep image grammar", () => {
   const dispatch = script.match(/function Draw-ScenePrimitive[\s\S]*?\r?\n}\r?\n/);
   const featureVolume = script.match(/function Draw-FeatureVolume[\s\S]*?\r?\n}\r?\n/);
-  const label = script.match(/function Draw-PlanLabel[\s\S]*?\r?\n}\r?\n/);
   assert.ok(dispatch, "expected scene primitive dispatcher");
   assert.ok(featureVolume, "expected feature-volume renderer");
-  assert.ok(label, "expected legacy label renderer guard");
   assert.match(dispatch[0], /form -eq "volume"[\s\S]*Draw-FeatureVolume/);
   assert.match(dispatch[0], /form -eq "plane"[\s\S]*Draw-ImageInput/);
   assert.match(featureVolume[0], /Draw-PublicationTensorTensorBox/);
-  assert.match(label[0], /sceneForm[\s\S]*return @\(\)/);
 });
 
 test("scene scale changes preserve downsample and upsample direction", () => {
@@ -141,18 +126,65 @@ test("scene scale changes preserve downsample and upsample direction", () => {
   assert.match(connector[0], /cross-scale/);
 });
 
-test("compound modules dispatch through topology patterns, not architecture names", () => {
-  assert.match(script, /function Draw-StructuredModule/);
-  assert.match(script, /shapeData\.modulePattern/);
-  assert.match(script, /Draw-StructuredModule[\s\S]*\$pattern/);
-  assert.doesNotMatch(script, /Draw-StructuredModule[\s\S]*YOLO|Draw-StructuredModule[\s\S]*ResNet/);
+test("Scene rendering contains no architecture-name branches", () => {
+  const scene = script.match(/function Draw-ScenePrimitive[\s\S]*?\r?\n}\r?\n/);
+  assert.ok(scene, "expected Draw-ScenePrimitive");
+  assert.doesNotMatch(scene[0], /YOLO|ResNet|Transformer|GAN|VGG|U-Net/);
 });
 
-test("publication primitive dispatch supports DSL tensor, dense, stack, and group shapes", () => {
-  assert.match(script, /publication-tensor-box[\s\S]*Draw-PublicationTensorPrimitive/);
-  assert.match(script, /publication-right-banded-tensor[\s\S]*Draw-PublicationTensorPrimitive/);
-  assert.match(script, /publication-dense-layer[\s\S]*Draw-PublicationDenseLayer/);
-  assert.match(script, /publication-layer-stack[\s\S]*Draw-PublicationLayerStack/);
-  assert.match(script, /publication-group-box[\s\S]*Draw-PublicationGroupBox/);
-  assert.match(script, /publication-label[\s\S]*Draw-PublicationLabel/);
+test("Scene block badges are emitted through Shape Data and native text shapes", () => {
+  assert.match(script, /function Draw-BlockBadge/);
+  assert.match(script, /blockBadge/);
+  assert.match(script, /block-badge/);
+});
+
+test("Scene block ports render as native Visio markers", () => {
+  assert.match(script, /function Draw-BlockPortMarkers/);
+  assert.match(script, /blockPortId/);
+  assert.match(script, /blockPortSide/);
+  assert.match(script, /block-port/);
+});
+
+test("Connectors prefer block port marker shapes for native Glue", () => {
+  assert.match(script, /BlockPortShapeMap/);
+  assert.match(script, /sourceEndpointIds\.source/);
+  assert.match(script, /sourceEndpointIds\.target/);
+  assert.match(script, /Glue-Endpoint \$line "BeginX" \$sourceTarget/);
+  assert.match(script, /Glue-Endpoint \$line "EndX" \$targetTarget/);
+});
+
+test("BlockKind drives semantic fill and line style profiles", () => {
+  for (const token of [
+    '"residual-block" { "#DDF3EC"',
+    '"attention-block" { "#E8DDF5"',
+    '"ffn-block" { "#E8EEF8"',
+    '"encoder-stage" { "#DCEAF4"',
+    '"decoder-stage" { "#E2F3E7"',
+    '"moe-block" { "#F0E7D8"',
+    '"graph-block" { "#DDF2F4"',
+  ]) {
+    assert.ok(script.includes(token), `missing block style ${token}`);
+  }
+});
+
+test("Block overlays draw residual, recurrent, MoE, and graph structural cues", () => {
+  assert.match(script, /function Draw-BlockOverlay/);
+  assert.match(script, /residual-lane/);
+  assert.match(script, /recurrent-loop/);
+  assert.match(script, /moe-router/);
+  assert.match(script, /graph-message/);
+  assert.match(script, /block-overlay/);
+});
+
+test("Recurrent block loop prefers state port marker Glue", () => {
+  assert.match(script, /stateMarkers/);
+  assert.match(script, /Glue-Endpoint \$loop "BeginX" \$stateMarkers\[0\]/);
+  assert.match(script, /Glue-Endpoint \$loop "EndX" \$stateMarkers\[1\]/);
+});
+
+test("MoE overlay emits router and expert partition labels", () => {
+  assert.match(script, /blockDetails/);
+  assert.match(script, /expertCount/);
+  assert.match(script, /"router"/);
+  assert.match(script, /"experts \$expertCount"/);
 });

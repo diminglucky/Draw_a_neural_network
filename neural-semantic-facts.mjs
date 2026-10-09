@@ -155,6 +155,7 @@ function certainty(value) {
 }
 
 function isCrossScale(edge, nodeById) {
+  if (/cross-scale|scale-transfer/i.test(String(edge.type || ""))) return true;
   const source = nodeById.get(String(edge.source));
   const target = nodeById.get(String(edge.target));
   if (!source || !target) return false;

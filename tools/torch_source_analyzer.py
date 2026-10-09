@@ -99,6 +99,33 @@ def index_init_layers(class_node):
     return layers
 
 
+def module_list_children(declaration):
+    if not isinstance(declaration, ast.Call) or not constructor_base_name(declaration).endswith("ModuleList"):
+        return []
+    if not declaration.args:
+        return []
+    value = declaration.args[0]
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return [child for child in value.elts if isinstance(child, ast.Call)]
+    if isinstance(value, ast.ListComp) and isinstance(value.elt, ast.Call):
+        count = range_literal_count(value.generators[0].iter if value.generators else None)
+        return [value.elt for _ in range(count)] if count > 0 else []
+    return []
+
+
+def range_literal_count(node):
+    if not isinstance(node, ast.Call) or call_name(node) != "range" or not node.args:
+        return 0
+    try:
+        if len(node.args) == 1:
+            return max(0, int(ast.literal_eval(node.args[0])))
+        if len(node.args) >= 2:
+            return max(0, len(range(int(ast.literal_eval(node.args[0])), int(ast.literal_eval(node.args[1])))))
+    except Exception:
+        return 0
+    return 0
+
+
 def input_shape_value(raw):
     if isinstance(raw, list) and raw and all(isinstance(v, int) for v in raw):
         return raw
@@ -364,6 +391,10 @@ class GraphBuilder:
         return self.nodes
 
     def process_statement(self, statement):
+        if isinstance(statement, ast.For):
+            expanded = self.expand_module_list_loop(statement)
+            if expanded:
+                return expanded
         if isinstance(statement, ast.Assign):
             node_ids = self.process_value(statement.value, statement.lineno)
             for target in statement.targets:
@@ -377,6 +408,34 @@ class GraphBuilder:
         if isinstance(statement, ast.Return):
             return self.process_value(statement.value, statement.lineno)
         return []
+
+    def expand_module_list_loop(self, statement):
+        if not isinstance(statement.target, ast.Name):
+            return []
+        if not isinstance(statement.iter, ast.Attribute) or not isinstance(statement.iter.value, ast.Name) or statement.iter.value.id != "self":
+            return []
+        children = module_list_children(self.layers.get(statement.iter.attr))
+        if not children or len(statement.body) != 1:
+            return []
+        body = statement.body[0]
+        if not isinstance(body, ast.Assign) or len(body.targets) != 1:
+            return []
+        target = body.targets[0]
+        if not isinstance(target, ast.Name) or not isinstance(body.value, ast.Call):
+            return []
+        if call_name(body.value) != statement.target.id:
+            return []
+        previous = self.var_node.get(self.current_var)
+        created = []
+        for child in children:
+            node = self.node_for_constructor(child, statement.lineno)
+            self.add_edge(previous, node["id"], "signal", statement.lineno)
+            previous = node["id"]
+            created.append(node["id"])
+        if created:
+            self.var_node[target.id] = created[-1]
+            self.current_var = target.id
+        return created
 
     def process_value(self, value, line):
         if value is None:

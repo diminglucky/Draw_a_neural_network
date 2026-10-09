@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createProjectionMap, validateProjectionMap } from "./neural-projection-map.mjs";
 import { deriveNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
+import { deriveNeuralBlocks } from "./neural-block-ir.mjs";
 import { normalizeUniversalIR } from "./universal-ir.mjs";
 
 function linearIR() {
@@ -30,6 +31,15 @@ test("full projection maps every node directly and every edge visibly", () => {
   assert.ok(map.projections.every((projection) => projection.kind === "direct"));
   assert.ok(Object.values(map.edgeToProjection).every((mapping) => mapping.disposition === "visible"));
   assert.equal(validateProjectionMap(map, ir).ok, true);
+});
+
+test("full projection ignores Block IR collapse even when blocks are supplied", () => {
+  const ir = linearIR();
+  const facts = deriveNeuralSemanticFacts(ir);
+  const blocks = deriveNeuralBlocks(ir, facts);
+  const map = createProjectionMap(ir, facts, { detail: "full", blocks });
+  assert.ok(map.projections.every((projection) => projection.kind === "direct"));
+  assert.deepEqual(map.projections.map((projection) => projection.orderedNodeIds), [["in"], ["a"], ["b"], ["c"], ["out"]]);
 });
 
 test("overview collapses a safe linear run and explicitly accounts for internal edges", () => {
@@ -112,4 +122,106 @@ test("projection decisions are deterministic and independent of display names", 
   const first = createProjectionMap(ir, deriveNeuralSemanticFacts(ir), { detail: "overview" });
   const second = createProjectionMap(renamed, deriveNeuralSemanticFacts(renamed), { detail: "overview" });
   assert.deepEqual(first, second);
+});
+
+test("balanced projection collapses Block IR boundaries before individual nodes", () => {
+  const ir = linearIR();
+  const facts = deriveNeuralSemanticFacts(ir);
+  const blocks = deriveNeuralBlocks(ir, facts);
+  const map = createProjectionMap(ir, facts, { detail: "balanced", blocks });
+  const convBlock = map.projections.find((projection) => projection.blockKind === "conv-block");
+  assert.deepEqual(convBlock.orderedNodeIds, ["a", "b", "c"]);
+  assert.equal(convBlock.kind, "block-conv-block");
+  assert.equal(validateProjectionMap(map, ir).ok, true);
+});
+
+test("balanced projection skips blocks that contain manually positioned workspace nodes", () => {
+  const ir = linearIR();
+  ir.nodes.find((node) => node.id === "b").attributes = { workspaceUi: { x: 400, y: 200, w: 80, h: 60 } };
+  const facts = deriveNeuralSemanticFacts(ir);
+  const blocks = deriveNeuralBlocks(ir, facts);
+  const map = createProjectionMap(ir, facts, { detail: "balanced", blocks });
+  assert.equal(map.projections.some((projection) => projection.blockKind === "conv-block"), false);
+  assert.equal(map.projections.find((projection) => projection.orderedNodeIds.includes("b")).kind, "direct");
+});
+
+test("balanced projection can expand selected block kinds", () => {
+  const ir = linearIR();
+  const facts = deriveNeuralSemanticFacts(ir);
+  const blocks = deriveNeuralBlocks(ir, facts);
+  const expanded = createProjectionMap(ir, facts, { detail: "balanced", blocks, expandBlockKinds: ["conv-block"] });
+  assert.equal(expanded.projections.some((projection) => projection.blockKind === "conv-block"), false);
+  assert.deepEqual(expanded.projections.map((projection) => projection.orderedNodeIds), [["in"], ["a"], ["b"], ["c"], ["out"]]);
+
+  const collapsed = createProjectionMap(ir, facts, { detail: "balanced", blocks });
+  assert.equal(collapsed.projections.some((projection) => projection.blockKind === "conv-block"), true);
+});
+
+test("balanced projection honors per-block expand and locked collapse overrides", () => {
+  const ir = linearIR();
+  const facts = deriveNeuralSemanticFacts(ir);
+  const blocks = deriveNeuralBlocks(ir, facts);
+  const block = blocks.blocks.find((item) => item.kind === "conv-block");
+
+  const expanded = createProjectionMap(ir, facts, {
+    detail: "balanced",
+    blocks,
+    blockOverrides: { [block.id]: { expanded: true, locked: false } },
+  });
+  assert.equal(expanded.projections.some((projection) => projection.blockId === block.id), false);
+
+  const locked = createProjectionMap(ir, facts, {
+    detail: "balanced",
+    blocks,
+    blockOverrides: { [block.id]: { expanded: false, locked: true } },
+  });
+  assert.equal(locked.projections.some((projection) => projection.blockId === block.id), true);
+});
+
+test("locked block overrides win over conflicting expand flags and emit diagnostics", () => {
+  const ir = linearIR();
+  const facts = deriveNeuralSemanticFacts(ir);
+  const blocks = deriveNeuralBlocks(ir, facts);
+  const block = blocks.blocks.find((item) => item.kind === "conv-block");
+  const map = createProjectionMap(ir, facts, {
+    detail: "balanced",
+    blocks,
+    blockOverrides: { [block.id]: { expanded: true, locked: true } },
+  });
+  assert.equal(map.projections.some((projection) => projection.blockId === block.id), true);
+  assert.ok(map.diagnostics.some((issue) => issue.code === "block-lock-expand-conflict" && issue.blockId === block.id));
+});
+
+test("block port mappings produce unique edge port ids for MIMO blocks", () => {
+  const ir = normalizeUniversalIR({
+    version: "universal-neural-ir/v1",
+    nodes: [
+      { id: "a", family: "conv", op: "Conv2d" },
+      { id: "b", family: "conv", op: "Conv2d" },
+      { id: "merge", family: "merge", op: "Concat" },
+    ],
+    edges: [
+      { id: "e1", source: "a", target: "merge", ports: { target: "in" } },
+      { id: "e2", source: "b", target: "merge", ports: { target: "in" } },
+    ],
+  });
+  const blocks = {
+    version: "neural-block-ir/v1",
+    blocks: [{
+      id: "block:conv-block:a+b",
+      kind: "conv-block",
+      nodeIds: ["a", "b"],
+      entryPortMappings: [],
+      exitPortMappings: [
+        { edgeId: "e1", nodeId: "a", targetNodeId: "merge", portId: "out" },
+        { edgeId: "e2", nodeId: "b", targetNodeId: "merge", portId: "out" },
+      ],
+    }],
+  };
+  const facts = deriveNeuralSemanticFacts(ir);
+  const map = createProjectionMap(ir, facts, { detail: "balanced", blocks });
+  const projection = map.projections.find((item) => item.blockKind === "conv-block");
+  assert.deepEqual(projection.exitPorts.map((port) => port.id), ["out", "out-2"]);
+  assert.equal(map.edgeToProjection.e1.sourceBlockPortId, "out");
+  assert.equal(map.edgeToProjection.e2.sourceBlockPortId, "out-2");
 });

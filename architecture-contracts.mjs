@@ -9,14 +9,8 @@ import { GRAPH_EVIDENCE_FUSION_VERSION } from "./graph-evidence-fusion.mjs";
 import { EVIDENCE_METADATA_VERSION } from "./evidence-metadata.mjs";
 import { SHAPE_INFERENCE_VERSION } from "./shape-inference.mjs";
 import { CANONICAL_MODEL_GRAPH_VERSION } from "./canonical-model-graph.mjs";
-import { PUBLICATION_LAYOUT_PLAN_VERSION } from "./publication-layout-plan.mjs";
-import { REFERENCE_FIGURE_SPEC_VERSION } from "./reference-figure-spec.mjs";
-import { REFERENCE_STYLE_COMPILATION_VERSION } from "./reference-style-compiler.mjs";
-import { FIGURE_COMPARISON_VERSION } from "./figure-comparator.mjs";
-import { PUBLICATION_PRIMITIVE_VERSION } from "./publication-primitives.mjs";
-import { NEURAL_FIGURE_DSL_VERSION } from "./neural-figure-dsl.mjs";
-import { NEURAL_FIGURE_PLANNER_VERSION } from "./figure-planner.mjs";
-import { FIGURE_QA_VERSION } from "./figure-qa.mjs";
+import { RENDERING_PROFILE_VERSION } from "./rendering-profile.mjs";
+import { NEURAL_BLOCK_IR_VERSION } from "./neural-block-ir.mjs";
 import { MODEL_WORKSPACE_VERSION } from "./model-workspace.mjs";
 
 export const ARCHITECTURE_IR_CONTRACTS = Object.freeze({
@@ -25,6 +19,7 @@ export const ARCHITECTURE_IR_CONTRACTS = Object.freeze({
   semantic: Object.freeze({
     facts: NEURAL_SEMANTIC_FACTS_VERSION,
     motifs: NEURAL_MOTIFS_VERSION,
+    blocks: NEURAL_BLOCK_IR_VERSION,
   }),
   visualPlan: Object.freeze({
     semanticScene: SEMANTIC_NEURAL_SCENE_VERSION,
@@ -32,16 +27,7 @@ export const ARCHITECTURE_IR_CONTRACTS = Object.freeze({
     visioDiagramPlan: VISIO_DIAGRAM_PLAN_VERSION,
   }),
   visioOperation: VISIO_OPERATION_PLAN_VERSION,
-  publicationLayout: PUBLICATION_LAYOUT_PLAN_VERSION,
-  referenceStyle: Object.freeze({
-    spec: REFERENCE_FIGURE_SPEC_VERSION,
-    compilation: REFERENCE_STYLE_COMPILATION_VERSION,
-    comparison: FIGURE_COMPARISON_VERSION,
-  }),
-  publicationPrimitive: PUBLICATION_PRIMITIVE_VERSION,
-  neuralFigureDsl: NEURAL_FIGURE_DSL_VERSION,
-  neuralFigurePlanner: NEURAL_FIGURE_PLANNER_VERSION,
-  figureQa: FIGURE_QA_VERSION,
+  renderingProfile: RENDERING_PROFILE_VERSION,
   modelWorkspace: MODEL_WORKSPACE_VERSION,
   evidenceFusion: GRAPH_EVIDENCE_FUSION_VERSION,
   evidenceMetadata: EVIDENCE_METADATA_VERSION,

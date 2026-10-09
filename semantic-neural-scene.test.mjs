@@ -36,8 +36,10 @@ test("compiles generic data, operator, merge, state, sequence, repeat, and opaqu
   const bodyForms = scene.primitives.filter((primitive) => primitive.role === "body").map((primitive) => primitive.form);
   for (const form of ["plane", "wedge", "stack", "glyph", "cell", "strip", "callout", "band"]) assert.ok(bodyForms.includes(form), `missing ${form}`);
   assert.ok(scene.primitives.some((primitive) => primitive.role === "decoration" && primitive.data?.decoration === "repeat"));
+  assert.ok(scene.primitives.some((primitive) => primitive.role === "decoration" && primitive.data?.decoration === "repeat" && primitive.labels.includes("x3")));
   assert.ok(scene.relations.some((relation) => relation.relationTags.includes("bypass")));
   assert.ok(scene.relations.some((relation) => relation.relationTags.includes("state")));
+  assert.ok(scene.blockSummary.total >= 1);
 });
 
 test("branch topology emits a split structure without inventing source identities", () => {

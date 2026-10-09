@@ -28,8 +28,8 @@ export function createAgentRun(input, dependencies = {}, options = {}) {
     attempts: { repair: 0 },
     inspect: undefined, extract: undefined, normalize: undefined, ir: undefined,
     plan: undefined, planOutput: undefined, visioDiagramPlan: undefined, visioDiagramPlanValidation: undefined,
-    publicationVisioDiagramPlan: undefined, publicationVisioDiagramPlanValidation: undefined,
-    neuralFigureProgram: undefined, neuralFigurePlanValidation: undefined, publicationFigureQa: undefined,
+    renderingProfile: undefined, renderingProfileValidation: undefined,
+    blockIr: undefined, blockIrValidation: undefined, blockSummary: undefined,
     renderResult: undefined, readback: undefined,
   };
   runtimeByRun.set(run, {
@@ -64,11 +64,12 @@ export async function runAgentPipeline(run, options = {}) {
       if (stage === "plan") {
         current.planOutput = current.plan;
         current.visioDiagramPlan = current.plan?.visioDiagramPlan || current.plan;
-        current.publicationVisioDiagramPlan = current.plan?.publicationVisioDiagramPlan;
-        current.publicationVisioDiagramPlanValidation = current.plan?.publicationVisioDiagramPlanValidation;
-        current.neuralFigureProgram = current.plan?.neuralFigureProgram;
-        current.neuralFigurePlanValidation = current.plan?.neuralFigurePlanValidation;
-        current.publicationFigureQa = current.plan?.publicationFigureQa;
+        current.visioDiagramPlanValidation = current.plan?.visioDiagramPlanValidation;
+        current.renderingProfile = current.plan?.renderingProfile;
+        current.renderingProfileValidation = current.plan?.renderingProfileValidation;
+        current.blockIr = current.plan?.blockIr;
+        current.blockIrValidation = current.plan?.blockIrValidation;
+        current.blockSummary = current.plan?.blockSummary;
         if (current.plan?.ir) current.ir = current.plan.ir;
       }
       await appendSnapshot(current, stage, value, runtime.runStore);
@@ -199,17 +200,12 @@ async function continueRepair(current, runtime) {
     const activePlan = selectedRenderPlan(current);
     const nextPlan = typeof repair === "function" ? await repair(clone(activePlan), reason, current) : clone(activePlan);
     if (nextPlan === undefined) throw new Error("repairDiagramPlan must return a Visio Diagram Plan.");
-    if (current.publicationVisioDiagramPlan) {
-      current.publicationVisioDiagramPlan = clone(nextPlan);
-    } else {
-      current.visioDiagramPlan = clone(nextPlan);
-    }
-    current.planOutput = mergePlanIntoOutput(current.planOutput, nextPlan, Boolean(current.publicationVisioDiagramPlan));
+    current.visioDiagramPlan = clone(nextPlan);
+    current.planOutput = mergePlanIntoOutput(current.planOutput, nextPlan);
     current.plan = current.planOutput;
     await appendSnapshot(current, "repair", {
       reason,
       visioDiagramPlan: current.visioDiagramPlan,
-      publicationVisioDiagramPlan: current.publicationVisioDiagramPlan,
     }, runtime.runStore);
     return runPostPlan(current, runtime);
   } catch (error) {
@@ -301,11 +297,12 @@ function restoreSnapshots(run) {
       run.plan = upgraded;
       run.planOutput = upgraded;
       run.visioDiagramPlan = upgraded?.visioDiagramPlan || upgraded;
-      run.publicationVisioDiagramPlan = upgraded?.publicationVisioDiagramPlan;
-      run.publicationVisioDiagramPlanValidation = upgraded?.publicationVisioDiagramPlanValidation;
-      run.neuralFigureProgram = upgraded?.neuralFigureProgram;
-      run.neuralFigurePlanValidation = upgraded?.neuralFigurePlanValidation;
-      run.publicationFigureQa = upgraded?.publicationFigureQa;
+      run.visioDiagramPlanValidation = upgraded?.visioDiagramPlanValidation;
+      run.renderingProfile = upgraded?.renderingProfile;
+      run.renderingProfileValidation = upgraded?.renderingProfileValidation;
+      run.blockIr = upgraded?.blockIr;
+      run.blockIrValidation = upgraded?.blockIrValidation;
+      run.blockSummary = upgraded?.blockSummary;
       if (upgraded?.ir) run.ir = upgraded.ir;
     }
     if (snapshot.stage === "render") run.renderResult = upgradeLegacyRenderResult(value);
@@ -339,15 +336,14 @@ function upgradeLegacyPlan(value) {
 }
 
 function selectedRenderPlan(run = {}) {
-  return run.publicationVisioDiagramPlan || run.visioDiagramPlan;
+  return run.visioDiagramPlan;
 }
 
-function mergePlanIntoOutput(planOutput, nextPlan, publication) {
+function mergePlanIntoOutput(planOutput, nextPlan) {
   const base = planOutput && typeof planOutput === "object" && !Array.isArray(planOutput)
     ? { ...clone(planOutput) }
     : {};
-  if (publication) base.publicationVisioDiagramPlan = clone(nextPlan);
-  else base.visioDiagramPlan = clone(nextPlan);
+  base.visioDiagramPlan = clone(nextPlan);
   return base;
 }
 
@@ -365,7 +361,7 @@ function resultOf(run) {
 }
 
 function publicState(run) {
-  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), visioDiagramPlan: clone(run.visioDiagramPlan), publicationVisioDiagramPlan: clone(run.publicationVisioDiagramPlan), visioDiagramPlanValidation: clone(run.visioDiagramPlanValidation), publicationVisioDiagramPlanValidation: clone(run.publicationVisioDiagramPlanValidation), neuralFigureProgram: clone(run.neuralFigureProgram), neuralFigurePlanValidation: clone(run.neuralFigurePlanValidation), publicationFigureQa: clone(run.publicationFigureQa), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
+  return { id: run.id, status: run.status, stage: run.stage, snapshots: run.snapshots, diagnostics: clone(run.diagnostics), attempts: { ...run.attempts }, input: clone(run.input), inspect: clone(run.inspect), extract: clone(run.extract), normalize: clone(run.normalize), ir: clone(run.ir), plan: clone(run.plan), visioDiagramPlan: clone(run.visioDiagramPlan), visioDiagramPlanValidation: clone(run.visioDiagramPlanValidation), renderingProfile: clone(run.renderingProfile), renderingProfileValidation: clone(run.renderingProfileValidation), blockIr: clone(run.blockIr), blockIrValidation: clone(run.blockIrValidation), blockSummary: clone(run.blockSummary), planOutput: clone(run.planOutput), renderResult: clone(run.renderResult), readback: clone(run.readback), confirmation: clone(run.confirmation), repair: clone(run.repair), repairReason: run.repairReason };
 }
 
 async function invoke(dependency, value, run) { return typeof dependency === "function" ? dependency(value, run) : value; }

@@ -54,6 +54,17 @@ function Get-SemanticColor([object]$Spec, [string]$FaceRole = "front") {
     "output" { "#7A238C"; break }
     "merge" { "#F4D7A8"; break }
     "attention" { "#E8DDF5"; break }
+    "residual-block" { "#DDF3EC"; break }
+    "attention-block" { "#E8DDF5"; break }
+    "ffn-block" { "#E8EEF8"; break }
+    "encoder-stage" { "#DCEAF4"; break }
+    "decoder-stage" { "#E2F3E7"; break }
+    "multi-scale-fusion" { "#F4D7A8"; break }
+    "detection-head" { "#FAD9D2"; break }
+    "recurrent-cell" { "#E8DDF5"; break }
+    "moe-block" { "#F0E7D8"; break }
+    "repeat-block" { "#EDF0F3"; break }
+    "graph-block" { "#DDF2F4"; break }
     "token" { "#E2EEF8"; break }
     "compound" { "#E7EEF5"; break }
     "unresolved" { "#F5F0E7"; break }
@@ -119,6 +130,16 @@ function Get-SemanticLineColor([object]$Spec) {
     "residual" { "#2E7F8C" }
     "scale-transfer" { "#3E8E5A" }
     "prediction" { "#C0432E" }
+    "residual-block" { "#2E8B72" }
+    "attention-block" { "#7A4BA0" }
+    "ffn-block" { "#52709E" }
+    "encoder-stage" { "#467EA6" }
+    "decoder-stage" { "#3E8E5A" }
+    "multi-scale-fusion" { "#8B6A32" }
+    "detection-head" { "#C0432E" }
+    "recurrent-cell" { "#70459B" }
+    "moe-block" { "#8A6A3D" }
+    "graph-block" { "#2E7F8C" }
     default { "#3F5D78" }
   }
   return $lineColor
@@ -894,55 +915,6 @@ function Draw-TextAnnotation([object]$Page, [string]$Text, [double]$X, [double]$
   return $shape
 }
 
-function Draw-PlanLabel([object]$Page, [object]$Spec, [double]$Scale) {
-  if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $Spec.parentNodeId))) { return @() }
-  if (-not [string]::IsNullOrWhiteSpace((Get-PlanString $Spec.sceneForm))) { return @() }
-  $visualRole = Get-PlanString $Spec.visualRole
-  if ($visualRole -eq "repeat-marker" -or $visualRole -eq "annotation") { return @() }
-  # Publication blocks carry their title and shape inside the card; no
-  # external label is needed.
-  if ((Get-PlanString $Spec.shapeKind) -eq "publication-block") { return @() }
-  $labels = New-Object 'System.Collections.Generic.List[object]'
-  $x = [double]$Spec.x * $Scale
-  $y = [double]$Spec.y * $Scale
-  $w = [double]$Spec.w * $Scale
-  $h = [double]$Spec.h * $Scale
-  # The render plan carries the compiled slots in Shape Data so the native
-  # bridge does not need to reconstruct semantic grammar from model names.
-  # Keep the labelSlots fallback for plans produced before this contract.
-  $labelTitleSlot = Get-PlanString $Spec.shapeData.labelTitleSlot
-  $labelSubtitleSlot = Get-PlanString $Spec.shapeData.labelSubtitleSlot
-  if ([string]::IsNullOrWhiteSpace($labelTitleSlot)) { $labelTitleSlot = Get-PlanString $Spec.labelSlots.title }
-  if ([string]::IsNullOrWhiteSpace($labelSubtitleSlot)) { $labelSubtitleSlot = Get-PlanString $Spec.labelSlots.subtitle }
-  $titleSlot = $labelTitleSlot
-  $subtitleSlot = $labelSubtitleSlot
-  if ([string]::IsNullOrWhiteSpace($titleSlot)) { $titleSlot = "above" }
-  if ([string]::IsNullOrWhiteSpace($subtitleSlot)) { $subtitleSlot = "below" }
-  $titleY = if ($titleSlot -eq "below") { $y - 0.25 } else { $y + $h + 0.36 }
-  $subtitleY = if ($subtitleSlot -eq "above") { $y + $h + 0.02 } else { $y - 0.5 }
-  # Thin neural-network primitives need independent label width; otherwise
-  # channel counts are split by the narrow feature-map body itself.
-  $labelWidth = [Math]::Max(0.88, $w + 0.36)
-  $labelX = $x - 0.18
-  if ($visualRole -eq "pool-downsample") {
-    $labelWidth = [Math]::Max(0.92, $w + 0.62)
-    $labelX = $x + (($w - $labelWidth) / 2)
-    $titleY = $y - 0.38
-  }
-  $title = Draw-TextAnnotation $Page (Get-PlanString $Spec.label) $labelX $titleY $labelWidth 0.2 "10 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "figure-label"
-  if ($null -ne $title) { $labels.Add($title) | Out-Null }
-  $subtitleText = Get-PlanString $Spec.subtitle
-  if ($visualRole -eq "pool-downsample") { $subtitleText = "" }
-  if ($subtitleText -notmatch "`r?`n" -and $subtitleText -match "\s·\s") {
-    $subtitleText = $subtitleText -replace "\s+·\s+", "`n· "
-  }
-  if (-not [string]::IsNullOrWhiteSpace($subtitleText)) {
-    $subtitle = Draw-TextAnnotation $Page $subtitleText $labelX $subtitleY $labelWidth 0.32 "7 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "figure-dimension"
-    if ($null -ne $subtitle) { $labels.Add($subtitle) | Out-Null }
-  }
-  return $labels.ToArray()
-}
-
 function Draw-CompoundModule([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
   # The outer frame is a topology container; its evidenced child graph is
   # drawn separately by Draw-PlanShape and remains visible inside this frame.
@@ -1681,58 +1653,133 @@ function Draw-PlanShape([object]$Page, [object]$Spec, [double]$Scale) {
   $w = [double]([double]$Spec.w * [double]$Scale)
   $h = [double]([double]$Spec.h * [double]$Scale)
   $sceneForm = Get-PlanString $Spec.sceneForm
-  if (-not [string]::IsNullOrWhiteSpace($sceneForm)) { return @(Draw-ScenePrimitive $Page $Spec $x $y $w $h $Scale) }
-  $kind = Get-PlanString $Spec.shapeKind
-  if ($kind -eq "publication-tensor-box") { return @(Draw-PublicationTensorPrimitive $Page $Spec $Scale $false) }
-  if ($kind -eq "publication-right-banded-tensor") { return @(Draw-PublicationTensorPrimitive $Page $Spec $Scale $true) }
-  if ($kind -eq "publication-dense-layer") { return @(Draw-PublicationDenseLayer $Page $Spec $Scale) }
-  if ($kind -eq "publication-layer-stack") { return @(Draw-PublicationLayerStack $Page $Spec $Scale) }
-  if ($kind -eq "publication-group-box") { return @(Draw-PublicationGroupBox $Page $Spec $Scale) }
-  if ($kind -eq "publication-label") { return @(Draw-PublicationLabel $Page $Spec $Scale) }
-  if ($kind -eq "publication-block") { return @(Draw-PublicationBlock $Page $Spec $x $y $w $h $Scale) }
-  if ($kind -eq "named-module") { return @(Draw-NamedModule $Page $Spec $x $y $w $h $Scale) }
-  if ($kind -eq "classifier-prism") { return @(Draw-NeuronColumn $Page $Spec $x $y $w $h $Scale) }
-  if ($kind -eq "softmax-prism") { return @(Draw-OutputDistribution $Page $Spec $x $y $w $h $Scale) }
-  if ($kind -eq "pool-prism") {
-    return @(Draw-DownsampleFrustum $Page $Spec $x $y $w $h $Scale)
+  if (-not [string]::IsNullOrWhiteSpace($sceneForm)) {
+    $created = @(Draw-ScenePrimitive $Page $Spec $x $y $w $h $Scale)
+    $badge = Draw-BlockBadge $Page $Spec $x $y $w $h $Scale
+    if ($null -ne $badge) { $created += $badge }
+    $portMarkers = @(Draw-BlockPortMarkers $Page $Spec $Scale)
+    if ($portMarkers.Count -gt 0) { $created += $portMarkers }
+    $blockOverlay = @(Draw-BlockOverlay $Page $Spec $x $y $w $h $Scale)
+    if ($blockOverlay.Count -gt 0) { $created += $blockOverlay }
+    return $created
   }
-  if ($kind -eq "upsample-box" -or (Get-PlanString $Spec.visualRole) -eq "upsample") {
-    return @(Draw-DownsampleFrustum $Page $Spec $x $y $w $h $Scale)
+  throw "Unsupported Scene primitive form: $sceneForm"
+}
+
+function Draw-BlockOverlay([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $blockKind = Get-PlanString $Spec.shapeData.blockKind
+  if ([string]::IsNullOrWhiteSpace($blockKind)) { return @() }
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  if ($blockKind -eq "residual-block") {
+    $line = $Page.DrawLine(($X + 0.12), ($Y + $H - 0.14), ($X + $W - 0.12), ($Y + $H - 0.14))
+    $line.CellsU("LineColor").FormulaU = Get-RgbFormula "#2E8B72"
+    $line.CellsU("LineWeight").FormulaU = "0.007 in"
+    $line.CellsU("LinePattern").FormulaU = "2"
+    Set-PlanData $line ([pscustomobject]@{ renderId = $Spec.shapeData.renderId; visualRole = "block-overlay"; overlayKind = "residual-lane"; sourceNodeId = $Spec.shapeData.sourceNodeId; blockKind = $blockKind })
+    $created.Add($line) | Out-Null
   }
-  $visualRole = Get-PlanString $Spec.visualRole
-  if ($visualRole -eq "decision") { return @(Draw-DecisionShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "merge-add") { return @(Draw-MergeAddShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "merge-concat") { return @(Draw-MergeConcatShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "split") { return @(Draw-SplitShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "junction") { return @(Draw-JunctionShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "repeat-marker") { return @(Draw-RepeatMarkerShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "annotation") { return @(Draw-AnnotationShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "inner-attention") { return @(Draw-AttentionModule $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "inner-norm") { return @(Draw-NormModule $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "inner-operator" -or $visualRole -eq "inner-capsule") { return @(Draw-InnerOperatorShape $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "image-input") { return @(Draw-ImageInput $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "sequence-input") { return @(Draw-SequenceInput $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "state-input") { return @(Draw-StateInput $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "vector-input") { return @(Draw-VectorInput $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "volume-input") { return @(Draw-VolumeInput $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "unknown-input") { return @(Draw-UnknownInput $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "vectorize" -or $kind -eq "flatten-ribbon") { return @(Draw-FlattenRibbon $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "input-tensor") { return @(Draw-InputTensor $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "legacy-publication-tensor") { return @(Draw-FeatureMapStack $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "feature-map-stage" -or $kind -match "volume|tensor") { return @(Draw-FeaturePlane $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "recurrent-instance" -or $kind -eq "recurrent-instance") { return @(Draw-RecurrentInstance $Page $Spec $x $y $w $h $Scale) }
-  if ($visualRole -eq "compound-module" -or $kind -eq "compound") {
-    $pattern = Get-PlanString $Spec.shapeData.modulePattern
-    if ([string]::IsNullOrWhiteSpace($pattern)) { $pattern = "opaque" }
-    return @(Draw-StructuredModule $Page $Spec $x $y $w $h $Scale $pattern)
+  if ($blockKind -eq "recurrent-cell") {
+    $stateMarkers = @($script:BlockPortShapeMap.Keys | Where-Object {
+      $_.StartsWith("$($Spec.id)::") -and $_ -match '(state|hidden|(^|::)h($|::)|(^|::)c($|::))'
+    } | ForEach-Object { $script:BlockPortShapeMap[$_] })
+    if ($stateMarkers.Count -ge 2) {
+      $loop = $Page.DrawLine(($X + $W), ($Y + $H * 0.35), ($X + $W), ($Y + $H * 0.65))
+      Glue-Endpoint $loop "BeginX" $stateMarkers[0] $false
+      Glue-Endpoint $loop "EndX" $stateMarkers[1] $true
+    } else {
+      $loop = $Page.DrawLine(($X + $W - 0.08), ($Y + $H * 0.35), ($X + $W + 0.08), ($Y + $H * 0.35))
+    }
+    $loop.CellsU("EndArrow").FormulaU = "13"
+    $loop.CellsU("LineColor").FormulaU = Get-RgbFormula "#70459B"
+    $loop.CellsU("LineWeight").FormulaU = "0.007 in"
+    Set-PlanData $loop ([pscustomobject]@{ renderId = $Spec.shapeData.renderId; visualRole = "block-overlay"; overlayKind = "recurrent-loop"; sourceNodeId = $Spec.shapeData.sourceNodeId; blockKind = $blockKind })
+    $created.Add($loop) | Out-Null
   }
-  if ($visualRole -eq "unresolved-module") { return @(Draw-UnresolvedModule $Page $Spec $x $y $w $h $Scale) }
-  if ($kind -eq "operator-symbol") {
-    $shape = $Page.DrawOval($x, $y, $x + $w, $y + $h)
-    Set-ShapeStyle $shape $Spec $Scale
-    return $shape
+  if ($blockKind -eq "moe-block") {
+    $expertCount = 0
+    try {
+      $details = (Get-PlanString $Spec.shapeData.blockDetails) | ConvertFrom-Json
+      if ($null -ne $details.expertCount) { $expertCount = [int]$details.expertCount }
+    } catch {}
+    $divider = $Page.DrawLine(($X + $W / 2), ($Y + 0.10), ($X + $W / 2), ($Y + $H - 0.10))
+    $divider.CellsU("LineColor").FormulaU = Get-RgbFormula "#8A6A3D"
+    $divider.CellsU("LineWeight").FormulaU = "0.006 in"
+    $divider.CellsU("LinePattern").FormulaU = "2"
+    Set-PlanData $divider ([pscustomobject]@{ renderId = $Spec.shapeData.renderId; visualRole = "block-overlay"; overlayKind = "moe-router"; sourceNodeId = $Spec.shapeData.sourceNodeId; blockKind = $blockKind })
+    $created.Add($divider) | Out-Null
+    $routerLabel = Draw-TextAnnotation $Page "router" ($X + 0.08) ($Y + 0.08) (($W / 2) - 0.12) 0.14 "6 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "block-overlay-label"
+    if ($null -ne $routerLabel) { $created.Add($routerLabel) | Out-Null }
+    $expertText = if ($expertCount -gt 0) { "experts $expertCount" } else { "experts" }
+    $expertLabel = Draw-TextAnnotation $Page $expertText (($X + $W / 2) + 0.04) ($Y + 0.08) (($W / 2) - 0.12) 0.14 "6 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "block-overlay-label"
+    if ($null -ne $expertLabel) { $created.Add($expertLabel) | Out-Null }
   }
-  return @(Draw-OperatorGlyph $Page $Spec $x $y $w $h $Scale)
+  if ($blockKind -eq "graph-block") {
+    $nodes = @(
+      @(($X + $W * 0.28), ($Y + $H * 0.32)),
+      @(($X + $W * 0.72), ($Y + $H * 0.28)),
+      @(($X + $W * 0.50), ($Y + $H * 0.72))
+    )
+    foreach ($node in $nodes) {
+      $marker = $Page.DrawOval(($node[0] - 0.055), ($node[1] - 0.055), ($node[0] + 0.055), ($node[1] + 0.055))
+      $marker.CellsU("FillForegnd").FormulaU = Get-RgbFormula "#DDF2F4"
+      $marker.CellsU("FillBkgnd").FormulaU = Get-RgbFormula "#DDF2F4"
+      $marker.CellsU("LineColor").FormulaU = Get-RgbFormula "#2E7F8C"
+      $marker.CellsU("LineWeight").FormulaU = "0.005 in"
+      Set-PlanData $marker ([pscustomobject]@{ renderId = $Spec.shapeData.renderId; visualRole = "block-overlay"; overlayKind = "graph-node"; sourceNodeId = $Spec.shapeData.sourceNodeId; blockKind = $blockKind })
+      $created.Add($marker) | Out-Null
+    }
+    $graphEdges = @(
+      @($nodes[0][0], $nodes[0][1], $nodes[1][0], $nodes[1][1]),
+      @($nodes[1][0], $nodes[1][1], $nodes[2][0], $nodes[2][1]),
+      @($nodes[2][0], $nodes[2][1], $nodes[0][0], $nodes[0][1])
+    )
+    foreach ($edge in $graphEdges) {
+      $line = $Page.DrawLine($edge[0], $edge[1], $edge[2], $edge[3])
+      $line.CellsU("LineColor").FormulaU = Get-RgbFormula "#2E7F8C"
+      $line.CellsU("LineWeight").FormulaU = "0.005 in"
+      $line.CellsU("EndArrow").FormulaU = "13"
+      Set-PlanData $line ([pscustomobject]@{ renderId = $Spec.shapeData.renderId; visualRole = "block-overlay"; overlayKind = "graph-message"; sourceNodeId = $Spec.shapeData.sourceNodeId; blockKind = $blockKind })
+      $created.Add($line) | Out-Null
+    }
+  }
+  return $created.ToArray()
+}
+
+function Draw-BlockPortMarkers([object]$Page, [object]$Spec, [double]$Scale) {
+  if ([string]::IsNullOrWhiteSpace((Get-PlanString $Spec.shapeData.blockKind))) { return @() }
+  if ($null -eq $script:BlockPortShapeMap) { $script:BlockPortShapeMap = @{} }
+  $created = New-Object 'System.Collections.Generic.List[object]'
+  $r = [double](5.0 * $Scale)
+  foreach ($side in @("inputs", "outputs")) {
+    foreach ($anchor in @($Spec.anchors.$side)) {
+      try {
+        $cx = [double]$anchor.x * $Scale
+        $cy = [double]$anchor.y * $Scale
+      } catch { continue }
+      $marker = $Page.DrawOval($cx - $r, $cy - $r, $cx + $r, $cy + $r)
+      $marker.CellsU("LineColor").FormulaU = Get-RgbFormula "#3F5D78"
+      $marker.CellsU("LineWeight").FormulaU = "0.006 in"
+      $marker.CellsU("FillForegnd").FormulaU = Get-RgbFormula $(if ($side -eq "inputs") { "#E2EEF8" } else { "#E2F3E7" })
+      $marker.CellsU("FillBkgnd").FormulaU = $marker.CellsU("FillForegnd").FormulaU
+      Set-PlanData $marker ([pscustomobject]@{
+        renderId = $Spec.shapeData.renderId
+        visualRole = "block-port"
+        sourceNodeId = $Spec.shapeData.sourceNodeId
+        blockKind = $Spec.shapeData.blockKind
+        blockPortId = $anchor.id
+        blockPortSide = if ($side -eq "inputs") { "input" } else { "output" }
+      })
+      $script:BlockPortShapeMap["$($Spec.id)::$($anchor.id)"] = $marker
+      $created.Add($marker) | Out-Null
+    }
+  }
+  return $created.ToArray()
+}
+
+function Draw-BlockBadge([object]$Page, [object]$Spec, [double]$X, [double]$Y, [double]$W, [double]$H, [double]$Scale) {
+  $badge = Get-PlanString $Spec.shapeData.blockBadge
+  if ([string]::IsNullOrWhiteSpace($badge)) { return $null }
+  return Draw-TextAnnotation $Page $badge ($X + $W - 0.62) ($Y + $H - 0.20) 0.56 0.15 "6 pt" ([string]$Spec.shapeData.renderId) ([string]$Spec.shapeData.sourceNodeId) "block-badge"
 }
 
 function Draw-JunctionDot([object]$Page, [object]$Spec, [double]$Scale) {
@@ -1789,8 +1836,16 @@ function Draw-PlanConnector([object]$Page, [object]$Spec, [double]$Scale, [hasht
     if ($routeClass -match "skip|residual|branch|feedback|conditional|cross-scale") { $line.CellsU("LinePattern").FormulaU = "2" }
     if ($index -eq $points.Count - 2) { $line.CellsU("EndArrow").FormulaU = "13" }
     $segmentRole = if ($points.Count -eq 2) { "direct" } elseif ($index -eq 0) { "begin" } elseif ($index -eq $points.Count - 2) { "end" } else { "middle" }
-    if ($index -eq 0 -and -not $Spec.avoidGlue) { Glue-Endpoint $line "BeginX" $ShapeMap[[string]$Spec.sourceShapeId] $true }
-    if ($index -eq $points.Count - 2 -and -not $Spec.avoidGlue) { Glue-Endpoint $line "EndX" $ShapeMap[[string]$Spec.targetShapeId] $false }
+    if ($index -eq 0 -and -not $Spec.avoidGlue) {
+      $sourcePort = if ($null -ne $Spec.sourceEndpointIds) { Get-PlanString $Spec.sourceEndpointIds.source } else { "" }
+      $sourceTarget = if ($sourcePort -and $script:BlockPortShapeMap.ContainsKey("$($Spec.sourceShapeId)::$sourcePort")) { $script:BlockPortShapeMap["$($Spec.sourceShapeId)::$sourcePort"] } else { $ShapeMap[[string]$Spec.sourceShapeId] }
+      Glue-Endpoint $line "BeginX" $sourceTarget $true
+    }
+    if ($index -eq $points.Count - 2 -and -not $Spec.avoidGlue) {
+      $targetPort = if ($null -ne $Spec.sourceEndpointIds) { Get-PlanString $Spec.sourceEndpointIds.target } else { "" }
+      $targetTarget = if ($targetPort -and $script:BlockPortShapeMap.ContainsKey("$($Spec.targetShapeId)::$targetPort")) { $script:BlockPortShapeMap["$($Spec.targetShapeId)::$targetPort"] } else { $ShapeMap[[string]$Spec.targetShapeId] }
+      Glue-Endpoint $line "EndX" $targetTarget $false
+    }
     Set-PlanData $line ([pscustomobject]@{
       renderId = $Spec.renderId
       edgeId = $Spec.id
@@ -1921,6 +1976,7 @@ Draw-FigureHeader $page $plan ([double]$pageSize.width) ([double]$pageSize.heigh
 [int]$shapeCount = 0
 [int]$connectorCount = 0
 $shapeMap = @{}
+$script:BlockPortShapeMap = @{}
 # Group containers (Backbone/Neck/Head/Stage) are drawn first, underneath the nodes.
 foreach ($group in @($plan.groups)) {
   $groupFrames = @(Draw-GroupContainer $page $group ([double]$plan.unitScale))
@@ -1932,8 +1988,6 @@ foreach ($spec in @($plan.shapes)) {
   if ($drawn.Count -gt 0) { $shapeMap[$spec.id] = Get-NativeShapeForPlan $drawn ([string]$spec.id) }
   $junctionDots = @(Draw-JunctionDot $page $spec ([double]$plan.unitScale))
   $shapeCount = [int]$shapeCount + [int]$junctionDots.Count
-  $labels = @(Draw-PlanLabel $page $spec ([double]$plan.unitScale))
-  $shapeCount = [int]$shapeCount + [int]$labels.Count
 }
 foreach ($spec in @($plan.connectors)) {
   $lines = Draw-PlanConnector $page $spec ([double]$plan.unitScale) $shapeMap

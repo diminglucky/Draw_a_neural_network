@@ -43,6 +43,7 @@ export function createUniversalIR(document = {}, options = {}) {
     containers: Array.isArray(document.containers) ? document.containers : [],
     lanes: Array.isArray(document.lanes) ? document.lanes : [],
     constraints: Array.isArray(document.constraints) ? document.constraints : [],
+    blockOverrides: document.blockOverrides && typeof document.blockOverrides === "object" ? document.blockOverrides : {},
     layout: document.layout && typeof document.layout === "object" ? document.layout : undefined,
     projection: document.projection,
     diagnostics: Array.isArray(document.diagnostics) ? document.diagnostics : [],
@@ -67,6 +68,7 @@ export function normalizeUniversalIR(ir = {}) {
     constraints: Array.isArray(ir.constraints) ? ir.constraints.map((constraint) => ({ ...constraint })) : [],
     ...(ir.layout && typeof ir.layout === "object" ? { layout: { ...ir.layout } } : {}),
     ...(ir.projection ? { projection: String(ir.projection) } : {}),
+    ...(ir.blockOverrides && typeof ir.blockOverrides === "object" ? { blockOverrides: Object.fromEntries(Object.entries(ir.blockOverrides).map(([id, value]) => [String(id), { ...value }])) } : {}),
     diagnostics: Array.isArray(ir.diagnostics) ? ir.diagnostics : [],
     nodeIds,
   };

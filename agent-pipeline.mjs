@@ -8,6 +8,8 @@ import { importOnnxGraph } from "./onnx-graph-importer.mjs";
 import { createVisioDiagramPlan, validateVisioDiagramPlan } from "./visio-diagram-plan.mjs";
 import { normalizeNetworkIR, validateNetworkIR } from "./network-ir.mjs";
 import { deriveNeuralSemanticFacts, validateNeuralSemanticFacts } from "./neural-semantic-facts.mjs";
+import { deriveNeuralBlocks, validateNeuralBlocks } from "./neural-block-ir.mjs";
+import { deriveNeuralMotifs } from "./neural-motifs.mjs";
 import { createProjectionMap, validateProjectionMap } from "./neural-projection-map.mjs";
 import { compileSemanticScene, validateSemanticScene } from "./semantic-neural-scene.mjs";
 import { layoutNeuralScene, validateLaidOutScene } from "./neural-scene-layout.mjs";
@@ -15,12 +17,7 @@ import { containsUncertainTopology } from "./topology-uncertainty.mjs";
 import { fuseGraphEvidence } from "./graph-evidence-fusion.mjs";
 import { fuseAutomaticEvidence } from "./automatic-evidence.mjs";
 import { buildCanonicalModelGraph, validateCanonicalModelGraph } from "./canonical-model-graph.mjs";
-import { createPublicationLayoutPlan, validatePublicationLayoutPlan } from "./publication-layout-plan.mjs";
-import { planNeuralFigure, validateNeuralFigurePlan } from "./figure-planner.mjs";
-import { compileNeuralFigureDslToVisioLayout } from "./visio-dsl-bridge.mjs";
-import { evaluatePublicationFigure } from "./figure-qa.mjs";
-import { createPlotNeuralNetStyleSpec } from "./reference-figure-spec.mjs";
-import { compileReferenceStyle } from "./reference-style-compiler.mjs";
+import { createRenderingProfile, validateRenderingProfile } from "./rendering-profile.mjs";
 
 const STATUS = Object.freeze({
   READY: "ready_for_visio",
@@ -254,6 +251,11 @@ export function planArchitectureFigure(normalized = {}) {
     source: normalized.source,
     visioDiagramPlan: planned.visioDiagramPlan,
     visioDiagramPlanValidation: planned.visioDiagramPlanValidation,
+    renderingProfile: planned.renderingProfile,
+    renderingProfileValidation: planned.renderingProfileValidation,
+    blockIr: planned.blockIr,
+    blockIrValidation: planned.blockIrValidation,
+    blockSummary: planned.blockSummary,
     validation: normalized.validation,
     diagnostics: allDiagnostics,
   };
@@ -406,7 +408,10 @@ function buildEvidenceGraphIR(rawIR, context = {}) {
     layout: rawIR?.layout,
     projection: rawIR?.projection,
   });
-  const ir = normalizeNetworkIR(evidenceGraphToUniversalIR(evidenceGraph));
+  const ir = normalizeNetworkIR({
+    ...evidenceGraphToUniversalIR(evidenceGraph),
+    ...(rawIR?.blockOverrides && typeof rawIR.blockOverrides === "object" ? { blockOverrides: rawIR.blockOverrides } : {}),
+  });
   const validation = validateNetworkIR(ir);
   return { evidenceGraph, ir, validation };
 }
@@ -433,12 +438,22 @@ function buildVisioPlan(ir, diagnostics) {
   if (!semanticFactsValidation.ok) {
     return invalidSceneContract("semantic-facts", semanticFactsValidation.issues);
   }
-  const projectionMap = createProjectionMap(canonicalIR, semanticFacts, { detail: "balanced" });
+  const semanticMotifs = deriveNeuralMotifs(canonicalIR, semanticFacts);
+  const blockIr = deriveNeuralBlocks(canonicalModel, { ...semanticFacts, motifs: semanticMotifs });
+  const blockIrValidation = validateNeuralBlocks(blockIr, canonicalModel);
+  if (!blockIrValidation.ok) {
+    return invalidSceneContract("block-ir", blockIrValidation.issues);
+  }
+  const projectionMap = createProjectionMap(canonicalIR, semanticFacts, {
+    detail: "balanced",
+    blocks: blockIr,
+    blockOverrides: canonicalIR.blockOverrides || {},
+  });
   const projectionValidation = validateProjectionMap(projectionMap, canonicalIR);
   if (!projectionValidation.ok) {
     return invalidSceneContract("projection", projectionValidation.issues);
   }
-  const semanticScene = compileSemanticScene(canonicalIR, semanticFacts, projectionMap);
+  const semanticScene = compileSemanticScene(canonicalIR, semanticFacts, projectionMap, {}, { blocks: blockIr });
   const semanticSceneValidation = validateSemanticScene(semanticScene, canonicalIR, projectionMap);
   const semanticErrors = (semanticScene.diagnostics || []).filter((item) => item.severity === "error");
   if (!semanticSceneValidation.ok || semanticErrors.length) {
@@ -447,20 +462,16 @@ function buildVisioPlan(ir, diagnostics) {
       ...semanticErrors.map((item) => ({ code: item.code || "semantic-scene-error", ...item })),
     ]);
   }
-  const publicationLayoutPlan = createPublicationLayoutPlan({
+  const renderingProfile = createRenderingProfile({
     canonicalModel,
     facts: semanticFacts,
     motifs: { motifs: semanticScene.motifs || [] },
-    styleCompilation: compileReferenceStyle({
-      style: createPlotNeuralNetStyleSpec(),
-      canonicalModel,
-    }),
   });
-  const publicationLayoutValidation = validatePublicationLayoutPlan(publicationLayoutPlan, canonicalModel);
-  if (!publicationLayoutValidation.ok) {
-    return invalidSceneContract("publication-layout", publicationLayoutValidation.issues);
+  const renderingProfileValidation = validateRenderingProfile(renderingProfile, canonicalModel);
+  if (!renderingProfileValidation.ok) {
+    return invalidSceneContract("rendering-profile", renderingProfileValidation.issues);
   }
-  const scene = layoutNeuralScene(semanticScene, { publicationLayoutPlan });
+  const scene = layoutNeuralScene(semanticScene, { renderingProfile });
   const sceneValidation = validateLaidOutScene(scene, semanticScene);
   const layoutDiagnostics = sceneValidation.issues.map((issue) => diagnostic(
     "layout-issue",
@@ -469,38 +480,22 @@ function buildVisioPlan(ir, diagnostics) {
     { issueCode: issue.code, issue },
   ));
   if (!sceneValidation.ok) return { sceneValidation, layoutDiagnostics };
+  const planningDiagnostics = dedupeDiagnostics([
+    ...(semanticScene.diagnostics || []),
+    ...(scene.diagnostics || []),
+  ]);
   const visioDiagramPlan = createVisioDiagramPlan({ ir: canonicalIR, scene, diagnostics });
   const visioDiagramPlanValidation = validateVisioDiagramPlan(visioDiagramPlan);
-  const neuralFigureProgram = planNeuralFigure(canonicalModel, {
-    facts: semanticFacts,
-    motifs: { motifs: semanticScene.motifs || [] },
-  });
-  const neuralFigurePlanValidation = validateNeuralFigurePlan(neuralFigureProgram, canonicalModel);
-  const publicationVisioDiagramPlan = neuralFigurePlanValidation.ok
-    ? compileNeuralFigureDslToVisioLayout(neuralFigureProgram, {
-      title: canonicalIR.figure?.title,
-      subtitle: canonicalIR.figure?.subtitle,
-    })
-    : null;
-  const publicationVisioDiagramPlanValidation = publicationVisioDiagramPlan
-    ? validateVisioDiagramPlan(publicationVisioDiagramPlan)
-    : neuralFigurePlanValidation;
-  const publicationFigureQa = publicationVisioDiagramPlan
-    ? evaluatePublicationFigure(publicationVisioDiagramPlan, {
-      canonicalModel,
-      neuralFigureProgram,
-    })
-    : { version: "figure-qa/v1", ok: false, issues: neuralFigurePlanValidation.issues, metrics: {} };
   return {
     visioDiagramPlan: { ...visioDiagramPlan, validation: visioDiagramPlanValidation },
     visioDiagramPlanValidation,
-    neuralFigureProgram,
-    neuralFigurePlanValidation,
-    publicationVisioDiagramPlan,
-    publicationVisioDiagramPlanValidation,
-    publicationFigureQa,
+    renderingProfile,
+    renderingProfileValidation,
+    blockIr,
+    blockIrValidation,
+    blockSummary: semanticScene.blockSummary,
     sceneValidation,
-    layoutDiagnostics,
+    layoutDiagnostics: [...layoutDiagnostics, ...planningDiagnostics],
   };
 }
 
@@ -560,11 +555,11 @@ function finalizeResult(rawIR, context = {}) {
     ir: publicIR(ir),
     visioDiagramPlan: planned.visioDiagramPlan,
     visioDiagramPlanValidation: planned.visioDiagramPlanValidation,
-    neuralFigureProgram: planned.neuralFigureProgram,
-    neuralFigurePlanValidation: planned.neuralFigurePlanValidation,
-    publicationVisioDiagramPlan: planned.publicationVisioDiagramPlan,
-    publicationVisioDiagramPlanValidation: planned.publicationVisioDiagramPlanValidation,
-    publicationFigureQa: planned.publicationFigureQa,
+    renderingProfile: planned.renderingProfile,
+    renderingProfileValidation: planned.renderingProfileValidation,
+    blockIr: planned.blockIr,
+    blockIrValidation: planned.blockIrValidation,
+    blockSummary: planned.blockSummary,
     validation,
     diagnostics,
     summary: summaryFor(ir, context.sourceKind),
