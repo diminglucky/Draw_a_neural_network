@@ -47,6 +47,39 @@ node server.js
 npm.cmd start
 ```
 
+## ONNX 直通：又快又准的一条路
+
+不想经过 LLM 或自然语言描述时，直接把模型导出成 ONNX，让编译器画出真实计算图。ONNX 的每个算子、每条边、每个张量形状都是导出时写死的确定事实，因此这条路径不需要猜测，也不依赖网络连接。
+
+**1) 导出 ONNX**（需要 PyTorch 的环境）：
+
+```powershell
+python tools/export_onnx.py --model=models/resnet.py --class-name=ResNet18 `
+    --checkpoint=weights/resnet18.pth --input-shape=1,3,224,224 `
+    --out=artifacts/onnx/resnet18.onnx
+```
+
+脚本优先使用 `torch.onnx.export(dynamo=True)`（`torch.export` 路径，保留控制流），失败时自动降级到 TorchScript trace，并在结尾打印实际使用的方式。
+
+**2) 出图**：
+
+```powershell
+npm.cmd run onnx:draw -- --input=artifacts/onnx/resnet18.onnx --title="ResNet-18"
+```
+
+输出 `artifacts/onnx/<model>.svg`、`<model>.visio-plan.json` 和 `<model>.summary.json`。可用 `--projection=overview|balanced|full` 控制折叠粒度，`--plan-only` 只出计划。
+
+**没有 PyTorch 也能验证链路**：用内置的合成样例生成真实结构的 ONNX（逐算子、带声明形状）：
+
+```powershell
+npm.cmd run onnx:sample
+npm.cmd run onnx:draw -- --input=artifacts/onnx/resnet18-lite.onnx
+```
+
+三个样例分别是 `resnet18-lite`（17 算子，残差分支）、`unet-lite`（16 算子，编码器-解码器 + 跳跃连接）、`vit-lite`（13 算子，注意力 + FFN）。
+
+**投影粒度**：ONNX 输入默认走 `full`，逐算子出图，不做 Block 折叠——这是"准"的前提。以 `resnet18-lite` 为例，`full` 得到 17 个 body，`balanced` 折叠成 7 个，`overview` 折叠成 6 个。如果 `full` 在布局阶段不通过，会显式降级到 `balanced`，并在 summary 的 `fallbacks` 里记录原因，不会静默改变语义。
+
 ## 配置
 
 ### LLM
@@ -93,6 +126,9 @@ npm.cmd test
 npm.cmd run block:acceptance -- --list
 npm.cmd run block:plan-audit
 npm.cmd run scene:preview
+npm.cmd run scene:showcase
+npm.cmd run onnx:sample
+npm.cmd run onnx:draw -- --input=artifacts/onnx/resnet18-lite.onnx
 ```
 
 当前测试覆盖输入边界、证据融合、Universal IR、Canonical Graph、语义事实、Scene 布局、Visio Plan、Shape Data、连接器回读、工作区编辑和 HTTP 路由。
@@ -107,6 +143,8 @@ npm.cmd run block:acceptance -- --fixture=graph
 没有 Visio 时先跑 `block:plan-audit`。它会检查全部 fixture 的 Block IR、Scene 布局、QA 指标、预期模块和稳定 plan hash，并把审计结果写到 `artifacts/block-acceptance/<fixture>/`。
 
 `scene:preview` 会把每个 fixture 的最终 laid-out Scene 渲染成纯 Node SVG，输出到 `artifacts/scene-preview/<fixture>/`。它不依赖 Visio，用于快速检查节点、标签、连接器、Block badge 和端口。
+
+`scene:showcase` 会绘制公开架构参考资料对应的结构目录，当前包含 ResNet Block、U-Net、Transformer、ViT、CLIP、DETR、LSTM、GCN、GAN、Diffusion U-Net、MoE Transformer、GraphCast、Swin Transformer。输出位于 `artifacts/showcase/<model>/`。
 
 真实验收必须使用 Windows + Microsoft Visio + 实际 `.vsdx`，并检查：
 
@@ -146,13 +184,17 @@ scene-svg-renderer.mjs            纯 Node Scene -> SVG 预览渲染器
 visio-diagram-plan.mjs            唯一 Visio Diagram Plan 契约
 visio-bridge.mjs                  Render Plan、COM 执行、回读校验
 visio-bridge.ps1                  Visio 原生对象绘制
+scripts/draw-onnx.mjs             ONNX 直通：.onnx -> Scene -> SVG + Visio Plan
+tools/export_onnx.py              PyTorch -> ONNX 导出（dynamo 优先，自动降级）
+tools/make-sample-onnx.mjs        合成样例 ONNX，无 PyTorch 时验证链路
 ```
 
 ## 当前边界
 
 - PyTorch/Keras 源码输入是主要路径。
 - `ModuleList` 的列表和常量 `range` 循环已支持展开；变量次数、条件分支、函数式调用和运行时生成结构仍可能漏层或错边。
-- 精确覆盖这些模型需要接入 `torch.export`、torch.fx、Keras Model 遍历或 ONNX。
+- 需要精确覆盖这些模型时，走 ONNX 直通（`tools/export_onnx.py` + `scripts/draw-onnx.mjs`）。`torch.export` 路径已由 `export_onnx.py` 的 `dynamo=True` 优先尝试；torch.fx 与 Keras Model 遍历尚未接入。
+- ONNX 直通的当前短板是**版式**：逐算子出图会排成很宽的一行（`resnet18-lite` 约 19.7:1），适合核对拓扑，但还不适合直接作为论文插图，需要多行折行布局。
 - 自然语言和 LLM 只能辅助理解，不能替代真实模型图证据。
 - 当前安装包会把 analyzer 脚本复制到 `resources/tools`，但仍需要系统 Python 或通过 `PYTHON` 指向可用解释器。
 - `Block IR` 当前为 `neural-block-ir/v2`，v0/v1 会在投影和 Scene 编译边界自动升级。

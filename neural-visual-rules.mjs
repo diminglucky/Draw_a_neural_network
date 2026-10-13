@@ -5,16 +5,35 @@ export function createDefaultNeuralVisualRules() {
   return [
     bodyRule("opaque-body", 100, (c) => ["opaque-module", "callout-expansion"].includes(c.projection.kind), "boundary", "callout", ["opaque"]),
     bodyRule("repeat-body", 95, (c) => c.projection.kind === "repeat-collapse", "structure", "stack", ["repeat"]),
+    bodyRule("residual-block-body", 92, (c) => hasBlockKind(c, "residual-block"), "structure", "band", ["residual"]),
+    bodyRule("conv-block-body", 92, (c) => hasBlockKind(c, "conv-block"), "data", "volume", ["conv"]),
+    bodyRule("detection-head-body", 92, (c) => hasBlockKind(c, "detection-head"), "structure", "band", ["head"]),
     bodyRule("merge-body", 90, (c) => hasRole(c, "merge"), "structure", "glyph", ["merge"]),
     bodyRule("state-body", 85, (c) => hasDomain(c, "state"), "operator", "cell", ["stateful"]),
     bodyRule("attention-body", 82, (c) => hasMotif(c, "attention-region"), "operator", "stack", ["attention", "sequence"]),
-    bodyRule("sequence-body", 80, (c) => hasDomain(c, "sequence"), "data", "strip", ["sequence"]),
-    bodyRule("input-plane-body", 75, (c) => hasRole(c, "input") && hasDomain(c, "spatial"), "data", "plane", ["spatial", "input"]),
+    bodyRule("attention-family-body", 81, (c) => hasFamily(c, "attention"), "operator", "stack", ["attention", "sequence"]),
+    // Only a tensor *boundary* (input, output, volume) gets a data-shape form.
+    // Letting every sequence-domain operator inherit `strip` painted LayerNorm,
+    // GELU and every MatMul as the same ticked band, which is what made a
+    // transformer figure read as one repeated grey block.
+    bodyRule("sequence-body", 80, (c) => hasDomain(c, "sequence") && hasDataFamily(c), "data", "strip", ["sequence"]),
+    bodyRule("dense-body", 79, (c) => hasFamily(c, "dense"), "operator", "stack", ["linear"]),
+    // Shape-preserving elementwise operators keep the tensor form of the values
+    // they touch, so a spatial BatchNorm stays a cuboid and a sequence-domain
+    // LayerNorm becomes a compact bar.
+    bodyRule("norm-spatial-body", 78, (c) => hasFamily(c, "norm") && hasDomain(c, "spatial"), "data", "volume", ["spatial", "norm"]),
+    bodyRule("norm-body", 77, (c) => hasFamily(c, "norm"), "operator", "band", ["norm"]),
+    bodyRule("activation-spatial-body", 76, (c) => hasFamily(c, "activation") && hasDomain(c, "spatial"), "data", "volume", ["spatial", "activation"]),
+    bodyRule("activation-body", 75, (c) => hasFamily(c, "activation"), "operator", "band", ["activation"]),
+    bodyRule("reshape-body", 74, (c) => hasFamily(c, "flatten"), "operator", "band", ["reshape"]),
+    bodyRule("sequence-operator-body", 73, (c) => hasDomain(c, "sequence"), "operator", "band", ["sequence", "operator"]),
+    bodyRule("input-plane-body", 72, (c) => hasRole(c, "input") && hasDomain(c, "spatial"), "data", "plane", ["spatial", "input"]),
     bodyRule("scale-reduce-body", 70, (c) => hasEffect(c, "reduce"), "operator", "wedge", ["scale-change", "reduce"], { scaleChange: "reduce" }),
     bodyRule("scale-expand-body", 69, (c) => hasEffect(c, "expand"), "operator", "wedge", ["scale-change", "expand"], { scaleChange: "expand" }),
     bodyRule("graph-body", 68, (c) => hasMotif(c, "graph-message-passing"), "operator", "cell", ["graph"]),
     bodyRule("conditional-body", 67, (c) => hasMotif(c, "conditional-route"), "structure", "glyph", ["conditional"]),
     bodyRule("spatial-volume-body", 65, (c) => hasDomain(c, "spatial"), "data", "volume", ["spatial"]),
+    bodyRule("conv-volume-body", 64, (c) => hasFamily(c, "conv"), "data", "volume", ["spatial", "conv"]),
     bodyRule("fallback-body", 1, () => true, "operator", "band", ["operator"]),
     {
       id: "split-structure", phase: "structure", priority: 50,
@@ -78,12 +97,40 @@ function selectExclusiveBody(matches) {
   return winners;
 }
 
+// 张量边界：这些投影代表"数据本身"，可以用张量形状（strip / plane / volume）表达。
+const DATA_FAMILIES = new Set(["input", "output", "volume"]);
+
 function bodyRule(id, priority, match, category, form, semanticTags, data = {}) {
-  return { id, phase: "body", priority, match, emit: () => [{ category, form, semanticTags, data }] };
+  return {
+    id, phase: "body", priority, match,
+    emit: (context) => [{
+      category,
+      form,
+      semanticTags,
+      // 把声明的张量形状随图元一起带下去：布局层据此按真实尺寸比例决定盒子大小，
+      // 渲染层据此标注 C x H x W。没有形状时保持固定的默认尺寸。
+      data: { ...data, ...tensorShapeData(context) },
+    }],
+  };
 }
+
+function tensorShapeData(context = {}) {
+  for (const node of context.nodes || []) {
+    const dims = Array.isArray(node?.shape?.output) ? node.shape.output : [];
+    if (dims.length < 2) continue;
+    const numeric = dims.map(Number);
+    if (!numeric.every((value) => Number.isFinite(value))) continue;
+    return { tensorShape: numeric };
+  }
+  return {};
+}
+
+function hasDataFamily(context) { return context.nodes.some((node) => DATA_FAMILIES.has(String(node.family || ""))); }
 function hasDomain(context, value) { return context.nodeFacts.some((facts) => facts.dataDomain?.value === value); }
 function hasEffect(context, value) { return context.nodeFacts.some((facts) => facts.operationEffect?.value === value); }
 function hasRole(context, value) { return context.nodeFacts.some((facts) => facts.structuralRole?.value === value); }
+function hasFamily(context, value) { return context.nodes.some((node) => String(node.family || "") === value); }
+function hasBlockKind(context, value) { return String(context.projection?.blockKind || "") === value; }
 function hasMotif(context, kind) {
   const ids = new Set(context.nodes.map((node) => String(node.id)));
   return (context.motifs?.motifs || []).some((motif) => motif.kind === kind && motif.nodeIds.some((nodeId) => ids.has(String(nodeId))));

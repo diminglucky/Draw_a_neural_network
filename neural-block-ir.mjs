@@ -122,7 +122,7 @@ export function deriveNeuralBlocks(input = {}, facts = {}) {
 
   for (const node of order.map((id) => nodeById.get(id)).filter(Boolean)) {
     if (node.family !== "upsample") continue;
-    const nodeIds = collectForwardRun(node.blockNodeId, outgoing, nodeById, new Set(["upsample", "conv", "norm", "activation"]), 6, orderIndex);
+    const nodeIds = collectForwardRun(node.blockNodeId, outgoing, nodeById, new Set(["upsample", "conv", "norm", "activation", "merge"]), 6, orderIndex);
     if (nodeIds.some((id) => nodeById.get(id)?.family === "conv")) {
       addBlock(blocks, "decoder-stage", nodeIds, edges, facts, "upsampling stage with downstream convolution evidence");
     }
@@ -139,6 +139,7 @@ export function deriveNeuralBlocks(input = {}, facts = {}) {
 
   for (const node of order.map((id) => nodeById.get(id)).filter(Boolean)) {
     if (node.family !== "merge" && !["add", "sum", "merge"].includes(String(node.op || "").toLowerCase())) continue;
+    if (/concat|concatenate|cat/i.test(`${String(node.op || "")} ${String(node.semanticRole || "")}`)) continue;
     const incomingEdges = incoming.get(node.blockNodeId) || [];
     if (incomingEdges.length < 2) continue;
     if (!incomingEdges.some((edge) => /residual|skip|bypass/i.test(String(edge.type || "")))) continue;
@@ -147,6 +148,7 @@ export function deriveNeuralBlocks(input = {}, facts = {}) {
     const nodeIds = residualMembers(start, node.blockNodeId, outgoing, orderIndex)
       .filter((nodeId) => String(nodeId) !== String(start));
     if (nodeIds.length < 3 || !nodeIds.some((id) => ["conv", "dense", "attention"].includes(String(nodeById.get(id)?.family || "")))) continue;
+    if (nodeIds.some((id) => String(nodeById.get(id)?.family || "") === "attention")) continue;
     addBlock(blocks, "residual-block", nodeIds, edges, facts, "merge node with bypassed computation path");
     nodeIds.forEach((id) => claimed.add(String(id)));
   }

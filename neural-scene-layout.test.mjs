@@ -105,8 +105,77 @@ test("uses blockKind-specific dimensions for block-aware projections", () => {
   const result = layoutNeuralScene(input);
   const residual = result.primitives.find((primitive) => primitive.id === "residual");
   const attention = result.primitives.find((primitive) => primitive.id === "attention");
-  assert.deepEqual({ w: residual.bounds.w, h: residual.bounds.h }, { w: 154, h: 108 });
-  assert.deepEqual({ w: attention.bounds.w, h: attention.bounds.h }, { w: 138, h: 116 });
+  assert.deepEqual({ w: residual.bounds.w, h: residual.bounds.h }, { w: 96, h: 34 });
+  assert.deepEqual({ w: attention.bounds.w, h: attention.bounds.h }, { w: 88, h: 34 });
+});
+
+// 两条约定是分开的，不能再用同一把尺子量：
+//   (1) Transformer/ViT 注意力图、U-Net 图——扁平 2D 矩形（band/stack/strip），
+//       又宽又扁的横条：盒高÷字号 1.6–3.2、中位宽高比 2.2+。
+//   (2) CNN/VGG16 特征图塔——volume 盒子的高度编码空间尺寸，可以高到 VOLUME_MAX_H(96)，
+//       不能用"宽高比"去卡它，否则 VGG 那种塔形就出不来。
+// 用户后一条投诉"全是方框没区别"恰恰说明要允许 CNN 出塔，所以两者分别断言。
+
+// 锁的是用户最早的观感投诉："模块绘制得过大，看看顶刊怎么设计的"——
+// 针对 (1) 扁平注意力图这一支。
+test("flat transformer-style boxes stay in the top-journal band of height-over-font and aspect", () => {
+  const BODY_FONT = 11;
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "c", role: "body", category: "structure", form: "band", blockKind: "residual-block", projectionId: "p-c", sourceNodeIds: ["c"] },
+      { id: "d", role: "body", category: "structure", form: "band", blockKind: "encoder-stage", projectionId: "p-d", sourceNodeIds: ["d"] },
+      { id: "e", role: "body", category: "operator", form: "glyph", semanticTags: ["merge"], projectionId: "p-e", sourceNodeIds: ["e"] },
+      { id: "f", role: "body", category: "operator", form: "stack", blockKind: "ffn-block", projectionId: "p-f", sourceNodeIds: ["f"] },
+      { id: "g", role: "body", category: "operator", form: "strip", projectionId: "p-g", sourceNodeIds: ["g"] },
+    ],
+    relations: [],
+    groups: [],
+    constraints: [],
+  };
+  const bodies = layoutNeuralScene(input).primitives.filter((primitive) => primitive.role === "body");
+  assert.ok(bodies.length >= 5, "样本要覆盖多种 flat 形态");
+  for (const body of bodies) {
+    if (body.form === "glyph") continue; // 圆形单独校验正方形，不参与扁度比较
+    const ratio = body.bounds.h / BODY_FONT;
+    assert.ok(ratio <= 3.4, `${body.id} 的盒高是字号的 ${ratio.toFixed(2)}×，超出顶刊 3.2× 上限`);
+    assert.ok(ratio >= 1.4, `${body.id} 的盒高只有字号的 ${ratio.toFixed(2)}×，盒子会紧到贴边`);
+  }
+  // 宽度色散是"同一张图里有的块过大"的直接来源，压到 1.8× 以内。
+  // 圆形合并算子（glyph）天生是小正方形，不参与横向比较。
+  const boxes = bodies.filter((body) => body.form !== "glyph");
+  const widths = boxes.map((body) => body.bounds.w).sort((left, right) => left - right);
+  assert.ok(widths[widths.length - 1] / widths[0] <= 1.8, `宽度色散 ${(widths[widths.length - 1] / widths[0]).toFixed(2)}× 过大`);
+  // 算子块应该是横条，不是方块。
+  const ratios = boxes.map((body) => body.bounds.w / body.bounds.h).sort((left, right) => left - right);
+  assert.ok(ratios[Math.floor(ratios.length / 2)] >= 1.9, "盒子中位宽高比要接近顶刊的 2.2+");
+  // 圆形算子必须是正方形，否则画出来是椭圆或者"大盒子里一颗小圆"。
+  for (const glyph of bodies.filter((body) => body.form === "glyph")) {
+    assert.equal(glyph.bounds.w, glyph.bounds.h, `${glyph.id} 的圆形算子被拉成了椭圆`);
+  }
+});
+
+// 锁的是用户后一条投诉："全是方框没有区别，看看 vgg16 怎么绘制的"——
+// 针对 (2) CNN 特征图塔这一支。volume 盒子必须随空间尺寸长高，且不超过 VOLUME_MAX_H。
+test("cnn volume boxes form a feature-map tower: taller for larger spatial size, capped at VOLUME_MAX_H", () => {
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      { id: "small", role: "body", category: "operator", form: "volume", blockKind: "conv-block", projectionId: "p-small", sourceNodeIds: ["s"], data: { tensorShape: [1, 64, 28, 28] } },
+      { id: "large", role: "body", category: "operator", form: "volume", blockKind: "conv-block", projectionId: "p-large", sourceNodeIds: ["l"], data: { tensorShape: [1, 64, 224, 224] } },
+    ],
+    relations: [],
+    groups: [],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input);
+  const small = result.primitives.find((primitive) => primitive.id === "small");
+  const large = result.primitives.find((primitive) => primitive.id === "large");
+  // 大空间尺寸的盒子要明显高于小空间尺寸——这是 VGG16 塔形能"读出来"的前提。
+  assert.ok(large.bounds.h > small.bounds.h + 10, `大空间盒子(${large.bounds.h})应明显高于小空间盒子(${small.bounds.h})`);
+  // 但再高也不能突破硬上限，否则又回到"盒子淹字"。
+  assert.ok(large.bounds.h <= 96, `大空间盒子高度 ${large.bounds.h} 不应超过 VOLUME_MAX_H=96`);
+  assert.ok(small.bounds.h >= 24, "小空间盒子高度不应低于下限 24");
 });
 
 test("arranges encoder and decoder block stages into a U-shaped layout", () => {
@@ -289,6 +358,218 @@ test("encoder-decoder-u layout archetype separates encoder, bottleneck, and deco
   assert.ok(byId.get("output").bounds.x > byId.get("core").bounds.x);
   assert.ok(byId.get("output").bounds.y < byId.get("up").bounds.y);
 });
+
+test("cnn-tower archetype builds a VGG-style feature-map tower that narrows to the right", () => {
+  const body = (id, spatial, channels, extra = {}) => ({
+    id,
+    role: "body",
+    category: "operator",
+    form: "volume",
+    blockKind: "conv-block",
+    projectionId: `p-${id}`,
+    sourceNodeIds: [id],
+    data: { tensorShape: [1, channels, spatial, spatial], ...extra },
+    ...extra,
+  });
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      body("conv1", 224, 64),
+      body("conv2", 224, 64),
+      body("pool1", 112, 64, { semanticTags: ["reduce"], data: { tensorShape: [1, 64, 112, 112], scaleChange: "reduce" } }),
+      body("conv3", 112, 128),
+      body("conv4", 112, 128),
+      body("pool2", 56, 128, { semanticTags: ["reduce"], data: { tensorShape: [1, 128, 56, 56], scaleChange: "reduce" } }),
+      body("conv5", 56, 256),
+    ],
+    relations: [
+      { id: "e1", sourcePrimitiveId: "conv1", targetPrimitiveId: "conv2", relationTags: ["data"], sourceEdgeIds: ["e1"] },
+      { id: "e2", sourcePrimitiveId: "conv2", targetPrimitiveId: "pool1", relationTags: ["data"], sourceEdgeIds: ["e2"] },
+      { id: "e3", sourcePrimitiveId: "pool1", targetPrimitiveId: "conv3", relationTags: ["data"], sourceEdgeIds: ["e3"] },
+      { id: "e4", sourcePrimitiveId: "conv3", targetPrimitiveId: "conv4", relationTags: ["data"], sourceEdgeIds: ["e4"] },
+      { id: "e5", sourcePrimitiveId: "conv4", targetPrimitiveId: "pool2", relationTags: ["data"], sourceEdgeIds: ["e5"] },
+      { id: "e6", sourcePrimitiveId: "pool2", targetPrimitiveId: "conv5", relationTags: ["data"], sourceEdgeIds: ["e6"] },
+    ],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input, {
+    renderingProfile: {
+      version: "neural-rendering-profile/v1",
+      constraints: [{ id: "tower", kind: "layout-archetype", archetype: "cnn-tower" }],
+    },
+  });
+  const bodies = result.primitives.filter((primitive) => primitive.role === "body");
+  const columns = groupIntoColumns(bodies);
+  assert.ok(columns.length >= 3, `应按池化切出多个阶段列，实际 ${columns.length}`);
+  // 基线对齐：所有阶段共用同一条底边，盒子越往后越矮，顶边逐级下沉 → 收窄的塔
+  const bottoms = columns.map((column) => Math.round(Math.max(...column.map((b) => b.bounds.y + b.bounds.h))));
+  const spread = Math.max(...bottoms) - Math.min(...bottoms);
+  assert.ok(spread <= 1, `所有阶段列必须共用一条基线，实际底边差 ${spread}`);
+  // 塔形：靠后的阶段（空间尺寸更小）盒子更矮
+  const firstHeight = Math.max(...columns[0].map((b) => b.bounds.h));
+  const lastHeight = Math.max(...columns[columns.length - 1].map((b) => b.bounds.h));
+  assert.ok(lastHeight < firstHeight, `末阶段盒子应比首阶段矮（塔形收窄），实际 ${lastHeight} vs ${firstHeight}`);
+});
+
+test("residual-tower archetype splits stages at downsampling and top-aligns them", () => {
+  const body = (id, extra = {}) => ({
+    id,
+    role: "body",
+    category: "operator",
+    form: "volume",
+    blockKind: "residual-block",
+    projectionId: `p-${id}`,
+    sourceNodeIds: [id],
+    data: { tensorShape: [1, 64, 56, 56] },
+    ...extra,
+  });
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      body("conv1"),
+      body("conv2"),
+      body("down1", { semanticTags: ["reduce"], data: { tensorShape: [1, 128, 28, 28], scaleChange: "reduce" } }),
+      body("conv3"),
+      body("conv4"),
+      body("add1", { form: "glyph", semanticTags: ["merge"] }),
+    ],
+    relations: [
+      { id: "e1", sourcePrimitiveId: "conv1", targetPrimitiveId: "conv2", relationTags: ["data"], sourceEdgeIds: ["e1"] },
+      { id: "e2", sourcePrimitiveId: "conv2", targetPrimitiveId: "down1", relationTags: ["data"], sourceEdgeIds: ["e2"] },
+      { id: "e3", sourcePrimitiveId: "down1", targetPrimitiveId: "conv3", relationTags: ["data"], sourceEdgeIds: ["e3"] },
+      { id: "e4", sourcePrimitiveId: "conv3", targetPrimitiveId: "conv4", relationTags: ["data"], sourceEdgeIds: ["e4"] },
+      { id: "e5", sourcePrimitiveId: "conv4", targetPrimitiveId: "add1", relationTags: ["data"], sourceEdgeIds: ["e5"] },
+    ],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input, {
+    renderingProfile: {
+      version: "neural-rendering-profile/v1",
+      constraints: [{ id: "res", kind: "layout-archetype", archetype: "residual-tower" }],
+    },
+  });
+  const columns = groupIntoColumns(result.primitives.filter((primitive) => primitive.role === "body"));
+  assert.ok(columns.length >= 2, `应按降采样切出多个阶段列，实际 ${columns.length}`);
+  // 顶端对齐：每个阶段从同一条顶边往下堆
+  const tops = columns.map((column) => Math.round(Math.min(...column.map((b) => b.bounds.y))));
+  const spread = Math.max(...tops) - Math.min(...tops);
+  assert.ok(spread <= 1, `所有阶段列必须顶端对齐，实际顶边差 ${spread}`);
+});
+
+test("transformer-stack archetype stacks homogeneous blocks vertically", () => {
+  const block = (id, kind) => ({
+    id,
+    role: "body",
+    category: "operator",
+    form: "stack",
+    blockKind: kind,
+    projectionId: `p-${id}`,
+    sourceNodeIds: [id],
+    data: { tensorShape: [1, 197, 768] },
+  });
+  const ids = ["attn1", "ffn1", "attn2", "ffn2"];
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: ids.map((id, index) => block(id, index % 2 ? "ffn-block" : "attention-block")),
+    relations: ids.slice(1).map((id, index) => ({
+      id: `e${index}`,
+      sourcePrimitiveId: ids[index],
+      targetPrimitiveId: id,
+      relationTags: ["data"],
+      sourceEdgeIds: [`e${index}`],
+    })),
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input, {
+    renderingProfile: {
+      version: "neural-rendering-profile/v1",
+      constraints: [{ id: "stack", kind: "layout-archetype", archetype: "transformer-stack" }],
+    },
+  });
+  const bodies = result.primitives.filter((primitive) => primitive.role === "body");
+  const columns = groupIntoColumns(bodies);
+  assert.equal(columns.length, 1, "同构块必须堆成一列，而不是横向铺开");
+  const ys = columns[0].map((body) => body.bounds.y);
+  assert.deepEqual(ys, [...ys].sort((left, right) => left - right), "块顺序必须自上而下");
+  assert.ok(ys[ys.length - 1] > ys[0], "竖直堆叠要有实际高度差");
+});
+
+test("detection-pyramid archetype puts multi-scale heads in the last column ordered as a pyramid", () => {
+  const body = (id, extra = {}) => ({
+    id,
+    role: "body",
+    category: "operator",
+    form: "volume",
+    projectionId: `p-${id}`,
+    sourceNodeIds: [id],
+    data: { tensorShape: [1, 256, 20, 20] },
+    ...extra,
+  });
+  const input = {
+    version: "semantic-neural-scene/v1",
+    primitives: [
+      body("stem"),
+      body("c2", { semanticTags: ["reduce"], data: { tensorShape: [1, 128, 40, 40], scaleChange: "reduce" } }),
+      body("c3"),
+      body("neck", { blockKind: "multi-scale-fusion" }),
+      body("head-small", { blockKind: "detection-head", data: { tensorShape: [1, 256, 10, 10] } }),
+      body("head-large", { blockKind: "detection-head", data: { tensorShape: [1, 256, 80, 80] } }),
+    ],
+    relations: [
+      { id: "e1", sourcePrimitiveId: "stem", targetPrimitiveId: "c2", relationTags: ["data"], sourceEdgeIds: ["e1"] },
+      { id: "e2", sourcePrimitiveId: "c2", targetPrimitiveId: "c3", relationTags: ["data"], sourceEdgeIds: ["e2"] },
+      { id: "e3", sourcePrimitiveId: "c3", targetPrimitiveId: "neck", relationTags: ["data"], sourceEdgeIds: ["e3"] },
+      { id: "e4", sourcePrimitiveId: "stem", targetPrimitiveId: "neck", relationTags: ["data"], sourceEdgeIds: ["e4"] },
+      { id: "e5", sourcePrimitiveId: "neck", targetPrimitiveId: "head-small", relationTags: ["data"], sourceEdgeIds: ["e5"] },
+      { id: "e6", sourcePrimitiveId: "neck", targetPrimitiveId: "head-large", relationTags: ["data"], sourceEdgeIds: ["e6"] },
+    ],
+    constraints: [],
+  };
+  const result = layoutNeuralScene(input, {
+    renderingProfile: {
+      version: "neural-rendering-profile/v1",
+      constraints: [{ id: "det", kind: "layout-archetype", archetype: "detection-pyramid" }],
+    },
+  });
+  const bodies = result.primitives.filter((primitive) => primitive.role === "body");
+  const columns = groupIntoColumns(bodies);
+  const lastColumn = columns[columns.length - 1];
+  const headIds = new Set(["head-small", "head-large"]);
+  assert.ok(
+    lastColumn.every((body) => headIds.has(body.id)),
+    `检测头必须落在最后一列，实际是 ${lastColumn.map((b) => b.id).join(",")}`,
+  );
+  assert.equal(lastColumn.length, 2, "两个尺度的检测头都要在最后一列");
+  // 金字塔：空间尺寸小的（P5 粗粒度）在上，大的（P3 细粒度）在下
+  const byId = new Map(bodies.map((primitive) => [primitive.id, primitive]));
+  assert.ok(
+    byId.get("head-small").bounds.y < byId.get("head-large").bounds.y,
+    "小尺度检测头应排在大尺度之上，形成金字塔",
+  );
+  // 数据只能从左到右：颈里的节点在拓扑上晚于骨干，按角色分组时极易被排到骨干左边，
+  // 直接触发 dag-direction-violation。这里锁住「任何边的目标列不小于源列」。
+  for (const relation of input.relations) {
+    const source = byId.get(relation.sourcePrimitiveId);
+    const target = byId.get(relation.targetPrimitiveId);
+    assert.ok(
+      target.bounds.x >= source.bounds.x,
+      `${relation.id}: ${relation.sourcePrimitiveId}→${relation.targetPrimitiveId} 逆流了（${source.bounds.x}→${target.bounds.x}）`,
+    );
+  }
+});
+
+// 把图元按 x 聚成列（容差 2 单位，吸收浮点与对齐误差）。
+function groupIntoColumns(bodies) {
+  const sorted = [...bodies].sort((left, right) => left.bounds.x - right.bounds.x);
+  const columns = [];
+  for (const body of sorted) {
+    const column = columns[columns.length - 1];
+    if (column && Math.abs(column[0].bounds.x - body.bounds.x) <= 2) column.push(body);
+    else columns.push([body]);
+  }
+  for (const column of columns) column.sort((left, right) => left.bounds.y - right.bounds.y);
+  return columns;
+}
 
 test("applies motif center-y constraints without introducing overlaps", () => {
   const constrained = {

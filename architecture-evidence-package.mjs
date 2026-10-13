@@ -16,11 +16,13 @@ export function createArchitectureEvidencePackage(value = {}) {
     status: String(claim.status || "grounded"),
   }));
   const graph = value.graph || {};
+  const projection = String(value.projection || "").toLowerCase();
   return {
     version: VERSION,
     status: String(value.status || "grounded"),
     request: { ...(value.request || {}) },
     identity: { ...(value.identity || {}) },
+    ...(projection ? { projection } : {}),
     sources,
     claims,
     graph: {

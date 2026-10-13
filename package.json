@@ -14,7 +14,10 @@
     "test": "node --import ./test-setup.mjs --test",
     "block:acceptance": "node scripts/render-block-acceptance.mjs",
     "block:plan-audit": "node scripts/render-block-acceptance.mjs --fixture=all --plan-only",
-    "scene:preview": "node scripts/render-scene-preview.mjs --fixture=all"
+    "scene:preview": "node scripts/render-scene-preview.mjs --fixture=all",
+    "scene:showcase": "node scripts/render-showcase.mjs --model=all",
+    "onnx:sample": "node tools/make-sample-onnx.mjs --model=all",
+    "onnx:draw": "node scripts/draw-onnx.mjs"
   },
   "build": {
     "appId": "com.synapse.studio",

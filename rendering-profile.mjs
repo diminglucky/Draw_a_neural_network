@@ -1,6 +1,8 @@
+import { detectArchitectureFamily } from "./architecture-family.mjs";
+
 export const RENDERING_PROFILE_VERSION = "neural-rendering-profile/v1";
 
-export function createRenderingProfile({ canonicalModel = {}, facts = {}, motifs = {} } = {}) {
+export function createRenderingProfile({ canonicalModel = {}, facts = {}, motifs = {}, blocks = {} } = {}) {
   const nodes = canonicalModel.nodes || [];
   const edges = canonicalModel.edges || [];
   const constraints = [
@@ -33,11 +35,15 @@ export function createRenderingProfile({ canonicalModel = {}, facts = {}, motifs
     });
   }
 
-  if (detectEncoderDecoder(nodes, edges)) {
+  // 架构家族识别：判出"这是一张什么网络"，再按家族选布局原型。
+  // 旧实现只有一条 encoder-decoder 判定，其余网络一律通用顺序流，
+  // 于是 YOLO 和 ViT 画出来是同一种东西。
+  const family = detectArchitectureFamily({ canonicalModel, blocks });
+  if (family.archetype && family.archetype !== "sequential-flow") {
     constraints.push({
-      id: "constraint:global:encoder-decoder-u",
+      id: `constraint:global:${family.archetype}`,
       kind: "layout-archetype",
-      archetype: "encoder-decoder-u",
+      archetype: family.archetype,
       priority: 120,
     });
   }
@@ -46,6 +52,15 @@ export function createRenderingProfile({ canonicalModel = {}, facts = {}, motifs
     version: RENDERING_PROFILE_VERSION,
     direction: "left-to-right",
     constraints,
+    // 家族信息进 profile，供下游（布局 / 渲染 / UI）按家族取画法约定。
+    architectureFamily: {
+      family: family.family,
+      label: family.label,
+      archetype: family.archetype,
+      canonical: family.canonical,
+      confidence: family.confidence,
+      evidence: family.evidence,
+    },
     styleTokens: {
       bodyStroke: "semantic-line",
       labelPlacement: "outside-below",
@@ -58,6 +73,7 @@ export function createRenderingProfile({ canonicalModel = {}, facts = {}, motifs
       edgeCount: edges.length,
       motifCount: Array.isArray(motifs.motifs) ? motifs.motifs.length : 0,
       regionCount: facts.regionFacts ? Object.keys(facts.regionFacts).length : 0,
+      architectureFamily: family.family,
     },
   };
 }
@@ -88,20 +104,6 @@ export function validateRenderingProfile(profile = {}, canonicalModel = {}) {
   }
 
   return { ok: issues.length === 0, issues, summary: { constraintCount: profile.constraints?.length || 0 } };
-}
-
-function detectEncoderDecoder(nodes, edges) {
-  const hasDown = nodes.some((node) => node.family === "pool" || /pool|downsample/i.test(String(node.op || "")));
-  const hasUp = nodes.some((node) => node.family === "upsample" || /upsample|interpolate/i.test(String(node.op || "")));
-  if (!hasDown || !hasUp) return false;
-
-  const nodeIds = new Set(nodes.map((node) => String(node.canonicalId || node.id)));
-  return edges.some((edge) => {
-    const type = String(edge.type || "");
-    return /skip|residual|bypass/i.test(type)
-      && nodeIds.has(String(edge.canonicalSource || edge.source))
-      && nodeIds.has(String(edge.canonicalTarget || edge.target));
-  });
 }
 
 function routeClassForEdge(edge = {}) {

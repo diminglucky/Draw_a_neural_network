@@ -77,6 +77,7 @@ export function architectureEvidencePackageToEvidenceGraph(pkg = {}) {
       evidence: [...(Array.isArray(edge.evidence) ? edge.evidence : []), ...evidenceFor(edge.id)],
     })),
     containers: pkg.graph?.containers || [],
+    projection: pkg.projection,
     diagnostics: pkg.diagnostics || [],
   });
 }

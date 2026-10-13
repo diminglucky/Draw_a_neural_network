@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { analyzeArchitectureInput, extractArchitectureEvidence, normalizeArchitectureEvidence, planArchitectureFigure } from "./agent-pipeline.mjs";
+import { validateLaidOutScene } from "./neural-scene-layout.mjs";
 import { buildVisioRenderPlan } from "./visio-bridge.mjs";
 import onnxProto from "onnx-proto";
 
@@ -290,13 +291,30 @@ test("production pipeline blocks a hard Scene layout issue while a normal Scene 
   assert.equal(normal.status, "ready_for_visio");
   assert.equal(normal.readyForVisio, true);
   assert.ok(normal.visioDiagramPlan);
-  assert.equal(invalidLayout.status, "invalid_input");
-  assert.equal(invalidLayout.readyForVisio, false);
-  assert.equal(invalidLayout.visioDiagramPlan, undefined);
-  assert.ok(invalidLayout.diagnostics.some((item) => (
-    item.kind === "layout-issue"
-    && item.issueCode === "connector-body-intersection"
-  )));
+
+  // 这张带环的图以前会撞上 connector-body-intersection：折行前的走线只有顶/底两条通道，
+  // 外拐固定 18 单位，对"同列内向下"的连线必然拐进列内部。
+  // 侧向回退通道落地后它已经能被干净绕开，所以现在断言的是"给出合法且不穿模的方案"。
+  assert.equal(invalidLayout.status, "ready_for_visio");
+  assert.equal(invalidLayout.readyForVisio, true);
+  assert.equal(invalidLayout.visioDiagramPlanValidation.ok, true);
+  assert.equal(invalidLayout.diagnostics.some((item) => item.issueCode === "connector-body-intersection"), false);
+
+  // 但闸门本身仍然拦得住真正穿模的走线——直接喂给同一道布局校验。
+  const blocked = validateLaidOutScene({
+    version: "laid-out-neural-scene/v1",
+    units: "layout-unit",
+    page: { x: 0, y: 0, width: 400, height: 200 },
+    primitives: [
+      { id: "a", role: "body", bounds: { x: 20, y: 20, w: 80, h: 32 }, anchors: { inputs: [], outputs: [] } },
+      { id: "b", role: "body", bounds: { x: 220, y: 20, w: 80, h: 32 }, anchors: { inputs: [], outputs: [] } },
+      { id: "wall", role: "body", bounds: { x: 120, y: 10, w: 40, h: 60 }, anchors: { inputs: [], outputs: [] } },
+    ],
+    connectors: [{ id: "c", sourcePrimitiveId: "a", targetPrimitiveId: "b", points: [{ x: 100, y: 36 }, { x: 220, y: 36 }] }],
+    groups: [],
+  }, {});
+  assert.equal(blocked.ok, false);
+  assert.ok(blocked.issues.some((issue) => issue.code === "connector-body-intersection"));
 });
 
 test("production Scene preserves finite nested container bounds", () => {

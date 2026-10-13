@@ -133,6 +133,7 @@
 - Block acceptance script 支持 `--list`、`--fixture=<name>` 和 `--fixture=all` 并写 audit JSON
 - plan-only audit 覆盖全部 fixture，校验 Block IR、Scene、QA、预期模块和稳定 plan hash
 - 纯 Node Scene -> SVG 预览器覆盖全部 fixture，用于无 Visio 环境检查最终布局
+- 建立主流/顶刊参考架构 showcase：ResNet Block、U-Net、Transformer、ViT、CLIP、DETR、LSTM、GCN、GAN、Diffusion U-Net、MoE Transformer、GraphCast、Swin Transformer
 - MoE 只在存在 router / expert / conditional 证据时聚合，不再把普通 fan-in 误判为 MoE
 - GNN message-passing block 使用独立 layout hint、badge、颜色和原生节点链路 overlay
 

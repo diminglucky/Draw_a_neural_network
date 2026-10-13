@@ -1,5 +1,5 @@
 const KINDS = new Set(["source", "ir", "image", "prompt", "repository", "config", "artifact", "evidence"]);
-const FIELDS = ["kind", "source", "framework", "ir", "images", "prompt", "sourceId", "metadata", "repository", "revision", "entryPoint", "config", "artifact", "diagnostics", "sources"];
+const FIELDS = ["kind", "source", "framework", "ir", "images", "prompt", "sourceId", "metadata", "repository", "revision", "entryPoint", "config", "artifact", "diagnostics", "sources", "projection"];
 const CONTEXT_FIELDS = new Set(["documentPath", "pageName", "renderId", "unitScale", "previewPath"]);
 
 export function normalizeArchitectureInput(input) {

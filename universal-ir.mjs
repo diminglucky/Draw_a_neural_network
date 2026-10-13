@@ -5,19 +5,25 @@ export { normalizeRecurrentEvidence, recurrentEvidenceForNode } from "./semantic
 
 const FAMILY_ALIASES = [
   ["input", /^(input|tensor|placeholder|source)$/i],
-  ["output", /^(output|prediction|logits|softmax)$/i],
+  // Anchored on the whole operator name only: an unanchored `softmax` used to
+  // swallow every attention Softmax and redraw it as a terminal output head.
+  ["output", /^(output|prediction|logits)$/i],
   ["conv", /conv|convolution/i],
   // Upsample precedes pool so interpolation/upscaling is never classified as
   // downsampling. Transposed conv (ConvTranspose2d) still matches `conv` above,
   // which is intentional: its shape math is a convolution in reverse.
-  ["upsample", /upsample|up.?sample|interpolate|pixel.?shuffle|unpool/i],
+  ["upsample", /upsample|up.?sample|interpolate|pixel.?shuffle|unpool|^resize$/i],
   ["pool", /pool|downsample|max.?pool|avg.?pool|adaptive.?pool|global.?pool/i],
-  ["dense", /linear|dense|dense-layer|neuron|fully.?connected|classifier/i],
+  // ONNX spells a linear layer `MatMul`/`Gemm`/`Einsum`. Without these the whole
+  // attention and FFN body of a transformer fell through to `custom` and was
+  // drawn as an unresolved module.
+  ["dense", /linear|dense|dense-layer|neuron|fully.?connected|classifier|matmul|gemm|einsum|batch.?matmul|innerproduct/i],
   ["attention", /attention|mhsa|mha|transformer/i],
   ["merge", /concat|concatenate|add|sum|merge|join/i],
-  ["flatten", /flatten|reshape|view|projection/i],
+  // Layout-only operators: they move values around without transforming them.
+  ["flatten", /flatten|reshape|view|projection|transpose|permute|squeeze|unsqueeze|^pad$|^slice$|^split$|^gather$|^shape$/i],
   ["norm", /norm|batch.?normal|layer.?normal|group.?normal/i],
-  ["activation", /relu|gelu|silu|sigmoid|tanh|softmax|activation/i],
+  ["activation", /relu|gelu|silu|sigmoid|tanh|softmax|activation|erf|^exp$|^tanh$/i],
   ["recurrent", /lstm|gru|rnn|recurrent/i],
   ["graph", /graph.?conv|message.?pass|gcn|gat|graph/i],
   ["volume", /volume|voxel|3d/i],

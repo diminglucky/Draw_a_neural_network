@@ -88,6 +88,14 @@ npm.cmd run scene:preview
 
 输出位于 `artifacts/scene-preview/<fixture>/`。该预览直接读取最终 laid-out Scene，包含 body、decoration、connector route class、Block badge 和 port anchor，用于在无 Visio 环境下检查布局。
 
+主流架构展示目录：
+
+```powershell
+npm.cmd run scene:showcase
+```
+
+当前包含 ResNet Block、U-Net、Transformer、ViT、CLIP、DETR、LSTM、GCN、GAN、Diffusion U-Net、MoE Transformer、GraphCast、Swin Transformer，输出到 `artifacts/showcase/<model>/`。
+
 Block 验收样本可以直接列出：
 
 ```powershell

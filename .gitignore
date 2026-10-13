@@ -16,3 +16,6 @@ artifacts/
 tmp/
 *.bak
 ~$*
+
+# Agent-local working notes (kept on disk, not shared through git)
+.workbuddy-ai/

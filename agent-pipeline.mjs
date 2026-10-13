@@ -184,9 +184,29 @@ function packageImportedEvidence(input, imported) {
     sources: imported.sources,
     claims: imported.claims,
     graph: imported.graph,
+    projection: requestedProjection(input) || defaultProjectionFor(imported),
     diagnostics: imported.diagnostics,
     unresolvedQuestions: imported.status === "unresolved" ? [{ code: "confirm-imported-topology" }] : [],
   });
+}
+
+const PROJECTION_DETAILS = ["overview", "balanced", "full"];
+
+function requestedProjection(input = {}) {
+  const detail = String(input.projection || "").toLowerCase();
+  return PROJECTION_DETAILS.includes(detail) ? detail : "";
+}
+
+// An ONNX artifact is a compiler-emitted operator chain: every node, edge and
+// tensor shape is a declared fact. Folding whole blocks back into one primitive
+// would throw that evidence away, so ONNX defaults to the `full` projection.
+// Every other input keeps the `balanced` default.
+function defaultProjectionFor(imported = {}) {
+  const formats = [
+    ...(imported.sources || []).map((source) => String(source.format || "").toLowerCase()),
+    ...(imported.sources || []).map((source) => String(source.path || "").toLowerCase().endsWith(".onnx") ? "onnx" : ""),
+  ];
+  return formats.includes("onnx") ? "full" : "";
 }
 
 function packageResolvedEvidence(input, resolved) {
@@ -203,6 +223,7 @@ function packageResolvedEvidence(input, resolved) {
       sources: resolved.sources,
       claims: imported.claims,
       graph: imported.graph,
+      projection: requestedProjection(input) || (context.format === "onnx" ? "full" : ""),
       diagnostics: [...(resolved.diagnostics || []), ...(imported.diagnostics || [])],
       unresolvedQuestions: imported.status === "unresolved" ? [{ code: "confirm-imported-topology" }] : [],
     });
@@ -445,7 +466,7 @@ function buildVisioPlan(ir, diagnostics) {
     return invalidSceneContract("block-ir", blockIrValidation.issues);
   }
   const projectionMap = createProjectionMap(canonicalIR, semanticFacts, {
-    detail: "balanced",
+    detail: projectionDetailFor(canonicalIR),
     blocks: blockIr,
     blockOverrides: canonicalIR.blockOverrides || {},
   });
@@ -466,6 +487,9 @@ function buildVisioPlan(ir, diagnostics) {
     canonicalModel,
     facts: semanticFacts,
     motifs: { motifs: semanticScene.motifs || [] },
+    // blockIr 含 detection-head / multi-scale-fusion / residual-block 等，
+    // 是架构家族识别的关键信号（判 YOLO 金字塔 vs ResNet 塔 vs ViT 栈）。
+    blocks: blockIr,
   });
   const renderingProfileValidation = validateRenderingProfile(renderingProfile, canonicalModel);
   if (!renderingProfileValidation.ok) {
@@ -497,6 +521,11 @@ function buildVisioPlan(ir, diagnostics) {
     sceneValidation,
     layoutDiagnostics: [...layoutDiagnostics, ...planningDiagnostics],
   };
+}
+
+function projectionDetailFor(ir = {}) {
+  const detail = String(ir.projection || "").toLowerCase();
+  return ["overview", "balanced", "full"].includes(detail) ? detail : "balanced";
 }
 
 function invalidSceneContract(stage, issues) {
