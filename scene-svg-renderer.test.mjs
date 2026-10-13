@@ -353,9 +353,10 @@ test("a figure too tall for the journal page is reported instead of silently emi
   assert.ok(plan.diagnostics.some((item) => item.code === "figure-too-tall"), "超高图必须给出诊断");
 });
 
-test("a label that has to shrink below the journal floor is reported, not silently drawn", () => {
+test("a label that cannot fit is reported and moved outside the box, never drawn below the floor", () => {
   // 盒宽由布局层锁死，长名字只能靠缩字号塞进去。缩到期刊下限仍放不下时，
-  // 图会静默越界——这正是"画得出、投不出去"的最后一环，必须报出来。
+  // 旧行为是继续缩到 4.86 pt 静默越界——这正是"画得出、投不出去"的最后一环。
+  // 现在的契约是：报出诊断 + 把名字外置到盒外，成品里不得出现低于下限的字号。
   const longName = "LayerNormalization_8";
   const scene = {
     page: { x: 0, y: 0, width: 800, height: 300 },
@@ -366,17 +367,20 @@ test("a label that has to shrink below the journal floor is reported, not silent
   };
   const plan = planFigureTypography(scene, { journal: "nature" });
   const diagnostic = plan.diagnostics.find((item) => item.code === "label-below-font-floor");
-  assert.ok(diagnostic, "跌破字号下限的标签必须给出诊断");
+  assert.ok(diagnostic, "放不下的标签必须给出诊断");
   assert.deepEqual(diagnostic.labels, [longName]);
-  assert.ok(diagnostic.minPt < 5, `诊断里的实际字号 ${diagnostic.minPt}pt 应低于下限 5pt`);
+  assert.ok(diagnostic.minPt < 5, `诊断里的所需字号 ${diagnostic.minPt}pt 应低于下限 5pt`);
 
-  // 诊断不能是"另一套算法算出来的"：成品 SVG 里最小字号换算回 pt 必须与诊断一致。
   const svg = renderSceneSvg(scene, { journal: "nature" });
   const widthUnits = Number(/viewBox="0 0 ([\d.]+) /.exec(svg)[1]);
   const ptPerUnit = (plan.targetMm / MM_PER_PT) / widthUnits;
   const renderedPt = Math.min(...[...svg.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]) * ptPerUnit));
-  assert.ok(renderedPt < 5, `成品里确实出现了 ${renderedPt.toFixed(2)}pt 的字号`);
-  assert.ok(Math.abs(renderedPt - diagnostic.minPt) < 0.05, `诊断 ${diagnostic.minPt.toFixed(2)}pt 与成品 ${renderedPt.toFixed(2)}pt 不一致`);
+  // 容差 0.01 pt：SVG 里的 px 值只保留三位小数，反算回来会有末位误差。
+  assert.ok(renderedPt >= 5 - 0.01, `成品里不得出现低于下限的字号，实得 ${renderedPt.toFixed(2)}pt`);
+  // 名字被挪到盒外：正文块（body-text）里不再有它，说明块（body-caption）里有。
+  assert.ok(svg.includes(`>${longName}<`), "外置的名字仍要出现在图上");
+  const caption = /<g class="body-caption">[\s\S]*?<\/g>/.exec(svg);
+  assert.ok(caption && caption[0].includes(longName), "放不下的名字应挂到盒外");
 
   // 对照组：短名字塞得下时不能报诊断，否则诊断就成了永远为真的噪声。
   const shortScene = {
@@ -390,5 +394,74 @@ test("a label that has to shrink below the journal floor is reported, not silent
     planFigureTypography(shortScene, { journal: "nature" }).diagnostics.some((item) => item.code === "label-below-font-floor"),
     false,
     "短标签不该触发字号下限诊断",
+  );
+});
+
+// ── P0 硬伤回归：角标方向、线宽 pt、算子名缩写 ────────────────────
+
+// 步骤角标必须沿**数据流**递增，而不是沿**阅读顺序**。
+// 旧实现按「先 x 后 y」编号，并注释断言这"正好等于数据流的先后"——该断言对自上而下的列
+// 成立，对 U-Net 那种上升臂不成立：输出层被编成 9、首个上采样被编成 16，与箭头相反。
+test("step numbers follow the data flow, not the reading order", () => {
+  // 三个盒子自上而下摆放，但数据流自下而上——阅读顺序与数据流正好相反。
+  const box = (id, y) => ({ id, role: "body", form: "band", labels: [id.toUpperCase()], sourceNodeIds: [id], bounds: { x: 20, y, w: 90, h: 30 } });
+  const edge = (id, from, to) => ({ id, sourcePrimitiveId: from, targetPrimitiveId: to, routeClass: "main-flow", points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
+  const scene = {
+    page: { x: 0, y: 0, width: 220, height: 300 },
+    primitives: [box("a", 220), box("b", 140), box("c", 60)],
+    connectors: [edge("e1", "a", "b"), edge("e2", "b", "c")],
+  };
+  const svg = renderSceneSvg(scene, { legend: false });
+  const chips = [...svg.matchAll(/<circle class="step-chip" cx="([\d.]+)" cy="([\d.]+)" r="[\d.]+"[^>]*\/><text class="step-chip-label"[^>]*>(\d+)</g)]
+    .map((m) => ({ cx: Number(m[1]), cy: Number(m[2]), step: Number(m[3]) }));
+  const stepAt = (y) => chips.find((chip) => Math.abs(chip.cy - (y + 9)) < 6)?.step;
+  const [a, b, c] = [220, 140, 60].map(stepAt);
+  assert.ok([a, b, c].every(Number.isFinite), `三个盒子都应有角标，实得 ${a}/${b}/${c}`);
+  assert.ok(a < b && b < c, `角标必须沿箭头递增（a→b→c），实得 ${a}/${b}/${c}；按阅读顺序会得到 ${c}/${b}/${a}`);
+  assert.equal(a, 1, "数据流的起点应是 1 号，而不是阅读顺序最上面那个");
+});
+
+// 线宽和字号是同一类问题：都是绝对物理量，却写在 layout 单位里。
+// 图幅一变小线就跟着变细——实测 U-Net 单栏 89 mm 时掉到 0.49 pt（低于 Cell 下限），
+// ViT 双栏 183 mm 时涨到 1.75 pt（高于上限）。两端都破。
+test("line widths are normalised into the journal pt range, not left in layout units", () => {
+  const scene = sceneOf("transformer");
+  for (const journal of ["nature", "cell"]) {
+    const plan = planFigureTypography(scene, { journal });
+    const svg = renderSceneSvg(scene, { journal, legend: false });
+    const widthUnits = Number(/viewBox="0 0 ([\d.]+) /.exec(svg)[1]);
+    const ptPerUnit = (plan.targetMm / MM_PER_PT) / widthUnits;
+    const pt = [...new Set([...svg.matchAll(/stroke-width="([\d.]+)"/g)].map((m) => Number(m[1]) * ptPerUnit))];
+    assert.ok(pt.length > 0, "应能取到线宽");
+    for (const value of pt) {
+      assert.ok(value >= 0.5 - 0.01, `${journal} 下线宽 ${value.toFixed(2)}pt 低于 Cell 的 0.5pt 下限`);
+      assert.ok(value <= 1.5 + 0.01, `${journal} 下线宽 ${value.toFixed(2)}pt 高于 Cell 的 1.5pt 上限`);
+    }
+  }
+});
+
+// 长算子名先换成领域标准缩写再试排——这是"名字塞不进盒子"的正解，
+// 比缩字号（会跌破下限）和溢出盒外（会压住邻盒）都好。
+test("long operator names are abbreviated to the field's standard short form", () => {
+  const scene = {
+    page: { x: 0, y: 0, width: 800, height: 300 },
+    primitives: [
+      { id: "gap", role: "body", form: "wedge", data: { scaleChange: "reduce" }, sourceNodeIds: ["GlobalAveragePool_14"], bounds: { x: 10, y: 10, w: 60, h: 34 } },
+      { id: "ln", role: "body", form: "band", sourceNodeIds: ["LayerNormalization_8"], bounds: { x: 90, y: 10, w: 60, h: 34 } },
+      { id: "bn", role: "body", form: "band", sourceNodeIds: ["BatchNormalization_2"], bounds: { x: 170, y: 10, w: 60, h: 34 } },
+    ],
+    connectors: [],
+  };
+  const svg = renderSceneSvg(scene, { journal: "nature", legend: false });
+  for (const short of ["GAP", "LayerNorm", "BatchNorm"]) {
+    assert.ok(svg.includes(`>${short}<`), `${short} 应出现在图上`);
+  }
+  for (const long of ["GlobalAveragePool", "LayerNormalization", "BatchNormalization"]) {
+    assert.ok(!svg.includes(`>${long}<`), `${long} 不该原样画出去`);
+  }
+  assert.equal(
+    planFigureTypography(scene, { journal: "nature" }).diagnostics.length,
+    0,
+    "缩写之后应当没有任何排版诊断",
   );
 });

@@ -34,6 +34,21 @@ const CORNER_RADIUS = 8;
 // Segoe UI 只是屏幕字体，落到制版环节会被替换掉。
 const FONT = "Helvetica,Arial,Helvetica Neue,Segoe UI,sans-serif";
 
+// ── 模块绘制令牌 ────────────────────────────────────────────────
+// 所有图元共用同一套线宽与圆角。旧实现里线宽散落着 0.8/0.9/1.1/1.2/1.3/1.4/1.8
+// 七种取值、圆角有 0/4/6/7/8/10/12/16 八种，看起来像不同人拼出来的。
+//
+// 线宽和字号是同一类问题：它们都是**绝对物理量（pt）**，却写在 layout 单位里。
+// 图幅一变小线就跟着变细——实测 U-Net 单栏 89 mm 时掉到 0.49 pt，低于 Cell 要求的
+// 0.5 pt 下限；ViT 双栏 183 mm 时涨到 1.75 pt，超过 1.5 pt 上限。**两端都破**。
+// 所以线宽必须和字号一样由 unitsPerPt 反推，见 resolvePrintType 的 stroke/hairline。
+const STROKE = 1.25;
+const STROKE_HAIRLINE = 1;
+// 接期刊栏宽时线宽的目标 pt（Cell 0.5–1.5 pt 区间）。
+const STROKE_PT = 1;
+const HAIRLINE_PT = 0.5;
+const CONNECTOR_PT = 1;
+
 // ── 期刊成品尺寸与字号规范 ──────────────────────────────────────
 // 顶刊的字号是**成品尺寸下的绝对 pt**（Nature 5–7、Cell 6–8…），
 // 而我们内部用的是抽象 layout 单位。两者只能靠"目标栏宽"换算：
@@ -62,6 +77,10 @@ const LEGACY_TYPE = Object.freeze({
   labelMin: 8,
   chipRadius: 7.5,
   unitsPerPt: 0,
+  stroke: STROKE,
+  hairline: STROKE_HAIRLINE,
+  // null = 沿用 ROUTE_STYLES 各自的宽度（1.8 / 1.9）。接了期刊栏宽后改由 pt 反推。
+  connectorWidth: null,
   diagnostics: [],
 });
 
@@ -110,12 +129,13 @@ function belowFloorDiagnostics(primitives, type, flat) {
   if (!seen.size) return [];
   const floorPt = type.fontPtRange ? type.fontPtRange[0] : null;
   const names = [...seen.keys()];
+  const minPt = Math.min(...[...seen.values()].filter((value) => value !== null));
   return [{
     code: "label-below-font-floor",
     severity: "warning",
     labels: names,
-    minPt: Math.min(...[...seen.values()].filter((value) => value !== null)),
-    message: `${names.length} 个盒内标签（${names.slice(0, 3).join(" / ")}${names.length > 3 ? " 等" : ""}）在锁定的盒宽下缩到 ${floorPt} pt 仍放不下，实际会掉到 ${Math.min(...[...seen.values()].filter((value) => value !== null)).toFixed(2)} pt，低于期刊下限；应缩短名字或放大盒宽。`,
+    minPt,
+    message: `${names.length} 个盒内标签（${names.slice(0, 3).join(" / ")}${names.length > 3 ? " 等" : ""}）在锁定的盒宽下缩到 ${floorPt} pt 仍放不下（需要 ${minPt.toFixed(2)} pt）。渲染器已把名字外置到盒外以免越界，但这会让图看起来不整齐——应缩短名字（用 GAP / LayerNorm 这类领域缩写）或放大盒宽。`,
   }];
 }
 
@@ -172,15 +192,17 @@ function resolvePrintType(options, widthUnits, heightUnits) {
     legend: toUnits(smallPt),
     labelMin: toUnits(loPt),
     chipRadius: toUnits(smallPt) * 0.68,
+    // 线宽同样锁进物理 pt。取值依据：Cell 要求 0.5–1.5 pt，Nature 下限 0.25 pt。
+    // 轮廓取 1.0 pt（区间中段）、发丝线取 0.5 pt（贴着 Cell 下限，仍高于 Nature 下限）、
+    // 连接线取 1.0 pt。三档都在 0.5–1.5 pt 内，跨图幅一致。
+    stroke: toUnits(STROKE_PT),
+    hairline: toUnits(HAIRLINE_PT),
+    connectorWidth: toUnits(CONNECTOR_PT),
     diagnostics,
   };
 }
 
-// ── 模块绘制令牌 ────────────────────────────────────────────────
-// 所有图元共用同一套线宽与圆角。旧实现里线宽散落着 0.8/0.9/1.1/1.2/1.3/1.4/1.8
-// 七种取值、圆角有 0/4/6/7/8/10/12/16 八种，看起来像不同人拼出来的。
-const STROKE = 1.25;
-const STROKE_HAIRLINE = 1;
+// ── 圆角与墨色令牌（线宽见文件顶部）──────────────────────────────
 const RADIUS_2D = 8;
 const RADIUS_SLAB = 5;
 const TEXT_INK = "#1F2937";
@@ -208,12 +230,7 @@ export function renderSceneSvg(scene = {}, options = {}) {
   const groups = [...(scene.groups || [])].sort((left, right) => area(right.bounds) - area(left.bounds));
   const bodies = scene.primitives.filter((primitive) => primitive.role === "body");
   const decorations = scene.primitives.filter((primitive) => primitive.role !== "body");
-  // 阅读顺序：折行布局是列优先的，所以先按 x 再按 y 排序，正好等于数据流的先后。
-  const steps = new Map(
-    [...bodies]
-      .sort((left, right) => left.bounds.x - right.bounds.x || left.bounds.y - right.bounds.y)
-      .map((primitive, index) => [String(primitive.id), index + 1]),
-  );
+  const steps = assignDataFlowSteps(bodies, scene.connectors);
   const legendItems = options.legend === false ? [] : buildLegend(bodies);
   const legendWidth = width - margin * 2;
   const legendRows = legendItems.length ? layoutLegend(legendItems, legendWidth, type) : null;
@@ -237,7 +254,7 @@ export function renderSceneSvg(scene = {}, options = {}) {
   if (title) lines.push(`<text class="scene-title" x="${format(width / 2)}" y="${format(margin + 20)}">${escapeXml(title)}</text>`);
   lines.push(`<g transform="translate(${format(margin)} ${format(margin + titleHeight)})">`);
   for (const group of groups) lines.push(renderGroup(group, type));
-  for (const connector of scene.connectors) lines.push(renderConnector(connector));
+  for (const connector of scene.connectors) lines.push(renderConnector(connector, type));
   for (const primitive of [...bodies, ...decorations].sort((left, right) => (left.zIndex || 0) - (right.zIndex || 0))) {
     lines.push(renderPrimitive(primitive, steps.get(String(primitive.id)), flat, type));
   }
@@ -247,8 +264,60 @@ export function renderSceneSvg(scene = {}, options = {}) {
   return lines.join("\n");
 }
 
-// 图例：PLOS ONE 2025 指南 L 要求图能自足。只列出本图真正用到的图元形态，
-// 避免出现"图例里有、图上没有"的噪声。
+// 步骤序号必须沿**数据流**递增，而不是沿**阅读顺序**。
+//
+// 旧实现按「先 x 后 y」给所有 body 编 1..N，注释里断言这"正好等于数据流的先后"。
+// 该断言只对自上而下的列成立。U-Net 的 decoder 是上升臂：列内自下而上是
+// Resize_8 → … → Conv_15（输出层），阅读顺序却自上而下，于是角标把输出层编成 9、
+// 把首个上采样编成 16——读者按角标读出的执行顺序与箭头完全相反。**这不是装饰问题，
+// 是错误信息。**
+//
+// 现在对 body 图做拓扑排序（Kahn），同层内按阅读顺序打破平局，
+// 保证「角标增大 = 沿箭头前进」。环或孤岛按阅读顺序补在末尾，不会漏编号。
+function assignDataFlowSteps(bodies, connectors = []) {
+  const ids = new Set(bodies.map((body) => String(body.id)));
+  const readingOrder = new Map(
+    [...bodies]
+      .sort((left, right) => left.bounds.x - right.bounds.x || left.bounds.y - right.bounds.y)
+      .map((body, index) => [String(body.id), index]),
+  );
+  const rank = (body) => readingOrder.get(String(body.id)) ?? Number.MAX_SAFE_INTEGER;
+  const byId = new Map(bodies.map((body) => [String(body.id), body]));
+  const indegree = new Map([...ids].map((id) => [id, 0]));
+  const outgoing = new Map([...ids].map((id) => [id, []]));
+  const seen = new Set();
+  for (const connector of connectors || []) {
+    const from = String(connector.sourcePrimitiveId || "");
+    const to = String(connector.targetPrimitiveId || "");
+    if (from === to || !ids.has(from) || !ids.has(to)) continue;
+    const key = `${from}>${to}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    outgoing.get(from).push(to);
+    indegree.set(to, indegree.get(to) + 1);
+  }
+  const queue = bodies.filter((body) => indegree.get(String(body.id)) === 0);
+  const ordered = [];
+  while (queue.length) {
+    queue.sort((left, right) => rank(left) - rank(right));
+    const next = queue.shift();
+    const id = String(next.id);
+    ordered.push(next);
+    for (const target of outgoing.get(id)) {
+      indegree.set(target, indegree.get(target) - 1);
+      if (indegree.get(target) === 0) queue.push(byId.get(target));
+    }
+  }
+  if (ordered.length < bodies.length) {
+    const placed = new Set(ordered.map((body) => String(body.id)));
+    for (const body of [...bodies].sort((left, right) => rank(left) - rank(right))) {
+      if (!placed.has(String(body.id))) ordered.push(body);
+    }
+  }
+  return new Map(ordered.map((body, index) => [String(body.id), index + 1]));
+}
+
+// 图例：PLOS ONE 2025 指南 L 要求图能自足。只列出本图真正用到的图元形态，// 避免出现"图例里有、图上没有"的噪声。
 const LEGEND_ENTRIES = Object.freeze([
   { form: "volume", label: "张量 / 特征图（宽=通道数，高=空间尺寸）" },
   { form: "stack", label: "矩阵算子（MatMul / Linear）" },
@@ -301,7 +370,7 @@ function renderLegend(layout, originX, originY, flat, type) {
     let cursor = originX;
     const y = originY + rowIndex * rowStep;
     for (const entry of row.items) {
-      const style = styleForForm(entry.form);
+      const style = styleForForm(entry.form, type);
       parts.push(renderBodyShape({ form: entry.form, data: entry.data, semanticTags: entry.semanticTags }, { x: cursor, y, w: LEGEND_SWATCH.w, h: LEGEND_SWATCH.h }, style, flat));
       parts.push(`<text class="legend-label" x="${n(cursor + LEGEND_SWATCH.w + 8)}" y="${n(y + LEGEND_SWATCH.h / 2)}" dominant-baseline="central">${escapeXml(entry.label)}</text>`);
       cursor += legendItemWidth(entry, type);
@@ -311,7 +380,17 @@ function renderLegend(layout, originX, originY, flat, type) {
   return parts.join("");
 }
 
-function styleForForm(form) {
+function styleForForm(form, type = LEGACY_TYPE) {
+  return withStroke(baseStyleForForm(form), type);
+}
+
+// 线宽是随图幅变化的物理量，所以由 type 注入样式对象。
+// 所有形态函数都已经把 style 拿在手里，不必再逐个透传 type。
+function withStroke(style, type) {
+  return { ...style, width: type.stroke, hairline: type.hairline };
+}
+
+function baseStyleForForm(form) {
   // VGG16 配色的 form 默认值：conv 蓝、linear 绿、pool 红、sequence 橄榄、merge 棕、recurrent 紫。
   // 没有 blockKind 的算子按 form 落到这里；具体的 blockKind 会在 styleForPrimitive 里覆盖。
   if (form === "volume" || form === "plane") return { fill: "#BCD9F2", stroke: "#1F4E8C" };
@@ -340,47 +419,72 @@ function renderGroup(group, type = LEGACY_TYPE) {
   ].filter(Boolean).join("");
 }
 
-function renderConnector(connector) {
+function renderConnector(connector, type = LEGACY_TYPE) {
   const points = (connector.points || []).filter(validPoint);
   if (points.length < 2) return "";
   const routeClass = String(connector.routeClass || "main-flow");
   const style = ROUTE_STYLES[routeClass] || ROUTE_STYLES["main-flow"];
   const path = roundedPolyline(points, CORNER_RADIUS);
   const dash = style.dash ? ` stroke-dasharray="${style.dash}"` : "";
-  return `<path class="scene-connector ${escapeAttribute(routeClass)}" d="${path}" stroke="${style.color}" stroke-width="${style.width}"${dash} marker-end="url(#arrow-${escapeAttribute(routeClass)})"/>`;
+  // 接了期刊栏宽时用 pt 反推的绝对宽度；否则沿用 ROUTE_STYLES 里的 layout 单位宽度。
+  const width = type.connectorWidth ?? style.width;
+  return `<path class="scene-connector ${escapeAttribute(routeClass)}" d="${path}" stroke="${style.color}" stroke-width="${n(width)}"${dash} marker-end="url(#arrow-${escapeAttribute(routeClass)})"/>`;
 }
 
 function renderPrimitive(primitive, step, flat, type = LEGACY_TYPE) {
   if (!validBounds(primitive.bounds)) return "";
   if (primitive.role !== "body") return renderDecoration(primitive);
   const bounds = primitive.bounds;
-  const style = styleForPrimitive(primitive);
+  const style = styleForPrimitive(primitive, type);
   const shape = renderBodyShape(primitive, bounds, style, flat);
   const text = renderBodyText(primitive, bounds, step, flat, type);
-  // 合并算子的序号已经并进圆下方的说明行，不能再在角上画一个。
-  const chip = isMergeGlyph(primitive) ? "" : renderStepChip(step, bounds, primitive, type, flat);
-  return `<g class="scene-body ${escapeAttribute(primitive.blockKind || primitive.form || "operator")}">${shape}${text}${chip}</g>`;
+  // 合并算子的序号已经并进圆下方的说明行；名字被外置的盒子也不再重复画角标——
+  // 外置块自带序号，画两次会出现两个同号圆。
+  const chip = isMergeGlyph(primitive) || text.external
+    ? ""
+    : renderStepChip(step, bounds, primitive, type, flat);
+  return `<g class="scene-body ${escapeAttribute(primitive.blockKind || primitive.form || "operator")}">${shape}${text.markup}${chip}</g>`;
+}
+
+// 名字放不进盒子时的退路：挂到盒子正下方，盒内保持干净。
+//
+// 这条退路是必需的：盒宽由张量形状决定（layout 层锁死），而算子名是外部输入。
+// 只要名字够长，就一定会出现"缩到期刊字号下限仍放不下"的组合——这时缩字号已经
+// 不合规、溢出盒外又会压住相邻元素。顶刊的做法是把标注挪到盒子外面。
+function renderExternalLabel(primitive, bounds, step, badge, label, type) {
+  const cx = bounds.x + bounds.w / 2;
+  const cy = bounds.y + bounds.h + type.label * 1.45;
+  const half = label.length * type.label * 0.29;
+  const chip = Number.isFinite(step)
+    ? stepChipMarkup(step, cx - half - type.chipRadius - 4, cy, type.chipRadius, type.hairline)
+    : "";
+  const shift = chip ? type.chipRadius + 4 : 0;
+  const rows = [`<text class="body-label" x="${n(cx + shift)}" y="${n(cy)}">${escapeXml(label)}</text>`];
+  if (badge) rows.push(`<text class="block-badge" x="${n(cx + shift)}" y="${n(cy + type.badge * 1.6)}">${escapeXml(badge)}</text>`);
+  return `<g class="body-caption">${chip}${rows.join("")}</g>`;
 }
 
 // 标签与角标合成一个居中文本块。旧画法是"名字在中间 + 药丸浮在右上角"，
 // 在 111×130 的盒子上同时挂序号圆、药丸、两个端口、名字，噪声压过了信息。
+//
+// 返回 { markup, external }：external 为真表示名字已被挪到盒外，调用方不应再画角标。
 function renderBodyText(primitive, bounds, step, flat, type = LEGACY_TYPE) {
   const label = bodyLabel(primitive);
   const badge = cleanText(primitive.blockBadge || "");
-  if (!label && !badge) return "";
+  if (!label && !badge) return { markup: "", external: false };
   // 合并算子的圆心留给 ⊕。名字挂到圆下方，序号排在名字左边——
   // 序号圆没法塞进圆形的左上角（内接方形的角点离圆心只有 r/√2），
   // 硬塞就会压在圆周上。
   if (isMergeGlyph(primitive)) {
-    if (!label) return "";
+    if (!label) return { markup: "", external: false };
     const cx = bounds.x + bounds.w / 2;
     const cy = bounds.y + bounds.h + 13;
     const half = label.length * type.label * 0.29;
     const chip = Number.isFinite(step)
-      ? stepChipMarkup(step, cx - half - type.chipRadius - 4, cy, type.chipRadius)
+      ? stepChipMarkup(step, cx - half - type.chipRadius - 4, cy, type.chipRadius, type.hairline)
       : "";
     const shift = Number.isFinite(step) ? type.chipRadius + 4 : 0;
-    return `<g class="body-caption">${chip}<text class="body-label" x="${n(cx + shift)}" y="${n(cy)}">${escapeXml(label)}</text></g>`;
+    return { markup: `<g class="body-caption">${chip}<text class="body-label" x="${n(cx + shift)}" y="${n(cy)}">${escapeXml(label)}</text></g>`, external: false };
   }
   const face = textFace(primitive, bounds, flat);
   const cx = face.x + face.w / 2;
@@ -391,6 +495,11 @@ function renderBodyText(primitive, bounds, step, flat, type = LEGACY_TYPE) {
   // 盒子尺寸由布局层按"顶刊比例带"锁死，所以只能改字号/换行，不能改几何。
   if (label) {
     const fit = fitLabelText(label, face.w, type);
+    // 缩到期刊下限仍放不下：既不能再缩（不合规），也不能溢出（压住邻盒）。
+    // 外置到盒子下方，盒内只保留 badge。
+    if (fit.overflow) {
+      return { markup: renderExternalLabel(primitive, bounds, step, badge, label, type), external: true };
+    }
     const lineGap = fit.fontSize * 1.18;
     const hasBadge = Boolean(badge);
     const blockHeight = fit.lines.length * lineGap + (hasBadge ? type.badge * 1.3 : 0);
@@ -404,7 +513,7 @@ function renderBodyText(primitive, bounds, step, flat, type = LEGACY_TYPE) {
   } else if (badge) {
     rows.push(`<text class="block-badge" x="${n(cx)}" y="${n(cy)}">${escapeXml(badge)}</text>`);
   }
-  return `<g class="body-text">${rows.join("")}</g>`;
+  return { markup: `<g class="body-text">${rows.join("")}</g>`, external: false };
 }
 
 // Helvetica 平均字宽 ≈ 0.58×字号（取保守值，给真实排版留余量，避免名字压到盒边）；
@@ -437,12 +546,26 @@ function fitLabelText(label, faceWidth, type = LEGACY_TYPE) {
   let font = base;
   while (font > minFont && estimateTextWidth(text, font) > maxWidth) font -= 0.5;
   if (estimateTextWidth(text, font) <= maxWidth) return { fontSize: font, lines: [text], overflow: belowFloor(font, [text]) };
-  // 折两行：从中间断开，尽量让两行长度接近。
-  const mid = Math.ceil(text.length / 2);
-  const lines = [text.slice(0, mid), text.slice(mid)];
+  // 折两行：优先断在 camelCase / 字母-数字边界，避免出现 LayerNorm / alization
+  // 这种按字符中点断开的词。
+  const lines = splitLabelLines(text);
   font = base * 0.86;
   while (font > minFont && tooWide(lines, font)) font -= 0.5;
   return { fontSize: font, lines, overflow: belowFloor(font, lines) };
+}
+
+// 在 camelCase 与"字母→数字"的边界里，挑离中点最近的一处断开。
+// 找不到合适边界（全小写、无数字）时才退回按字符中点断。
+function splitLabelLines(text) {
+  const mid = text.length / 2;
+  let best = -1;
+  for (let index = 1; index < text.length; index += 1) {
+    const isBoundary = /[a-z0-9]/.test(text[index - 1]) && /[A-Z0-9]/.test(text[index]);
+    if (!isBoundary) continue;
+    if (best === -1 || Math.abs(index - mid) < Math.abs(best - mid)) best = index;
+  }
+  const at = best === -1 ? Math.ceil(mid) : best;
+  return [text.slice(0, at), text.slice(at)];
 }
 
 // 步骤序号：PLOS ONE 2025 指南 G（便于导航）。折行之后读者需要一条明确的
@@ -454,9 +577,9 @@ function fitLabelText(label, faceWidth, type = LEGACY_TYPE) {
 // 放在顶面的左上角既不和文字撞，也跟顶刊常见的"角标"排版一致。
 const CHIP_RADIUS = 7.5;
 
-function stepChipMarkup(step, cx, cy, radius = CHIP_RADIUS) {
+function stepChipMarkup(step, cx, cy, radius = CHIP_RADIUS, hairline = STROKE_HAIRLINE) {
   return [
-    `<circle class="step-chip" cx="${n(cx)}" cy="${n(cy)}" r="${n(radius)}" fill="#FFFFFF" stroke="${MUTED_INK}" stroke-width="${STROKE_HAIRLINE}"/>`,
+    `<circle class="step-chip" cx="${n(cx)}" cy="${n(cy)}" r="${n(radius)}" fill="#FFFFFF" stroke="${MUTED_INK}" stroke-width="${n(hairline)}"/>`,
     `<text class="step-chip-label" x="${n(cx)}" y="${n(cy)}">${step}</text>`,
   ].join("");
 }
@@ -472,7 +595,7 @@ function renderStepChip(step, bounds, primitive, type = LEGACY_TYPE, flat = fals
   // 梯形的左上角是**斜的**（三维棱柱还多一层顶面斜边）：角标必须贴着实测的左边界放，
   // 否则会有一半悬在形状外面。
   if (primitive.form === "wedge") x = wedgeLeftAt(primitive, bounds, flat, y) + radius + pad;
-  return stepChipMarkup(step, x, y, radius);
+  return stepChipMarkup(step, x, y, radius, type.hairline);
 }
 
 // 梯形（含三维棱柱）在高度 y 处的左边界。角标据此定位。
@@ -528,7 +651,7 @@ function renderBodyShape(primitive, bounds, style, flat) {
 // 颜色由 blockKind 承担语义，文字由 renderBodyText 标注张量形状/算子名。
 function renderFlatBox(bounds, style, radius = RADIUS_2D, className = "flat-body") {
   const { x, y, w, h } = bounds;
-  return `<rect class="${className}" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${n(radius)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`;
+  return `<rect class="${className}" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${n(radius)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`;
 }
 
 // 扁平特征图 / 卷积：顶刊里就是一个干净的圆角矩形。
@@ -558,7 +681,7 @@ function renderFlatWedge(primitive, bounds, style) {
   const points = expand
     ? `${n(x + inset)},${n(y)} ${n(x + w - inset)},${n(y)} ${n(x + w)},${n(y + h)} ${n(x)},${n(y + h)}`
     : `${n(x)},${n(y)} ${n(x + w)},${n(y)} ${n(x + w - inset)},${n(y + h)} ${n(x + inset)},${n(y + h)}`;
-  return `<polygon class="wedge-body" points="${points}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}" stroke-linejoin="round"/>`;
+  return `<polygon class="wedge-body" points="${points}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}" stroke-linejoin="round"/>`;
 }
 
 // 梯形的腰内收量。上限取短边的 1/3，否则窄盒会退化成三角形，文字无处安放。
@@ -579,10 +702,10 @@ function renderFlatPlane(bounds, style) {
   const cy = y + (h - side) / 2;
   const opacity = 0.46;
   const stroke = style.stroke;
-  parts.push(`<rect x="${n(cx)}" y="${n(cy)}" width="${n(side)}" height="${n(side)}" rx="2" fill="none" stroke="${stroke}" stroke-width="${STROKE_HAIRLINE}" opacity="${opacity}"/>`);
+  parts.push(`<rect x="${n(cx)}" y="${n(cy)}" width="${n(side)}" height="${n(side)}" rx="2" fill="none" stroke="${stroke}" stroke-width="${n(style.hairline)}" opacity="${opacity}"/>`);
   // 太阳：左上角小圆
   const sunR = side * 0.15;
-  parts.push(`<circle cx="${n(cx + side * 0.28)}" cy="${n(cy + side * 0.28)}" r="${n(sunR)}" fill="none" stroke="${stroke}" stroke-width="${STROKE_HAIRLINE}" opacity="${opacity}"/>`);
+  parts.push(`<circle cx="${n(cx + side * 0.28)}" cy="${n(cy + side * 0.28)}" r="${n(sunR)}" fill="none" stroke="${stroke}" stroke-width="${n(style.hairline)}" opacity="${opacity}"/>`);
   // 山：底部折线
   const mountain = [
     `${n(cx + side * 0.16)},${n(cy + side * 0.82)}`,
@@ -590,7 +713,7 @@ function renderFlatPlane(bounds, style) {
     `${n(cx + side * 0.64)},${n(cy + side * 0.62)}`,
     `${n(cx + side * 0.84)},${n(cy + side * 0.82)}`,
   ].join(" ");
-  parts.push(`<polyline points="${mountain}" fill="none" stroke="${stroke}" stroke-width="${STROKE_HAIRLINE}" opacity="${opacity}"/>`);
+  parts.push(`<polyline points="${mountain}" fill="none" stroke="${stroke}" stroke-width="${n(style.hairline)}" opacity="${opacity}"/>`);
   return parts.join("");
 }
 
@@ -638,12 +761,12 @@ function renderFeatureMapStack(bounds, style) {
       const backPx = x + (i + 1) * dx;
       const backPy = y + (N - 1 - (i + 1)) * dy;
       // 右侧面：从前一张的右边到后一张的右边
-      parts.push(`<polygon points="${n(px + planeW)},${n(py)} ${n(backPx + planeW)},${n(backPy)} ${n(backPx + planeW)},${n(backPy + planeH)} ${n(px + planeW)},${n(py + planeH)}" fill="${tint(style.fill, FACE_SIDE)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`);
+      parts.push(`<polygon points="${n(px + planeW)},${n(py)} ${n(backPx + planeW)},${n(backPy)} ${n(backPx + planeW)},${n(backPy + planeH)} ${n(px + planeW)},${n(py + planeH)}" fill="${tint(style.fill, FACE_SIDE)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
       // 顶面：从前一张的顶边到后一张的顶边
-      parts.push(`<polygon points="${n(px)},${n(py)} ${n(px + planeW)},${n(py)} ${n(backPx + planeW)},${n(backPy)} ${n(backPx)},${n(backPy)}" fill="${tint(style.fill, FACE_SIDE - 0.06)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`);
+      parts.push(`<polygon points="${n(px)},${n(py)} ${n(px + planeW)},${n(py)} ${n(backPx + planeW)},${n(backPy)} ${n(backPx)},${n(backPy)}" fill="${tint(style.fill, FACE_SIDE - 0.06)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
     }
     const tintAmt = FACE_FRONT - 0.04 * (N - 1 - i);
-    parts.push(`<rect x="${n(px)}" y="${n(py)}" width="${n(planeW)}" height="${n(planeH)}" fill="${tint(style.fill, tintAmt)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`);
+    parts.push(`<rect x="${n(px)}" y="${n(py)}" width="${n(planeW)}" height="${n(planeH)}" fill="${tint(style.fill, tintAmt)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
   }
   return parts.join("");
 }
@@ -665,14 +788,14 @@ function renderImageSlab(bounds, style) {
   const iconCx = fx + fw / 2;
   const iconCy = fy + fh / 2;
   const opacity = 0.55;
-  const frame = `<rect x="${n(iconCx - iconSide / 2)}" y="${n(iconCy - iconSide / 2)}" width="${n(iconSide)}" height="${n(iconSide)}" rx="2" fill="none" stroke="${style.stroke}" stroke-width="${STROKE_HAIRLINE}" opacity="${opacity}"/>`;
+  const frame = `<rect x="${n(iconCx - iconSide / 2)}" y="${n(iconCy - iconSide / 2)}" width="${n(iconSide)}" height="${n(iconSide)}" rx="2" fill="none" stroke="${style.stroke}" stroke-width="${n(style.hairline)}" opacity="${opacity}"/>`;
   const sunR = iconSide * 0.13;
-  const sun = `<circle cx="${n(iconCx - iconSide * 0.22)}" cy="${n(iconCy - iconSide * 0.22)}" r="${n(sunR)}" fill="none" stroke="${style.stroke}" stroke-width="${STROKE_HAIRLINE}" opacity="${opacity}"/>`;
-  const mountain = `<polyline points="${n(iconCx - iconSide * 0.35)},${n(iconCy + iconSide * 0.28)} ${n(iconCx - iconSide * 0.08)},${n(iconCy - iconSide * 0.12)} ${n(iconCx + iconSide * 0.12)},${n(iconCy + iconSide * 0.12)} ${n(iconCx + iconSide * 0.35)},${n(iconCy + iconSide * 0.28)}" fill="none" stroke="${style.stroke}" stroke-width="${STROKE_HAIRLINE}" opacity="${opacity}"/>`;
+  const sun = `<circle cx="${n(iconCx - iconSide * 0.22)}" cy="${n(iconCy - iconSide * 0.22)}" r="${n(sunR)}" fill="none" stroke="${style.stroke}" stroke-width="${n(style.hairline)}" opacity="${opacity}"/>`;
+  const mountain = `<polyline points="${n(iconCx - iconSide * 0.35)},${n(iconCy + iconSide * 0.28)} ${n(iconCx - iconSide * 0.08)},${n(iconCy - iconSide * 0.12)} ${n(iconCx + iconSide * 0.12)},${n(iconCy + iconSide * 0.12)} ${n(iconCx + iconSide * 0.35)},${n(iconCy + iconSide * 0.28)}" fill="none" stroke="${style.stroke}" stroke-width="${n(style.hairline)}" opacity="${opacity}"/>`;
   return [
-    `<polygon class="face-top" points="${top}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`,
-    `<polygon class="face-side" points="${side}" fill="${tint(style.fill, FACE_SIDE)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`,
-    `<rect class="face-front" x="${n(fx)}" y="${n(fy)}" width="${n(fw)}" height="${n(fh)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`,
+    `<polygon class="face-top" points="${top}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`,
+    `<polygon class="face-side" points="${side}" fill="${tint(style.fill, FACE_SIDE)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`,
+    `<rect class="face-front" x="${n(fx)}" y="${n(fy)}" width="${n(fw)}" height="${n(fh)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`,
     frame,
     sun,
     mountain,
@@ -685,7 +808,7 @@ function renderImageSlab(bounds, style) {
 // 现在这就是一根扁条。
 function renderFlatBar(bounds, style) {
   const { x, y, w, h } = bounds;
-  return `<rect class="bar-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_SLAB}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`;
+  return `<rect class="bar-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_SLAB}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`;
 }
 
 // 下采样 / 上采样：内嵌 mini 两层网格 + 映射线。
@@ -718,7 +841,7 @@ function renderWedge(primitive, bounds, style) {
   const quad = (points, fill, className) => {
     const attr = className ? ` class="${className}"` : "";
     const path = points.map((point) => `${n(point[0])},${n(point[1])}`).join(" ");
-    return `<polygon${attr} points="${path}" fill="${fill}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`;
+    return `<polygon${attr} points="${path}" fill="${fill}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`;
   };
   // 从后往前画：右侧面 → 顶面 → 正面。
   return [
@@ -734,13 +857,13 @@ function renderWedge(primitive, bounds, style) {
 // 又一个不编码信息的装饰（"一串 token"由形状比例与标签表达，不需要画刻度）。
 function renderStrip(bounds, style) {
   const { x, y, w, h } = bounds;
-  return `<rect class="strip-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_SLAB}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`;
+  return `<rect class="strip-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_SLAB}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`;
 }
 
 // 逐元素算子（Norm / Activation）：干净的圆角条。
 function renderBand(bounds, style) {
   const { x, y, w, h } = bounds;
-  return `<rect class="band-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_2D}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`;
+  return `<rect class="band-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_2D}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`;
 }
 
 // 合并算子：圆 + ⊕。圆形是 ResNet 之后的事实标准，一眼可读；
@@ -758,9 +881,9 @@ function renderGlyph(primitive, bounds, style) {
   const cy = y + h / 2;
   const arm = radius * 0.5;
   return [
-    `<circle class="glyph-body" cx="${n(cx)}" cy="${n(cy)}" r="${n(radius)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`,
-    `<line class="glyph-arm" x1="${n(cx - arm)}" y1="${n(cy)}" x2="${n(cx + arm)}" y2="${n(cy)}" stroke="${style.stroke}" stroke-width="${STROKE}" stroke-linecap="round"/>`,
-    `<line class="glyph-arm" x1="${n(cx)}" y1="${n(cy - arm)}" x2="${n(cx)}" y2="${n(cy + arm)}" stroke="${style.stroke}" stroke-width="${STROKE}" stroke-linecap="round"/>`,
+    `<circle class="glyph-body" cx="${n(cx)}" cy="${n(cy)}" r="${n(radius)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`,
+    `<line class="glyph-arm" x1="${n(cx - arm)}" y1="${n(cy)}" x2="${n(cx + arm)}" y2="${n(cy)}" stroke="${style.stroke}" stroke-width="${n(style.width)}" stroke-linecap="round"/>`,
+    `<line class="glyph-arm" x1="${n(cx)}" y1="${n(cy - arm)}" x2="${n(cx)}" y2="${n(cy + arm)}" stroke="${style.stroke}" stroke-width="${n(style.width)}" stroke-linecap="round"/>`,
   ].join("");
 }
 
@@ -768,13 +891,13 @@ function renderGlyph(primitive, bounds, style) {
 function renderCell(bounds, style) {
   const { x, y, w, h } = bounds;
   const radius = Math.max(RADIUS_2D, Math.min(18, h * 0.42));
-  return `<rect class="cell-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${n(radius)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${STROKE}"/>`;
+  return `<rect class="cell-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${n(radius)}" fill="${tint(style.fill, FACE_FRONT)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`;
 }
 
 // 未解析模块：虚线是"待确认"的既有约定，保留。
 function renderCallout(bounds, style) {
   const { x, y, w, h } = bounds;
-  return `<rect class="callout-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_2D}" fill="#FFFFFF" stroke="${style.stroke}" stroke-width="${STROKE}" stroke-dasharray="5 4"/>`;
+  return `<rect class="callout-body" x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${RADIUS_2D}" fill="#FFFFFF" stroke="${style.stroke}" stroke-width="${n(style.width)}" stroke-dasharray="5 4"/>`;
 }
 
 // 端口圆点已移除：连接线本来就落在盒子边缘，再点一排小圆点只是噪声
@@ -829,7 +952,11 @@ function labelFaceOrigin(primitive, bounds) {
   return { x: face.x, y: face.y };
 }
 
-function styleForPrimitive(primitive) {
+function styleForPrimitive(primitive, type = LEGACY_TYPE) {
+  return withStroke(baseStyleForPrimitive(primitive), type);
+}
+
+function baseStyleForPrimitive(primitive) {
   if (primitive.blockKind && BLOCK_STYLES[primitive.blockKind]) return BLOCK_STYLES[primitive.blockKind];
   const role = String(primitive.styleProfile || primitive.visualRole || primitive.form || "");
   if (/input/.test(role)) return { fill: "#BCD9F2", stroke: "#1F4E8C" };
@@ -847,7 +974,36 @@ function styleForPrimitive(primitive) {
 function bodyLabel(primitive) {
   const first = (primitive.sourceNodeIds || [])[0] || "";
   const label = (primitive.labels || []).map(cleanText).find(Boolean);
-  return label || displayNodeName(first);
+  return abbreviateOperatorName(label || displayNodeName(first));
+}
+
+// 顶刊里写的是领域标准缩写，不是框架的算子类名。
+// GlobalAveragePool 要 18 个字符宽，在 U-Net 那种窄梯形里必然溢出（实测需要 124 单位、
+// 中腰只有 50，2.5× 越界）；GAP 只要 3 个字符。这既解决溢出，也是论文里的通用写法。
+// 只做整词匹配，不碰 layer1.0.conv1 / Encoder Stage 1 这类结构名。
+const OPERATOR_ABBREVIATIONS = Object.freeze({
+  GlobalAveragePool: "GAP",
+  GlobalAveragePooling: "GAP",
+  AdaptiveAvgPool: "GAP",
+  AdaptiveAveragePool: "GAP",
+  GlobalMaxPool: "GMP",
+  AveragePool: "AvgPool",
+  MaxPooling: "MaxPool",
+  LayerNormalization: "LayerNorm",
+  BatchNormalization: "BatchNorm",
+  GroupNormalization: "GroupNorm",
+  InstanceNormalization: "InstanceNorm",
+  LocalResponseNormalization: "LRN",
+  MultiHeadAttention: "MHA",
+  MultiheadAttention: "MHA",
+  ScaledDotProductAttention: "SDPA",
+  Convolution: "Conv",
+  FullyConnected: "FC",
+});
+
+function abbreviateOperatorName(name) {
+  const text = cleanText(name);
+  return OPERATOR_ABBREVIATIONS[text] || text;
 }
 
 // ONNX 导出器给节点起名 "算子类型_序号"（LayerNormalization_8 / MatMul_0 / conv2d_1），
@@ -961,7 +1117,7 @@ function css(type = LEGACY_TYPE) {
     `text{font-family:${FONT};fill:${TEXT_INK}}`,
     `.scene-title{text-anchor:middle;font-size:${format(type.title)}px;font-weight:600;letter-spacing:0.2px}`,
     // 组框改用实线：Nature 明确避免 pattern，虚线框缩到栏宽后会糊成灰边。
-    ".scene-group-frame{fill:#FBFCFD;stroke:#D5DBE3;stroke-width:1}",
+    `.scene-group-frame{fill:#FBFCFD;stroke:#D5DBE3;stroke-width:${format(type.hairline)}}`,
     ".scene-group-tag{fill:#E8EDF3;stroke:none}",
     `.scene-group-label{font-size:${format(type.group)}px;font-weight:600;fill:#475569;dominant-baseline:middle}`,
     `.body-label{text-anchor:middle;dominant-baseline:middle;font-size:${format(type.label)}px;font-weight:600;fill:${TEXT_INK}}`,
