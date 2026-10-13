@@ -57,6 +57,60 @@ const MODELS = {
       node("Conv_15", "Conv", ["Conv_14"], [1, 2, 256, 256], { kernel_shape: [1, 1] }),
     ],
   },
+  // VGG16：13 个卷积 + 3 个全连接，共 16 个带权重的层——"16" 就是这么来的。
+  // 这张图是「塔状堆叠」的试金石：五段卷积塔，每段内部通道数翻倍、空间尺寸减半，
+  // 段尾一个池化。顶刊画 VGG 的惯用语言是「一摞薄片」而不是「一个大方块」，
+  // 薄片的数量示意通道数、薄片的宽高示意空间尺寸。
+  vgg16: {
+    title: "VGG16（13 卷积 + 3 全连接）",
+    input: { name: "image", dims: [1, 3, 224, 224] },
+    output: { name: "logits", dims: [1, 1000] },
+    nodes: [
+      // --- block1: 224×224, 64 通道 ---
+      node("Conv_0", "Conv", ["image"], [1, 64, 224, 224], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_1", "Relu", ["Conv_0"], [1, 64, 224, 224]),
+      node("Conv_2", "Conv", ["Relu_1"], [1, 64, 224, 224], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_3", "Relu", ["Conv_2"], [1, 64, 224, 224]),
+      node("MaxPool_4", "MaxPool", ["Relu_3"], [1, 64, 112, 112], { kernel_shape: [2, 2], strides: [2, 2] }),
+      // --- block2: 112×112, 128 通道 ---
+      node("Conv_5", "Conv", ["MaxPool_4"], [1, 128, 112, 112], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_6", "Relu", ["Conv_5"], [1, 128, 112, 112]),
+      node("Conv_7", "Conv", ["Relu_6"], [1, 128, 112, 112], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_8", "Relu", ["Conv_7"], [1, 128, 112, 112]),
+      node("MaxPool_9", "MaxPool", ["Relu_8"], [1, 128, 56, 56], { kernel_shape: [2, 2], strides: [2, 2] }),
+      // --- block3: 56×56, 256 通道 ---
+      node("Conv_10", "Conv", ["MaxPool_9"], [1, 256, 56, 56], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_11", "Relu", ["Conv_10"], [1, 256, 56, 56]),
+      node("Conv_12", "Conv", ["Relu_11"], [1, 256, 56, 56], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_13", "Relu", ["Conv_12"], [1, 256, 56, 56]),
+      node("Conv_14", "Conv", ["Relu_13"], [1, 256, 56, 56], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_15", "Relu", ["Conv_14"], [1, 256, 56, 56]),
+      node("MaxPool_16", "MaxPool", ["Relu_15"], [1, 256, 28, 28], { kernel_shape: [2, 2], strides: [2, 2] }),
+      // --- block4: 28×28, 512 通道 ---
+      node("Conv_17", "Conv", ["MaxPool_16"], [1, 512, 28, 28], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_18", "Relu", ["Conv_17"], [1, 512, 28, 28]),
+      node("Conv_19", "Conv", ["Relu_18"], [1, 512, 28, 28], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_20", "Relu", ["Conv_19"], [1, 512, 28, 28]),
+      node("Conv_21", "Conv", ["Relu_20"], [1, 512, 28, 28], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_22", "Relu", ["Conv_21"], [1, 512, 28, 28]),
+      node("MaxPool_23", "MaxPool", ["Relu_22"], [1, 512, 14, 14], { kernel_shape: [2, 2], strides: [2, 2] }),
+      // --- block5: 14×14, 512 通道 ---
+      node("Conv_24", "Conv", ["MaxPool_23"], [1, 512, 14, 14], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_25", "Relu", ["Conv_24"], [1, 512, 14, 14]),
+      node("Conv_26", "Conv", ["Relu_25"], [1, 512, 14, 14], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_27", "Relu", ["Conv_26"], [1, 512, 14, 14]),
+      node("Conv_28", "Conv", ["Relu_27"], [1, 512, 14, 14], { kernel_shape: [3, 3], pads: [1, 1, 1, 1] }),
+      node("Relu_29", "Relu", ["Conv_28"], [1, 512, 14, 14]),
+      node("MaxPool_30", "MaxPool", ["Relu_29"], [1, 512, 7, 7], { kernel_shape: [2, 2], strides: [2, 2] }),
+      // --- classifier: 25088 → 4096 → 4096 → 1000 ---
+      node("Flatten_31", "Flatten", ["MaxPool_30"], [1, 25088], { axis: 1 }),
+      node("Gemm_32", "Gemm", ["Flatten_31"], [1, 4096], { alpha: 1, beta: 1, transB: 1 }),
+      node("Relu_33", "Relu", ["Gemm_32"], [1, 4096]),
+      node("Gemm_34", "Gemm", ["Relu_33"], [1, 4096], { alpha: 1, beta: 1, transB: 1 }),
+      node("Relu_35", "Relu", ["Gemm_34"], [1, 4096]),
+      node("Gemm_36", "Gemm", ["Relu_35"], [1, 1000], { alpha: 1, beta: 1, transB: 1 }),
+    ],
+  },
   "vit-lite": {
     title: "ViT 单层 Transformer（lite）",
     input: { name: "patches", dims: [1, 196, 768] },

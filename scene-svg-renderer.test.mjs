@@ -483,3 +483,67 @@ test("long operator names are abbreviated to the field's standard short form", (
     "缩写之后应当没有任何排版诊断",
   );
 });
+
+// VGG16 这类"塔状"网络最要紧的一条视觉语言：特征图是**一摞**，且越往后越厚。
+// 旧实现把片数写死成 3，于是 64 通道和 512 通道画出来一模一样——
+// 读者看不出 conv1 和 conv4 的区别，"深度"这个维度整个丢了。
+test("feature-map stacks get deeper as channels grow, so 64 and 512 stop looking alike", () => {
+  const volume = (channels) => ({
+    id: `v${channels}`,
+    role: "body",
+    form: "volume",
+    labels: ["Conv"],
+    sourceNodeIds: ["Conv_0"],
+    data: { tensorShape: [1, channels, 56, 56] },
+    bounds: { x: 20, y: 20, w: 90, h: 60 },
+  });
+  // legend: false —— 图例本身也用 renderBodyShape 画一枚样例图元，
+  // 不排掉的话数出来会多 3 片。
+  const planes = (channels) => {
+    const svg = renderSceneSvg(
+      { page: { width: 200, height: 120 }, primitives: [volume(channels)], connectors: [], groups: [] },
+      { legend: false },
+    );
+    return (svg.match(/data-plane="/g) || []).length;
+  };
+  assert.equal(planes(3), 3, "RGB 输入按最小深度画");
+  assert.equal(planes(64), 3);
+  assert.equal(planes(256), 5);
+  assert.equal(planes(512), 6);
+  assert.ok(planes(512) > planes(64), "512 通道必须比 64 通道摞得厚");
+  // 拿不到通道数（没有声明张量形状）时退回最小深度，而不是编一个数。
+  const blind = renderSceneSvg(
+    {
+      page: { width: 200, height: 120 },
+      primitives: [{ id: "x", role: "body", form: "volume", labels: ["Conv"], sourceNodeIds: ["Conv_0"], bounds: { x: 20, y: 20, w: 90, h: 60 } }],
+      connectors: [],
+      groups: [],
+    },
+    { legend: false },
+  );
+  assert.equal((blind.match(/data-plane="/g) || []).length, 3);
+});
+
+// 反过来锁住另一半：扁平模式**不得**用盒内竖线去暗示片数。
+// 竖线数按 log2(通道数) 压缩（512 通道只画 5 条），是虚构的刻度——
+// 和项目早期那条"按盒尺寸算列数的 3×3 网格"是同一个错误。
+// 扁平模式里通道数由标签承担（512×28×28），形状不参与。
+test("flat mode refuses to fake stack depth with inset rules", () => {
+  const volume = (channels) => ({
+    id: `v${channels}`,
+    role: "body",
+    form: "volume",
+    labels: ["Conv"],
+    sourceNodeIds: ["Conv_0"],
+    data: { tensorShape: [1, channels, 56, 56] },
+    bounds: { x: 20, y: 20, w: 90, h: 60 },
+  });
+  for (const channels of [64, 512]) {
+    const svg = renderSceneSvg(
+      { page: { width: 200, height: 120 }, primitives: [volume(channels)], connectors: [], groups: [] },
+      { flat: true },
+    );
+    assert.equal((svg.match(/<line/g) || []).length, 0, "扁平特征图内部不得有横线或竖线");
+    assert.match(svg, /class="flat-body"/, "扁平特征图仍是圆角矩形");
+  }
+});

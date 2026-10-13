@@ -994,7 +994,10 @@ function renderBodyShape(primitive, bounds, style, flat) {
   if (flat && form === "plane") return renderFlatPlane(bounds, style);
   if (flat && form === "stack") return renderFlatStack(bounds, style);
   if (flat && form === "wedge") return renderFlatWedge(primitive, bounds, style);
-  if (form === "volume") return renderFeatureMapStack(bounds, style);
+  // 薄片数由通道数决定：64 通道摞 3 片、512 通道摞 6 片。
+  // 这是 VGG 这类"塔状"网络最要紧的一条视觉语言——否则 64 通道和 512 通道
+  // 画出来一模一样，读者根本看不出"越往后越厚"。
+  if (form === "volume") return renderFeatureMapStack(bounds, style, featureMapDepthOf(primitive));
   if (form === "plane") return renderImageSlab(bounds, style);
   if (form === "stack") return renderFlatBar(bounds, style);
   if (form === "wedge") return renderWedge(primitive, bounds, style);
@@ -1022,6 +1025,14 @@ function renderFlatBox(bounds, style, radius = RADIUS_2D, className = "flat-body
 // Nature / Cell 的架构图里，模块内部一律没有横线竖线：算子类型由「形状 + 标签 + 填充」
 // 承担。而盒子的宽高本身已经编码了张量形状（布局层按 tensorShape 定尺寸），
 // 不需要在盒子里再画一遍。
+// 扁平特征图：就是一个圆角矩形。
+//
+// 这里**刻意**不画"一摞纸"的竖线。曾经想过用它表达通道数，但那和项目早期
+// 用「盒内 3×3 网格」区分卷积是同一个错误：网格列数按盒尺寸算，跟核大小无关；
+// 竖线数按 log2(通道数) 压缩，512 通道也只画 5 条——都是**虚构的刻度**，
+// 会让读者以为数线就能数出通道数。Nature / Cell 的架构图模块内部一律干净，
+// 算子类型由「形状 + 标签 + 填充」承担，通道数写在标签里（512×28×28）。
+// 要表达"这是摞起来的特征图"，走 3D 模式的体量——那是真实的几何，不是装饰。
 function renderFlatVolume(bounds, style) {
   return renderFlatBox(bounds, style);
 }
@@ -1097,18 +1108,53 @@ function cuboidDepth(bounds) {
 // 用户说"你只是不同颜色的方块"指的就是这个。
 // 现在 N 张平面在等距投影下向右上方错开：平面高度编码空间尺寸，
 // 可见平面数（恒为 3）暗示通道数；正面那张承载文字。
-function featureMapStackGeometry(bounds) {
+// 张量的通道数。NCHW 取第 2 维，NHWC / 序列（[N, T, D]）取最后一维。
+// 拿不到就返回 null，调用方退回默认深度——宁可画得保守，也不能编一个数。
+function tensorChannels(primitive) {
+  const shape = primitive?.data?.tensorShape;
+  if (!Array.isArray(shape) || shape.length < 2) return null;
+  const raw = shape.length === 4 ? shape[1] : shape[shape.length - 1];
+  return Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+// 薄片数：顶刊 VGG 图的标志性语言是"一摞薄片，通道越多摞得越厚"。
+// 但不可能真画 512 片——按 log2 压缩到 3..8 片，既能一眼看出"越往后越厚"，
+// 又不会把平面挤成一条线。64→3、128→4、256→5、512→6、1024→7。
+const STACK_DEPTH_MIN = 3;
+const STACK_DEPTH_MAX = 8;
+
+function featureMapDepth(channels) {
+  if (!Number.isFinite(channels) || channels <= 4) return STACK_DEPTH_MIN;
+  const depth = Math.round(Math.log2(channels)) - 3;
+  return Math.max(STACK_DEPTH_MIN, Math.min(STACK_DEPTH_MAX, depth));
+}
+
+// 图元 → 薄片数。渲染形状与计算文字面必须走这一个入口，否则两处会漂移。
+function featureMapDepthOf(primitive) {
+  return featureMapDepth(tensorChannels(primitive));
+}
+
+// 最前面那片平面（也就是文字面）不能小于这个高度，否则摞起来只剩一条缝，
+// 盒子里一个字都放不下。22 单位约等于一行 6 pt 字 + 上下留白。
+const STACK_PLANE_FLOOR = 22;
+
+function featureMapStackGeometry(bounds, depth = STACK_DEPTH_MIN) {
   const { x, y, w, h } = bounds;
-  const N = 3;
-  const dx = Math.max(3, Math.min(5, w * 0.05));
-  const dy = Math.max(3, Math.min(5, h * 0.06));
-  const planeW = w - (N - 1) * dx;
-  const planeH = h - (N - 1) * dy;
+  const N = Math.max(1, Math.round(depth));
+  const steps = Math.max(1, N - 1);
+  // 偏移量同时满足两条：常规尺寸下"看得出是摞的"（1.6..5），
+  // 且最前面那片平面不能矮到放不下字。矮盒子自动减小步长，
+  // 步长已经到下限还不够时，宁可让平面矮一点也不要退成"一片"（那就不像 VGG 了）。
+  const floorH = Math.min(STACK_PLANE_FLOOR, h * 0.62);
+  const dy = Math.max(1.6, Math.min(5, (h - floorH) / steps));
+  const dx = Math.max(1.6, Math.min(5, (w * 0.34) / steps));
+  const planeW = w - steps * dx;
+  const planeH = h - steps * dy;
   return { N, dx, dy, planeW, planeH };
 }
 
-function renderFeatureMapStack(bounds, style) {
-  const { N, dx, dy, planeW, planeH } = featureMapStackGeometry(bounds);
+function renderFeatureMapStack(bounds, style, depth = STACK_DEPTH_MIN) {
+  const { N, dx, dy, planeW, planeH } = featureMapStackGeometry(bounds, depth);
   const { x, y } = bounds;
   const parts = [];
   // 从后往前画：最远的先画，最前面的盖在上面。
@@ -1127,7 +1173,10 @@ function renderFeatureMapStack(bounds, style) {
     // 最前面那张平面就是文字面（见 textFace），给它一个类名，几何核验器才认得出
     // "这个盒子的文字应该落在哪"——后面几张被它挡住，标了反而会造成误判。
     const className = i === 0 ? ' class="body-rect"' : "";
-    parts.push(`<rect${className} x="${n(px)}" y="${n(py)}" width="${n(planeW)}" height="${n(planeH)}" fill="${tint(style.fill, tintAmt)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
+    // data-plane 让"这一摞到底几片"成为可断言的事实，而不是靠数矩形个数去猜
+    // （图里还有段带、组框等别的矩形）。核验器的类名正则只认紧跟在 class 后面的
+    // 属性，多一个 data-* 不影响它认 body-rect。
+    parts.push(`<rect${className} data-plane="${i}" x="${n(px)}" y="${n(py)}" width="${n(planeW)}" height="${n(planeH)}" fill="${tint(style.fill, tintAmt)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
   }
   return parts.join("");
 }
@@ -1281,7 +1330,9 @@ function textFace(primitive, bounds, flat) {
   }
   if (primitive.form === "volume") {
     // 特征图平面堆：文字落在最前面那张平面上（左下角那张）。
-    const { N, dx, dy, planeW, planeH } = featureMapStackGeometry(bounds);
+    // 深度必须与 renderFeatureMapStack 用同一份——两处各自算就会漂移，
+    // 文字会落到一张不存在的平面上。
+    const { N, dx, dy, planeW, planeH } = featureMapStackGeometry(bounds, featureMapDepthOf(primitive));
     return { x: bounds.x, y: bounds.y + (N - 1) * dy, w: planeW, h: planeH };
   }
   if (primitive.form === "plane") {
