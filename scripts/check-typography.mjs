@@ -66,9 +66,13 @@ for (const file of svgFiles) {
   const span = pts.length ? Math.max(...pts) - Math.min(...pts) : 0;
 
   const reportedBelow = diagnostics.some((item) => item.code === "label-below-font-floor");
-  // 核验的核心不变量：渲染器报的"越界"必须与成品里真实存在的越界一致。
-  const agrees = below.length > 0 === reportedBelow;
-  if (!agrees) failed += 1;
+  // 核心不变量（P0-2 之后）：**成品里不得存在越界字号**。
+  // 渲染器遇到"缩到下限仍放不下"的做法是"报诊断 + 把名字外置到盒外"，
+  // 所以"报了诊断、成品却干净"是**正确**结果，不是不一致。
+  // 真正要抓的是反过来的情况：成品越界了，渲染器却一声不吭（漏报）。
+  const missed = below.length > 0 && !reportedBelow;
+  const preempted = below.length === 0 && reportedBelow;
+  if (missed) failed += 1;
 
   // 线宽和字号是同一类问题：都必须是绝对 pt，不能留在 layout 单位里跟着图幅缩放。
   const strokeUnits = [...new Set([
@@ -90,12 +94,12 @@ for (const file of svgFiles) {
     + (above.length ? `  高于上限: ${above.map((pt) => pt.toFixed(2)).join(",")}` : "")
     + (thinLines.length ? `  线太细: ${thinLines.map((pt) => pt.toFixed(2)).join(",")}` : "")
     + (fatLines.length ? `  线太粗: ${fatLines.map((pt) => pt.toFixed(2)).join(",")}` : "")
-    + `  [诊断${reportedBelow ? "已报" : "未报"} ${agrees ? "一致" : "★不一致"}]`,
+    + `  [诊断${reportedBelow ? "已报" : "未报"} ${missed ? "★漏报" : preempted ? "已提前规避" : "一致"}]`,
   );
 }
 
 console.log(
   `\n合计 ${svgFiles.length} 张：${svgFiles.length - unchecked} 张可核验，${unchecked} 张无物理尺寸，`
-  + `${failed} 张"诊断与成品不一致"。`,
+  + `${failed} 张"成品越界但渲染器未报"（漏报）。`,
 );
 process.exit(failed ? 1 : 0);

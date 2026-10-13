@@ -231,7 +231,7 @@ export function renderSceneSvg(scene = {}, options = {}) {
   const bodies = scene.primitives.filter((primitive) => primitive.role === "body");
   const decorations = scene.primitives.filter((primitive) => primitive.role !== "body");
   const steps = assignDataFlowSteps(bodies, scene.connectors);
-  const legendItems = options.legend === false ? [] : buildLegend(bodies);
+  const legendItems = options.legend === false ? [] : buildLegend(bodies, options.legendLang === "zh" ? "zh" : "en");
   const legendWidth = width - margin * 2;
   const legendRows = legendItems.length ? layoutLegend(legendItems, legendWidth, type) : null;
   const legendHeight = legendRows ? legendRows.height + 20 : 0;
@@ -253,10 +253,33 @@ export function renderSceneSvg(scene = {}, options = {}) {
   ];
   if (title) lines.push(`<text class="scene-title" x="${format(width / 2)}" y="${format(margin + 20)}">${escapeXml(title)}</text>`);
   lines.push(`<g transform="translate(${format(margin)} ${format(margin + titleHeight)})">`);
+  // 段带画在最底层：它表达的是"这一段整体是什么"，而不是任何一个盒子。
+  const bands = computeStageBands(bodies);
+  const bandedIds = new Set(bands.flatMap((band) => band.bodies.map((body) => String(body.id))));
+  const stageObstacles = bands.length ? collectStageObstacles(bodies, scene.connectors) : null;
+  for (const band of bands) lines.push(renderStageBand(band, type, stageObstacles));
   for (const group of groups) lines.push(renderGroup(group, type));
   for (const connector of scene.connectors) lines.push(renderConnector(connector, type));
+  const mergeAnnotations = collectMergeAnnotations(bodies, decorations);
+  // 盒内标签集合：装饰标注据此去重——盒子里写过的名字不在盒下再写一遍。
+  const bodyNames = new Set(bodies.map((body) => bodyLabel(body)).filter(Boolean));
+  // 段名 badge 必须**整图统一**：只给一部分盒子画段名，读者会以为那几个盒子有特殊含义
+  // （实测 ResNet 第一列只有前 3 个带 ENCODER，看起来像标注漏了）。
+  // 所以要么全画、要么全不画；段带已经表达过分段语义时也不必再画。
+  const suppressBadges = bands.length > 0
+    || !bodies.every((body) => bodyBadgeFits(body, body.bounds, flat, type, steps.get(String(body.id))));
+  // 盒下的说明文字（形状标注、外置名字、⊕ 标注）要避开连接线，障碍取自布局结果。
+  const obstacles = collectStageObstacles(bodies, scene.connectors);
   for (const primitive of [...bodies, ...decorations].sort((left, right) => (left.zIndex || 0) - (right.zIndex || 0))) {
-    lines.push(renderPrimitive(primitive, steps.get(String(primitive.id)), flat, type));
+    if (mergeAnnotations.consumed.has(String(primitive.id))) continue;
+    lines.push(renderPrimitive(primitive, steps.get(String(primitive.id)), flat, type, {
+      inStageBand: bandedIds.has(String(primitive.id)),
+      suppressBadges,
+      mergeShape: mergeAnnotations.shapes.get(String(primitive.id)) || "",
+      bodyNames,
+      obstacles,
+      type,
+    }));
   }
   lines.push("</g>");
   if (legendRows) lines.push(renderLegend(legendRows, margin, margin + titleHeight + page.height + 14, flat, type));
@@ -317,8 +340,149 @@ function assignDataFlowSteps(bodies, connectors = []) {
   return new Map(ordered.map((body, index) => [String(body.id), index + 1]));
 }
 
-// 图例：PLOS ONE 2025 指南 L 要求图能自足。只列出本图真正用到的图元形态，// 避免出现"图例里有、图上没有"的噪声。
-const LEGEND_ENTRIES = Object.freeze([
+// ── 段带（stage band）────────────────────────────────────────────
+// 顶刊不用"每个盒子挂一个小字标签"来表达"这属于编码器段"——那是逐盒重复，
+// U-Net 一张图就要写 16 次 `encoder` / `decoder`。顶刊的做法是一条浅色背景带
+// 罩住整段，段标签只出现一次。
+//
+// 段的划分：同一列内、blockKind 相同的连续盒子算一段。
+// 合并算子（没有 blockKind）在分段时天然"透明"——它不在候选列表里，
+// 所以不会把一段从中间切开。
+//
+// 但段标签必须**能区分段**，否则就是把"逐盒噪声"换成了"逐段噪声"：
+//   U-Net   → ENCODER / CONV BLOCK / DECODER，各出现一次，读者一眼知道左右两臂是什么。
+//   ViT     → 三段全叫 FFN；ResNet → 三段全叫 ENCODER。这时标签不携带任何区分信息，
+//             而且 ViT 那张把 Transpose / LayerNorm 也叫成 FFN，是**错误信息**。
+// 所以：只要有任何一个标签重复，整张图就退回逐盒 badge，不画段带。
+// （根因在上游 blockKind 粒度太粗——ONNX 直通路径把所有注意力/FFN 都归成 ffn-block。
+//   修 block IR 才是正解，渲染器这一层只能拒绝画会误导人的东西。）
+const STAGE_BAND_PADDING = Object.freeze({ x: 12, top: 18, bottom: 10 });
+
+function computeStageBands(bodies) {
+  const byColumn = new Map();
+  for (const body of bodies) {
+    if (!body.blockKind) continue;
+    const key = Math.round(body.bounds.x);
+    if (!byColumn.has(key)) byColumn.set(key, []);
+    byColumn.get(key).push(body);
+  }
+  const bands = [];
+  for (const members of byColumn.values()) {
+    const ordered = [...members].sort((left, right) => left.bounds.y - right.bounds.y);
+    let run = [];
+    const flush = () => {
+      const label = run.length >= 2 ? stageBandLabel(run[0]) : "";
+      if (label) bands.push({ blockKind: run[0].blockKind, label, bodies: [...run] });
+      run = [];
+    };
+    for (const body of ordered) {
+      if (!run.length || run[0].blockKind === body.blockKind) run.push(body);
+      else { flush(); run = [body]; }
+    }
+    flush();
+  }
+  const counts = new Map();
+  for (const band of bands) counts.set(band.label, (counts.get(band.label) || 0) + 1);
+  return [...counts.values()].some((count) => count > 1) ? [] : bands;
+}
+
+// 段标签用全大写 + 字距，读作"这一段叫什么"，而不是"这个盒子叫什么"。
+function stageBandLabel(body) {
+  const badge = cleanText(body.blockBadge || "");
+  if (!badge) return "";
+  const expanded = { conv: "CONV BLOCK", attention: "ATTENTION", dense: "DENSE" }[badge.toLowerCase()] || badge;
+  return expanded.toUpperCase();
+}
+
+function renderStageBand(band, type = LEGACY_TYPE, obstacles = { boxes: [], segments: [] }) {
+  const xs = band.bodies.map((body) => body.bounds.x);
+  const ys = band.bodies.map((body) => body.bounds.y);
+  const rights = band.bodies.map((body) => body.bounds.x + body.bounds.w);
+  const bottoms = band.bodies.map((body) => body.bounds.y + body.bounds.h);
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+  const bounds = {
+    x: left - STAGE_BAND_PADDING.x,
+    // 不让段带顶出画布上沿；标题在上方，越界会被裁掉。
+    y: Math.max(4, top - STAGE_BAND_PADDING.top),
+    w: Math.max(...rights) - left + STAGE_BAND_PADDING.x * 2,
+    h: Math.max(...bottoms) - top + STAGE_BAND_PADDING.top + STAGE_BAND_PADDING.bottom,
+  };
+  // 只用浅填充、不描边：Nature 明确避免多余边框，段带是背景不是容器。
+  const rect = `<rect class="stage-band-frame" x="${n(bounds.x)}" y="${n(bounds.y)}" width="${n(bounds.w)}" height="${n(bounds.h)}" rx="${n(type.group * 1.2)}"/>`;
+  if (!band.label) return `<g class="stage-band">${rect}</g>`;
+  const anchor = placeStageBandLabel(band, bounds, type, obstacles);
+  const label = `<text class="stage-band-label" x="${n(anchor.x)}" y="${n(anchor.y)}">${escapeXml(band.label)}</text>`;
+  return `<g class="stage-band">${rect}${label}</g>`;
+}
+
+// 段标签放在哪儿，要看那儿有没有东西。
+//
+// 实测 U-Net 的 CONV BLOCK：带上方 692 与 703 各有一条水平连接线，带内又正好是
+// 第一条连接线的必经之路——"固定放在左上角"必然压线。所以这里给一组候选位置，
+// 挑第一个不压盒子、不压线段的；全都不行才退回原位。
+// 候选顺序是「带上、带更上方、带内左上、带内左下」，让多张图的段标签观感一致。
+function placeStageBandLabel(band, bounds, type, obstacles) {
+  const gap = type.group * 1.05;
+  // 全大写 + 0.8 字距，宽度系数比正文大。
+  const width = band.label.length * (type.group * 0.62 + 0.8);
+  const candidates = [
+    { x: bounds.x + 10, y: bounds.y - gap },
+    { x: bounds.x + 10, y: bounds.y - gap * 2.2 },
+    { x: bounds.x + 10, y: bounds.y + type.group * 0.2 },
+    { x: bounds.x + 10, y: bounds.y + bounds.h - type.group * 0.35 },
+  ];
+  const boxAt = (anchor) => ({ x: anchor.x, y: anchor.y - type.group, w: width, h: type.group });
+  const clear = (anchor) => {
+    const box = boxAt(anchor);
+    if (box.y < 2) return false;
+    if (obstacles.boxes.some((other) => overlaps(box, other, 3))) return false;
+    return !obstacles.segments.some((segment) => segmentHits(box, segment, 3));
+  };
+  return candidates.find(clear) || candidates[0];
+}
+
+function overlaps(a, b, pad = 0) {
+  return a.x < b.x + b.w + pad && a.x + a.w > b.x - pad && a.y < b.y + b.h + pad && a.y + a.h > b.y - pad;
+}
+
+// 把轴对齐线段当成一个细长盒来判交——本项目的连接线全是正交折线。
+function segmentHits(box, segment, pad) {
+  const [a, b] = segment;
+  const thin = {
+    x: Math.min(a.x, b.x) - pad,
+    y: Math.min(a.y, b.y) - pad,
+    w: Math.abs(a.x - b.x) + pad * 2,
+    h: Math.abs(a.y - b.y) + pad * 2,
+  };
+  return overlaps(box, thin);
+}
+
+// 段标签要避开的障碍：所有盒子，以及所有连接线的每一段。
+function collectStageObstacles(bodies, connectors) {
+  const segments = [];
+  for (const connector of connectors || []) {
+    const points = (connector.points || []).filter(validPoint);
+    for (let index = 1; index < points.length; index += 1) segments.push([points[index - 1], points[index]]);
+  }
+  return { boxes: bodies.map((body) => body.bounds), segments };
+}
+
+// 图例：PLOS ONE 2025 指南 L 要求图能自足。只列出本图真正用到的图元形态，
+// 避免出现"图例里有、图上没有"的噪声。
+// 默认英文——顶刊图内文字一律英文，中文图例只留给内部评审稿（options.legendLang === "zh"）。
+const LEGEND_ENTRIES_EN = Object.freeze([
+  { form: "volume", label: "Feature map (width = channels)" },
+  { form: "stack", label: "Matrix operator (MatMul / Linear)" },
+  { form: "wedge", label: "Down / upsampling", data: { scaleChange: "reduce" } },
+  { form: "strip", label: "Token sequence" },
+  { form: "glyph", label: "Element-wise merge (Add / Concat)", semanticTags: ["merge"] },
+  { form: "band", label: "Element-wise op (Norm / Activation)" },
+  { form: "cell", label: "Recurrent / graph operator" },
+  { form: "callout", label: "Unresolved module (needs review)" },
+]);
+
+const LEGEND_ENTRIES_ZH = Object.freeze([
   { form: "volume", label: "张量 / 特征图（宽=通道数，高=空间尺寸）" },
   { form: "stack", label: "矩阵算子（MatMul / Linear）" },
   { form: "wedge", label: "下采样 / 上采样", data: { scaleChange: "reduce" } },
@@ -329,9 +493,10 @@ const LEGEND_ENTRIES = Object.freeze([
   { form: "callout", label: "未解析模块（需人工确认）" },
 ]);
 
-function buildLegend(bodies) {
+function buildLegend(bodies, lang = "en") {
   const present = new Set(bodies.map((primitive) => String(primitive.form || "")));
-  return LEGEND_ENTRIES.filter((entry) => present.has(entry.form));
+  const entries = lang === "zh" ? LEGEND_ENTRIES_ZH : LEGEND_ENTRIES_EN;
+  return entries.filter((entry) => present.has(entry.form));
 }
 
 const LEGEND_SWATCH = { w: 30, h: 18 };
@@ -431,19 +596,118 @@ function renderConnector(connector, type = LEGACY_TYPE) {
   return `<path class="scene-connector ${escapeAttribute(routeClass)}" d="${path}" stroke="${style.color}" stroke-width="${n(width)}"${dash} marker-end="url(#arrow-${escapeAttribute(routeClass)})"/>`;
 }
 
-function renderPrimitive(primitive, step, flat, type = LEGACY_TYPE) {
+function renderPrimitive(primitive, step, flat, type = LEGACY_TYPE, context = {}) {
   if (!validBounds(primitive.bounds)) return "";
-  if (primitive.role !== "body") return renderDecoration(primitive);
+  if (primitive.role !== "body") return renderDecoration(primitive, context);
   const bounds = primitive.bounds;
   const style = styleForPrimitive(primitive, type);
   const shape = renderBodyShape(primitive, bounds, style, flat);
-  const text = renderBodyText(primitive, bounds, step, flat, type);
   // 合并算子的序号已经并进圆下方的说明行；名字被外置的盒子也不再重复画角标——
   // 外置块自带序号，画两次会出现两个同号圆。
-  const chip = isMergeGlyph(primitive) || text.external
+  const chipRect = isMergeGlyph(primitive) ? null : stepChipRect(step, bounds, primitive, type, flat);
+  const text = renderBodyText(primitive, bounds, step, flat, type, { ...context, chipRect });
+  const chip = text.external || !chipRect
     ? ""
-    : renderStepChip(step, bounds, primitive, type, flat);
+    : stepChipMarkup(step, chipRect.cx, chipRect.cy, chipRect.radius, type.hairline);
   return `<g class="scene-body ${escapeAttribute(primitive.blockKind || primitive.form || "operator")}">${shape}${text.markup}${chip}</g>`;
+}
+
+// 合并算子（⊕）的张量标注折进它自己的标签行。
+//
+// 旧画法把 "Concat" 当成一个独立装饰图元，放在 ⊕ 下方几乎同一个 y 上——
+// 实测 U-Net 里标签占 371–383、标注占 378–388，**两行字直接压在一起**。
+// 而且标注的第一行就是算子名，和 ⊕ 的标签完全重复（"Concat" 写了两遍）。
+// 这里把两者合成一块：算子名一行、张量形状一行，装饰图元本身不再单独渲染。
+function collectMergeAnnotations(bodies, decorations) {
+  const mergeBodyByOwner = new Map();
+  for (const body of bodies) {
+    if (!isMergeGlyph(body)) continue;
+    const owner = String((body.sourceNodeIds || [])[0] || "");
+    if (owner) mergeBodyByOwner.set(owner, String(body.id));
+  }
+  const shapes = new Map();
+  const consumed = new Set();
+  for (const decoration of decorations) {
+    const owner = String((decoration.sourceNodeIds || [])[0] || "");
+    const bodyId = mergeBodyByOwner.get(owner);
+    if (!bodyId) continue;
+    // 发布名的格式是 `${算子名}\n${形状}`——**一个含换行的字符串**，不是数组。
+    // 第一行是算子名（与 ⊕ 的标签重复），后面才是张量形状。
+    const lines = (decoration.labels || [])
+      .flatMap((value) => String(value ?? "").split("\n"))
+      .map(cleanText)
+      .filter(Boolean);
+    const shape = normalizeShapeText(lines.slice(1).join(" "));
+    if (!shape) continue;
+    shapes.set(bodyId, shape);
+    consumed.add(String(decoration.id));
+  }
+  return { shapes, consumed };
+}
+
+// 张量尺寸的规范写法：用乘号 ×，并且**不加空格**。
+// 顶刊两种写法都出现过，但 "384 × 128 × 128" 在窄列里（ResNet 第二列盒宽 67）根本放不下——
+// 三处竖线把 65 单位的空隙切完后只剩 61，15 个字符放不进去；紧凑写法只要 11 个字符。
+function normalizeShapeText(text) {
+  return cleanText(text).replace(/\s*[x×]\s*/gi, "×").trim();
+}
+
+// 挂在盒子下方 / 圆下方的说明文字，水平位置必须避开竖向连接线。
+//
+// 竖向连线的走线位置恰好是盒子的中线，说明文字居中就一定会被线从正中穿过去——
+// 实测三张图共 32 处。顶刊的写法是把张量尺寸写在箭头**旁边**，而不是压在箭头上。
+//
+// 候选位**从"贴线右侧"开始**而不是从居中开始：同一列里所有标注共用同一个左边界，
+// 一眼看过去是整齐的一列；若允许"能居中就居中"，同一列会出现 +0 / +25 / +40 三种偏移。
+// 贴线位放不下时才依次外扩，最后才退回居中。
+const CAPTION_CLEARANCE = 4;
+const CAPTION_SHIFTS = [1, 2, 3, -1, -2, 4, -3, 6, -4, 8, -6, 0];
+
+function placeCaptionAxis(rows, bounds, obstacles) {
+  const cx = bounds.x + bounds.w / 2;
+  if (!obstacles) return cx;
+  const widest = Math.max(0, ...rows.map((row) => estimateTextWidth(row.text, row.fontSize)));
+  if (!(widest > 0)) return cx;
+  const height = Math.max(bounds.h, rows.length * 13);
+  const y = bounds.y + bounds.h / 2 - height / 2;
+  let best = null;
+  for (const step of CAPTION_SHIFTS) {
+    const left = step === 0
+      ? cx - widest / 2
+      : step > 0
+        ? cx + step * CAPTION_CLEARANCE
+        : cx - widest + step * CAPTION_CLEARANCE;
+    const rect = { x: left, y, w: widest, h: height };
+    const cost = captionCollisionCost(rect, obstacles);
+    if (cost === 0) return left + widest / 2;
+    if (!best || cost < best.cost) best = { cost, axis: left + widest / 2 };
+  }
+  return best ? best.axis : cx;
+}
+
+// 障碍 = 所有盒子 + 所有连接线段。线段按有宽度的实体算（1 pt ≈ 1.5 单位），
+// 零宽线段会把"线从文字正中穿过"这种最严重的情况判成不交。
+function captionCollisionCost(rect, obstacles) {
+  let cost = 0;
+  for (const box of obstacles.boxes || []) cost += overlapArea(rect, box);
+  for (const segment of obstacles.segments || []) cost += segmentOverlapArea(rect, segment, 1);
+  return cost;
+}
+
+function overlapArea(a, b) {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+function segmentOverlapArea(rect, segment, pad = 0) {
+  const [a, b] = segment;
+  return overlapArea(rect, {
+    x: Math.min(a.x, b.x) - pad,
+    y: Math.min(a.y, b.y) - pad,
+    w: Math.abs(a.x - b.x) + pad * 2,
+    h: Math.abs(a.y - b.y) + pad * 2,
+  });
 }
 
 // 名字放不进盒子时的退路：挂到盒子正下方，盒内保持干净。
@@ -451,40 +715,52 @@ function renderPrimitive(primitive, step, flat, type = LEGACY_TYPE) {
 // 这条退路是必需的：盒宽由张量形状决定（layout 层锁死），而算子名是外部输入。
 // 只要名字够长，就一定会出现"缩到期刊字号下限仍放不下"的组合——这时缩字号已经
 // 不合规、溢出盒外又会压住相邻元素。顶刊的做法是把标注挪到盒子外面。
-function renderExternalLabel(primitive, bounds, step, badge, label, type) {
-  const cx = bounds.x + bounds.w / 2;
+function renderExternalLabel(primitive, bounds, step, badge, label, type, context = {}) {
+  const rows = [{ text: label, fontSize: type.label }, ...(badge ? [{ text: badge, fontSize: type.badge }] : [])];
   const cy = bounds.y + bounds.h + type.label * 1.45;
-  const half = label.length * type.label * 0.29;
+  const strip = { x: bounds.x, y: cy - type.label, w: bounds.w, h: type.label * 2.8 };
+  const axis = placeCaptionAxis(rows, strip, context.obstacles);
   const chip = Number.isFinite(step)
-    ? stepChipMarkup(step, cx - half - type.chipRadius - 4, cy, type.chipRadius, type.hairline)
+    ? stepChipMarkup(step, axis - rows[0].fontSize * label.length * 0.29 - type.chipRadius - 4, cy, type.chipRadius, type.hairline)
     : "";
   const shift = chip ? type.chipRadius + 4 : 0;
-  const rows = [`<text class="body-label" x="${n(cx + shift)}" y="${n(cy)}">${escapeXml(label)}</text>`];
-  if (badge) rows.push(`<text class="block-badge" x="${n(cx + shift)}" y="${n(cy + type.badge * 1.6)}">${escapeXml(badge)}</text>`);
-  return `<g class="body-caption">${chip}${rows.join("")}</g>`;
+  const markup = [`<text class="body-label" x="${n(axis + shift)}" y="${n(cy)}">${escapeXml(label)}</text>`];
+  if (badge) markup.push(`<text class="block-badge" x="${n(axis + shift)}" y="${n(cy + type.badge * 1.6)}">${escapeXml(badge)}</text>`);
+  return `<g class="body-caption">${chip}${markup.join("")}</g>`;
 }
 
 // 标签与角标合成一个居中文本块。旧画法是"名字在中间 + 药丸浮在右上角"，
 // 在 111×130 的盒子上同时挂序号圆、药丸、两个端口、名字，噪声压过了信息。
 //
 // 返回 { markup, external }：external 为真表示名字已被挪到盒外，调用方不应再画角标。
-function renderBodyText(primitive, bounds, step, flat, type = LEGACY_TYPE) {
+// context.inStageBand 为真时不再画逐盒 badge——段带已经把"这一段是什么"表达过一次了。
+// context.mergeShape 是合并算子的张量形状，折进它的标签行。
+function renderBodyText(primitive, bounds, step, flat, type = LEGACY_TYPE, context = {}) {
+  const { inStageBand = false, suppressBadges = false, mergeShape = "" } = context;
   const label = bodyLabel(primitive);
-  const badge = cleanText(primitive.blockBadge || "");
+  const badge = inStageBand || suppressBadges ? "" : badgeText(primitive);
   if (!label && !badge) return { markup: "", external: false };
   // 合并算子的圆心留给 ⊕。名字挂到圆下方，序号排在名字左边——
   // 序号圆没法塞进圆形的左上角（内接方形的角点离圆心只有 r/√2），
   // 硬塞就会压在圆周上。
   if (isMergeGlyph(primitive)) {
     if (!label) return { markup: "", external: false };
-    const cx = bounds.x + bounds.w / 2;
     const cy = bounds.y + bounds.h + 13;
+    const shapeRows = mergeShape ? [{ text: mergeShape, fontSize: type.label }] : [];
+    const axis = placeCaptionAxis([{ text: label, fontSize: type.label }, ...shapeRows], { x: bounds.x, y: cy - type.label, w: bounds.w, h: type.label * 2.8 }, context.obstacles);
     const half = label.length * type.label * 0.29;
     const chip = Number.isFinite(step)
-      ? stepChipMarkup(step, cx - half - type.chipRadius - 4, cy, type.chipRadius, type.hairline)
+      ? stepChipMarkup(step, axis - half - type.chipRadius - 4, cy, type.chipRadius, type.hairline)
       : "";
     const shift = Number.isFinite(step) ? type.chipRadius + 4 : 0;
-    return { markup: `<g class="body-caption">${chip}<text class="body-label" x="${n(cx + shift)}" y="${n(cy)}">${escapeXml(label)}</text></g>`, external: false };
+    // 张量形状另起一行，字号小一档、颜色压灰——它是补充信息，不是名字。
+    const shapeLine = mergeShape
+      ? `<text class="body-shape" x="${n(axis + shift)}" y="${n(cy + type.label * 1.3)}">${escapeXml(mergeShape)}</text>`
+      : "";
+    return {
+      markup: `<g class="body-caption">${chip}<text class="body-label" x="${n(axis + shift)}" y="${n(cy)}">${escapeXml(label)}</text>${shapeLine}</g>`,
+      external: false,
+    };
   }
   const face = textFace(primitive, bounds, flat);
   const cx = face.x + face.w / 2;
@@ -498,12 +774,32 @@ function renderBodyText(primitive, bounds, step, flat, type = LEGACY_TYPE) {
     // 缩到期刊下限仍放不下：既不能再缩（不合规），也不能溢出（压住邻盒）。
     // 外置到盒子下方，盒内只保留 badge。
     if (fit.overflow) {
-      return { markup: renderExternalLabel(primitive, bounds, step, badge, label, type), external: true };
+      return { markup: renderExternalLabel(primitive, bounds, step, badge, label, type, context), external: true };
     }
+    // .body-label / .block-badge 都用 dominant-baseline:middle —— y 是文字的**垂直中心**，
+    // 不是基线。块的上/下缘必须按 ±0.5em 算。之前按基线算，下缘少算了 0.35em，
+    // 实测 ResNet 的 "CONV" 因此探出盒底 2.8 单位，正好被连接线的箭头啃掉。
     const lineGap = fit.fontSize * 1.18;
-    const hasBadge = Boolean(badge);
-    const blockHeight = fit.lines.length * lineGap + (hasBadge ? type.badge * 1.3 : 0);
-    const startY = cy - blockHeight / 2 + lineGap / 2;
+    const badgeHeight = type.badge * 1.15;
+    // 相对 startY 的下缘：末行中心 + 0.5em，或 badge 中心 + 0.5em。
+    const bottomFor = (withBadge) => (withBadge
+      ? fit.lines.length * lineGap + badgeHeight
+      : fit.lines.length * lineGap - 0.68 * fit.fontSize);
+    // 文字块的可用纵向区间：上要躲开左上角的序号圆，下不能贴到盒沿
+    // （竖向连线的箭头落在盒底中线上，贴底会被箭头啃掉）。
+    const minStart = (context.chipRect ? context.chipRect.y + context.chipRect.h + 1.5 : face.y + 1.5) + fit.fontSize * 0.5;
+    const maxBottom = face.y + face.h - 1.5;
+    const hasBadge = Boolean(badge) && !context.suppressBadges && badgeFitsInBlock(fit, face, context.chipRect, type);
+    const bottomOffset = bottomFor(hasBadge);
+    const blockHeight = fit.fontSize * 0.5 + bottomOffset;
+    const blockWidth = Math.max(
+      ...fit.lines.map((line) => estimateTextWidth(line, fit.fontSize)),
+      hasBadge ? estimateTextWidth(badge, type.badge) : 0,
+    );
+    let startY = cy - blockHeight / 2 + fit.fontSize * 0.5;
+    const maxStart = maxBottom - bottomOffset;
+    // 区间为空（盒子比文字块还矮）时保持居中：怎么放都越界，居中至少不偏。
+    if (minStart <= maxStart) startY = Math.min(Math.max(startY, minStart), maxStart);
     fit.lines.forEach((line, lineIndex) => {
       rows.push(`<text class="body-label"${fontSizeAttr(fit.fontSize, type.label)} x="${n(cx)}" y="${n(startY + lineIndex * lineGap)}">${escapeXml(line)}</text>`);
     });
@@ -527,6 +823,24 @@ function estimateTextWidth(text, fontSize) {
 
 function fontSizeAttr(fontSize, base = 11) {
   return Math.abs(fontSize - base) < 0.05 ? "" : ` style="font-size:${format(fontSize)}px"`;
+}
+
+// 盒子能否在期刊字号下同时装下"名字 + 段名 + 序号圆"。
+// 抽成独立函数是因为这个判定要被用两次：一次在出图前决定"整图要不要画段名"，
+// 一次在逐盒排版时决定这一盒画不画。两处共用同一份几何，不会各自漂移。
+function badgeFitsInBlock(fit, face, chipRect, type) {
+  const minStart = (chipRect ? chipRect.y + chipRect.h + 1.5 : face.y + 1.5) + fit.fontSize * 0.5;
+  return minStart + fit.lines.length * fit.fontSize * 1.18 + type.badge * 1.15 <= face.y + face.h - 1.5;
+}
+
+function bodyBadgeFits(primitive, bounds, flat, type, step) {
+  if (isMergeGlyph(primitive)) return false;
+  const label = bodyLabel(primitive);
+  if (!label) return true;
+  const face = textFace(primitive, bounds, flat);
+  const fit = fitLabelText(label, face.w, type);
+  if (fit.overflow) return false;
+  return badgeFitsInBlock(fit, face, stepChipRect(step, bounds, primitive, type, flat), type);
 }
 
 function fitLabelText(label, faceWidth, type = LEGACY_TYPE) {
@@ -584,18 +898,20 @@ function stepChipMarkup(step, cx, cy, radius = CHIP_RADIUS, hairline = STROKE_HA
   ].join("");
 }
 
-function renderStepChip(step, bounds, primitive, type = LEGACY_TYPE, flat = false) {
-  if (!Number.isFinite(step)) return "";
+// 角标的实际占位。既用于绘制，也用于"盒内文字必须避开角标"的排版约束——
+// 两处共用同一份几何，避免"角标挪了位置、避让还按旧位置算"。
+function stepChipRect(step, bounds, primitive, type = LEGACY_TYPE, flat = false) {
+  if (!Number.isFinite(step)) return null;
   const radius = Math.max(6, Math.min(type.chipRadius, Math.min(bounds.w, bounds.h) * 0.14));
   // 顶刊的"角标"读法：落在盒子最外侧的左上角。三维盒就是顶面，叠板就是最后面那块板的角。
   // 用 bounds 的左上角而不是 labelFaceOrigin，这样压扁之后不会再盖到名字。
   const pad = radius * 0.5;
-  const y = bounds.y + radius + pad;
-  let x = bounds.x + radius + pad;
+  const cy = bounds.y + radius + pad;
+  let cx = bounds.x + radius + pad;
   // 梯形的左上角是**斜的**（三维棱柱还多一层顶面斜边）：角标必须贴着实测的左边界放，
   // 否则会有一半悬在形状外面。
-  if (primitive.form === "wedge") x = wedgeLeftAt(primitive, bounds, flat, y) + radius + pad;
-  return stepChipMarkup(step, x, y, radius, type.hairline);
+  if (primitive.form === "wedge") cx = wedgeLeftAt(primitive, bounds, flat, cy) + radius + pad;
+  return { x: cx - radius, y: cy - radius, w: radius * 2, h: radius * 2, cx, cy, radius };
 }
 
 // 梯形（含三维棱柱）在高度 y 处的左边界。角标据此定位。
@@ -615,16 +931,58 @@ function wedgeLeftAt(primitive, bounds, flat, y) {
   return bounds.x + (expand ? inset * (1 - t) : inset * t);
 }
 
-function renderDecoration(primitive) {
-  const labels = (primitive.labels || []).map(cleanText).filter(Boolean);
-  if (!labels.length) return "";
+function renderDecoration(primitive, context = {}) {
+  const type = context.type || LEGACY_TYPE;
+  const bodyNames = context.bodyNames instanceof Set ? context.bodyNames : new Set();
+  const rows = decorationRows(primitive.labels, bodyNames).map((row) => ({
+    ...row,
+    fontSize: row.shape ? type.badge : type.primitive,
+  }));
+  if (!rows.length) return "";
   const bounds = primitive.bounds;
   const lineHeight = 13;
-  const centerY = bounds.y + bounds.h / 2 - ((labels.length - 1) * lineHeight) / 2;
-  const text = labels.map((label, index) =>
-    `<text class="primitive-label" x="${n(bounds.x + bounds.w / 2)}" y="${n(centerY + index * lineHeight + 4)}">${escapeXml(label)}</text>`
-  ).join("");
+  const axisX = placeCaptionAxis(rows, bounds, context.obstacles);
+  const centerY = bounds.y + bounds.h / 2 - ((rows.length - 1) * lineHeight) / 2;
+  const text = rows.map((row, index) => {
+    const className = row.shape ? "primitive-shape" : "primitive-label";
+    return `<text class="${className}" x="${n(axisX)}" y="${n(centerY + index * lineHeight + 4)}">${escapeXml(row.text)}</text>`;
+  }).join("");
   return `<g class="scene-decoration">${text}</g>`;
+}
+
+// 装饰标注的原始形态是「算子名 \n 输出张量形状」（见 neural-visual-rules 的 publicationLabel）。
+// 但 cleanText 会把换行压成空格，于是图上出现 "Conv 64 x 112 x 112" 这种一长串——
+// 名字在盒子里已经写过一遍，形状又是读者真正要找的信息，两件事挤在一行里谁也不突出。
+//
+// 这里拆成「名字行 + 形状行」，并做三件事：
+//   1) 名字走同一套领域缩写（Conv / BatchNorm / GAP），与盒内标签一致；
+//   2) 盒内已经写过这个名字时，标注只留形状——不重复同一信息两遍；
+//   3) 维度分隔符用乘号 ×，ASCII 的 x 只留作输入的容错写法。
+function decorationRows(labels, bodyNames) {
+  const rows = [];
+  for (const value of labels || []) {
+    const parts = String(value ?? "").split("\n").map(cleanText).filter(Boolean);
+    if (!parts.length) continue;
+    const [head, ...rest] = parts;
+    if (!rest.length) {
+      if (isShapeOnly(head)) rows.push({ text: normalizeShapeText(head), shape: true });
+      else {
+        const name = abbreviateOperatorName(head);
+        if (!bodyNames.has(name)) rows.push({ text: name, shape: false });
+      }
+      continue;
+    }
+    const name = abbreviateOperatorName(head);
+    if (!bodyNames.has(name)) rows.push({ text: name, shape: false });
+    const shape = normalizeShapeText(rest.join(" "));
+    if (shape) rows.push({ text: shape, shape: true });
+  }
+  return rows;
+}
+
+// "64 x 112 x 112" / "196 × 768" 这类纯尺寸串：没有任何字母（* 是 assumed-default 标记，保留）。
+function isShapeOnly(text) {
+  return /^[\d\s×xX*]+$/.test(text) && /\d/.test(text);
 }
 
 function renderBodyShape(primitive, bounds, style, flat) {
@@ -766,7 +1124,10 @@ function renderFeatureMapStack(bounds, style) {
       parts.push(`<polygon points="${n(px)},${n(py)} ${n(px + planeW)},${n(py)} ${n(backPx + planeW)},${n(backPy)} ${n(backPx)},${n(backPy)}" fill="${tint(style.fill, FACE_SIDE - 0.06)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
     }
     const tintAmt = FACE_FRONT - 0.04 * (N - 1 - i);
-    parts.push(`<rect x="${n(px)}" y="${n(py)}" width="${n(planeW)}" height="${n(planeH)}" fill="${tint(style.fill, tintAmt)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
+    // 最前面那张平面就是文字面（见 textFace），给它一个类名，几何核验器才认得出
+    // "这个盒子的文字应该落在哪"——后面几张被它挡住，标了反而会造成误判。
+    const className = i === 0 ? ' class="body-rect"' : "";
+    parts.push(`<rect${className} x="${n(px)}" y="${n(py)}" width="${n(planeW)}" height="${n(planeH)}" fill="${tint(style.fill, tintAmt)}" stroke="${style.stroke}" stroke-width="${n(style.width)}"/>`);
   }
   return parts.join("");
 }
@@ -977,6 +1338,13 @@ function bodyLabel(primitive) {
   return abbreviateOperatorName(label || displayNodeName(first));
 }
 
+// 块类型标记（encoder / conv / dense …）是布局层给的分段语义，不是实现细节。
+// 顶刊一律全大写写段名，小写的 "encoder" 挂在盒子底下看起来像调试输出。
+function badgeText(primitive) {
+  const badge = cleanText(primitive.blockBadge || "");
+  return badge ? badge.toUpperCase() : "";
+}
+
 // 顶刊里写的是领域标准缩写，不是框架的算子类名。
 // GlobalAveragePool 要 18 个字符宽，在 U-Net 那种窄梯形里必然溢出（实测需要 124 单位、
 // 中腰只有 50，2.5× 越界）；GAP 只要 3 个字符。这既解决溢出，也是论文里的通用写法。
@@ -1118,11 +1486,25 @@ function css(type = LEGACY_TYPE) {
     `.scene-title{text-anchor:middle;font-size:${format(type.title)}px;font-weight:600;letter-spacing:0.2px}`,
     // 组框改用实线：Nature 明确避免 pattern，虚线框缩到栏宽后会糊成灰边。
     `.scene-group-frame{fill:#FBFCFD;stroke:#D5DBE3;stroke-width:${format(type.hairline)}}`,
+    // 段带：只用浅填充、不描边。它是背景，不是容器——Nature 明确避免多余边框。
+    ".stage-band-frame{fill:#F1F5F9;stroke:none}",
+    // 段标签位置由 renderStageBand 做碰撞检测后决定，这里只管字形。
+    // （试过用 paint-order 描一圈与底色同色的光晕来压住穿过的连接线——
+    //   但 cairosvg 不支持 paint-order，描边会盖掉填充，字直接消失。改用避让。）
+    `.stage-band-label{font-size:${format(type.group)}px;font-weight:600;fill:#94A3B8;letter-spacing:0.8px}`,
+    // 段带标签是浅灰的说明性文字，不是数据标签；Nature 只禁止"彩色文字"，
+    // 灰度文字不受限，但仍要保证印出来有足够对比度（#94A3B8 ≈ 2.8:1）。
     ".scene-group-tag{fill:#E8EDF3;stroke:none}",
     `.scene-group-label{font-size:${format(type.group)}px;font-weight:600;fill:#475569;dominant-baseline:middle}`,
     `.body-label{text-anchor:middle;dominant-baseline:middle;font-size:${format(type.label)}px;font-weight:600;fill:${TEXT_INK}}`,
-    `.block-badge{text-anchor:middle;dominant-baseline:middle;font-size:${format(type.badge)}px;fill:${MUTED_INK}}`,
+    // 张量形状是补充信息：小一档字号 + 压灰，避免和算子名抢注意力。
+    `.body-shape{text-anchor:middle;dominant-baseline:middle;font-size:${format(type.primitive)}px;fill:#5A6472}`,
     `.primitive-label{text-anchor:middle;font-size:${format(type.primitive)}px;fill:#5A6472}`,
+    // 盒下的张量形状：比算子名再压一档，让"名字 > 形状"的层级一眼可见。
+    `.primitive-shape{text-anchor:middle;font-size:${format(type.badge)}px;fill:#8A94A3}`,
+    // 块类型标记（ENCODER / CONV）：顶刊写全大写小号字，不写小写的实现名。
+    `.block-badge{text-anchor:middle;dominant-baseline:middle;font-size:${format(type.badge)}px;fill:${MUTED_INK};letter-spacing:0.6px}`,
+    // 步骤序号是过程性标注，压到最小一档并转灰——它服务于方法描述，不该抢视觉重心。
     `.step-chip-label{text-anchor:middle;dominant-baseline:central;font-size:${format(type.step)}px;font-weight:600;fill:${TEXT_INK}}`,
     `.legend-label{font-size:${format(legendFontSize(type))}px;fill:#475569}`,
     ".scene-connector{fill:none;stroke-linejoin:round;stroke-linecap:round}",

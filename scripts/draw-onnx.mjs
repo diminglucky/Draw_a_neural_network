@@ -19,7 +19,7 @@ const args = new Map(process.argv.slice(2).map((arg) => {
 
 const inputPath = args.get("input");
 if (!inputPath) {
-  console.error("usage: node scripts/draw-onnx.mjs --input=<model.onnx> [--projection=full|balanced|overview] [--out=<dir>] [--title=<text>] [--journal=nature|science|cell|ieee|acs] [--target-width=<mm>] [--flat] [--plan-only]");
+  console.error("usage: node scripts/draw-onnx.mjs --input=<model.onnx> [--projection=full|balanced|overview] [--out=<dir>] [--title=<text>] [--journal=nature|science|cell|ieee|acs] [--target-width=<mm>] [--flat] [--legend-lang=en|zh] [--plan-only]");
   process.exit(2);
 }
 
@@ -32,7 +32,9 @@ if (!["overview", "balanced", "full"].includes(projection)) {
 const absoluteInput = resolve(inputPath);
 const bytes = readFileSync(absoluteInput);
 const modelName = basename(absoluteInput, extname(absoluteInput));
-const title = args.get("title") || modelName;
+// 图内标题：顶刊架构图的标题写在图注（caption）里，图内不该重复一遍。
+// 因此只有显式 --title=... 才画标题；模型名照旧进 summary 供检索。
+const title = args.get("title") || "";
 const outputRoot = args.get("out")
   ? resolve(String(args.get("out")))
   : fileURLToPath(new URL("../artifacts/onnx", import.meta.url));
@@ -115,7 +117,9 @@ if (!args.has("plan-only")) {
   // --journal=nature --target-width=183：按期刊成品栏宽出图，字号落在该刊 5–7 pt 区间。
   const journal = args.get("journal");
   const targetWidth = args.get("target-width");
-  writeFileSync(svgPath, renderSceneSvg(scene, { title, flat, journal, targetWidth }), "utf8");
+  // 图例默认英文（顶刊图内文字一律英文）；--legend-lang=zh 只用于内部评审稿。
+  const legendLang = String(args.get("legend-lang") || "en").toLowerCase();
+  writeFileSync(svgPath, renderSceneSvg(scene, { title, flat, journal, targetWidth, legendLang }), "utf8");
 }
 writeFileSync(planPath, JSON.stringify(plan.visioDiagramPlan, null, 2));
 
@@ -132,7 +136,7 @@ const summary = {
   renderer: SCENE_SVG_RENDERER_VERSION,
   status: "rendered",
   model: modelName,
-  title,
+  title: title || null,
   input: absoluteInput,
   bytes: bytes.length,
   requestedProjection: projection,

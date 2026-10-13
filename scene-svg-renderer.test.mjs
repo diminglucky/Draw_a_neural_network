@@ -13,9 +13,27 @@ test("renders a laid-out Scene to deterministic SVG", () => {
   assert.match(svg, /^<svg /);
   assert.match(svg, /marker id="arrow-main-flow"/);
   assert.match(svg, /class="scene-connector/);
-  assert.match(svg, /class="block-badge"/);
+  // 段名 badge 是"整图统一"的：这份 fixture 的盒子（高 26–34）装不下
+  // "名字 + 段名 + 序号圆"三者，于是整张图都不画段名。
+  // 只给一部分盒子画会让读者以为那几个盒子有特殊含义，比全不画更糟。
+  assert.doesNotMatch(svg, /class="block-badge"/);
   assert.match(svg, /Multimodal/);
   assert.equal(svg, renderSceneSvg(result.visioDiagramPlan.scene, { title: "Multimodal" }));
+});
+
+// 段名的两条不变量：放得下就必须全画（且写成大写的段名），放不下就一个都不画。
+test("block badges are all-or-nothing across the figure and use the uppercase section name", () => {
+  const box = (id, label, kind) => ({ id, role: "body", form: "volume", blockKind: kind, blockBadge: kind === "conv-block" ? "encoder" : "dense", labels: [label], sourceNodeIds: [id], bounds: { x: 20, y: 20, w: 120, h: 70 } });
+  // 两个盒子的 blockKind 必须不同，否则它们会先被合成段带，段带路径不画逐盒段名。
+  const scene = () => ({ page: { width: 200, height: 120 }, primitives: [box("a", "Conv_0", "conv-block"), box("b", "Relu_1", "ffn-block")], connectors: [], groups: [] });
+  // flat 模式下文字面就是整个盒子，70 高足够放下"名字 + 段名 + 序号圆"。
+  const roomy = renderSceneSvg(scene(), { flat: true });
+  assert.equal((roomy.match(/class="block-badge"/g) || []).length, 2);
+  assert.match(roomy, />ENCODER</);
+  // 同样的两个盒子，其中一个被压到装不下段名的高度——整张图都不该再有段名。
+  const tight = scene();
+  tight.primitives[1].bounds.h = 30;
+  assert.doesNotMatch(renderSceneSvg(tight, { flat: true }), /class="block-badge"/);
 });
 
 test("escapes labels and rejects incomplete scenes", () => {
